@@ -5,6 +5,7 @@ mod catalog_entities;
 #[cfg(feature = "neural-search")]
 pub mod alerts;
 #[cfg(feature = "neural-search")]
+pub mod embed_policy;
 pub mod entities;
 #[cfg(feature = "semantic-search")]
 pub mod evidence;

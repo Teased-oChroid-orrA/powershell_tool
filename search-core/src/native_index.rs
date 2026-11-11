@@ -21,6 +21,7 @@ use native_search::error::{NsError, NsResult};
 use tokio_util::sync::CancellationToken;
 
 use crate::cache::ticks_from_modified;
+use crate::embed_policy::EmbedPolicy;
 use crate::extraction;
 use crate::file_reader;
 use crate::models::{FileSearchResult, SearchSettings};
@@ -306,6 +307,11 @@ pub struct CorpusIndexOutcome {
     /// The build was cancelled part-way; everything indexed before the
     /// cancel was committed and is usable.
     pub cancelled: bool,
+    /// Files embedded by this run (semantic index on). The rest of the files in scope were already current.
+    pub semantic_embedded_count: i32,
+    /// Files that still lack current vectors after this run because the pass limit (`EmbedPolicy::limit`) was
+    /// reached. They are in the exact index and found by exact search; a later pass embeds them.
+    pub semantic_pending_count: i32,
 }
 
 /// Replaces anything path-like in `text` with `<path>`: a whitespace/quote-
@@ -412,7 +418,7 @@ pub async fn build_or_update_corpus_index(
     cancellation: &CancellationToken,
     on_progress: Option<&mut dyn FnMut(CorpusIndexProgress)>,
 ) -> NsResult<CorpusIndexOutcome> {
-    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress, None).await
+    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress, None, &EmbedPolicy::default()).await
 }
 
 /// Same as [`build_or_update_corpus_index`], for callers that need the
@@ -433,7 +439,7 @@ pub async fn build_or_update_corpus_index_send<F: FnMut(CorpusIndexProgress) + S
     cancellation: &CancellationToken,
     on_progress: Option<&mut F>,
 ) -> NsResult<CorpusIndexOutcome> {
-    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress, None).await
+    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress, None, &EmbedPolicy::default()).await
 }
 
 /// Brings the index up to date for only the `changed` paths a file watcher reported, instead of walking the whole
@@ -450,7 +456,47 @@ pub async fn update_corpus_index_paths_send<F: FnMut(CorpusIndexProgress) + Send
     changed: &[String],
     on_progress: Option<&mut F>,
 ) -> NsResult<CorpusIndexOutcome> {
-    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress, Some(changed)).await
+    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress, Some(changed), &EmbedPolicy::default()).await
+}
+
+/// [`build_or_update_corpus_index_send`] with an embedding budget (P2-3): the exact index is brought fully up to date,
+/// but this pass embeds at most `policy.limit` of the files that lack current vectors, in `policy` order (priority
+/// folders, then prose before code before data). The rest stay searchable by exact search and are counted in
+/// `semantic_pending_count`; a later pass (or [`enrich_semantic_index_send`]) embeds them. No stored format changes:
+/// "not embedded yet" is simply "no current row in `semantic_documents`", the state an interrupted build already leaves.
+pub async fn build_or_update_corpus_index_lazy_send<F: FnMut(CorpusIndexProgress) + Send>(
+    settings: &SearchSettings,
+    engine: &NativeSearchEngine,
+    cancellation: &CancellationToken,
+    on_progress: Option<&mut F>,
+    policy: &EmbedPolicy,
+) -> NsResult<CorpusIndexOutcome> {
+    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress, None, policy).await
+}
+
+/// Background enrichment: repeats lazy passes of `policy.limit` files until nothing is pending, the run is cancelled
+/// or a pass embeds nothing (every remaining file fails; stops instead of looping). Between passes the exact index is
+/// committed and searchable. Returns the last pass's outcome with `semantic_embedded_count` summed over all passes,
+/// so progress is `embedded / (embedded + pending)`. Each pass walks the folder once; choose a limit large enough that
+/// the walk is small next to the embedding.
+pub async fn enrich_semantic_index_send<F: FnMut(CorpusIndexProgress) + Send>(
+    settings: &SearchSettings,
+    engine: &NativeSearchEngine,
+    cancellation: &CancellationToken,
+    mut on_progress: Option<&mut F>,
+    policy: &EmbedPolicy,
+) -> NsResult<CorpusIndexOutcome> {
+    let mut embedded = 0;
+    loop {
+        let mut outcome =
+            build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress.as_deref_mut(), None, policy).await?;
+        let pass = outcome.semantic_embedded_count;
+        embedded += pass;
+        outcome.semantic_embedded_count = embedded;
+        if outcome.cancelled || outcome.semantic_pending_count == 0 || pass == 0 {
+            return Ok(outcome);
+        }
+    }
 }
 
 /// What `changed` means on disk right now: files to consider and index ids to remove.
@@ -703,6 +749,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
     cancellation: &CancellationToken,
     mut on_progress: Option<&mut F>,
     only: Option<&[String]>,
+    policy: &EmbedPolicy,
 ) -> NsResult<CorpusIndexOutcome> {
     let started = std::time::Instant::now();
     let mut outcome = CorpusIndexOutcome::default();
@@ -809,6 +856,13 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         HashMap::new()
     });
     let mut work: Vec<(file_reader::EnumeratedFile, String, String)> = Vec::new();
+    // Lazy embedding (policy.limit set): files whose exact entry is current but whose vectors are not are held back
+    // here, and `sem_need` names every file that lacks current vectors.
+    let lazy = policy.limit.is_some() && cfg!(feature = "semantic-search");
+    #[cfg(not(feature = "semantic-search"))]
+    let _ = policy;
+    let mut deferred: Vec<(file_reader::EnumeratedFile, String, String)> = Vec::new();
+    let mut sem_need: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (i, file) in candidates.into_iter().enumerate() {
         if cancellation.is_cancelled() {
             outcome.cancelled = true;
@@ -850,6 +904,29 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
                 outcome.skipped_count += 1;
                 continue;
             }
+            let exact_current = existing_modified == modified_unix && existing_size == file.length && ocr_current;
+            let ext = file
+                .path
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
+                .unwrap_or_default();
+            if lazy && !semantic_current {
+                sem_need.insert(full_name.clone());
+                if exact_current {
+                    deferred.push((file, full_name, ext));
+                    continue;
+                }
+            }
+            work.push((file, full_name, ext));
+            continue;
+        }
+        #[cfg(feature = "semantic-search")]
+        if lazy
+            && !semantic_index
+                .as_ref()
+                .is_some_and(|index| index.is_current(&full_name, modified_unix, file.length).unwrap_or(false))
+        {
+            sem_need.insert(full_name.clone());
         }
         let ext = file
             .path
@@ -857,6 +934,29 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
             .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
             .unwrap_or_default();
         work.push((file, full_name, ext));
+    }
+    // Choose this pass's embedding set from everything lacking vectors (new, changed and held-back files alike), in
+    // priority order; the rest are exact-indexed only. Priority files are also read and indexed first.
+    let mut skip_embed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Held-back files picked this pass: their exact entry is current, so they are embedded without being re-staged.
+    let mut embed_only: std::collections::HashSet<String> = std::collections::HashSet::new();
+    #[cfg(not(feature = "semantic-search"))]
+    let _ = &skip_embed;
+    if lazy {
+        let needing: Vec<(&str, &str)> = work
+            .iter()
+            .chain(deferred.iter())
+            .filter(|(_, name, _)| sem_need.contains(name))
+            .map(|(_, name, ext)| (name.as_str(), ext.as_str()))
+            .collect();
+        let chosen: std::collections::HashSet<&str> = policy.select(&needing).into_iter().map(|i| needing[i].0).collect();
+        skip_embed = needing.iter().map(|(name, _)| *name).filter(|name| !chosen.contains(name)).map(String::from).collect();
+        outcome.semantic_pending_count = skip_embed.len() as i32;
+        let (now, later): (Vec<_>, Vec<_>) = deferred.into_iter().partition(|(_, name, _)| !skip_embed.contains(name));
+        drop(later);
+        embed_only = now.iter().map(|(_, name, _)| name.clone()).collect();
+        work.extend(now);
+        work.sort_by_cached_key(|(_, name, ext)| policy.rank(name, ext));
     }
 
     // Pass 2: read+extract concurrently in order-preserving windows, index serially.
@@ -947,22 +1047,28 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         let _pages = pages;
 
         #[cfg(feature = "semantic-search")]
-        if let Some(index) = &semantic_index {
-            if let Err(error) = index.index_document_with_pages(
+        if let Some(index) = semantic_index.as_ref().filter(|_| !skip_embed.contains(&full_name)) {
+            match index.index_document_with_pages(
                 &full_name,
                 ticks_from_modified(file.modified),
                 file.length,
                 &lines,
                 pages.as_deref(),
             ) {
-                *outcome
-                    .failure_summary
-                    .entry(format!("semantic index failed: {}", redact_paths(&error)))
-                    .or_insert(0) += 1;
-                tracing::warn!(error = %redact_paths(&error), "semantic indexing failed for one document");
+                Ok(_) => outcome.semantic_embedded_count += 1,
+                Err(error) => {
+                    *outcome
+                        .failure_summary
+                        .entry(format!("semantic index failed: {}", redact_paths(&error)))
+                        .or_insert(0) += 1;
+                    tracing::warn!(error = %redact_paths(&error), "semantic indexing failed for one document");
+                }
             }
         }
 
+        if embed_only.contains(&full_name) {
+            continue;
+        }
         let doc = PendingDoc {
             filename: file
                 .path
@@ -1947,6 +2053,82 @@ mod tests {
             Some(dir.path().join("shaft.txt").to_string_lossy().as_ref())
         );
         assert_eq!((hits[0].first_line, hits[0].last_line), (1, 1));
+    }
+
+    /// P2-3: a pass with an embedding limit exact-indexes every file, embeds the priority ones first, reports what is
+    /// pending, and enrichment embeds the rest without redoing finished documents.
+    #[cfg(feature = "semantic-search")]
+    #[tokio::test]
+    async fn lazy_pass_embeds_by_priority_keeps_exact_search_whole_and_enrichment_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = [
+            ("notes.md", "The shaft rotates under torque and torsional load.\n"),
+            ("lug.txt", "Lug bearing margin of safety at the pin hole.\n"),
+            ("calc.rs", "fn torque() { let shaft = 1; }\n"),
+            ("table.csv", "shaft,torque\n1,2\n"),
+        ];
+        for (name, text) in files {
+            std::fs::write(dir.path().join(name), text).unwrap();
+        }
+        let mut exclude_folders = Vec::new();
+        ensure_index_folder_excluded(&mut exclude_folders);
+        let settings = SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            output_folder: dir.path().to_string_lossy().into_owned(),
+            extensions: Some(vec![".md".into(), ".txt".into(), ".rs".into(), ".csv".into()]),
+            exclude_folders,
+            semantic_index: true,
+            ..Default::default()
+        };
+        let index_dir = index_directory(&settings.search_path);
+        ensure_index_directory_exists(&index_dir).unwrap();
+        let engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
+        let cancel = CancellationToken::new();
+        let semantic_paths = || -> Vec<String> {
+            let index = SemanticIndex::open(&index_dir.join("semantic.sqlite")).unwrap();
+            let mut paths: Vec<String> = ["notes.md", "lug.txt", "calc.rs", "table.csv"]
+                .iter()
+                .map(|n| dir.path().join(n).to_string_lossy().into_owned())
+                .filter(|p| {
+                    let meta = std::fs::metadata(p).unwrap();
+                    let modified = ticks_from_modified(chrono::DateTime::<chrono::Local>::from(meta.modified().unwrap()));
+                    index.is_current(p, modified, meta.len() as i64).unwrap()
+                })
+                .map(|p| std::path::Path::new(&p).file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            paths.sort();
+            paths
+        };
+
+        let policy = EmbedPolicy { limit: Some(2), ..Default::default() };
+        let first = build_or_update_corpus_index_lazy_send(&settings, &engine, &cancel, None::<&mut fn(CorpusIndexProgress)>, &policy)
+            .await
+            .unwrap();
+        assert_eq!(first.indexed_count, 4, "the exact index covers every file in the first pass");
+        assert_eq!((first.semantic_embedded_count, first.semantic_pending_count), (2, 2));
+        assert_eq!(semantic_paths(), ["lug.txt", "notes.md"], "prose first, code and data later");
+        assert!(!engine.search("torque", 10, None).unwrap().is_empty(), "exact search finds the pending files too");
+
+        // A second pass indexes nothing new in the exact index (those files are current) and embeds the next two.
+        let second = build_or_update_corpus_index_lazy_send(&settings, &engine, &cancel, None::<&mut fn(CorpusIndexProgress)>, &policy)
+            .await
+            .unwrap();
+        assert_eq!(second.indexed_count, 0);
+        assert_eq!((second.semantic_embedded_count, second.semantic_pending_count), (2, 0));
+        assert_eq!(semantic_paths().len(), 4);
+
+        // Enrichment from scratch reaches the same state and sums the embedded count over its passes.
+        let _ = std::fs::remove_file(index_dir.join("semantic.sqlite"));
+        let enriched = enrich_semantic_index_send(&settings, &engine, &cancel, None::<&mut fn(CorpusIndexProgress)>, &EmbedPolicy { limit: Some(1), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!((enriched.semantic_embedded_count, enriched.semantic_pending_count), (4, 0));
+        assert_eq!(semantic_paths().len(), 4);
+
+        // No limit is today's behaviour: everything embeds in one pass, nothing is pending.
+        let _ = std::fs::remove_file(index_dir.join("semantic.sqlite"));
+        let full = build_or_update_corpus_index(&settings, &engine, &cancel, None).await.unwrap();
+        assert_eq!((full.semantic_embedded_count, full.semantic_pending_count), (4, 0));
     }
 
     #[test]
