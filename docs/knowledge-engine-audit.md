@@ -147,3 +147,6 @@ Reading: index build is linear (about 2 ms per file here, 10x files = 10x time).
 
 Still open for P2-1 (box stays unticked): 500,000 and 1,000,000 files (a 12 KB-per-file corpus would need 6 GB and 12 GB of the 16 GB free, so these need a smaller-file corpus or an external disk), the semantic index at scale (embedding throughput, snapshot memory above the 250,000-chunk limit), startup time, Windows, and memory attributed per stage.
 
+### 2026-11-10: P0-1 private index location (done)
+`IndexLocation::AppData` ("App data (private)") is a third choice for the fast index location, after Search folder (default, unchanged) and Output folder. The index (Tantivy files and `semantic.sqlite`, which hold extracted text and vectors) then lives under `<app data>/indexes/<root key>` instead of inside a folder that may be synced, backed up or committed; the root key is the same readable-prefix-plus-hash used for Output folder, so roots never collide. With no app data folder it falls back to the in-folder location. The setting's hint now says what the index contains. Existing settings files still load (old values parse; the new one is additive). The default stays in-folder for compatibility; making private the default is an owner decision. Tests: `app_data_location_is_private_per_root_and_cycles_back`, updated cycle test; `app-tui` suite 1278 passed.
+

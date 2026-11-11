@@ -38,13 +38,16 @@ pub enum IndexLocation {
     #[default]
     SearchFolder,
     OutputFolder,
+    /// The app's private data folder: extracted text and vectors stay out of folders that are synced, backed up or committed.
+    AppData,
 }
 
 impl IndexLocation {
     pub fn cycle(self) -> Self {
         match self {
             IndexLocation::SearchFolder => IndexLocation::OutputFolder,
-            IndexLocation::OutputFolder => IndexLocation::SearchFolder,
+            IndexLocation::OutputFolder => IndexLocation::AppData,
+            IndexLocation::AppData => IndexLocation::SearchFolder,
         }
     }
 
@@ -52,6 +55,7 @@ impl IndexLocation {
         match self {
             IndexLocation::SearchFolder => "Search folder",
             IndexLocation::OutputFolder => "Output folder",
+            IndexLocation::AppData => "App data (private)",
         }
     }
 }
@@ -219,6 +223,11 @@ pub fn index_directory(location: IndexLocation, search_path: &str, output_folder
                 .join(".native-search-index")
                 .join(name)
         }
+        // No app data folder (no HOME / APPDATA): fall back to the folder itself rather than fail.
+        IndexLocation::AppData => match crate::paths::app_data_dir() {
+            Some(base) => base.join("indexes").join(sanitized_root_key(search_path)),
+            None => native_index::index_directory(search_path),
+        },
     }
 }
 
@@ -656,6 +665,31 @@ mod tests {
     }
 
     #[test]
+    fn app_data_location_is_private_per_root_and_cycles_back() {
+        let a = index_directory(IndexLocation::AppData, "/tmp/a/project", "/tmp/output");
+        let b = index_directory(IndexLocation::AppData, "/tmp/b/project", "/tmp/output");
+        assert_ne!(a, b, "two roots sharing a leaf name never share an index");
+        for dir in [&a, &b] {
+            assert!(!dir.starts_with("/tmp/a") && !dir.starts_with("/tmp/b") && !dir.starts_with("/tmp/output"));
+        }
+        if let Some(base) = crate::paths::app_data_dir() {
+            assert!(a.starts_with(base.join("indexes")));
+        }
+        let mut seen = vec![IndexLocation::SearchFolder];
+        let mut at = IndexLocation::SearchFolder.cycle();
+        while at != IndexLocation::SearchFolder {
+            seen.push(at);
+            at = at.cycle();
+        }
+        assert_eq!(seen.len(), 3, "cycle visits every location once");
+        // Stored settings keep working: old values parse, the new one round-trips.
+        let old: IndexLocation = serde_json::from_str("\"OutputFolder\"").unwrap();
+        assert_eq!(old, IndexLocation::OutputFolder);
+        let json = serde_json::to_string(&IndexLocation::AppData).unwrap();
+        assert_eq!(serde_json::from_str::<IndexLocation>(&json).unwrap(), IndexLocation::AppData);
+    }
+
+    #[test]
     fn output_folder_location_keys_by_sanitized_root() {
         let dir = index_directory(IndexLocation::OutputFolder, "/tmp/project", "/tmp/output");
         assert!(dir.starts_with(Path::new("/tmp/output/.native-search-index")));
@@ -670,15 +704,13 @@ mod tests {
     }
 
     #[test]
-    fn location_cycles_between_both_variants_and_wraps() {
+    fn location_cycles_through_all_variants_and_wraps() {
         assert_eq!(
             IndexLocation::SearchFolder.cycle(),
             IndexLocation::OutputFolder
         );
-        assert_eq!(
-            IndexLocation::OutputFolder.cycle(),
-            IndexLocation::SearchFolder
-        );
+        assert_eq!(IndexLocation::OutputFolder.cycle(), IndexLocation::AppData);
+        assert_eq!(IndexLocation::AppData.cycle(), IndexLocation::SearchFolder);
     }
 
     #[tokio::test]

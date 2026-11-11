@@ -800,7 +800,7 @@ fn field_hint(index: usize) -> &'static str {
         27 => "Give up on any single file after this many seconds, PDFs included (in addition to the PDF-specific timeout above).",
         28 => "How many times to retry a file after a transient read/extraction failure before giving up on it.",
         29 => "Build/use the fast Tantivy-backed re-search index for near-instant repeat searches of the same folder.",
-        30 => "Where the fast re-search index itself is stored on disk.",
+        30 => "Where the fast re-search index itself is stored. It holds extracted text and vectors of your files: Search folder and Output folder keep it inside those folders (and with them in any sync, backup or commit); App data (private) keeps it in the app's own data folder.",
         31 => "Build a local neural embedding index for separate semantic search results.",
         32 => "Match accented letters, ligatures and curly quotes as their plain forms (e.g. cafe finds café). Applies to literal and whole-word searches; searches every file instead of using the fast index.",
         33 => "Allow this many typos per word (0 = exact, 1 or 2). Words under 4 letters or with digits stay exact; excluded terms are never fuzzy. Searches every file instead of using the fast index.",
