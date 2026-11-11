@@ -185,6 +185,10 @@ const FIELDS: &[FieldDef] = &[
         label: "Typo tolerance (0-2)",
         kind: FieldKind::Number,
     },
+    FieldDef {
+        label: "Keep index current",
+        kind: FieldKind::Bool,
+    },
 ];
 
 /// A row in the rendered/navigable Fields list - either a non-selectable
@@ -804,6 +808,7 @@ fn field_hint(index: usize) -> &'static str {
         31 => "Build a local neural embedding index for separate semantic search results.",
         32 => "Match accented letters, ligatures and curly quotes as their plain forms (e.g. cafe finds café). Applies to literal and whole-word searches; searches every file instead of using the fast index.",
         33 => "Allow this many typos per word (0 = exact, 1 or 2). Words under 4 letters or with digits stay exact; excluded terms are never fuzzy. Searches every file instead of using the fast index.",
+        34 => "Watch the folder while the app is open and update the fast index for the files that change, instead of re-checking every file. Runs inside this app only: no administrator rights, nothing installed and no system setting or file changed; it stops when the app closes. Network shares and some synced folders report no changes, so Build / update remains the way to be sure.",
         _ => "",
     }
 }
@@ -1088,6 +1093,7 @@ fn bool_field_mut(config: &mut SearchToolConfig, idx: usize) -> Option<&mut bool
         29 => Some(&mut config.index.enabled),
         31 => Some(&mut config.index.semantic),
         32 => Some(&mut config.fold_accents),
+        34 => Some(&mut config.index.watch),
         _ => None,
     }
 }
@@ -1107,6 +1113,7 @@ fn bool_field(config: &SearchToolConfig, idx: usize) -> bool {
         29 => config.index.enabled,
         31 => config.index.semantic,
         32 => config.fold_accents,
+        34 => config.index.watch,
         _ => false,
     }
 }
@@ -1783,6 +1790,16 @@ mod tests {
             FIELDS.len() > 31,
             "a field index literal above assumes at least 32 fields"
         );
+    }
+
+    #[test]
+    fn keep_index_current_is_a_switch_that_defaults_off_and_has_a_hint() {
+        let mut config = SearchToolConfig::default();
+        assert!(!setting_on(&config, 34));
+        step_setting(&mut config, 34);
+        assert!(setting_on(&config, 34) && config.index.watch);
+        assert_eq!(FIELDS[34].label, "Keep index current");
+        assert!(field_hint(34).contains("no administrator rights"));
     }
 
     #[test]

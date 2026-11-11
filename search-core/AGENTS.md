@@ -31,6 +31,7 @@ Plain Rust library, zero GUI dependency — `cargo test -p search-core` must bui
 | Parallel search driver, progress/in-flight status | `src/orchestrator.rs` (`run`, `run_candidates`, `InFlightMap`, `ticker_handle`) |
 | Machine-level catalog of roots/files, cross-root fast search (derived, additive; single-root search never uses it) | `src/catalog.rs` (`Catalog::register_root`, `sync_root`, `search_all`, `duplicate_groups`) |
 | Stored entities with evidence + "files sharing X" (pattern matches only; feature `neural-search`) | `src/catalog_entities.rs` (`Catalog::index_entities`, `files_with_entity`, `files_sharing_entities`) |
+| Opt-in folder watcher + index update for only the changed paths (user-mode; collects paths, never reads files) | `src/watch.rs` (`FolderWatcher`), `native_index::update_corpus_index_paths_send`, `file_reader::path_in_scope` |
 | Fast re-search index policy (folder placement, auto-exclude) | `src/native_index.rs` (`index_directory`, `ensure_index_folder_excluded`, `build_or_update_corpus_index`) |
 | Optional neural suggestion ranking over caller-provided candidates | `src/neural_search.rs` (feature `neural-search`; model execution is in `search-ml`) |
 | Natural-language Find orchestration (per-condition hybrid retrieval, model judge with verified quote, weakest-condition label, negation as exclusion) | `src/nl_find.rs` (feature `nl-find`; generic over `search_llm::ConditionModel`, retrieval is a closure; tests use a fake model) |

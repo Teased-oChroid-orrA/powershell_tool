@@ -76,6 +76,9 @@ urlencoding = "2"
 # without this feature would need the host to already have a system
 # SQLite library, which win-x64 machines aren't guaranteed to have.
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Opt-in folder watcher (`watch.rs`, #240 P2-2). In-process and user-mode only: ReadDirectoryChangesW on Windows (no admin,
+# no service, no registry or system-file change), FSEvents on macOS, inotify on Linux; the watch handle is closed when dropped.
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 # Structured instrumentation (issue #6 §57/§58) - spans/events around
 # discover/extract/index/query, aggregate-not-per-file log lines. Already
 # pulled into this workspace transitively (dioxus's "logger" feature in

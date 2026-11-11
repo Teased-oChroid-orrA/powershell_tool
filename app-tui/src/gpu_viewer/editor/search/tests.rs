@@ -2030,3 +2030,63 @@ fn corpus_probe() {
         }
     }
 }
+
+/// "Keep index current": a real watcher on a temp folder updates the index for just the changed files, without
+/// a walk, and leaves the settings file alone (the persist effect is never produced on this path).
+#[test]
+fn keep_index_current_updates_the_index_for_changed_files_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::write(root.join("a.txt"), "alpha first").unwrap();
+    std::fs::write(root.join("b.txt"), "bravo stays").unwrap();
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = root.to_string_lossy().into_owned();
+    s.st.config.index.enabled = true;
+    s.st.config.index.watch = true;
+    let spin = |s: &mut SearchSession, busy: &dyn Fn(&SearchSession) -> bool| {
+        let started = Instant::now();
+        while busy(s) {
+            assert!(started.elapsed() < Duration::from_secs(60), "timed out: {}", s.status);
+            s.poll();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        s.poll();
+    };
+    // No watcher before a first build, and none while the session is a test session (persist off).
+    s.poll();
+    assert!(s.watcher.is_none());
+    act_on(&mut s, SearchAct::BuildIndex);
+    spin(&mut s, &|s| s.st.index_run.is_building);
+    assert_eq!(s.st.index_run.docs, Some(2));
+
+    s.persist = true; // lets the watcher start; nothing below saves settings
+    s.poll();
+    assert!(s.watcher.is_some(), "{}", s.status);
+    std::thread::sleep(Duration::from_millis(400));
+    std::fs::write(root.join("a.txt"), "alpha second edit, longer").unwrap();
+    std::fs::write(root.join("c.txt"), "charlie is new").unwrap();
+    std::fs::remove_file(root.join("b.txt")).unwrap();
+
+    let started = Instant::now();
+    while s.st.index_run.docs != Some(2) || !s.status.contains("Updating") && started.elapsed() < Duration::from_secs(30) {
+        if started.elapsed() > Duration::from_secs(30) {
+            break;
+        }
+        s.poll();
+        std::thread::sleep(Duration::from_millis(100));
+        if s.status.contains("Updating the index") {
+            break;
+        }
+    }
+    assert!(s.status.contains("Updating the index"), "watcher never fired: {}", s.status);
+    spin(&mut s, &|s| s.st.index_run.is_building);
+    s.persist = false;
+
+    let index_dir = crate::toolboxes::search::indexing::index_directory(s.st.config.index.location, &s.st.config.search_path, "");
+    let engine = native_search::engine::NativeSearchEngine::open_or_create(&index_dir).unwrap();
+    let mut ids: Vec<String> = engine.all_document_ids().unwrap().into_iter().map(|p| p.rsplit('/').next().unwrap().to_string()).collect();
+    ids.sort();
+    assert_eq!(ids, ["a.txt", "c.txt"], "edit kept, new added, removed gone");
+    let hits = search_core::native_index::search(&engine, "charlie", 5).unwrap();
+    assert_eq!(hits.len(), 1);
+}

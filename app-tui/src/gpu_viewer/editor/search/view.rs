@@ -2177,6 +2177,7 @@ pub(super) fn ribbon(s: &SearchSession) -> Vec<RibbonTab> {
             "Fast index",
             vec![
                 switch(s, "Use fast index", 29),
+                switch(s, "Keep index current", 34),
                 when(
                     e("Build / update", "", SearchAct::BuildIndex),
                     !ix.is_building && !s.st.run.is_running && !c.search_path.trim().is_empty(),

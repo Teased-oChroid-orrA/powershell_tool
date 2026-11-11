@@ -41,4 +41,5 @@ mod semantic_cache;
 #[cfg(feature = "semantic-search")]
 pub mod semantic_index;
 pub mod synonyms;
+pub mod watch;
 pub mod textfold;

@@ -321,6 +321,10 @@ pub struct SearchSession {
     /// The fast index went out of date during the last run: offer an update.
     stale: Option<(usize, usize)>,
     index_started: Option<Instant>,
+    /// Watches the searched folder while "Keep index current" is on (root it watches, watcher).
+    watcher: Option<(String, search_core::watch::FolderWatcher)>,
+    /// When the watcher was last tried, so a folder without an index or a failing start is retried slowly.
+    watcher_tried: Option<Instant>,
     /// The Exclude row is shown (it opens shown when the saved settings already exclude something).
     show_exclude: bool,
     /// Write `settings-tui.json` (off in tests, which must never touch the user's file).
@@ -915,6 +919,8 @@ impl SearchSession {
             pick_folder: system_folder_picker,
             stale: None,
             index_started: None,
+            watcher: None,
+            watcher_tried: None,
             show_exclude: !st.config.exclude_filters_text.trim().is_empty(),
             persist,
             st,
@@ -1139,6 +1145,7 @@ impl SearchSession {
             enabled: record.ui_settings.index_enabled,
             location: record.ui_settings.index_location.unwrap_or_default(),
             semantic: false,
+            watch: false,
         };
         let generation = self.alert_generation;
         self.alert_generation = self.alert_generation.wrapping_add(1);
@@ -1254,6 +1261,59 @@ impl SearchSession {
                 .diagnostics
                 .as_ref()
                 .is_some_and(|diagnostics| diagnostics.skipped_by_mode > 0)
+    }
+
+    /// "Keep index current": starts or stops the folder watcher to match the setting, and when changes have settled
+    /// and nothing else is running, updates the index for just those files (a full update if events may be lost).
+    fn poll_watcher(&mut self) {
+        const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+        const RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+        let config = &self.st.config;
+        let root = config.search_path.trim().to_string();
+        // Tests never start a real watcher (`persist` is off there).
+        if !(self.persist && config.index.enabled && config.index.watch && !root.is_empty()) {
+            self.watcher = None;
+            return;
+        }
+        if self.watcher.as_ref().is_none_or(|(watched, _)| *watched != root) {
+            self.watcher = None;
+            if self.watcher_tried.is_some_and(|t| t.elapsed() < RETRY) {
+                return;
+            }
+            self.watcher_tried = Some(Instant::now());
+            let dir = crate::toolboxes::search::indexing::index_directory(config.index.location, &root, &config.output_folder);
+            // Nothing to keep current until a first build exists.
+            if !crate::toolboxes::search::indexing::index_is_built(&dir) {
+                return;
+            }
+            let scope = model::build_settings(config);
+            match search_core::watch::FolderWatcher::start(&root, scope.include_hidden, scope.exclude_folders) {
+                Ok(watcher) => self.watcher = Some((root, watcher)),
+                Err(error) => self.status = format!("Cannot watch the folder for changes: {error}"),
+            }
+            return;
+        }
+        if self.st.run.is_running || self.st.index_run.is_building {
+            return;
+        }
+        let Some((_, watcher)) = &self.watcher else { return };
+        let Some(changes) = watcher.take_quiet(SETTLE) else { return };
+        if changes.overflow {
+            self.status = "The folder changed more than could be tracked: updating the whole index...".into();
+            self.build_index();
+            return;
+        }
+        let count = changes.paths.len();
+        let effects = search::start_index_update(&mut self.st, changes.paths.clone());
+        if effects.is_empty() {
+            if let Some((_, watcher)) = &self.watcher {
+                watcher.restore(changes);
+            }
+            return;
+        }
+        self.index_started = Some(Instant::now());
+        self.status = format!("Updating the index for {count} changed path(s)...");
+        self.execute(effects);
     }
 
     fn build_index(&mut self) {
@@ -2686,6 +2746,7 @@ impl Authoring for SearchSession {
     }
     fn poll(&mut self) -> bool {
         let mut changed = false;
+        self.poll_watcher();
         self.request_neural_suggestions();
         #[cfg(feature = "neural-search")]
         while let Ok(event) = self.neural_rx.try_recv() {

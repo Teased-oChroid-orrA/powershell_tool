@@ -412,7 +412,7 @@ pub async fn build_or_update_corpus_index(
     cancellation: &CancellationToken,
     on_progress: Option<&mut dyn FnMut(CorpusIndexProgress)>,
 ) -> NsResult<CorpusIndexOutcome> {
-    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress).await
+    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress, None).await
 }
 
 /// Same as [`build_or_update_corpus_index`], for callers that need the
@@ -433,7 +433,97 @@ pub async fn build_or_update_corpus_index_send<F: FnMut(CorpusIndexProgress) + S
     cancellation: &CancellationToken,
     on_progress: Option<&mut F>,
 ) -> NsResult<CorpusIndexOutcome> {
-    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress).await
+    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress, None).await
+}
+
+/// Brings the index up to date for only the `changed` paths a file watcher reported, instead of walking the whole
+/// folder and checking every file (the cost that dominates at 100k files). Each path is resolved against the disk now:
+/// a file in scope is (re)indexed through the same extraction, semantic, commit and progress path as a full update
+/// (an unchanged one is skipped by the same freshness check); a directory contributes the files under it; a path that
+/// no longer exists is removed from the index, with everything under it if it was a folder. Paths outside the
+/// folder, hidden, excluded or inside the index folder are ignored. Does not record the OCR setting: only a full
+/// update may, because only it revisits every PDF.
+pub async fn update_corpus_index_paths_send<F: FnMut(CorpusIndexProgress) + Send>(
+    settings: &SearchSettings,
+    engine: &NativeSearchEngine,
+    cancellation: &CancellationToken,
+    changed: &[String],
+    on_progress: Option<&mut F>,
+) -> NsResult<CorpusIndexOutcome> {
+    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress, Some(changed)).await
+}
+
+/// What `changed` means on disk right now: files to consider and index ids to remove.
+fn resolve_changes(
+    settings: &SearchSettings,
+    engine: &NativeSearchEngine,
+    changed: &[String],
+    cancellation: &CancellationToken,
+) -> NsResult<(Vec<file_reader::EnumeratedFile>, usize)> {
+    let root = &settings.search_path;
+    let mut files: Vec<file_reader::EnumeratedFile> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut gone: Vec<String> = Vec::new();
+    for raw in changed {
+        let path = Path::new(raw);
+        if !file_reader::path_in_scope(root, path, settings.include_hidden, &settings.exclude_folders) {
+            continue;
+        }
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => {
+                if let Ok((found, _)) = file_reader::enumerate_files_safely(
+                    raw,
+                    settings.include_hidden,
+                    &settings.exclude_folders,
+                    cancellation,
+                    None,
+                ) {
+                    for f in found {
+                        if seen.insert(path_key(&f.path.to_string_lossy()).into_owned()) {
+                            files.push(f);
+                        }
+                    }
+                }
+            }
+            Ok(meta) if meta.is_file() => {
+                if seen.insert(path_key(raw).into_owned()) {
+                    let modified = meta
+                        .modified()
+                        .map(file_reader::system_time_to_local)
+                        .unwrap_or_else(|_| chrono::Local::now());
+                    files.push(file_reader::EnumeratedFile {
+                        path: path.to_path_buf(),
+                        length: meta.len() as i64,
+                        created: meta.created().map(file_reader::system_time_to_local).unwrap_or(modified),
+                        modified,
+                    });
+                }
+            }
+            Ok(_) => {}
+            Err(_) => gone.push(raw.clone()),
+        }
+    }
+    let mut removed = 0usize;
+    if !gone.is_empty() {
+        // Ids are the paths as the walk produced them; match through `path_key` so a case or separator
+        // difference in the reported path (Windows) still finds the document. A vanished folder takes the
+        // documents under it along.
+        let gone_keys: Vec<String> = gone.iter().map(|g| path_key(g).trim_end_matches('/').to_string()).collect();
+        for id in engine.all_document_ids()? {
+            let key = path_key(&id).into_owned();
+            let hit = gone_keys.iter().any(|g| {
+                key == *g || key.strip_prefix(g.as_str()).is_some_and(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+            });
+            if hit {
+                engine.delete_document(&id)?;
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            engine.commit()?;
+        }
+    }
+    Ok((files, removed))
 }
 
 /// Owned, `Copy` slice of `SearchSettings` the per-file read+extract task
@@ -612,6 +702,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
     engine: &NativeSearchEngine,
     cancellation: &CancellationToken,
     mut on_progress: Option<&mut F>,
+    only: Option<&[String]>,
 ) -> NsResult<CorpusIndexOutcome> {
     let started = std::time::Instant::now();
     let mut outcome = CorpusIndexOutcome::default();
@@ -670,17 +761,25 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         settings.exclude_folders.clone(),
     );
     let walk_cancel = cancellation.clone();
-    let walked = tokio::task::spawn_blocking(move || {
-        file_reader::enumerate_files_safely(
-            &walk_settings.0,
-            walk_settings.1,
-            &walk_settings.2,
-            &walk_cancel,
-            None,
-        )
-    })
-    .await
-    .map_err(|e| NsError::index_error(format!("directory walk task failed: {e}")))?;
+    let walked = if let Some(changed) = only {
+        // Watcher delta: no walk. Resolve just the reported paths; removed ones leave the index now.
+        let (settings_c, changed_c) = (settings.clone(), changed.to_vec());
+        let (resolved, removed) = resolve_changes(&settings_c, engine, &changed_c, &walk_cancel)?;
+        tracing::info!(files = resolved.len(), removed, "watcher delta resolved");
+        Ok((resolved, 0))
+    } else {
+        tokio::task::spawn_blocking(move || {
+            file_reader::enumerate_files_safely(
+                &walk_settings.0,
+                walk_settings.1,
+                &walk_settings.2,
+                &walk_cancel,
+                None,
+            )
+        })
+        .await
+        .map_err(|e| NsError::index_error(format!("directory walk task failed: {e}")))?
+    };
     let Ok((all_files, enum_errors)) = walked else {
         // Cancelled before anything was written: nothing to commit.
         outcome.cancelled = true;
@@ -908,7 +1007,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
 
     outcome.elapsed_ms = started.elapsed().as_millis() as u64;
     outcome.index_docs = engine.num_docs();
-    if !outcome.cancelled {
+    if !outcome.cancelled && only.is_none() {
         if let Err(error) = std::fs::write(
             engine.index_directory().join(OCR_FLAG_FILE),
             if settings.ocr_scanned_pdfs { "1" } else { "0" },
@@ -1701,6 +1800,67 @@ mod tests {
             "unchanged file must be skipped on rerun"
         );
         assert_eq!(second.skipped_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_path_delta_leaves_the_index_equal_to_a_full_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("sub/deep")).unwrap();
+        std::fs::create_dir_all(root.join("skip")).unwrap();
+        std::fs::write(root.join("keep.txt"), "alpha one").unwrap();
+        std::fs::write(root.join("edit.txt"), "bravo before").unwrap();
+        std::fs::write(root.join("gone.txt"), "charlie").unwrap();
+        std::fs::write(root.join("sub/deep/x.txt"), "delta in a folder").unwrap();
+        std::fs::write(root.join("skip/s.txt"), "excluded").unwrap();
+        let index_dir = index_directory(&root.to_string_lossy());
+        ensure_index_directory_exists(&index_dir).unwrap();
+        let engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
+        let mut exclude_folders = vec!["skip".to_string()];
+        ensure_index_folder_excluded(&mut exclude_folders);
+        let settings = crate::models::SearchSettings {
+            search_path: root.to_string_lossy().into_owned(),
+            output_folder: root.to_string_lossy().into_owned(),
+            extensions: Some(vec![".txt".to_string()]),
+            exclude_folders,
+            ..Default::default()
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        build_or_update_corpus_index(&settings, &engine, &cancel, None).await.unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // mtime granularity
+        std::fs::write(root.join("edit.txt"), "bravo after the edit, longer").unwrap();
+        std::fs::write(root.join("new.txt"), "echo is new").unwrap();
+        std::fs::remove_file(root.join("gone.txt")).unwrap();
+        std::fs::remove_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(root.join("moved")).unwrap();
+        std::fs::write(root.join("moved/m.txt"), "foxtrot arrived in a folder").unwrap();
+        std::fs::write(root.join("skip/s2.txt"), "still excluded").unwrap();
+        let changed: Vec<String> = ["edit.txt", "new.txt", "gone.txt", "sub", "moved", "skip/s2.txt", "unchanged-name.txt"]
+            .iter()
+            .map(|p| root.join(p).to_string_lossy().into_owned())
+            .chain(std::iter::once(index_dir.join("segment").to_string_lossy().into_owned()))
+            .collect();
+        let mut noop = |_p: CorpusIndexProgress| {};
+        let delta = update_corpus_index_paths_send(&settings, &engine, &cancel, &changed, Some(&mut noop))
+            .await
+            .unwrap();
+        assert_eq!(delta.indexed_count, 3, "edit.txt, new.txt, moved/m.txt");
+        assert!(delta.enumerated_count <= 3, "no whole-folder walk");
+
+        let sorted = |e: &NativeSearchEngine| {
+            let mut v: Vec<_> = e.all_document_metadata().unwrap().into_iter().collect();
+            v.sort();
+            v
+        };
+        // A fresh full build of the same folder must hold exactly the same documents.
+        let fresh_dir = tempfile::tempdir().unwrap();
+        let fresh = NativeSearchEngine::open_or_create(fresh_dir.path()).unwrap();
+        build_or_update_corpus_index(&settings, &fresh, &cancel, None).await.unwrap();
+        assert_eq!(sorted(&engine), sorted(&fresh));
+        assert!(search(&engine, "foxtrot", 5).unwrap().len() == 1);
+        assert!(search(&engine, "charlie", 5).unwrap().is_empty());
+        assert!(search(&engine, "delta", 5).unwrap().is_empty());
     }
 
     #[tokio::test]

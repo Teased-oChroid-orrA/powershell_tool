@@ -355,6 +355,34 @@ pub(crate) fn is_hidden(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether `path` would have been visited by [`enumerate_files_safely`] from `root`: under the root, and no
+/// directory between them (nor the entry itself) hidden, excluded or the fast-index folder. Used to decide if a
+/// changed path reported by a file watcher belongs in the index; the rules are the walker's own.
+pub(crate) fn path_in_scope(root: &str, path: &Path, include_hidden: bool, exclude_folders: &[String]) -> bool {
+    let root = Path::new(root);
+    let Ok(relative) = path.strip_prefix(root) else { return false };
+    let mut current = root.to_path_buf();
+    let components: Vec<_> = relative.components().collect();
+    for (i, component) in components.iter().enumerate() {
+        current.push(component);
+        let is_last = i + 1 == components.len();
+        if !include_hidden && is_hidden(&current) {
+            return false;
+        }
+        if is_last {
+            break;
+        }
+        let name = component.as_os_str().to_string_lossy();
+        if name.eq_ignore_ascii_case(crate::native_index::INDEX_FOLDER_NAME)
+            || (!exclude_folders.is_empty()
+                && is_excluded_directory(&name, &current.to_string_lossy(), exclude_folders))
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// Matches a directory against `exclude_folders` by whole path segment, not
 /// raw substring - a raw `full_path.contains(ex)` check would let excluding
 /// "bin" also exclude any path merely containing "bin" as a substring

@@ -68,6 +68,9 @@ pub struct IndexSettings {
     pub location: IndexLocation,
     #[serde(default)]
     pub semantic: bool,
+    /// Keep the index current by watching the folder (opt-in; user-mode, nothing installed or changed outside the app).
+    #[serde(default)]
+    pub watch: bool,
 }
 
 /// Live index-build status the render layer reads. Deliberately separate
@@ -452,7 +455,29 @@ pub async fn build_or_rebuild_index(
     index_dir: PathBuf,
     cancel: CancellationToken,
 ) -> bool {
-    log("INDEX", "=== build start");
+    run_index_job(tx, settings, index_dir, cancel, None).await
+}
+
+/// Brings the index up to date for just the paths a folder watcher reported (see
+/// `search_core::native_index::update_corpus_index_paths_send`); same progress and finish events as a build.
+pub async fn update_index_paths(
+    tx: UnboundedSender<AppEvent>,
+    settings: SearchSettings,
+    index_dir: PathBuf,
+    cancel: CancellationToken,
+    paths: Vec<String>,
+) -> bool {
+    run_index_job(tx, settings, index_dir, cancel, Some(paths)).await
+}
+
+async fn run_index_job(
+    tx: UnboundedSender<AppEvent>,
+    settings: SearchSettings,
+    index_dir: PathBuf,
+    cancel: CancellationToken,
+    paths: Option<Vec<String>>,
+) -> bool {
+    log("INDEX", if paths.is_some() { "=== update from watcher" } else { "=== build start" });
     let _ = tx.send(AppEvent::IndexBuildProgress(CorpusIndexProgress {
         current_file: "Starting…".to_string(),
         ..Default::default()
@@ -465,7 +490,7 @@ pub async fn build_or_rebuild_index(
     // Run in its own task so a panic is a `JoinError` here rather than a
     // silently dead task that leaves the UI spinning forever.
     let joined = tokio::spawn(async move {
-        match build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, false, &cancel).await {
+        match build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, false, &cancel, paths.as_deref()).await {
             Err(e) if e.status == NsStatus::CorruptIndex => {
                 log(
                     "WARN",
@@ -474,7 +499,8 @@ pub async fn build_or_rebuild_index(
                         redact_paths(&e.to_string())
                     ),
                 );
-                build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, true, &cancel).await
+                // A damaged index cannot take a path delta: rebuild it completely.
+                build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, true, &cancel, None).await
             }
             other => other,
         }
@@ -523,6 +549,7 @@ async fn build_or_rebuild_index_inner(
     index_dir: &Path,
     wipe_first: bool,
     cancel: &CancellationToken,
+    paths: Option<&[String]>,
 ) -> NsResult<CorpusIndexOutcome> {
     {
         let (s, d) = (settings.clone(), index_dir.to_path_buf());
@@ -616,16 +643,22 @@ async fn build_or_rebuild_index_inner(
         }
     };
 
-    let mut outcome =
-        build_or_update_corpus_index_send(settings, &engine, cancel, Some(&mut on_progress))
-            .await?;
+    let mut outcome = match paths {
+        // Watcher delta: only the reported paths, no walk and no freshness pass over every file.
+        Some(changed) => {
+            native_index::update_corpus_index_paths_send(settings, &engine, cancel, changed, Some(&mut on_progress))
+                .await?
+        }
+        None => build_or_update_corpus_index_send(settings, &engine, cancel, Some(&mut on_progress)).await?,
+    };
 
     // Aggregated by extension + error text; never per-file (no file names in the log).
     for (kind, count) in &outcome.failure_summary {
         log("INDEX-FAIL", format!("{count} x {kind}"));
     }
 
-    if !outcome.cancelled {
+    if !outcome.cancelled && paths.is_none() {
+        // (A watcher delta already removed what vanished; this is a stat of every document.)
         // Documents whose files were deleted since the last build would
         // otherwise linger and keep being offered as search candidates.
         match native_index::remove_orphaned_documents(&engine) {

@@ -181,6 +181,15 @@ pub fn request_cancel(state: &SearchToolState) {
 /// `Effect` `main.rs` executes - `handle_event`'s call graph never touches
 /// the async runtime directly.
 pub fn start_index_build(state: &mut SearchToolState) -> Vec<Effect> {
+    start_index_job(state, None)
+}
+
+/// Like [`start_index_build`], but updating only `paths` (what a folder watcher reported).
+pub fn start_index_update(state: &mut SearchToolState, paths: Vec<String>) -> Vec<Effect> {
+    start_index_job(state, Some(paths))
+}
+
+fn start_index_job(state: &mut SearchToolState, paths: Option<Vec<String>>) -> Vec<Effect> {
     if state.index_run.is_building || state.config.search_path.trim().is_empty() {
         return Vec::new();
     }
@@ -190,7 +199,7 @@ pub fn start_index_build(state: &mut SearchToolState) -> Vec<Effect> {
     state.index_run.begin();
     let cancel = CancellationToken::new();
     state.index_cancel = Some(cancel.clone());
-    vec![Effect::BuildIndex { settings, index_dir, cancel }]
+    vec![Effect::BuildIndex { settings, index_dir, cancel, paths }]
 }
 
 /// Toolbox-local key routing for whichever workspace pane currently has
