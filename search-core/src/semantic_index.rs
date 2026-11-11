@@ -157,8 +157,31 @@ fn generation(conn: &Connection) -> Result<i64, String> {
         .map_err(|error| error.to_string())
 }
 
+/// `true` when `path` holds a readable SQLite database that passes `PRAGMA quick_check`.
+fn database_is_sound(path: &Path) -> bool {
+    Connection::open(path)
+        .and_then(|conn| conn.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0)))
+        .map(|verdict| verdict == "ok")
+        .unwrap_or(false)
+}
+
 impl SemanticIndex {
+    /// Opens the index. Everything in it is derived from the source files, so a database that is damaged
+    /// (not a database, truncated, failing `quick_check`) is deleted and recreated empty: the next index run
+    /// re-embeds the documents instead of every semantic search failing.
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
+        if path.exists() && !database_is_sound(path) {
+            tracing::warn!("semantic index is damaged; rebuilding it from the source files");
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                let mut name = path.as_os_str().to_owned();
+                name.push(suffix);
+                let _ = std::fs::remove_file(std::path::PathBuf::from(name));
+            }
+        }
+        Self::open_checked(path)
+    }
+
+    fn open_checked(path: &Path) -> rusqlite::Result<Self> {
         let mut conn = Connection::open(path)?;
         let tx = conn.transaction()?;
         tx.execute_batch(
@@ -1555,6 +1578,26 @@ mod tests {
     /// Hard retrieval set (`search-ml/examples/data/retrieval_eval.tsv`): near-duplicate
     /// part numbers, bare numbers, spec codes, negation. Measured on the bundled
     /// MiniLM: dense 34/40 top-1, fused 37/40 (lexical weight 1.5-3 all give 37).
+    #[test]
+    fn a_damaged_database_is_rebuilt_empty_and_a_sound_one_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("semantic.sqlite");
+        {
+            let index = SemanticIndex::open(&path).unwrap();
+            index.conn.lock().unwrap().execute("INSERT INTO semantic_documents(path,modified,size) VALUES('a',1,1)", []).unwrap();
+        }
+        let kept = SemanticIndex::open(&path).unwrap();
+        let count = |i: &SemanticIndex| -> i64 {
+            i.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM semantic_documents", [], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(count(&kept), 1, "a sound index is not touched");
+        drop(kept);
+
+        std::fs::write(&path, b"this is not a sqlite database at all, just damaged bytes").unwrap();
+        let rebuilt = SemanticIndex::open(&path).unwrap();
+        assert_eq!(count(&rebuilt), 0, "a damaged index is recreated empty");
+    }
+
     #[test]
     fn fused_ranking_beats_dense_only_on_the_hard_retrieval_set() {
         let data = include_str!("../../search-ml/examples/data/retrieval_eval.tsv");
