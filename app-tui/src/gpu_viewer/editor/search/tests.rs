@@ -1336,6 +1336,20 @@ fn presets_save_apply_and_delete() {
 }
 
 #[test]
+fn also_indexed_folders_reports_what_it_did_and_never_adds_the_main_folder() {
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = "/main".into();
+    act_on(&mut s, SearchAct::AlsoIndexedFolders);
+    // The catalog is the machine's real one: assert the contract, not its contents.
+    assert!(
+        s.status().starts_with("No other indexed folders") || s.status().starts_with("Also searching"),
+        "{}",
+        s.status()
+    );
+    assert!(!s.st.config.search_paths_extra.iter().any(|p| p == "/main"));
+}
+
+#[test]
 fn browse_uses_the_system_folder_picker_and_a_cancel_changes_nothing() {
     let mut s = SearchSession::in_memory();
     s.st.config.search_path = "/keep".into();

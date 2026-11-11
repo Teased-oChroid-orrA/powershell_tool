@@ -2224,6 +2224,7 @@ pub(super) fn menus(s: &SearchSession) -> Vec<Menu> {
         item(stop_entry(s)),
         Item::Separator,
         item(e("Choose a folder...", "", SearchAct::BrowseFolder)),
+        item(e("Also search all indexed folders", "", SearchAct::AlsoIndexedFolders)),
         item(report_entry(s)),
         Item::Separator,
         item(e("Save settings as preset...", "", SearchAct::SavePreset)),

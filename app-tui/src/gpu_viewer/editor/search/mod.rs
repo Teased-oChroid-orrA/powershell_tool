@@ -74,6 +74,8 @@ pub enum SearchAct {
     /// Choose the folder reports and exports are written to, with the same picker.
     BrowseOutput,
     BuildIndex,
+    /// Add every other folder with a recorded fast index to this search (the machine-level catalog).
+    AlsoIndexedFolders,
     #[cfg(feature = "neural-search")]
     SaveAlert,
     #[cfg(feature = "neural-search")]
@@ -2161,6 +2163,22 @@ impl SearchSession {
             self.save_settings();
         }
     }
+    /// Fills "more folders" with the other indexed folders from the catalog; Find then searches them all.
+    fn also_indexed_folders(&mut self) {
+        let main = self.st.config.search_path.trim().to_lowercase();
+        let others: Vec<String> = crate::toolboxes::search::indexing::catalogued_folders()
+            .into_iter()
+            .filter(|p| p.trim().to_lowercase() != main)
+            .collect();
+        self.status = if others.is_empty() {
+            "No other indexed folders yet: build an index in another folder first.".into()
+        } else {
+            let n = others.len();
+            self.st.config.search_paths_extra = others;
+            self.save_settings();
+            format!("Also searching {n} other indexed folder(s). Press Find.")
+        };
+    }
     /// Browse for the output folder, starting in it (or in the folder being searched).
     fn browse_output(&mut self) {
         let (current, searched) = (
@@ -2270,6 +2288,7 @@ impl SearchSession {
             SearchAct::ApplyEdit => self.apply_edit(),
             SearchAct::CancelEdit => self.edit = None,
             SearchAct::BrowseFolder => self.browse(),
+            SearchAct::AlsoIndexedFolders => self.also_indexed_folders(),
             SearchAct::BrowseOutput => self.browse_output(),
             SearchAct::BuildIndex => self.build_index(),
             #[cfg(feature = "neural-search")]

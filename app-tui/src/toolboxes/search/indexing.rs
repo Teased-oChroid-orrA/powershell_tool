@@ -208,6 +208,36 @@ pub(crate) fn format_eta(secs: f64) -> String {
     }
 }
 
+/// The machine-level catalog of indexed folders (`search_core::catalog`), in the app data folder.
+pub fn catalog_path() -> Option<PathBuf> {
+    crate::paths::app_data_dir().map(|d| d.join("catalog.sqlite"))
+}
+
+/// Registers a freshly built index in the catalog and refreshes its file list. Best effort: the catalog is
+/// derived data, so a failure is logged and never fails the build. Tests never touch the user's real catalog.
+fn record_in_catalog(root: &str, index_dir: &Path) {
+    let Some(path) = catalog_path().filter(|_| !cfg!(test)) else { return };
+    match record_in(&path, root, index_dir) {
+        Ok(n) => log("INDEX", format!("catalog: {n} file(s) recorded")),
+        Err(e) => log("WARN", format!("catalog update failed: {}", redact_paths(&e))),
+    }
+}
+
+fn record_in(catalog: &Path, root: &str, index_dir: &Path) -> Result<usize, String> {
+    let mut c = search_core::catalog::Catalog::open(catalog).map_err(|e| e.to_string())?;
+    c.register_root(root, index_dir).map_err(|e| e.to_string())?;
+    c.sync_root(root)
+}
+
+/// Folders with a recorded fast index that still exist, for "Also search all indexed folders".
+pub fn catalogued_folders() -> Vec<String> {
+    let Some(path) = catalog_path().filter(|p| p.exists()) else { return Vec::new() };
+    search_core::catalog::Catalog::open(&path)
+        .and_then(|c| c.roots())
+        .map(|roots| roots.into_iter().map(|r| r.path).filter(|p| Path::new(p).is_dir()).collect())
+        .unwrap_or_default()
+}
+
 /// Resolves the on-disk index directory for one root, mirroring
 /// `app-egui/src/search.rs::resolve_index_dir` exactly: `SearchFolder`
 /// delegates to `search_core::native_index::index_directory` (the index
@@ -425,6 +455,8 @@ pub async fn build_or_rebuild_index(
     }));
 
     let started = Instant::now();
+    let settings_root = settings.search_path.clone();
+    let index_dir_for_catalog = index_dir.clone();
     let task_tx = tx.clone();
     // Run in its own task so a panic is a `JoinError` here rather than a
     // silently dead task that leaves the UI spinning forever.
@@ -472,6 +504,10 @@ pub async fn build_or_rebuild_index(
         Err(e) => log("ERROR", format!("=== build FAILED after {:?}: {e:?}", started.elapsed())),
     }
     let usable = matches!(&result, Ok(o) if !o.cancelled);
+    if usable {
+        let (root, dir) = (settings_root, index_dir_for_catalog);
+        let _ = tokio::task::spawn_blocking(move || record_in_catalog(&root, &dir)).await;
+    }
     let _ = tx.send(AppEvent::IndexBuildFinished(result));
     usable
 }
@@ -773,6 +809,23 @@ mod tests {
         let candidates = candidates.unwrap();
         assert_eq!(candidates.len(), 1);
         assert!(candidates[0].ends_with("a.txt"));
+    }
+
+    #[tokio::test]
+    async fn a_built_index_is_recorded_in_the_catalog_with_its_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let settings = SearchSettings { search_path: root.clone(), ..Default::default() };
+        let index_dir = index_directory(IndexLocation::SearchFolder, &root, "");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(build_or_rebuild_index(tx, settings, index_dir.clone(), CancellationToken::new()).await);
+
+        let catalog = dir.path().join("catalog-test.sqlite");
+        assert_eq!(record_in(&catalog, &root, &index_dir).unwrap(), 1);
+        let c = search_core::catalog::Catalog::open(&catalog).unwrap();
+        assert_eq!(c.roots().unwrap()[0].path, root);
+        assert!(c.files().unwrap()[0].path.ends_with("a.txt"));
     }
 
     #[tokio::test]
