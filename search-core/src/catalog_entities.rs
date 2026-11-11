@@ -21,7 +21,7 @@ const CLASS: &str = "pattern";
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Returns a file's text by path; stands in for reading the disk.
-pub type TextReader = dyn Fn(&str) -> Option<String>;
+pub type TextReader<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
 /// One stored entity occurrence with its evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +83,7 @@ impl Catalog {
     /// Extracts entities for every file of `root` whose stored entities are missing or out of date
     /// (stamp is the file's size and mtime when it was extracted). `read` returns a file's text; use
     /// `None` for the default reader. Returns the number of files (re)extracted.
-    pub fn index_entities(&mut self, root: &str, read: Option<&TextReader>) -> Result<usize, String> {
+    pub fn index_entities(&mut self, root: &str, read: Option<&TextReader<'_>>) -> Result<usize, String> {
         let pending: Vec<(i64, String, i64, i64)> = {
             let mut stmt = self
                 .conn
