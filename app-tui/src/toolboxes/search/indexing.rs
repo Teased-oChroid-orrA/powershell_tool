@@ -226,7 +226,11 @@ fn record_in_catalog(root: &str, index_dir: &Path) {
 fn record_in(catalog: &Path, root: &str, index_dir: &Path) -> Result<usize, String> {
     let mut c = search_core::catalog::Catalog::open(catalog).map_err(|e| e.to_string())?;
     c.register_root(root, index_dir).map_err(|e| e.to_string())?;
-    c.sync_root(root)
+    let files = c.sync_root(root)?;
+    // Identifying strings (part numbers, standards) for "files sharing X"; only new or changed files are read.
+    let extracted = c.index_entities(root, None)?;
+    log("INDEX", format!("catalog: entities extracted for {extracted} file(s)"));
+    Ok(files)
 }
 
 /// Folders with a recorded fast index that still exist, for "Also search all indexed folders".
@@ -504,11 +508,12 @@ pub async fn build_or_rebuild_index(
         Err(e) => log("ERROR", format!("=== build FAILED after {:?}: {e:?}", started.elapsed())),
     }
     let usable = matches!(&result, Ok(o) if !o.cancelled);
+    let _ = tx.send(AppEvent::IndexBuildFinished(result));
     if usable {
+        // After the finish event: reading every changed file again for entities must not delay "index ready".
         let (root, dir) = (settings_root, index_dir_for_catalog);
         let _ = tokio::task::spawn_blocking(move || record_in_catalog(&root, &dir)).await;
     }
-    let _ = tx.send(AppEvent::IndexBuildFinished(result));
     usable
 }
 

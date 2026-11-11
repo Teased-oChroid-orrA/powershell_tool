@@ -32,7 +32,7 @@ pub struct CatalogFile {
 }
 
 pub struct Catalog {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl Catalog {
@@ -72,8 +72,27 @@ impl Catalog {
                  content_hash BLOB,
                  PRIMARY KEY(root_id, path)
              );
-             CREATE INDEX IF NOT EXISTS files_hash ON files(content_hash);",
+             CREATE INDEX IF NOT EXISTS files_hash ON files(content_hash);
+             CREATE TABLE IF NOT EXISTS entities(
+                 root_id INTEGER NOT NULL,
+                 path TEXT NOT NULL,
+                 kind TEXT NOT NULL,
+                 value TEXT NOT NULL,
+                 shown TEXT NOT NULL,
+                 line INTEGER NOT NULL,
+                 class TEXT NOT NULL,
+                 extractor TEXT NOT NULL,
+                 FOREIGN KEY(root_id,path) REFERENCES files(root_id,path) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS entities_value ON entities(kind,value);
+             CREATE INDEX IF NOT EXISTS entities_file ON entities(root_id,path);",
         )?;
+        let has_stamp = conn
+            .prepare("SELECT 1 FROM pragma_table_info('files') WHERE name='entities_stamp'")?
+            .exists([])?;
+        if !has_stamp {
+            conn.execute_batch("ALTER TABLE files ADD COLUMN entities_stamp TEXT;")?;
+        }
         Ok(Self { conn })
     }
 
@@ -120,17 +139,43 @@ impl Catalog {
         let root_id: i64 = tx
             .query_row("SELECT id FROM roots WHERE path=?1", [root], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM files WHERE root_id=?1", [root_id]).map_err(|e| e.to_string())?;
+        // Upsert so unchanged files keep their stored entities; a changed file loses them (stale evidence).
+        tx.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS seen(path TEXT PRIMARY KEY)",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM seen", []).map_err(|e| e.to_string())?;
         {
-            let mut insert = tx
-                .prepare("INSERT INTO files(root_id,path,size,modified,content_hash) VALUES(?1,?2,?3,?4,?5)")
+            let mut mark = tx.prepare("INSERT INTO seen(path) VALUES(?1)").map_err(|e| e.to_string())?;
+            let mut upsert = tx
+                .prepare(
+                    "INSERT INTO files(root_id,path,size,modified,content_hash) VALUES(?1,?2,?3,?4,?5)
+                     ON CONFLICT(root_id,path) DO UPDATE SET
+                         entities_stamp=CASE WHEN size=excluded.size AND modified=excluded.modified
+                                             THEN entities_stamp ELSE NULL END,
+                         size=excluded.size, modified=excluded.modified, content_hash=excluded.content_hash",
+                )
                 .map_err(|e| e.to_string())?;
             for (path, (modified, size)) in &docs {
-                insert
+                mark.execute([path]).map_err(|e| e.to_string())?;
+                upsert
                     .execute(params![root_id, path, size, modified, hashes.get(path)])
                     .map_err(|e| e.to_string())?;
             }
         }
+        tx.execute(
+            "DELETE FROM files WHERE root_id=?1 AND path NOT IN (SELECT path FROM seen)",
+            [root_id],
+        )
+        .map_err(|e| e.to_string())?;
+        // A changed file (stamp cleared) must not keep entities from its old content.
+        tx.execute(
+            "DELETE FROM entities WHERE root_id=?1 AND path IN
+               (SELECT path FROM files WHERE root_id=?1 AND entities_stamp IS NULL)",
+            [root_id],
+        )
+        .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(docs.len())
     }

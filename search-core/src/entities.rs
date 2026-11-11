@@ -22,6 +22,20 @@ pub enum EntityKind {
     Standard,
 }
 
+impl EntityKind {
+    /// Stable storage name (the catalog keys on it; never rename).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EntityKind::PartNumber => "part_number",
+            EntityKind::Material => "material",
+            EntityKind::Dimension => "dimension",
+            EntityKind::Unit => "unit",
+            EntityKind::FastenerCallout => "fastener_callout",
+            EntityKind::Standard => "standard",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct EntityCandidate {
     pub bytes: Range<usize>,
