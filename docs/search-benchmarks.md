@@ -534,3 +534,41 @@ Edge quality on the same sets, using co-relevance as a proxy label (two document
 Idea: hold the query-time snapshot (`semantic_cache::Snapshot`) with one signed byte per dimension plus a scale per vector, so an index above the 250,000-chunk limit could still be searched from memory (earlier ANN probe: quarter vector memory at recall@100 0.995). Built and tested: scores of the int8 snapshot stayed within 0.01 of the exact ones and gave the same chunk order on a three-chunk index (bundled MiniLM). Memory was measured on a synthetic index of 100,002 chunks of 120 words each (20,000-word vocabulary), release build, resident-set change across `Snapshot::build`: f32 3.87 KB per chunk, int8 3.81 KB per chunk. Peak process memory (`/usr/bin/time -l`, debug) was 404 MB against 417 MB.
 
 Reading: the vectors are only part of a snapshot; the term postings for the keyword side are the rest, and they do not shrink. By arithmetic the vector part is 1,536 B (f32) or 388 B (int8) per chunk, a possible saving of about 1.1 KB of roughly 3.9 KB (28%), and the measurement did not show even that (resident-set deltas include allocator slack, so the figure is an upper bound on the gain, not a precise one). Raising the in-memory limit four times would put 1,000,000 chunks at about 3.8 GB, which is not acceptable on the 8 GB reference Mac, and the limit of 250,000 chunks (about 1 GB at this chunk size, not the 400 MB the old comment says) was left alone. Not adopted; the code was reverted, nothing stored changed. A real answer for indexes beyond the limit has to shrink the postings (for example a disk-backed postings list or a keyword path off the snapshot) or use the ANN probe's IVF; neither was attempted. Note for later: the comment on `MAX_CACHED_CHUNKS` ("about 400 MB") understates the snapshot for 120-word chunks.
+
+## 2026-11-11: embedding only part of the documents (P2-3, lazy embedding)
+
+Question: what does a reader lose while only a fraction of the documents has vectors, and how much indexing time does the fraction save? `retrieval_eval ... --lazy 25,50,75,100` builds a second index in steps through the real `SemanticIndex::index_document`, in a fixed pseudo-random document order (FNV hash of the id). The sets have no folders or extensions, so this is the case where priority carries no information; a real priority order (prose before code, important folders first) can only do better than this when it correlates with relevance, and that was not measured. After each step it reports the shipped `default` hybrid ranking over the embedded part alone (`partial`) and `+exact`: that ranking merged by reciprocal rank (k = 60) with the keyword-led ranking (keyword weight 1000, rank fusion) of the not yet embedded documents taken from the fully built index. `+exact` is a simulation of what exact search adds, not shipped ranking; the app shows the exact and semantic lists separately. 200 queries per set (50 for TREC-COVID). Run serially on a Mac that was also running other builds, so seconds are relative; they are the embedding and write time of the step only.
+
+nDCG@10 / Recall@100, `partial` (hybrid over the embedded documents only):
+
+| Embedded | Cranfield | SciFact | NFCorpus | MS MARCO | TREC-COVID | mean nDCG | mean R@100 |
+|---|---|---|---|---|---|---|---|
+| 25% | 0.1464 / 0.2284 | 0.1883 / 0.2039 | 0.1539 / 0.1118 | 0.1229 / 0.2000 | 0.3254 / 0.2080 | 0.1874 | 0.1904 |
+| 50% | 0.2083 / 0.3600 | 0.4199 / 0.5137 | 0.2418 / 0.1581 | 0.2867 / 0.4600 | 0.3684 / 0.3430 | 0.3050 | 0.3670 |
+| 75% | 0.3155 / 0.6024 | 0.5754 / 0.7351 | 0.3171 / 0.2299 | 0.4902 / 0.7350 | 0.4036 / 0.4580 | 0.4204 | 0.5521 |
+| 100% | 0.3988 / 0.8020 | 0.7518 / 0.9700 | 0.3836 / 0.2970 | 0.6670 / 1.0000 | 0.4121 / 0.5520 | 0.5227 | 0.7242 |
+
+`+exact` (simulated union with the keyword ranking of the pending documents):
+
+| Embedded | Cranfield | SciFact | NFCorpus | MS MARCO | TREC-COVID | mean nDCG | mean R@100 |
+|---|---|---|---|---|---|---|---|
+| 25% | 0.2885 / 0.7369 | 0.6097 / 0.9278 | 0.3213 / 0.2756 | 0.3854 / 0.9975 | 0.3518 / 0.4805 | 0.3913 | 0.6837 |
+| 50% | 0.3307 / 0.7633 | 0.6374 / 0.9480 | 0.3240 / 0.2797 | 0.4094 / 0.9975 | 0.3803 / 0.5235 | 0.4164 | 0.7024 |
+| 75% | 0.3328 / 0.7567 | 0.6262 / 0.9515 | 0.3135 / 0.2883 | 0.4392 / 0.9975 | 0.3570 / 0.5035 | 0.4137 | 0.6995 |
+
+Cumulative indexing seconds (embedding plus write) to reach each step, with the share of the full time saved by stopping there:
+
+| Embedded | Cranfield | SciFact | NFCorpus | MS MARCO | TREC-COVID |
+|---|---|---|---|---|---|
+| 25% | 36.6 (74%) | 141.1 (74%) | 103.7 (74%) | 26.9 (74%) | 63.2 (76%) |
+| 50% | 71.3 (50%) | 267.8 (50%) | 201.1 (49%) | 52.3 (50%) | 124.9 (52%) |
+| 75% | 108.9 (23%) | 403.0 (25%) | 300.4 (25%) | 78.1 (25%) | 197.7 (25%) |
+| 100% | 141.8 | 538.6 | 398.0 | 104.3 | 262.0 |
+
+Findings (all numbers above, wins and losses):
+- Time is linear in documents embedded: stopping at 25% saves 74 to 76% of the embedding time on every set, 50% saves about half, 75% about a quarter.
+- Embedded-only recall falls faster than linearly, so a half-embedded index is not "half as good": mean nDCG@10 is 0.305 at 50% against 0.523 at 100% (58%), and 0.187 at 25% (36%). Recall@100 falls roughly in proportion to the embedded share (0.19 / 0.37 / 0.55 / 0.72 for 25 / 50 / 75 / 100%). Whatever is not embedded cannot appear in the semantic list.
+- Keyword results cover most of the gap, unevenly. The simulated union recovers Recall@100 to 0.68 to 0.70 mean at every fraction (full 0.724) and gets mean nDCG@10 to 0.39 to 0.42 (full 0.523); on SciFact and MS MARCO (short, keyword-rich) it reaches 0.93 to 1.00 Recall@100 at 25%, on NFCorpus (medical, vocabulary mismatch) it stays near 0.28 at every fraction because the keyword side alone is that weak there (full dense-plus-keyword 0.297). The union is not monotonic in the embedded share (mean nDCG 0.4164 at 50%, 0.4137 at 75%; Cranfield 0.3307 then 0.3328, SciFact 0.6374 then 0.6262): the reciprocal-rank merge of two differently scaled lists is crude, and this is the simulation's noise, not a property of the policy.
+- Full-index control: the 100% step reproduces the documented default (Cranfield 0.3988 / 0.8020, SciFact 0.7518 / 0.9700, MS MARCO 0.6670 / 1.0000, TREC-COVID 0.4121 / 0.5520). NFCorpus gives 0.3836 where the 2026-11-08 table has 0.3844; the cause of the 0.0008 was not investigated.
+- Not measured: a priority order correlated with relevance (needs a corpus with folders and extension classes and labelled queries; the cross-folder set of the audit's plan), query latency during enrichment, Windows.
+- Ranking defaults and stored data are unchanged; nothing here changes what the full index returns. Policy and counters: `search-core/src/embed_policy.rs`, `native_index::build_or_update_corpus_index_lazy_send`, `enrich_semantic_index_send`.

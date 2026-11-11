@@ -162,6 +162,84 @@ fn main() {
         return;
     }
 
+    // `--lazy 25,50,75,100` (P2-3): enrich a second index in steps, in a fixed pseudo-random document order (the sets have
+    // no folders or extensions, so priority cannot be tested; this is the case where priority carries no information),
+    // and after each step report the hybrid ranking over the embedded part alone (`partial`) and a simulated combined
+    // view (`+exact`): that ranking merged by reciprocal rank (k 60) with the keyword-led ranking of the not yet
+    // embedded documents, taken from the fully built index. The shipped app shows the two lists separately; `+exact`
+    // only estimates what a reader gets from both.
+    if let Some(steps) = flag("--lazy") {
+        let fractions: Vec<usize> = steps.split(',').filter_map(|v| v.parse().ok()).collect();
+        let mut docs: Vec<(String, String)> = corpus
+            .iter()
+            .filter_map(|doc| {
+                let id = doc["_id"].as_str()?.to_string();
+                let text = format!("{} {}", doc["title"].as_str().unwrap_or(""), doc["text"].as_str().unwrap_or("")).trim().to_string();
+                (!text.is_empty()).then_some((id, text))
+            })
+            .collect();
+        let fnv = |id: &str| id.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+        docs.sort_by_key(|(id, _)| fnv(id));
+        let lazy_dir = folder.join(".eval-index-lazy");
+        let _ = std::fs::remove_dir_all(&lazy_dir);
+        std::fs::create_dir_all(&lazy_dir).unwrap();
+        let lazy = SemanticIndex::open(&lazy_dir.join("semantic.sqlite")).expect("open lazy index");
+        let ranked_ids = |hits: Vec<search_core::semantic_index::SemanticHit>| {
+            let mut ranked: Vec<String> = Vec::new();
+            for hit in hits {
+                let id = Path::new(&hit.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                if !ranked.contains(&id) {
+                    ranked.push(id);
+                }
+            }
+            ranked
+        };
+        let score = |ranked: &[String], gains: &HashMap<String, f64>| {
+            (ndcg_at(ranked, gains, 10), ranked.iter().take(100).filter(|d| gains.contains_key(*d)).count() as f64 / gains.len() as f64)
+        };
+        let keyword = LexicalConfig { weight: 1000.0, ..LexicalConfig::rrf() };
+        let default = LexicalConfig::default();
+        println!("{:<8} {:>6} {:>9} | {:>8} {:>10} | {:>8} {:>10}", "embedded", "docs", "index s", "nDCG@10", "Recall@100", "+exact N", "+exact R");
+        let (mut done, mut spent) = (0usize, 0f64);
+        for pct in fractions {
+            let upto = (docs.len() * pct).div_ceil(100);
+            let step = std::time::Instant::now();
+            for (id, text) in &docs[done..upto] {
+                let path = docs_dir.join(format!("{id}.txt"));
+                let metadata = std::fs::metadata(&path).unwrap();
+                let modified = search_core::cache::ticks_from_modified(chrono::DateTime::<chrono::Local>::from(metadata.modified().unwrap()));
+                lazy.index_document(&path.to_string_lossy(), modified, metadata.len() as i64, &[text.clone()]).expect("index document");
+            }
+            spent += step.elapsed().as_secs_f64();
+            done = upto;
+            let embedded: std::collections::HashSet<&str> = docs[..done].iter().map(|(id, _)| id.as_str()).collect();
+            let (mut n, mut r, mut n2, mut r2) = (0.0, 0.0, 0.0, 0.0);
+            for (qid, text) in &queries {
+                let gains = &qrels[qid];
+                let partial = ranked_ids(lazy.search_tuned(text, 600, true, &default).expect("search"));
+                let exact_rest: Vec<String> = ranked_ids(index.search_tuned(text, 600, true, &keyword).expect("search"))
+                    .into_iter()
+                    .filter(|id| !embedded.contains(id.as_str()))
+                    .collect();
+                let mut fused: HashMap<&str, f64> = HashMap::new();
+                for list in [&partial, &exact_rest] {
+                    for (rank, id) in list.iter().enumerate() {
+                        *fused.entry(id.as_str()).or_default() += 1.0 / (60.0 + rank as f64 + 1.0);
+                    }
+                }
+                let mut merged: Vec<(&str, f64)> = fused.into_iter().collect();
+                merged.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(b.0)));
+                let merged: Vec<String> = merged.into_iter().map(|(id, _)| id.to_string()).collect();
+                let (a, b) = score(&partial, gains);
+                let (c, d) = score(&merged, gains);
+                n += a; r += b; n2 += c; r2 += d;
+            }
+            let q = queries.len() as f64;
+            println!("{:>7}% {:>6} {:>9.1} | {:>8.4} {:>10.4} | {:>8.4} {:>10.4}", pct, done, spent, n / q, r / q, n2 / q, r2 / q);
+        }
+        return;
+    }
+
     let embed_started = std::time::Instant::now();
     for (_, text) in &queries {
         search_ml::embed_queries(&[text.as_str()]).expect("embed");
