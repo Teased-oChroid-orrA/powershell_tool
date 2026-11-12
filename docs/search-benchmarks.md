@@ -616,3 +616,22 @@ Recall@100 moves by at most 0.004 (SciFact, Cranfield, NFCorpus) and 0.0015 (TRE
 Left in the code (does nothing unless `--context-prior` is passed): `run_context` in `examples/support/ranking_experiments.rs` and the flag in `retrieval_eval.rs`. Reproduce: `retrieval_eval <set> --context-prior` (about two minutes per set, this Mac, release).
 
 **Data hygiene finding (fixed in the benchmark data, outside the repo).** The first run printed default nDCG@10 above 1 (SciFact 1.15). Cause: every set's `.eval-index` held each document twice, once under its absolute path and once under a relative path (`cranfield/.eval-docs/1.txt`), left by an earlier run started with a relative folder argument. `doc_id` is the file stem, so rankings listed relevant files twice. I deleted the relative-path rows from the five `.eval-index` databases (rows with a path not starting with `/`; chunks cascade); defaults now reproduce the documented numbers to four decimals. Any experiment run on those indexes between that stray run and today would be inflated; always pass an absolute folder to `retrieval_eval`.
+
+## 2026-11-12: PDF extraction and OCR on the KG-RAG corpus
+
+Corpus: `docugami/KG-RAG-datasets` (MIT), 80 PDFs (20 each: NIH protocols, NTSB reports, SEC 10-Qs, US agency reports), 68 MB. Oracle: poppler `pdftotext -layout` (reference only, never shipped). Scored on the 79 files where poppler finds text. Word recall = multiset of lower-cased alphanumeric tokens found / oracle tokens. Phrase = 40 random 5-word runs per file inside one oracle line, found inside one output line (layout-dependent, so only a rough guide). Time and peak RSS per file via `/usr/bin/time -l`, release builds, one backend at a time (docling was partly contended).
+
+| Backend | Word recall | Phrase on one line | Empty files | Total time | Peak RSS |
+|---|---|---|---|---|---|
+| ours before fixes | 0.400 | 0.21 | 34 | 3.6 s | 31 MB |
+| ours after fixes (fe5f55b) | 0.866 | 0.51 | 1 | 9.5 s | 32 MB |
+| `yolowpdf` 0.1.2 | 0.976 | 0.91 | 0 | 10.4 s | 86 MB |
+| `pdfium` (via `pdfium-render`) | 0.9975 | 0.94 | 0 | 11.7 s | 35 MB |
+| `lopdf` 0.47 `extract_text` | 0.802 | 0.46 | 3 | 9.6 s | 250 MB |
+| docling (Python, layout model, no OCR) | 0.974 | 0.88 | 0 | 3,895 s (median 42 s/file) | 2.2 GB |
+
+Causes found in our extractor: 31 files carry `/Encrypt` with an empty user password (all RC4-128) and extracted to nothing (now decrypted with `lopdf`); the 400-character stream-header window crossed into the previous object, so `/ImageB` in a page `/ProcSet` made the `/Image` skip marker drop Word content streams (header now starts at its own `obj`). Still weak after both: 8 files below 0.5 recall, mostly CID TrueType (Identity-H) in NIH and Intel filings; cause not established.
+
+OCR: 8 digital pages sets (2-3 pages each, 200 dpi) turned into image-only JPEG PDFs, clean and noisy (blur, rotation, speckle); ground truth is the pages' own text layer. Recall / precision, clean | noisy: ours `ocrs` 0.12.2 0.965/0.970 | 0.953/0.888, 72 s | 89 s, 1 GB; `ocrs` 0.14.0 (same models) 0.966/0.966 | 0.957/0.805, 89 s | 116 s, 1 GB; `yolowpdf-ocr` small PP-OCRv6 0.974/0.987 | 0.917/0.956, 121 s | 111 s, 0.4 GB; tesseract 0.986/0.981 | 0.973/0.959, 37 s | 35 s, 76 MB. The corpus itself has one scan (CCITT, not decoded by our OCR path).
+
+Decisions: keep `ocrs` 0.12.2 (0.14 adds nothing); do not adopt `yolowpdf-ocr` (no gain on noisy scans, slower); reject docling (Python and torch, 2 GB, 400x slower) and tesseract (C++ runtime) for shipping; `yolowpdf` is the candidate if text-layer recall must reach 0.97 (pure Rust, MIT, 0.1.2 is days old, self-reported benchmarks only) and needs a flagged trial with the current path as fallback. Not measured: Windows, real scans, CCITT/JPEG2000 decoding, page numbers on decrypted files.
