@@ -275,6 +275,10 @@ fn record_in(catalog: &Path, root: &str, index_dir: &Path) -> Result<usize, Stri
     // Identifying strings (part numbers, standards) for "files sharing X"; only new or changed files are read.
     let extracted = c.index_entities(root, None)?;
     log("INDEX", format!("catalog: entities extracted for {extracted} file(s)"));
+    // Relationships (folder, duplicate, version, shared-entity edges) are derived from the rows just written; about
+    // 5 s for 100,000 files, on top of the entity pass (docs/knowledge-engine-audit.md, section 8).
+    let edges = c.rebuild_edges()?;
+    log("INDEX", format!("catalog: {} relationship edge(s), {} added, {} updated, {} removed", edges.total, edges.added, edges.updated, edges.removed));
     Ok(files)
 }
 
@@ -921,6 +925,25 @@ mod tests {
         let c = search_core::catalog::Catalog::open(&catalog).unwrap();
         assert_eq!(c.roots().unwrap()[0].path, root);
         assert!(c.files().unwrap()[0].path.ends_with("a.txt"));
+    }
+
+    #[tokio::test]
+    async fn recording_a_built_index_derives_the_folder_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "same words\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "same words\n").unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let settings = SearchSettings { search_path: root.clone(), ..Default::default() };
+        let index_dir = index_directory(IndexLocation::SearchFolder, &root, "");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(build_or_rebuild_index(tx, settings, index_dir.clone(), CancellationToken::new()).await);
+
+        let catalog = dir.path().join("catalog-edges-test.sqlite");
+        record_in(&catalog, &root, &index_dir).unwrap();
+        let c = search_core::catalog::Catalog::open(&catalog).unwrap();
+        let a = c.files().unwrap().into_iter().find(|f| f.path.ends_with("a.txt")).unwrap().path;
+        let facts = c.facts_for(&a).unwrap();
+        assert!(facts.iter().any(|e| e.kind == "FILE_IN_FOLDER"), "{facts:?}");
     }
 
     #[tokio::test]
