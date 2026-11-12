@@ -87,50 +87,31 @@ jobs:
           }
           Get-ChildItem -Recurse dist | Format-Table FullName, Length
 
-      - name: Create high-compression 7-Zip package
+      - name: Create ZIP package
         shell: pwsh
         run: |
-          $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
-          if (-not $sevenZip) { $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe" }
-          if (-not (Test-Path $sevenZip)) { throw "7-Zip was not found on the Windows runner" }
-          & $sevenZip a -t7z -m0=LZMA -mx=9 -md=64m -ms=on `
-            dist/app-tui-win-x64.7z dist/app-tui.exe dist/THIRD-PARTY-NOTICES.md dist/licenses
-          if ($LASTEXITCODE -ne 0) { throw "7-Zip packaging failed with exit code $LASTEXITCODE" }
-          & $sevenZip t dist/app-tui-win-x64.7z
-          if ($LASTEXITCODE -ne 0) { throw "7-Zip archive verification failed with exit code $LASTEXITCODE" }
-
-      - name: Package standalone 7za extractor
-        shell: pwsh
-        run: |
-          $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
-          if (-not $sevenZip) { $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe" }
-          if (-not (Test-Path $sevenZip)) { throw "7-Zip was not found on the Windows runner" }
-          $extraArchive = Join-Path $env:RUNNER_TEMP "7z2605-extra.7z"
-          Invoke-WebRequest "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-extra.7z" -OutFile $extraArchive
-          $expectedHash = "f27a8f103c84785026edcba1f67faf1357225df9d19ddb0b7760d55947141bc7"
-          $actualHash = (Get-FileHash $extraArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualHash -ne $expectedHash) { throw "7-Zip Extra archive SHA-256 mismatch" }
-          $extraDir = Join-Path $env:RUNNER_TEMP "7zip-extra"
-          & $sevenZip x $extraArchive "-o$extraDir" -y
-          if ($LASTEXITCODE -ne 0) { throw "7-Zip Extra extraction failed with exit code $LASTEXITCODE" }
-          New-Item -ItemType Directory -Force dist/7za-extractor | Out-Null
-          Copy-Item "$extraDir/x64/7za.exe" dist/7za-extractor/
-          Copy-Item "$extraDir/License.txt" dist/7za-extractor/
-          & dist/7za-extractor/7za.exe t dist/app-tui-win-x64.7z
-          if ($LASTEXITCODE -ne 0) { throw "Standalone 7za could not verify the app archive" }
+          # Plain ZIP (Deflate, optimal): Windows opens it with Explorer, no extra tool needed.
+          $zip = Join-Path $env:RUNNER_TEMP "app-tui-win-x64.zip"
+          if (Test-Path $zip) { Remove-Item $zip }
+          Compress-Archive -Path dist/app-tui.exe, dist/THIRD-PARTY-NOTICES.md, dist/licenses -DestinationPath $zip -CompressionLevel Optimal
+          Move-Item $zip dist/app-tui-win-x64.zip
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path dist/app-tui-win-x64.zip))
+          try {
+            $names = $archive.Entries | ForEach-Object { $_.FullName }
+            $names
+            if ($names -notcontains "app-tui.exe") { throw "app-tui.exe missing from the ZIP" }
+            $exe = $archive.GetEntry("app-tui.exe")
+            $stream = $exe.Open(); $total = 0; $buf = New-Object byte[] 1MB
+            while (($n = $stream.Read($buf, 0, $buf.Length)) -gt 0) { $total += $n }
+            $stream.Dispose()
+            if ($total -ne $exe.Length) { throw "app-tui.exe did not read back in full from the ZIP" }
+          } finally { $archive.Dispose() }
 
       - name: Upload app-tui release folder
         uses: actions/upload-artifact@v7
         with:
           name: app-tui-win-x64
-          path: dist/app-tui-win-x64.7z
-          compression-level: 0
-          if-no-files-found: error
-
-      - name: Upload standalone 7za extractor
-        uses: actions/upload-artifact@v7
-        with:
-          name: 7za-extractor-win-x64
-          path: dist/7za-extractor/*
+          path: dist/app-tui-win-x64.zip
           compression-level: 0
           if-no-files-found: error
