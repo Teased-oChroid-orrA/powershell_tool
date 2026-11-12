@@ -1,4 +1,4 @@
-//! Trial text-layer PDF backend (`pdf-yolow` feature, opt in with `SEARCH_PDF_YOLOW=1`).
+//! Trial text-layer PDF backend (`pdf-yolow` feature, opt in per run with `SearchSettings::pdf_yolow`).
 //!
 //! Measured on the KG-RAG corpus (docs/search-benchmarks.md, 2026-11-12) `yolowpdf`
 //! recovers ~0.976 of poppler's words against ~0.866 for the byte scanner. It returns
@@ -6,19 +6,28 @@
 //! means "use the scanner": backend off, parse error, panic, scanned document
 //! (the scanner owns OCR) or no text.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Duration;
 
 const OVERALL_TIMEOUT: Duration = Duration::from_secs(300);
 
-pub(crate) fn enabled() -> bool {
-    std::env::var_os("SEARCH_PDF_YOLOW").is_some_and(|v| v == "1")
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Process-wide, like the OCR cache folder: set at the start of each run from the settings.
+pub(crate) fn configure(on: bool) {
+    ENABLED.store(on, Ordering::Relaxed);
+}
+
+fn enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
 }
 
 pub(crate) fn extract_lines(bytes: &[u8]) -> Option<Vec<String>> {
-    if !enabled() {
-        return None;
-    }
+    if enabled() { run(bytes) } else { None }
+}
+
+fn run(bytes: &[u8]) -> Option<Vec<String>> {
     let opts = yolowpdf::Options {
         timeout: Some(OVERALL_TIMEOUT),
         ..Default::default()
@@ -71,13 +80,9 @@ mod tests {
     }
 
     #[test]
-    fn real_pdf_gives_lines_when_enabled_and_defers_when_not() {
+    fn real_pdf_gives_text_lines() {
         let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/test-data/test.pdf")).unwrap();
-        assert!(extract_lines(&bytes).is_none(), "off unless SEARCH_PDF_YOLOW=1");
-        // SAFETY: test-only env mutation; no other test reads this variable.
-        unsafe { std::env::set_var("SEARCH_PDF_YOLOW", "1") };
-        let lines = extract_lines(&bytes).expect("text layer");
-        unsafe { std::env::remove_var("SEARCH_PDF_YOLOW") };
+        let lines = run(&bytes).expect("text layer");
         assert!(lines.iter().any(|l| l.contains("apple")), "{lines:?}");
     }
 }

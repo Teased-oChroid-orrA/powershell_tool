@@ -69,7 +69,7 @@ pub struct FailureLog {
 /// predate this column.
 pub fn extraction_context(settings: &crate::models::SearchSettings) -> i64 {
     let timeout = i64::from(settings.pdf_timeout_seconds.max(0)) - 15;
-    (timeout << 1) | i64::from(settings.ocr_scanned_pdfs)
+    (timeout << 2) | (i64::from(settings.pdf_yolow) << 1) | i64::from(settings.ocr_scanned_pdfs)
 }
 
 impl FailureLog {

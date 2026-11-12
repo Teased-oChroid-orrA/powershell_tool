@@ -209,6 +209,7 @@ async fn run_over_candidates(
     }
 
     crate::extraction::configure_ocr_cache(settings.ocr_cache_dir.as_deref());
+    crate::extraction::configure_pdf_yolow(settings.pdf_yolow);
 
     // ---- Incremental cache ----
     let prior_cache = match settings.cache_file_path.as_deref() {

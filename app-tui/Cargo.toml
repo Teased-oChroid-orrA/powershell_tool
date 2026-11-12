@@ -55,7 +55,7 @@ futures-util = "0.3"
 # search-core/Cargo.toml's feature doc comment). Both `app/` and
 # `app-egui/` already enable it; this crate must match or its PDF OCR
 # toggle does nothing regardless of user setting.
-search-core = { path = "../search-core", features = ["ocr"] }
+search-core = { path = "../search-core", features = ["ocr", "pdf-yolow"] }
 # Fast re-search indexing (Tantivy-backed) - consumed the same way `app/`
 # and `app-egui/` do, through `search_core::native_index`'s policy layer,
 # with direct `native_search::engine::NativeSearchEngine` access only for

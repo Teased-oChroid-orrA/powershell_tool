@@ -71,6 +71,8 @@ pub struct SearchToolConfig {
     pub dry_run: bool,
     pub pdf_timeout_seconds: i32,
     pub ocr_scanned_pdfs: bool,
+    /// Opt-in trial PDF text backend (`yolowpdf`), scanner fallback.
+    pub pdf_yolow: bool,
     /// Fold accents, ligatures and curly quotes when matching (off by default).
     pub fold_accents: bool,
     /// Typos allowed per word, 0 to 2 (0 = exact).
@@ -119,6 +121,7 @@ impl Default for SearchToolConfig {
             dry_run: false,
             pdf_timeout_seconds: 15,
             ocr_scanned_pdfs: false,
+            pdf_yolow: false,
             fold_accents: false,
             typo_tolerance: 0,
             file_timeout_seconds: 30,
@@ -354,6 +357,7 @@ pub fn build_settings(config: &SearchToolConfig) -> SearchSettings {
         max_embed_lines: 4000,
         pdf_timeout_seconds: config.pdf_timeout_seconds,
         ocr_scanned_pdfs: config.ocr_scanned_pdfs,
+        pdf_yolow: config.pdf_yolow,
         fold_accents: config.fold_accents,
         typo_tolerance: config.typo_tolerance,
         ocr_cache_dir: crate::paths::app_data_dir().map(|d| d.join("ocr-cache").to_string_lossy().into_owned()),

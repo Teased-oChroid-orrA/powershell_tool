@@ -2159,6 +2159,8 @@ pub(super) fn ribbon(s: &SearchSession) -> Vec<RibbonTab> {
                     switch(s, "Regex", 6),
                     switch(s, "Whole word", 7),
                     switch(s, "Hidden files", 11),
+                    switch(s, "OCR scanned PDFs", 26),
+                    switch(s, "Better PDF text (trial)", 36),
                 ],
             ),
         RibbonTab::new("Results")

@@ -88,6 +88,8 @@ pub struct PersistedSearchSettings {
     pub pdf_timeout_seconds: Option<i32>,
     #[serde(default)]
     pub ocr_scanned_pdfs: bool,
+    #[serde(default)]
+    pub pdf_yolow: bool,
     pub file_timeout_seconds: Option<i32>,
     pub max_retries: Option<i32>,
 
@@ -141,6 +143,7 @@ impl From<&SearchToolConfig> for PersistedSearchSettings {
             dry_run: config.dry_run,
             pdf_timeout_seconds: Some(config.pdf_timeout_seconds),
             ocr_scanned_pdfs: config.ocr_scanned_pdfs,
+            pdf_yolow: config.pdf_yolow,
             file_timeout_seconds: Some(config.file_timeout_seconds),
             max_retries: Some(config.max_retries),
             index_enabled: config.index.enabled,
@@ -205,6 +208,7 @@ impl PersistedSearchSettings {
             config.pdf_timeout_seconds = v;
         }
         config.ocr_scanned_pdfs = self.ocr_scanned_pdfs;
+        config.pdf_yolow = self.pdf_yolow;
         if let Some(v) = self.file_timeout_seconds {
             config.file_timeout_seconds = v;
         }

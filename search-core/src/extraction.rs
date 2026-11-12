@@ -1817,6 +1817,14 @@ fn record_pdf_origin(origins: &mut Option<Vec<Option<usize>>>, origin: Option<us
     }
 }
 
+/// Switches the opt-in `yolowpdf` text-layer backend for this process (no-op without the `pdf-yolow` feature).
+pub fn configure_pdf_yolow(on: bool) {
+    #[cfg(feature = "pdf-yolow")]
+    crate::pdf_yolow::configure(on);
+    #[cfg(not(feature = "pdf-yolow"))]
+    let _ = on;
+}
+
 fn extract_pdf_lines_capture(
     bytes: &[u8],
     overall_timeout_seconds: u64,

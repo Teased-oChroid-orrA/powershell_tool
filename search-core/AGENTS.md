@@ -17,6 +17,7 @@ Plain Rust library, zero GUI dependency — `cargo test -p search-core` must bui
 | Why a search returned 0 hits despite matches existing | `matching::LineMatchOutcome.passes_mode` — never infer from `hits.is_empty()` |
 | DOCX/PPTX/XLSX/ZIP text extraction | `src/extraction.rs` (`extract_docx_lines`, `extract_pptx_lines`, `extract_xlsx_lines`, `extract_zip_archive_lines`) |
 | PDF text extraction | `src/extraction.rs::extract_pdf_lines` (~line 1433); stream scanner is `find_stream_blocks`, not a regex |
+| PDF decrypt (empty user password) / opt-in `yolowpdf` text layer | `src/pdf_decrypt.rs` (always on, `lopdf`); `src/pdf_yolow.rs` (`pdf-yolow` feature, `SearchSettings::pdf_yolow`, scanner fallback; results in `docs/search-benchmarks.md` 2026-11-12) |
 | PDF hex-string / CID-font operands | `extraction.rs`: `hex_string_re`, `parse_tounicode_cmap`, `hex_string_to_unicode` (~1128-1300) |
 | Encoding fallback (non-UTF8 text files) | `src/extraction.rs::decode_text` (Windows-1252 fallback) |
 | Regex-candidate literal-chunk extraction (index pre-filtering) | `src/regex_literals.rs::required_literal_alternatives` (OR of AND chunk sets; `required_literal_chunks` is one alternative) |

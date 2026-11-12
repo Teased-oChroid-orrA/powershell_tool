@@ -193,6 +193,10 @@ const FIELDS: &[FieldDef] = &[
         label: "Embed in the background",
         kind: FieldKind::Bool,
     },
+    FieldDef {
+        label: "Better PDF text (trial)",
+        kind: FieldKind::Bool,
+    },
 ];
 
 /// A row in the rendered/navigable Fields list - either a non-selectable
@@ -223,6 +227,7 @@ const SETTINGS_HEADERS: &[(usize, &str)] = &[
     (20, "Concurrency & Diagnostics"),
     (29, "Fast Re-search Index"),
     (32, "Matching"),
+    (36, "PDF"),
 ];
 
 fn settings_field_rows() -> Vec<SettingsFieldRow> {
@@ -814,6 +819,7 @@ fn field_hint(index: usize) -> &'static str {
         33 => "Allow this many typos per word (0 = exact, 1 or 2). Words under 4 letters or with digits stay exact; excluded terms are never fuzzy. Searches every file instead of using the fast index.",
         34 => "Watch the folder while the app is open and update the fast index for the files that change, instead of re-checking every file. Runs inside this app only: no administrator rights, nothing installed and no system setting or file changed; it stops when the app closes. Network shares and some synced folders report no changes, so Build / update remains the way to be sure.",
         35 => "With the semantic index on, embed files a few hundred at a time in the background (documents first, then code, then data) instead of in one long build. Exact search is complete after the first pass; semantic results grow as files are embedded, and the index status shows how many are done. Stop build pauses it; Build / update continues.",
+        36 => "Trial: read PDF text with the yolowpdf reader (recall 0.97 against 0.87 on a 79-file corpus, more memory, about twice the time). Falls back to the built-in reader for scans, errors and files it cannot read; scanned documents still use OCR. Page numbers in semantic results use the built-in reader. Turning this on re-reads PDFs.",
         _ => "",
     }
 }
@@ -1100,6 +1106,7 @@ fn bool_field_mut(config: &mut SearchToolConfig, idx: usize) -> Option<&mut bool
         32 => Some(&mut config.fold_accents),
         34 => Some(&mut config.index.watch),
         35 => Some(&mut config.index.lazy_embed),
+        36 => Some(&mut config.pdf_yolow),
         _ => None,
     }
 }
@@ -1121,6 +1128,7 @@ fn bool_field(config: &SearchToolConfig, idx: usize) -> bool {
         32 => config.fold_accents,
         34 => config.index.watch,
         35 => config.index.lazy_embed,
+        36 => config.pdf_yolow,
         _ => false,
     }
 }
@@ -1324,7 +1332,7 @@ mod tests {
     #[test]
     fn draw_fields_renders_every_header_divider() {
         let mut regions = crate::mouse::MouseRegions::default();
-        let backend = ratatui::backend::TestBackend::new(60, 40);
+        let backend = ratatui::backend::TestBackend::new(60, 46);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let view = SettingsView::default();
         let config = SearchToolConfig::default();

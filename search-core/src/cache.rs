@@ -106,6 +106,8 @@ struct FingerprintFields<'a> {
     // defaults so caches written before they were fingerprinted stay valid.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     ocr_scanned_pdfs: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pdf_yolow: bool,
     #[serde(skip_serializing_if = "is_default_pdf_timeout")]
     pdf_timeout_seconds: i32,
     // Change which lines match / how many lines are stored; skipped at their
@@ -157,6 +159,7 @@ pub fn compute_fingerprint(settings: &SearchSettings) -> String {
         max_file_size_mb: settings.max_file_size_mb,
         extraction_version: EXTRACTION_VERSION,
         ocr_scanned_pdfs: settings.ocr_scanned_pdfs,
+        pdf_yolow: settings.pdf_yolow,
         pdf_timeout_seconds: settings.pdf_timeout_seconds,
         fold_accents: settings.fold_accents,
         typo_tolerance: settings.typo_tolerance,
@@ -307,6 +310,9 @@ mod tests {
         // Default values add nothing, so pre-existing caches keep loading.
         assert!(!compute_fingerprint(&base).contains("ocr_scanned_pdfs"));
         assert!(!compute_fingerprint(&base).contains("pdf_timeout_seconds"));
+        let yolow = SearchSettings { pdf_yolow: true, ..base.clone() };
+        assert_ne!(compute_fingerprint(&base), compute_fingerprint(&yolow));
+        assert!(!compute_fingerprint(&base).contains("pdf_yolow"));
     }
 
     #[test]

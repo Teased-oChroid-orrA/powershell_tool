@@ -555,6 +555,7 @@ async fn load_comparison_lines(
         .unwrap_or_default();
     let timeout = config.pdf_timeout_seconds.max(1) as u64;
     let ocr = config.ocr_scanned_pdfs;
+    search_core::extraction::configure_pdf_yolow(config.pdf_yolow);
     tokio::task::spawn_blocking(move || {
         search_core::extraction::extract_lines_by_extension(&extension, &bytes, timeout, None, ocr)
             .map(|extracted| extracted.lines)
@@ -1945,6 +1946,7 @@ impl SearchSession {
                             format!("Extracting document text: page {page}..."),
                         ));
                     };
+                    search_core::extraction::configure_pdf_yolow(config.pdf_yolow);
                     search_core::extraction::extract_lines_by_extension(
                         &ext,
                         &bytes,

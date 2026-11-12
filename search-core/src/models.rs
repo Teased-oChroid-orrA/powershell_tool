@@ -91,6 +91,10 @@ pub struct SearchSettings {
     /// all regardless of this flag - see `extraction.rs`'s
     /// `extract_pdf_lines` and `ocr.rs`.
     pub ocr_scanned_pdfs: bool,
+    /// Opt-in trial: read PDF text layers with the `yolowpdf` backend (better recall on CID-font and
+    /// complex files), falling back to the built-in scanner. No effect without the `pdf-yolow` feature.
+    #[serde(default)]
+    pub pdf_yolow: bool,
     /// Folder for the persistent OCR text cache (one small file per scanned
     /// page image, keyed by a hash of the image bytes), so a re-run with
     /// other filters, an OCR off/on toggle or a new session does not
@@ -223,6 +227,7 @@ impl Default for SearchSettings {
             max_embed_lines: 4000,
             pdf_timeout_seconds: 15,
             ocr_scanned_pdfs: false,
+            pdf_yolow: false,
             ocr_cache_dir: None,
             export_csv: false,
             export_json: false,
