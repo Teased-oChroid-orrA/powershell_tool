@@ -591,3 +591,28 @@ Whole run: 1,746 s for 35,318 chunks, 20.2 chunks/s (the rate varied with other 
 - The first query after any write rebuilds the in-memory snapshot, about 0.07 to 0.1 ms per chunk and growing a little faster than linear here; extrapolated (not measured) about 20 s at 250,000 chunks. Every watcher update or enrichment pass that writes invalidates it, so lazy passes pay it once per pass. Steady queries stay near the embedding cost; the ANN probe measured the dense scan itself at 36 to 41 ms for 250,000 chunks.
 - RSS stayed under 370 MB through 35,000 chunks (the process also holds the model); snapshot memory is about 1.5 KB of vector per chunk plus postings, so 250,000 chunks is about 400 MB plus postings, not measured here.
 - Not measured: anything above 35,318 chunks (only that much distinct real text is on this machine), the streaming path above the 250,000 limit (the limit is private to `SemanticIndex`), startup time, Windows.
+
+
+## 2026-11-11: context-aware ranking prior (P1-3): not adopted
+
+Question (#240 P1-3): does a small prior built from query-time context (the folder of each file and where the best files sit) help ranking? Rule as before: adopted only if it loses on none of the five sets. **Not adopted; `default` unchanged, no stored data changed.**
+
+Prior (`--context-prior`, `ranking_experiments::run_context`, offline on the chunk scores of `rank_features`): every chunk of a file gets `beta * m(folder)` added to its min-max fused score, where `m` is the share of the top-k files of the default ranking (rank weight 1/(rank+1), normalised) that live in that folder. The boost is capped at `beta` (0.02, 0.05, 0.10; k 3, and k 10 at 0.05). Recency was not built: every eval file is written within seconds of the others, so any signal would be corpus order, not information.
+
+**What the public sets can and cannot show.** They have no folders: every document is `.eval-docs/<id>.txt`. With real folders (`flat`) the boost is the same constant for every file, so the ranking cannot change; the table confirms it (0 queries changed, every number identical to `default`). "No loss on all five sets" is therefore true by construction and says nothing about benefit. The benefit case (relevant files cluster in one folder) needs the cross-folder set of the audit (section 4), which does not exist yet. As a control for the downside, `rand20` assigns each file to one of 20 folders by hash of its id: folders carry no information, so any change is pure cost.
+
+nDCG@10 change against `default` (default: Cranfield 0.3936, SciFact 0.7315, NFCorpus 0.3456, MS MARCO 0.6632, TREC-COVID 0.4121; the five sets are the full query sets, 225 / 300 / 323 / 484 / 50):
+
+| Variant | Cranfield | SciFact | NFCorpus | MS MARCO | TREC-COVID | Sets lost |
+|---|---|---|---|---|---|---|
+| flat, any beta or k | 0 | 0 | 0 | 0 | 0 | 0 (identity) |
+| rand20 k3 beta 0.02 | -0.0009 | -0.0016 | +0.0007 | -0.0000 | -0.0023 | 4 |
+| rand20 k3 beta 0.05 | -0.0010 | -0.0024 | +0.0007 | +0.0003 | -0.0040 | 3 |
+| rand20 k3 beta 0.10 | -0.0028 | -0.0027 | -0.0006 | +0.0008 | -0.0076 | 4 |
+| rand20 k10 beta 0.05 | -0.0005 | -0.0012 | +0.0004 | +0.0001 | -0.0041 | 3 |
+
+Recall@100 moves by at most 0.004 (SciFact, Cranfield, NFCorpus) and 0.0015 (TREC-COVID). So a prior that fires on structure unrelated to relevance costs 0.001 to 0.008 nDCG@10 and loses three or four sets at every strength; it fails the rule even at beta 0.02. Whether real folders are informative enough to turn that into a gain is unmeasured. My analysis does not support trying a stronger or different prior on these sets: they cannot answer it. Not tried: neighbour context from content similarity, because pseudo-relevance feedback from the hits (`prf`) and graph expansion from shared entities (P3-1) are already measured and negative; a same-folder prior that is useful would have to beat that on the cross-folder set.
+
+Left in the code (does nothing unless `--context-prior` is passed): `run_context` in `examples/support/ranking_experiments.rs` and the flag in `retrieval_eval.rs`. Reproduce: `retrieval_eval <set> --context-prior` (about two minutes per set, this Mac, release).
+
+**Data hygiene finding (fixed in the benchmark data, outside the repo).** The first run printed default nDCG@10 above 1 (SciFact 1.15). Cause: every set's `.eval-index` held each document twice, once under its absolute path and once under a relative path (`cranfield/.eval-docs/1.txt`), left by an earlier run started with a relative folder argument. `doc_id` is the file stem, so rankings listed relevant files twice. I deleted the relative-path rows from the five `.eval-index` databases (rows with a path not starting with `/`; chunks cascade); defaults now reproduce the documented numbers to four decimals. Any experiment run on those indexes between that stray run and today would be inflated; always pass an absolute folder to `retrieval_eval`.

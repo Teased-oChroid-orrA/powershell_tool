@@ -162,6 +162,14 @@ fn main() {
         return;
     }
 
+    // `--context-prior`: the P1-3 folder-context prior against default (examples/support/ranking_experiments.rs).
+    if args.iter().any(|a| a == "--context-prior") {
+        let set = folder.to_string_lossy().rsplit('/').find(|p| !p.is_empty() && *p != "sub").unwrap_or("set").to_string();
+        let titles = HashMap::new();
+        ranking_experiments::run_context(&ranking_experiments::Inputs { set: &set, index: &index, queries: &queries, qrels: &qrels, titles: &titles, outdir: folder, weights: None });
+        return;
+    }
+
     // `--lazy 25,50,75,100` (P2-3): enrich a second index in steps, in a fixed pseudo-random document order (the sets have
     // no folders or extensions, so priority cannot be tested; this is the case where priority carries no information),
     // and after each step report the hybrid ranking over the embedded part alone (`partial`) and a simulated combined
