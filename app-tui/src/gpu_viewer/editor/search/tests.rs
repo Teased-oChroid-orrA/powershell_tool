@@ -2130,3 +2130,31 @@ fn opening_a_related_file_that_is_not_listed_only_reports_it() {
     s.act_search(SearchAct::OpenRelatedFile(3));
     assert_eq!(s.status, "That related file is no longer listed.");
 }
+
+#[cfg(feature = "semantic-search")]
+#[test]
+fn passages_from_several_files_are_briefed_by_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("a")).unwrap();
+    std::fs::create_dir_all(dir.path().join("b")).unwrap();
+    semantic_fixture(
+        dir.path(),
+        &[
+            ("a/x.txt", "The shaft rotates under torque and torsional load."),
+            ("a/y.txt", "Torque on the rotating shaft causes torsional shear stress."),
+            ("b/z.txt", "A rotating shaft transmits torque through its cross section."),
+        ],
+    );
+    let mut session = SearchSession::in_memory();
+    session.st.config.search_path = dir.path().to_string_lossy().into_owned();
+    session.st.config.index.semantic = true;
+    session.st.index_run.docs = Some(3);
+    act_on(&mut session, SearchAct::FindAs);
+    find_and_wait(&mut session, "shaft torque");
+    let doc = view::document(&session);
+    let texts: Vec<String> = insight_items(&doc).iter().filter_map(DockItem::plain_text).map(|t| t.to_string()).collect();
+    assert!(texts.iter().any(|t| t == "3 passages from 3 files in 2 folders"), "{texts:?}");
+    let folder_a = dir.path().join("a").to_string_lossy().into_owned();
+    let folder_b = dir.path().join("b").to_string_lossy().into_owned();
+    assert!(texts.iter().any(|t| *t == folder_a) && texts.iter().any(|t| *t == folder_b), "{texts:?}");
+}

@@ -1,7 +1,17 @@
 use crate::semantic_index::SemanticHit;
 
-const MAX_PASSAGES: usize = 3;
-const MAX_CHARS: usize = 2_400;
+/// How much one selection may take: passages, passages per file, and characters in all.
+#[derive(Clone, Copy)]
+struct Limits {
+    passages: usize,
+    per_file: usize,
+    chars: usize,
+}
+
+/// The short list quoted under a search: three passages, sources first, 2,400 characters.
+const SHORT: Limits = Limits { passages: 3, per_file: usize::MAX, chars: 2_400 };
+/// The brief (P4-1): six passages, at most two per file, 4,800 characters.
+const BRIEF: Limits = Limits { passages: 6, per_file: 2, chars: 4_800 };
 
 /// Select complete, cited excerpts for an extractive evidence brief.
 /// Similarity only orders passages; it does not establish that a passage answers a question.
@@ -13,6 +23,12 @@ pub fn select_evidence(hits: &[SemanticHit]) -> Vec<&SemanticHit> {
 /// search uses). Measured for the brief on the five benchmark sets, dropping near-duplicates loses on MS MARCO, so it is not
 /// applied (`docs/search-benchmarks.md`).
 pub fn select_evidence_with(hits: &[SemanticHit], near_duplicate: Option<f32>) -> Vec<&SemanticHit> {
+    let ranked = ranked_hits(hits);
+
+    pick_in_order(ranked, near_duplicate, SHORT)
+}
+
+fn ranked_hits(hits: &[SemanticHit]) -> Vec<&SemanticHit> {
     let mut ranked = hits.iter().collect::<Vec<_>>();
     ranked.sort_by(|left, right| {
         right
@@ -23,11 +39,54 @@ pub fn select_evidence_with(hits: &[SemanticHit], near_duplicate: Option<f32>) -
             .then_with(|| left.last_line.cmp(&right.last_line))
             .then_with(|| left.excerpt.cmp(&right.excerpt))
     });
-
-    pick_in_order(ranked, near_duplicate)
+    ranked
 }
 
-fn pick_in_order(ranked: Vec<&SemanticHit>, near_duplicate: Option<f32>) -> Vec<&SemanticHit> {
+/// Passages of one file in a [`brief`], in reading order.
+#[derive(Debug)]
+pub struct BriefFile<'a> {
+    pub path: &'a str,
+    pub passages: Vec<&'a SemanticHit>,
+}
+
+/// Files of one folder in a [`brief`], best first.
+#[derive(Debug)]
+pub struct BriefFolder<'a> {
+    pub folder: &'a str,
+    pub files: Vec<BriefFile<'a>>,
+}
+
+/// Extractive multi-document brief (P4-1): the best cited passages of `hits` (up to six, at most two per file,
+/// every file first before a file gets a second passage), grouped by folder and file. Folders and files come best
+/// first by their strongest passage; passages within a file in line order. Nothing is generated or reworded: every
+/// passage is a stored excerpt with its path and lines. Similarity only orders; it does not show a passage answers
+/// anything.
+pub fn brief(hits: &[SemanticHit]) -> Vec<BriefFolder<'_>> {
+    let picked = pick_in_order(ranked_hits(hits), None, BRIEF);
+    let mut folders: Vec<BriefFolder> = Vec::new();
+    for hit in picked {
+        let folder = crate::catalog_edges::parent_folder(&hit.path);
+        let fi = match folders.iter().position(|f| f.folder == folder) {
+            Some(i) => i,
+            None => {
+                folders.push(BriefFolder { folder, files: Vec::new() });
+                folders.len() - 1
+            }
+        };
+        let files = &mut folders[fi].files;
+        match files.iter_mut().find(|f| f.path == hit.path) {
+            Some(file) => file.passages.push(hit),
+            None => files.push(BriefFile { path: &hit.path, passages: vec![hit] }),
+        }
+    }
+    // `picked` was in rank order, so folders and files were created best first; only passages need reading order.
+    for file in folders.iter_mut().flat_map(|f| f.files.iter_mut()) {
+        file.passages.sort_by_key(|p| (p.first_line, p.last_line));
+    }
+    folders
+}
+
+fn pick_in_order(ranked: Vec<&SemanticHit>, near_duplicate: Option<f32>, limits: Limits) -> Vec<&SemanticHit> {
     let mut shingles: Vec<std::collections::HashSet<u64>> = Vec::new();
     let mut citations = std::collections::HashSet::new();
     let mut excerpts = std::collections::HashSet::new();
@@ -49,22 +108,23 @@ fn pick_in_order(ranked: Vec<&SemanticHit>, near_duplicate: Option<f32>) -> Vec<
         candidates.push(hit);
     }
 
-    let mut selected = Vec::new();
-    let mut paths = std::collections::HashSet::new();
+    let mut selected: Vec<&SemanticHit> = Vec::new();
+    let mut per_path: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     let mut chars = 0;
     for pass in 0..2 {
         for hit in &candidates {
-            if selected.len() == MAX_PASSAGES || (pass == 0 && paths.contains(hit.path.as_str())) {
+            let taken = per_path.get(hit.path.as_str()).copied().unwrap_or(0);
+            if selected.len() == limits.passages || (pass == 0 && taken > 0) || taken >= limits.per_file {
                 continue;
             }
             let size = hit.excerpt.chars().count();
-            if chars + size > MAX_CHARS {
+            if chars + size > limits.chars {
                 continue;
             }
             if selected.contains(hit) {
                 continue;
             }
-            paths.insert(hit.path.as_str());
+            *per_path.entry(hit.path.as_str()).or_insert(0) += 1;
             chars += size;
             selected.push(*hit);
         }
@@ -108,6 +168,49 @@ mod tests {
             ["top", "other source", "third source"]
         );
         assert_eq!(selected[0].first_line, 1);
+    }
+
+    #[test]
+    fn brief_groups_by_folder_and_file_best_first_with_two_passages_per_file() {
+        let hits = vec![
+            hit("/p/a/one.txt", 9, "one late", 0.80),
+            hit("/p/b/two.txt", 3, "two top", 0.99),
+            hit("/p/a/one.txt", 2, "one early", 0.95),
+            hit("/p/a/one.txt", 5, "one third", 0.94),
+            hit("/p/a/three.txt", 1, "three", 0.90),
+            hit("/q/four.txt", 1, "four", 0.85),
+        ];
+        let brief = super::brief(&hits);
+        let shape: Vec<(&str, Vec<(&str, Vec<&str>)>)> = brief
+            .iter()
+            .map(|f| (f.folder, f.files.iter().map(|x| (x.path, x.passages.iter().map(|p| p.excerpt.as_str()).collect())).collect()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("/p/b", vec![("/p/b/two.txt", vec!["two top"])]),
+                // one.txt: 0.95 and 0.94 kept (two per file), 0.80 left out; passages in reading order
+                ("/p/a", vec![("/p/a/one.txt", vec!["one early", "one third"]), ("/p/a/three.txt", vec!["three"])]),
+                ("/q", vec![("/q/four.txt", vec!["four"])]),
+            ]
+        );
+    }
+
+    #[test]
+    fn brief_caps_passages_and_characters_and_never_cuts_a_quote() {
+        let many: Vec<SemanticHit> = (0..10).map(|i| hit(&format!("/d/f{i}.txt"), 1, &format!("short {i}"), 1.0 - i as f32 / 100.0)).collect();
+        let n: usize = super::brief(&many).iter().flat_map(|f| &f.files).map(|f| f.passages.len()).sum();
+        assert_eq!(n, 6);
+        let big = "y".repeat(3_000);
+        let hits = vec![hit("/d/a.txt", 1, &big, 1.0), hit("/d/b.txt", 1, &big.replace('y', "z"), 0.9), hit("/d/c.txt", 1, "tiny", 0.8)];
+        let kept: Vec<&str> = super::brief(&hits).iter().flat_map(|f| &f.files).flat_map(|f| &f.passages).map(|p| p.path.as_str()).collect();
+        assert_eq!(kept, ["/d/a.txt", "/d/c.txt"], "the second 3,000-character quote would pass 4,800 and is skipped whole");
+    }
+
+    #[test]
+    fn the_short_list_is_unchanged_by_the_brief_limits() {
+        let hits: Vec<SemanticHit> = (0..5).map(|i| hit("/d/same.txt", i + 1, &format!("p{i}"), 1.0 - i as f32 / 100.0)).collect();
+        assert_eq!(select_evidence(&hits).len(), 3, "short list: three passages even from one file");
     }
 
     #[test]

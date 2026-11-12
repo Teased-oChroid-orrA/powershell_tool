@@ -3148,14 +3148,18 @@ mod snapshot_tests {
         };
         let _guard = headless_guard();
         let data = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(data.path().join("design")).unwrap();
+        std::fs::create_dir_all(data.path().join("reports")).unwrap();
         semantic_fixture(
             data.path(),
             &[
                 (
-                    "torque.txt",
+                    "design/torque.txt",
                     "Applied torque causes torsional stress in the shaft.",
                 ),
-                ("temperature.txt", "The shaft temperature limit is 120 C."),
+                ("design/limits.txt", "Shaft torque must stay under the rated torsional limit."),
+                ("reports/temperature.txt", "The shaft temperature limit is 120 C."),
+                ("reports/test-17.txt", "Torque on the shaft was raised until torsional shear stress appeared."),
             ],
         );
         let shoot = |session: &SearchSession, name: &str, dark: bool, open: Option<&str>| {

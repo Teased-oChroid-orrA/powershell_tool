@@ -738,7 +738,7 @@ impl Gui {
         out: &mut Vec<Outcome>,
         hint: &mut Option<String>,
     ) {
-        let height = (ui.available_height() * 0.38).clamp(110.0, 340.0);
+        let height = (ui.available_height() * 0.38).clamp(240.0, 420.0);
         egui::Frame::new()
             .fill(p.panel)
             .stroke(Stroke::new(1.0, p.line))

@@ -1920,22 +1920,33 @@ pub(super) fn insight(s: &SearchSession) -> Option<DocInsight> {
                 "Excerpts quoted from your files. Check each source in context.",
                 Tone::Dim,
             ));
-            for hit in search_core::evidence::select_evidence(hits) {
-                let i = hits
-                    .iter()
-                    .position(|candidate| std::ptr::eq(candidate, hit))
-                    .unwrap_or(0);
-                items.push(DockItem::row(
-                    format!(
-                        "{} · {:.0}% similar",
-                        semantic_citation(hit),
-                        hit.similarity * 100.0
-                    ),
-                    Tone::Normal,
-                    Some(act(SearchAct::OpenSemantic(i))),
-                    false,
+            let brief = search_core::evidence::brief(hits);
+            let (files, passages) = brief.iter().fold((0, 0), |(f, p), folder| {
+                (f + folder.files.len(), p + folder.files.iter().map(|file| file.passages.len()).sum::<usize>())
+            });
+            if files > 1 {
+                items.push(DockItem::text(
+                    format!("{passages} passages from {files} files in {} folder{}", brief.len(), if brief.len() == 1 { "" } else { "s" }),
+                    Tone::Dim,
                 ));
-                items.push(DockItem::text(plain(&hit.excerpt), Tone::Dim));
+            }
+            for folder in &brief {
+                if brief.len() > 1 {
+                    items.push(DockItem::text(plain(folder.folder), Tone::Dim));
+                }
+                for hit in folder.files.iter().flat_map(|file| file.passages.iter().copied()) {
+                    let i = hits
+                        .iter()
+                        .position(|candidate| std::ptr::eq(candidate, hit))
+                        .unwrap_or(0);
+                    items.push(DockItem::row(
+                        format!("{} · {:.0}% similar", semantic_citation(hit), hit.similarity * 100.0),
+                        Tone::Normal,
+                        Some(act(SearchAct::OpenSemantic(i))),
+                        false,
+                    ));
+                    items.push(DockItem::text(plain(&hit.excerpt), Tone::Dim));
+                }
             }
             if hits.is_empty() {
                 items.push(DockItem::text(
