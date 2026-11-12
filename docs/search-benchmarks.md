@@ -572,3 +572,22 @@ Findings (all numbers above, wins and losses):
 - Full-index control: the 100% step reproduces the documented default (Cranfield 0.3988 / 0.8020, SciFact 0.7518 / 0.9700, MS MARCO 0.6670 / 1.0000, TREC-COVID 0.4121 / 0.5520). NFCorpus gives 0.3836 where the 2026-11-08 table has 0.3844; the cause of the 0.0008 was not investigated.
 - Not measured: a priority order correlated with relevance (needs a corpus with folders and extension classes and labelled queries; the cross-folder set of the audit's plan), query latency during enrichment, Windows.
 - Ranking defaults and stored data are unchanged; nothing here changes what the full index returns. Policy and counters: `search-core/src/embed_policy.rs`, `native_index::build_or_update_corpus_index_lazy_send`, `enrich_semantic_index_send`.
+
+## Semantic index at scale (2026-11-11, P2-1)
+
+Probe: `search-core/examples/semantic_scale.rs` (`cargo run -p search-core --release --features semantic-search --example semantic_scale -- <out-dir> <folder>...`). One real semantic index built through the product path (`index_document`, MiniLM, hybrid query) from the distinct `title + text` of Cranfield, SciFact, NFCorpus, MS MARCO and TREC-COVID (17,161 documents, 35,318 chunks, about 1 chunk per document), on the loaded 16 GB Mac; queries are the first 20 of each set (100). Measured at growing sizes; the query time includes the query embedding (about 8 to 20 ms).
+
+| chunks | embed+store, chunks/s (window) | db MB | RSS MB | first query after a write (snapshot build) | steady query |
+|---|---|---|---|---|---|
+| 2,000 | 16.5 | 8 | 298 | 232 ms | 10.4 ms |
+| 5,000 | 17.4 | 19 | 367 | 450 ms | 10.7 ms |
+| 10,001 | 17.5 | 38 | 304 | 946 ms | 13.1 ms |
+| 20,001 | 17.9 | 76 | 327 | 1,552 ms | 13.3 ms |
+| 35,000 | 25.2 | 127 | 272 | 3,497 ms | 23.5 ms |
+
+Whole run: 1,746 s for 35,318 chunks, 20.2 chunks/s (the rate varied with other load on the machine; the last window was faster). Reading:
+- Embedding is the cost that scales: at 17 to 25 chunks/s, 100,000 chunks take 1.1 to 1.6 hours and the 250,000-chunk snapshot limit 2.9 to 4.1 hours. This is the case for P2-3 lazy embedding (exact search is complete long before).
+- The database is about 3.6 KB per chunk (vector, text, keyword data); 250,000 chunks would be about 0.9 GB.
+- The first query after any write rebuilds the in-memory snapshot, about 0.07 to 0.1 ms per chunk and growing a little faster than linear here; extrapolated (not measured) about 20 s at 250,000 chunks. Every watcher update or enrichment pass that writes invalidates it, so lazy passes pay it once per pass. Steady queries stay near the embedding cost; the ANN probe measured the dense scan itself at 36 to 41 ms for 250,000 chunks.
+- RSS stayed under 370 MB through 35,000 chunks (the process also holds the model); snapshot memory is about 1.5 KB of vector per chunk plus postings, so 250,000 chunks is about 400 MB plus postings, not measured here.
+- Not measured: anything above 35,318 chunks (only that much distinct real text is on this machine), the streaming path above the 250,000 limit (the limit is private to `SemanticIndex`), startup time, Windows.
