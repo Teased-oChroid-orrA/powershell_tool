@@ -58,6 +58,8 @@ pub(crate) fn extract_for_semantic_index(
     ocr_scanned_pdfs: bool,
 ) -> Result<SemanticExtraction, ExtractLinesError> {
     if extension.eq_ignore_ascii_case(".pdf") {
+        // Stream offsets (origins) and the page map must refer to the same bytes.
+        let bytes = &*crate::pdf_decrypt::open_with_empty_password(bytes);
         let extracted =
             extract_pdf_lines_with_origins(bytes, pdf_timeout_seconds, None, ocr_scanned_pdfs);
         let lines = extracted.lines.ok_or(ExtractLinesError::Failed)?;
@@ -1275,6 +1277,13 @@ fn find_stream_blocks_with_offsets(raw: &str) -> impl Iterator<Item = (&str, &st
             .map(|(idx, _)| idx)
             .unwrap_or(0)
             .max(anchor);
+        // The window can reach back into the previous object. Word writes the
+        // page object (`/ProcSet [/PDF /Text /ImageB ...]`) right before its
+        // content stream, and `/Image` in that text made `skip_marker_re`
+        // discard every page. A header starts at its own `obj` keyword.
+        let header_start = raw[header_start..stream_abs]
+            .rfind("obj")
+            .map_or(header_start, |at| header_start + at + "obj".len());
         let header = &raw[header_start..stream_abs];
         let source_body_start = source_chars + raw[source_cursor..body_start].chars().count();
 
@@ -1815,6 +1824,7 @@ fn extract_pdf_lines_capture(
     ocr_scanned_pdfs: bool,
     collect_origins: bool,
 ) -> PdfExtraction {
+    let bytes = &*crate::pdf_decrypt::open_with_empty_password(bytes);
     let raw = decode_latin1(bytes);
 
     let mut lines: Vec<String> = Vec::new();
@@ -2478,6 +2488,25 @@ mod tests {
         assert_same_blocks(&format!("{padding_with_high_byte} stream\nbody endstream"));
     }
 
+    /// Bodies are identical to the original regex's; a header is the same
+    /// 400-character window cut to start after its own `obj` keyword (it used
+    /// to carry the previous object's text, see `find_stream_blocks_with_offsets`).
+    fn assert_same_blocks_but_headers_start_at_their_obj(old: &[(&str, &str)], new: &[(&str, &str)], what: &str) {
+        for (i, ((old_header, old_body), (new_header, new_body))) in old.iter().zip(new).enumerate() {
+            assert_eq!(old_body, new_body, "body {i} of {what}");
+            assert!(old_header.ends_with(new_header), "header {i} of {what}");
+            assert!(!new_header.contains("obj"), "header {i} of {what} still spans objects");
+        }
+    }
+
+    #[test]
+    fn a_content_stream_after_a_procset_page_object_is_not_taken_for_an_image() {
+        // Word's layout: the page object lists /ImageB in /ProcSet, then the content stream.
+        let pdf = b"%PDF-1.7\n3 0 obj\n<</Type/Page/Resources<</ProcSet[/PDF/Text/ImageB/ImageC/ImageI]>>/Contents 4 0 R>>\nendobj\n4 0 obj\n<</Length 40>>\nstream\nBT /F1 12 Tf 72 700 Td (Word text survives) Tj ET\nendstream\nendobj\n";
+        let (lines, _) = extract_pdf_lines(pdf, 30, None, false);
+        assert_eq!(lines.unwrap_or_default(), vec!["Word text survives".to_string()]);
+    }
+
     #[test]
     fn find_stream_blocks_matches_the_original_regex_on_real_pdf_fixtures() {
         let fixtures_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/test-data");
@@ -2494,10 +2523,7 @@ mod tests {
             let old = old_regex_blocks(&raw);
             let new: Vec<(&str, &str)> = find_stream_blocks(&raw).collect();
             assert_eq!(old.len(), new.len(), "block count must match for {path}");
-            assert_eq!(
-                old, new,
-                "blocks must be byte-for-byte identical for {path}"
-            );
+            assert_same_blocks_but_headers_start_at_their_obj(&old, &new, &path);
         }
     }
 
@@ -2527,10 +2553,7 @@ mod tests {
             new.len(),
             "block count must match for xlarge-scanned.pdf"
         );
-        assert_eq!(
-            old, new,
-            "blocks must be byte-for-byte identical for xlarge-scanned.pdf"
-        );
+        assert_same_blocks_but_headers_start_at_their_obj(&old, &new, "xlarge-scanned.pdf");
     }
 
     /// `xlarge-scanned.pdf` is a real, legitimately-sourced ~38.6MB PDF

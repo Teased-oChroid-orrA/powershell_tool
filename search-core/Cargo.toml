@@ -19,6 +19,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 regex = "1"
+# Decrypts owner-password-only PDFs (empty user password: RC4 40/128, AES-128,
+# AES-256) so the byte-scanning extractor sees plain streams; see pdf_decrypt.rs.
+# Measured: 31 of 80 KG-RAG PDFs are such files and extracted to nothing without it.
+lopdf = { version = "0.47", default-features = false }
 # Rust's `regex` crate has no lookaround (no backtracking, by design), but
 # whole-word matching's boundary check needs it (see matching.rs's
 # `whole_word_pattern` doc comment). fancy-regex 0.19 verified by real

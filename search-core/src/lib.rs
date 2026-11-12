@@ -32,6 +32,7 @@ pub mod neural_search;
 pub mod ocr;
 pub mod orchestrator;
 pub mod ordering;
+mod pdf_decrypt;
 pub mod regex_literals;
 #[cfg(feature = "semantic-search")]
 mod pdf_page_map;
