@@ -248,7 +248,7 @@ pub fn version_parts(name: &str) -> Option<(String, String, Vec<String>)> {
     (!base.is_empty()).then_some((base, ext, tokens))
 }
 
-fn is_status_word(token: &str) -> bool {
+pub(crate) fn is_status_word(token: &str) -> bool {
     ["draft", "final", "old", "new", "backup", "bak", "latest"].iter().any(|w| token.starts_with(w))
 }
 
