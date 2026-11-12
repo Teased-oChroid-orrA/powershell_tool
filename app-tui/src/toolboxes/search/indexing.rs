@@ -291,6 +291,13 @@ pub fn catalogued_folders() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Why `path` relates to other indexed files (identical copies, versions, shared entities), from the catalog's
+/// stored edges. Empty when there is no catalog or no edge. Tests never read the user's real catalog.
+pub fn related_reasons(path: &str) -> Vec<search_core::catalog_edges::Reason> {
+    let Some(catalog) = catalog_path().filter(|p| !cfg!(test) && p.exists()) else { return Vec::new() };
+    search_core::catalog::Catalog::open(&catalog).and_then(|c| c.reasons_for(path)).unwrap_or_default()
+}
+
 /// Resolves the on-disk index directory for one root, mirroring
 /// `app-egui/src/search.rs::resolve_index_dir` exactly: `SearchFolder`
 /// delegates to `search_core::native_index::index_directory` (the index
@@ -932,6 +939,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "same words\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), "same words\n").unwrap();
+        std::fs::write(dir.path().join("spec_v1.txt"), "first\n").unwrap();
+        std::fs::write(dir.path().join("spec_v2.txt"), "second\n").unwrap();
         let root = dir.path().to_string_lossy().into_owned();
         let settings = SearchSettings { search_path: root.clone(), ..Default::default() };
         let index_dir = index_directory(IndexLocation::SearchFolder, &root, "");
@@ -944,6 +953,11 @@ mod tests {
         let a = c.files().unwrap().into_iter().find(|f| f.path.ends_with("a.txt")).unwrap().path;
         let facts = c.facts_for(&a).unwrap();
         assert!(facts.iter().any(|e| e.kind == "FILE_IN_FOLDER"), "{facts:?}");
+        // The reasons are keyed by the same path the file list (and so a result row) uses.
+        let v1 = c.files().unwrap().into_iter().find(|f| f.path.ends_with("spec_v1.txt")).unwrap().path;
+        let reasons = c.reasons_for(&v1).unwrap();
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(reasons[0].text.contains("spec_v2.txt") && !reasons[0].inferred, "{reasons:?}");
     }
 
     #[tokio::test]

@@ -1231,6 +1231,10 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
     }
     let preview = s.preview.as_ref().filter(|p| p.path == r.full_name);
     let text = preview.and_then(|p| p.text.clone());
+    if let Some(related) = preview.map(|p| &p.related).filter(|r| !r.is_empty()) {
+        let lines: Vec<String> = related.iter().map(|r| if r.inferred { format!("{} (inferred)", r.text) } else { r.text.clone() }).collect();
+        notes.push(DocNote::new("Related files", lines.join("\n")));
+    }
     let empty = preview.map_or("Loading the full document...".to_string(), |p| {
         p.status.clone()
     });

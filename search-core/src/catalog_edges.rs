@@ -501,6 +501,75 @@ impl Catalog {
     }
 }
 
+/// Weakest statistical edge worth showing a reader (an entity in at most three files, or several shared).
+pub const EXPLAIN_MIN_CONFIDENCE: f64 = 0.5;
+const EXPLAIN_PER_KIND: usize = 3;
+
+/// One sentence of why a file relates to another, backed by one stored edge. `inferred` edges are statistical
+/// (pattern matches, not verified) and must be shown as such; the rest are facts about names or content hashes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reason {
+    /// The other end of the edge.
+    pub other: String,
+    pub text: String,
+    pub inferred: bool,
+}
+
+/// The other end of `edge` as seen from `path`.
+fn other_end<'a>(edge: &'a StoredEdge, path: &str) -> &'a str {
+    if edge.src == path { &edge.dst } else { &edge.src }
+}
+
+/// Reasons for `path` from its stored edges: duplicates and versions (facts) first, then shared entities
+/// (inferred, at least [`EXPLAIN_MIN_CONFIDENCE`]). Folder edges are skipped (every file has one). At most
+/// three per kind, best first, plus a count of the rest. Only reads the edges' own evidence; no text is generated
+/// beyond naming the other file and what the evidence says.
+pub fn explain(path: &str, edges: &[StoredEdge]) -> Vec<Reason> {
+    let mut out = Vec::new();
+    let kinds = [("DUPLICATE_OF", false), ("VERSION_OF", false), ("SAME_ENTITY", true)];
+    for (kind, inferred) in kinds {
+        let mut of_kind: Vec<&StoredEdge> = edges
+            .iter()
+            .filter(|e| e.kind == kind && (e.src == path || e.dst == path))
+            .filter(|e| !inferred || e.confidence >= EXPLAIN_MIN_CONFIDENCE)
+            .collect();
+        of_kind.sort_by(|a, b| b.confidence.total_cmp(&a.confidence).then_with(|| other_end(a, path).cmp(other_end(b, path))));
+        for edge in of_kind.iter().take(EXPLAIN_PER_KIND) {
+            let other = other_end(edge, path);
+            let name = file_name(other);
+            let text = match kind {
+                "DUPLICATE_OF" => format!("Identical text to {name}"),
+                "VERSION_OF" => format!("Another version of the same document: {name}"),
+                _ => {
+                    let shared = edge.evidence["shared_count"].as_u64().unwrap_or(1);
+                    let first = edge.evidence["shared"][0]["src_text"].as_str().unwrap_or("");
+                    let first = if edge.src == path { first } else { edge.evidence["shared"][0]["dst_text"].as_str().unwrap_or(first) };
+                    let e = if shared == 1 { "entity" } else { "entities" };
+                    if first.is_empty() { format!("Shares {shared} {e} with {name}") } else { format!("Shares {shared} {e} with {name}, e.g. {first}") }
+                }
+            };
+            out.push(Reason { other: other.to_string(), text, inferred });
+        }
+        if of_kind.len() > EXPLAIN_PER_KIND {
+            let more = of_kind.len() - EXPLAIN_PER_KIND;
+            let what = match kind {
+                "DUPLICATE_OF" => "identical copies",
+                "VERSION_OF" => "versions",
+                _ => "files sharing entities",
+            };
+            out.push(Reason { other: String::new(), text: format!("and {more} more {what}"), inferred });
+        }
+    }
+    out
+}
+
+impl Catalog {
+    /// [`explain`] for `path` from the stored edges.
+    pub fn reasons_for(&self, path: &str) -> rusqlite::Result<Vec<Reason>> {
+        Ok(explain(path, &self.edges_for(path)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,6 +622,36 @@ mod tests {
         assert_eq!((&same.evidence["shared"][0]["src_line"], &same.evidence["shared"][0]["dst_line"]), (&json!(9), &json!(3)));
         // Different folders or different stems never form a version pair.
         assert_eq!(edges.iter().filter(|e| e.kind == EdgeType::VersionOf).count(), 1);
+    }
+
+    #[test]
+    fn reasons_name_the_other_file_label_inference_and_skip_folders_and_weak_edges() {
+        let stored = |src: &str, dst: &str, kind: &str, confidence: f64, evidence: Value, class: &str| StoredEdge {
+            src: src.into(), dst: dst.into(), kind: kind.into(), confidence, evidence, class: class.into(), created: 0, source_version: String::new(),
+        };
+        let edges = vec![
+            stored("/d/a.txt", "/d", "FILE_IN_FOLDER", 1.0, json!({"folder": "/d"}), "metadata"),
+            stored("/d/b.txt", "/d/a.txt", "DUPLICATE_OF", 1.0, json!({}), "verified"),
+            stored("/d/a.txt", "/d/spec v2.txt", "VERSION_OF", 0.9, json!({}), "metadata"),
+            stored("/d/a.txt", "/d/c.txt", "SAME_ENTITY", 0.9, json!({"shared_count": 2, "shared": [{"src_text": "AN3-5A", "dst_text": "an3-5a"}]}), "statistical"),
+            stored("/d/a.txt", "/d/weak.txt", "SAME_ENTITY", 0.2, json!({"shared_count": 1, "shared": []}), "statistical"),
+            stored("/x/y.txt", "/x/z.txt", "DUPLICATE_OF", 1.0, json!({}), "verified"),
+        ];
+        let got = explain("/d/a.txt", &edges);
+        let texts: Vec<(&str, bool)> = got.iter().map(|r| (r.text.as_str(), r.inferred)).collect();
+        assert_eq!(texts, [
+            ("Identical text to b.txt", false),
+            ("Another version of the same document: spec v2.txt", false),
+            ("Shares 2 entities with c.txt, e.g. AN3-5A", true),
+        ]);
+        // Seen from the other end of an entity edge, the other file's own spelling is quoted.
+        let dst_side = explain("/d/c.txt", &edges);
+        assert_eq!(dst_side[0].text, "Shares 2 entities with a.txt, e.g. an3-5a");
+        // More than three of a kind are counted, not listed.
+        let many: Vec<StoredEdge> = (0..5).map(|i| stored("/d/a.txt", &format!("/d/c{i}.txt"), "DUPLICATE_OF", 1.0, json!({}), "verified")).collect();
+        let got = explain("/d/a.txt", &many);
+        assert_eq!(got.len(), 4);
+        assert_eq!(got[3].text, "and 2 more identical copies");
     }
 
     #[test]

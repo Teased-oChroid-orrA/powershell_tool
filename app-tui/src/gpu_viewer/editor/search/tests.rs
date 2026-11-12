@@ -421,6 +421,7 @@ fn neural_entity_suggestions_arrive_for_the_current_preview_without_changing_exa
             marks: Default::default(),
         }),
         status: String::new(),
+        related: Vec::new(),
         entities: None,
     });
     let paths =
@@ -476,6 +477,7 @@ fn extractive_summary_is_cited_in_index_panel_and_bound_to_selected_file() {
             marks: Default::default(),
         }),
         status: String::new(),
+        related: Vec::new(),
         entities: None,
     });
     let key = SummaryKey {
@@ -534,6 +536,7 @@ fn cancelled_summary_keeps_session_busy_until_worker_completes() {
             marks: Default::default(),
         }),
         status: String::new(),
+        related: Vec::new(),
         entities: None,
     });
     let key = SummaryKey {
@@ -1002,6 +1005,7 @@ fn semantic_search_shows_cited_hits_separately_from_exact_results() {
             marks: std::sync::Arc::from(Vec::<(usize, usize)>::new()),
         }),
         status: String::new(),
+        related: Vec::new(),
         #[cfg(feature = "neural-search")]
         entities: None,
     });
@@ -2089,4 +2093,30 @@ fn keep_index_current_updates_the_index_for_changed_files_only() {
     assert_eq!(ids, ["a.txt", "c.txt"], "edit kept, new added, removed gone");
     let hits = search_core::native_index::search(&engine, "charlie", 5).unwrap();
     assert_eq!(hits.len(), 1);
+}
+
+#[test]
+fn related_files_note_lists_reasons_and_marks_the_inferred_ones() {
+    use search_core::catalog_edges::Reason;
+    let mut s = with_results();
+    s.selected = Some(0);
+    let path = s.st.run.results[0].full_name.clone();
+    s.preview = Some(Preview {
+        generation: s.preview_generation,
+        path,
+        text: None,
+        status: String::new(),
+        related: vec![
+            Reason { other: "/w/a/copy.pdf".into(), text: "Identical text to copy.pdf".into(), inferred: false },
+            Reason { other: "/w/b/x.pdf".into(), text: "Shares 2 entities with x.pdf, e.g. AN3-5A".into(), inferred: true },
+        ],
+        #[cfg(feature = "neural-search")]
+        entities: None,
+    });
+    let detail = view::document(&s).detail.unwrap();
+    let note = detail.notes.iter().find(|n| n.text == "Related files").expect("related note");
+    assert_eq!(note.hint, "Identical text to copy.pdf\nShares 2 entities with x.pdf, e.g. AN3-5A (inferred)");
+    s.preview.as_mut().unwrap().related.clear();
+    let detail = view::document(&s).detail.unwrap();
+    assert!(detail.notes.iter().all(|n| n.text != "Related files"));
 }

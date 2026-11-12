@@ -338,6 +338,8 @@ struct Preview {
     path: String,
     text: Option<crate::gpu_viewer::ui::DocText>,
     status: String,
+    /// Why this file relates to others, from the catalog's stored edges (read once when the preview opens).
+    related: Vec<search_core::catalog_edges::Reason>,
     #[cfg(feature = "neural-search")]
     entities: Option<Result<search_core::entities::EntityExtraction, String>>,
 }
@@ -1884,6 +1886,7 @@ impl SearchSession {
             let entity_text = text.content.to_string();
             self.preview = Some(Preview {
                 generation,
+                related: crate::toolboxes::search::indexing::related_reasons(&path),
                 path,
                 text: Some(text),
                 status: String::new(),
@@ -1896,6 +1899,7 @@ impl SearchSession {
         }
         self.preview = Some(Preview {
             generation,
+            related: crate::toolboxes::search::indexing::related_reasons(&path),
             path: path.clone(),
             text: None,
             status: "Loading the full document...".into(),
