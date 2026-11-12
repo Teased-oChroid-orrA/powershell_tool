@@ -734,6 +734,40 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_pdfs_keep_page_provenance_after_decryption() {
+        for name in ["rc4-40", "rc4-128", "aes-128", "aes-256"] {
+            let path = format!("{}/test-data/encrypted-{name}.pdf", env!("CARGO_MANIFEST_DIR"));
+            let bytes = std::fs::read(path).unwrap();
+            let extracted =
+                crate::extraction::extract_for_semantic_index(".pdf", &bytes, 10, false).unwrap();
+            let pages = extracted.pages.unwrap_or_else(|| panic!("{name}: no page map"));
+            assert_eq!(pages.len(), extracted.lines.len(), "{name}");
+            assert!(pages.iter().all(|p| *p == NonZeroU32::new(1)), "{name}: {pages:?}");
+        }
+    }
+
+    /// Measurement, not a gate: `PDF_DIR=<folder of pdfs> cargo test -p search-core --features semantic-search
+    /// -- --ignored page_map_coverage --nocapture` prints, per encrypted file, how many lines got a page number.
+    #[test]
+    #[ignore]
+    fn page_map_coverage_on_encrypted_pdfs_in_a_folder() {
+        let Ok(dir) = std::env::var("PDF_DIR") else { return };
+        let mut stack = vec![std::path::PathBuf::from(dir)];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() { stack.push(p); continue }
+                if p.extension().is_none_or(|x| x != "pdf") { continue }
+                let bytes = std::fs::read(&p).unwrap();
+                if !bytes.windows(8).any(|w| w == b"/Encrypt") { continue }
+                let Ok(x) = crate::extraction::extract_for_semantic_index(".pdf", &bytes, 120, false) else { continue };
+                let n = x.pages.as_ref().map(|v| v.iter().filter(|p| p.is_some()).count());
+                println!("{} lines={} paged={:?}", p.file_name().unwrap().to_string_lossy(), x.lines.len(), n);
+            }
+        }
+    }
+
+    #[test]
     fn real_multipage_pdf_keeps_line_page_alignment() {
         let pdf = include_bytes!("../benches/data/medium.pdf");
         let extracted = crate::extraction::extract_for_semantic_index(".pdf", pdf, 30, false)
