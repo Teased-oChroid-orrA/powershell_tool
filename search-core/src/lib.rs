@@ -33,6 +33,8 @@ pub mod ocr;
 pub mod orchestrator;
 pub mod ordering;
 mod pdf_decrypt;
+#[cfg(feature = "pdf-yolow")]
+mod pdf_yolow;
 pub mod regex_literals;
 #[cfg(feature = "semantic-search")]
 mod pdf_page_map;

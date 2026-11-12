@@ -635,3 +635,14 @@ Causes found in our extractor: 31 files carry `/Encrypt` with an empty user pass
 OCR: 8 digital pages sets (2-3 pages each, 200 dpi) turned into image-only JPEG PDFs, clean and noisy (blur, rotation, speckle); ground truth is the pages' own text layer. Recall / precision, clean | noisy: ours `ocrs` 0.12.2 0.965/0.970 | 0.953/0.888, 72 s | 89 s, 1 GB; `ocrs` 0.14.0 (same models) 0.966/0.966 | 0.957/0.805, 89 s | 116 s, 1 GB; `yolowpdf-ocr` small PP-OCRv6 0.974/0.987 | 0.917/0.956, 121 s | 111 s, 0.4 GB; tesseract 0.986/0.981 | 0.973/0.959, 37 s | 35 s, 76 MB. The corpus itself has one scan (CCITT, not decoded by our OCR path).
 
 Decisions: keep `ocrs` 0.12.2 (0.14 adds nothing); do not adopt `yolowpdf-ocr` (no gain on noisy scans, slower); reject docling (Python and torch, 2 GB, 400x slower) and tesseract (C++ runtime) for shipping; `yolowpdf` is the candidate if text-layer recall must reach 0.97 (pure Rust, MIT, 0.1.2 is days old, self-reported benchmarks only) and needs a flagged trial with the current path as fallback. Not measured: Windows, real scans, CCITT/JPEG2000 decoding, page numbers on decrypted files.
+
+### Flagged `yolowpdf` trial (same day)
+
+Built as the `pdf-yolow` cargo feature of `search-core` (off by default) plus a runtime opt-in, `SEARCH_PDF_YOLOW=1` (`search-core/src/pdf_yolow.rs`, hooked at the top of `extract_pdf_lines_capture`). `yolowpdf` runs first, under `catch_unwind`, and its Markdown is cleaned to plain lines. The byte scanner (with OCR) takes over when the backend is off, errors, panics, returns no text, or calls the document scanned. It is skipped when page provenance is requested (semantic indexing), so page numbers and the semantic index are unchanged. Measured through `extract_pdf_lines` (release, same 79 files and scorer as above):
+
+| Path | Word recall | Min file recall | Phrase on one line | Empty | Total time | Peak RSS |
+|---|---|---|---|---|---|---|
+| flag off (scanner) | 0.866 | 0.000 | 0.51 | 1 | 4.7 s | 31 MB |
+| flag on (`yolowpdf`, scanner fallback) | 0.972 | 0.855 | 0.91 | 0 | 9.6 s | 86 MB |
+
+The flag removes the CID-font failures (worst file 0.855 against 0), at roughly twice the time and 2.8x the memory. Not adopted as default: 0.1.2 is days old with self-reported benchmarks; no Windows run; scanned and mixed documents (some pages scanned) still go to the scanner only when the whole document is called scanned, so scanned pages inside a mostly-text document get no OCR on the flagged path; no page numbers on the flagged path. Next measurement before any default switch: Windows hosted run, and the mixed-document case.

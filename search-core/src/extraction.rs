@@ -1825,6 +1825,19 @@ fn extract_pdf_lines_capture(
     collect_origins: bool,
 ) -> PdfExtraction {
     let bytes = &*crate::pdf_decrypt::open_with_empty_password(bytes);
+    // Trial backend: only text-layer documents; scans, errors and empty
+    // results fall through to the scanner below (which also runs OCR).
+    #[cfg(feature = "pdf-yolow")]
+    if !collect_origins {
+        if let Some(lines) = crate::pdf_yolow::extract_lines(bytes) {
+            return PdfExtraction {
+                lines: Some(lines),
+                truncated: false,
+                ocr_used: false,
+                origins: None,
+            };
+        }
+    }
     let raw = decode_latin1(bytes);
 
     let mut lines: Vec<String> = Vec::new();

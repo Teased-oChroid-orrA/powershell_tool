@@ -23,6 +23,8 @@ regex = "1"
 # AES-256) so the byte-scanning extractor sees plain streams; see pdf_decrypt.rs.
 # Measured: 31 of 80 KG-RAG PDFs are such files and extracted to nothing without it.
 lopdf = { version = "0.47", default-features = false }
+# Trial text-layer backend (pure Rust, MIT) behind the off-by-default `pdf-yolow` feature; see pdf_yolow.rs.
+yolowpdf = { version = "0.1.2", optional = true }
 # Rust's `regex` crate has no lookaround (no backtracking, by design), but
 # whole-word matching's boundary check needs it (see matching.rs's
 # `whole_word_pattern` doc comment). fancy-regex 0.19 verified by real
@@ -129,6 +131,8 @@ image = { version = "0.25", optional = true, default-features = false, features 
 # rather than adding more image-format dependencies for formats not yet
 # seen in a real reported case.
 ocr = ["dep:ocrs", "dep:rten", "dep:image"]
+# Trial: yolowpdf text layer, used only when SEARCH_PDF_YOLOW=1; the byte scanner stays the fallback.
+pdf-yolow = ["dep:yolowpdf"]
 neural-search = ["dep:search-ml"]
 semantic-search = ["neural-search"]
 # Natural-language Find: rules (`nl_rules`) split a sentence into conditions and judge passages; no model.
