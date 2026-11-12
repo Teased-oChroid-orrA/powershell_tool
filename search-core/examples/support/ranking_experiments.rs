@@ -229,3 +229,60 @@ fn dedup_docs(ids: impl Iterator<Item = String>) -> Vec<String> {
     let mut seen = HashSet::new();
     ids.filter(|id| seen.insert(id.clone())).collect()
 }
+
+/// Context-aware ranking prior (P1-3, docs/search-benchmarks.md 2026-11-11). Query-time context only: the folder of
+/// each file and where the best files of the default ranking sit. Every chunk of a file gets
+/// `beta * m(folder)`, `m` = share of the top-`k` files (rank weight 1/(rank+1), normalised) that live in that folder,
+/// so the boost is capped at `beta` on the min-max fused scale (0..1). `flat` uses the real folders (the benchmark
+/// sets are one flat folder, so the boost is constant and the ranking cannot change); `rand20` assigns each file to
+/// one of 20 folders by hash of its id, a control that shows what the prior costs when folders carry no information.
+pub fn run_context(inputs: &Inputs) {
+    let config = LexicalConfig::default();
+    let fnv = |s: &str| s.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    let conditions: [(&str, Box<dyn Fn(&str) -> u64>); 2] = [
+        ("flat", Box::new(|p: &str| fnv(&Path::new(p).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()))),
+        ("rand20", Box::new(move |p: &str| fnv(&doc_id(p)) % 20)),
+    ];
+    let grid: Vec<(usize, f32)> = vec![(3, 0.02), (3, 0.05), (3, 0.10), (10, 0.05)];
+    // sums per (condition, grid index): nDCG, recall, queries worse than default, queries better
+    let mut sums = vec![[0.0f64; 4]; conditions.len() * grid.len()];
+    let (mut base_n, mut base_r) = (0.0, 0.0);
+    for (qid, text) in inputs.queries {
+        let gains = &inputs.qrels[qid];
+        let fs = inputs.index.rank_features(text, true).expect("features").expect("snapshot");
+        let (dense, bm25): (Vec<f32>, Vec<f32>) = fs.chunks.iter().map(|c| (c.dense, c.bm25)).unzip();
+        let base_scores = fuse(&minmax(&dense), &minmax(&bm25), config.weight);
+        let base = rank_docs(&fs, &base_scores);
+        let (bn, br) = (ndcg_at(&base, gains, 10), recall_at(&base, gains, 100));
+        base_n += bn;
+        base_r += br;
+        for (ci, (_, folder)) in conditions.iter().enumerate() {
+            let folders: Vec<u64> = fs.docs.iter().map(|p| folder(p)).collect();
+            for (gi, &(k, beta)) in grid.iter().enumerate() {
+                let mut mass: HashMap<u64, f32> = HashMap::new();
+                let weights: Vec<f32> = (0..k).map(|r| 1.0 / (r as f32 + 1.0)).collect();
+                let total: f32 = base.iter().take(k).zip(&weights).map(|(_, w)| w).sum();
+                let doc_index: HashMap<String, usize> = fs.docs.iter().enumerate().map(|(i, p)| (doc_id(p), i)).collect();
+                for (id, w) in base.iter().take(k).zip(&weights) {
+                    *mass.entry(folders[doc_index[id]]).or_default() += w / total;
+                }
+                let scores: Vec<f32> = fs.chunks.iter().zip(&base_scores).map(|(c, s)| s + beta * mass.get(&folders[c.doc as usize]).copied().unwrap_or(0.0)).collect();
+                let ranked = rank_docs(&fs, &scores);
+                let (n, r) = (ndcg_at(&ranked, gains, 10), recall_at(&ranked, gains, 100));
+                let slot = &mut sums[ci * grid.len() + gi];
+                slot[0] += n;
+                slot[1] += r;
+                slot[2] += (n < bn - 1e-9) as u8 as f64;
+                slot[3] += (n > bn + 1e-9) as u8 as f64;
+            }
+        }
+    }
+    let q = inputs.queries.len() as f64;
+    println!("{} ({} queries): default nDCG@10 {:.4} Recall@100 {:.4}", inputs.set, inputs.queries.len(), base_n / q, base_r / q);
+    for (ci, (name, _)) in conditions.iter().enumerate() {
+        for (gi, (k, beta)) in grid.iter().enumerate() {
+            let s = &sums[ci * grid.len() + gi];
+            println!("  ctx-{name}-k{k}-b{beta:.2}: nDCG@10 {:.4} ({:+.4}) Recall@100 {:.4} ({:+.4}) worse {} better {}", s[0] / q, (s[0] - base_n) / q, s[1] / q, (s[1] - base_r) / q, s[2], s[3]);
+        }
+    }
+}
