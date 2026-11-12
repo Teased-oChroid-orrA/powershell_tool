@@ -251,6 +251,21 @@ pub fn mode_label(mode: GroupMode, global_proximity: i32) -> String {
     }
 }
 
+/// A group's mode as the query preview and Run view name it: the mode label,
+/// plus `NEAR/n` when a filter in it is a word-distance query (not in regex mode).
+pub fn group_label(group: &ParsedGroup, config: &SearchToolConfig) -> String {
+    let mode = mode_label(effective_mode(group, config), config.proximity_lines);
+    let mut distances: Vec<usize> = Vec::new();
+    if !config.use_regex {
+        distances.extend(group.filters.iter().filter_map(|f| search_core::near::parse(f)).map(|q| q.distance));
+    }
+    match distances.as_slice() {
+        [] => mode,
+        [n] => format!("{mode}; NEAR: within {n} words, same line"),
+        _ => format!("{mode}; NEAR: word distance, same line"),
+    }
+}
+
 /// Group's mode with the global default filled in (for the summary line).
 pub fn effective_mode(group: &ParsedGroup, config: &SearchToolConfig) -> GroupMode {
     group
@@ -725,6 +740,20 @@ mod tests {
             parse_filter_groups("a[near 2]")[0].mode,
             Some(GroupMode::Match(MatchMode::Proximity, Some(2)))
         );
+    }
+
+    #[test]
+    fn group_label_names_near_queries_but_not_in_regex_mode() {
+        let mut config = SearchToolConfig { filters_text: "torque NEAR/5 bolt".to_string(), ..Default::default() };
+        let g = parse_filter_groups(&config.filters_text);
+        assert_eq!(group_label(&g[0], &config), "any line; NEAR: within 5 words, same line");
+        config.use_regex = true;
+        assert_eq!(group_label(&g[0], &config), "any line");
+        config.use_regex = false;
+        let plain = parse_filter_groups("torque, bolt [all]");
+        assert_eq!(group_label(&plain[0], &config), "all in file");
+        let g = parse_filter_groups("a NEAR/2 b, c NEAR/3 d");
+        assert_eq!(group_label(&g[0], &config), "any line; NEAR: word distance, same line");
     }
 
     #[test]

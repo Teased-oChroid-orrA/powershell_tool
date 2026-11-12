@@ -796,7 +796,7 @@ fn query_preview(config: &model::SearchToolConfig, exclude_visible: bool) -> Str
             format!(
                 "{} [{}]",
                 group.filters.join(", "),
-                model::mode_label(model::effective_mode(group, config), config.proximity_lines)
+                model::group_label(group, config)
             )
         };
         parts.push(format!("Find: {summary}"));
@@ -2034,6 +2034,7 @@ pub(super) fn find_help() -> DocHelp {
                 row("torque", "Lines that contain the word, also inside longer words (torqued). Turn on Whole word for the word alone.", Some("torque")),
                 row("bolt torque", "A phrase: the words together, in this order, with the spaces between them.", Some("bolt torque")),
                 row("bolt, torque", "Commas separate search terms. How they combine is the Match switch under the bar:", Some("bolt, torque")),
+                row("torque NEAR/5 bolt", "Both words on one line, at most 5 words apart, in either order (NEAR/1 = next to each other). Single words only; not with Regex.", Some("torque NEAR/5 bolt")),
                 row("Match: any line", "A file is listed when any line holds any of the terms.", None),
                 row("Match: all in file", "Every term must appear somewhere in the file.", None),
                 row("Match: within N lines", "Every term must appear within N lines of the others (set N in Options > Proximity lines).", None),
