@@ -675,11 +675,12 @@ impl Gui {
     ) {
         self.popover(ctx, &panel.label, anchor, 360.0, panel.progress, p, |gui, ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(match panel.label.as_str() { "Options" => "SEARCH PREFERENCES", "Index" => "LOCAL SEARCH INDEX", _ => "SEARCH OUTPUT" }).size(9.0).strong().color(p.accent));
+            ui.label(RichText::new(match panel.label.as_str() { "Options" => "SEARCH PREFERENCES", "Index" => "LOCAL SEARCH INDEX", "Projects" => "SUGGESTIONS", _ => "SEARCH OUTPUT" }).size(9.0).strong().color(p.accent));
             ui.heading(&panel.label);
             ui.add(egui::Label::new(RichText::new(match panel.label.as_str() {
                 "Options" => "Choose how Search matches content. Less common controls stay grouped below.",
                 "Index" => "Build a local index to speed repeat searches. Results still come from the same search engine.",
+                "Projects" => "Folders that look like one piece of work, found from your indexed folders.",
                 _ => "Choose where Search writes reports and exports.",
             }).small().color(p.dim)).wrap());
             ui.add_space(8.0);
@@ -718,7 +719,7 @@ impl Gui {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Changes apply to your next search").small().color(p.dim));
+                ui.label(RichText::new(if panel.label == "Projects" { "Nothing changes until you pick one" } else { "Changes apply to your next search" }).small().color(p.dim));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.add(egui::Button::new(RichText::new("Done").color(p.on_accent)).fill(p.accent).stroke(Stroke::NONE).corner_radius(CornerRadius::same(7))).clicked() {
                         gui.doc.open = None;

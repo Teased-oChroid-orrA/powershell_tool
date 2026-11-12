@@ -1503,7 +1503,7 @@ fn the_page_puts_its_options_in_bar_popovers_and_the_file_types_in_a_modal() {
     let mut s = SearchSession::in_memory();
     let doc = s.document().unwrap();
     let labels: Vec<&str> = doc.panels.iter().map(|p| p.label.as_str()).collect();
-    assert_eq!(labels, ["Options", "Report"]);
+    assert_eq!(labels, ["Options", "Report", "Projects"]);
     assert_eq!(doc.panels[0].badge.as_deref(), Some("index off"));
     let options: Vec<String> = doc.panels[0]
         .cards
@@ -1730,7 +1730,7 @@ fn the_page_has_only_options_and_report_panels_and_one_find_input() {
     let session = SearchSession::in_memory();
     let doc = view::document(&session);
     let labels: Vec<&str> = doc.panels.iter().map(|panel| panel.label.as_str()).collect();
-    assert_eq!(labels, ["Options", "Report"]);
+    assert_eq!(labels, ["Options", "Report", "Projects"]);
     assert!(doc.panels.iter().all(|panel| panel.inputs.iter().all(|input| input.id <= INPUT_OUTPUT)));
     assert!(doc.insight.is_none(), "nothing found yet");
 }
@@ -2157,4 +2157,73 @@ fn passages_from_several_files_are_briefed_by_folder() {
     let folder_a = dir.path().join("a").to_string_lossy().into_owned();
     let folder_b = dir.path().join("b").to_string_lossy().into_owned();
     assert!(texts.iter().any(|t| *t == folder_a) && texts.iter().any(|t| *t == folder_b), "{texts:?}");
+}
+
+fn two_projects() -> Result<Vec<search_core::catalog_projects::ProjectSuggestion>, String> {
+    let p = |folder: &str, files, linked, evidence: &[&str]| search_core::catalog_projects::ProjectSuggestion {
+        folder: folder.into(),
+        files,
+        linked,
+        cohesion: linked as f64 / files as f64,
+        evidence: evidence.iter().map(|e| e.to_string()).collect(),
+    };
+    Ok(vec![p("/w/work/alpha", 7, 7, &["QX-11-100", "3 versioned files"]), p("/w/old/beta", 5, 4, &[])])
+}
+
+#[test]
+fn project_suggestions_wait_for_a_click_and_only_a_click_sets_the_folder() {
+    let mut s = SearchSession::in_memory();
+    s.projects_source = two_projects;
+    s.st.config.search_path = "/w/other".into();
+    let lines = |s: &SearchSession| -> Vec<String> {
+        let doc = view::document(s);
+        let panel = doc.panels.iter().find(|p| p.label == "Projects").expect("Projects panel");
+        panel.cards[0]
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                DockItem::Line { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    // Nothing is looked up, and nothing offered, before the click.
+    assert!(lines(&s).iter().all(|l| !l.contains("alpha")));
+    s.act_search(SearchAct::FindProjects);
+    let started = Instant::now();
+    while s.projects.is_none() {
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        s.poll();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let shown = lines(&s);
+    assert!(shown.contains(&"alpha · in work · 7 of 7 files linked".to_string()), "{shown:?}");
+    assert!(shown.contains(&"Shared: QX-11-100, 3 versioned files".to_string()));
+    assert!(shown.contains(&"beta · in old · 4 of 5 files linked".to_string()));
+    assert_eq!(s.st.config.search_path, "/w/other", "suggestions never change the folder by themselves");
+    s.act_search(SearchAct::UseProject(1));
+    assert_eq!(s.st.config.search_path, "/w/old/beta");
+    s.act_search(SearchAct::UseProject(9));
+    assert_eq!(s.st.config.search_path, "/w/old/beta");
+    assert_eq!(s.status, "That project suggestion is no longer listed.");
+}
+
+#[test]
+fn project_suggestions_report_an_empty_catalog_and_errors_plainly() {
+    let mut s = SearchSession::in_memory();
+    s.projects_source = || Ok(Vec::new());
+    s.act_search(SearchAct::FindProjects);
+    while s.projects.is_none() {
+        s.poll();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(s.status, "No project stands out in the indexed folders yet.");
+    s.projects = None;
+    s.projects_source = || Err("catalog locked".into());
+    s.act_search(SearchAct::FindProjects);
+    while s.projects.is_none() {
+        s.poll();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(s.status, "Project suggestions unavailable: catalog locked");
 }

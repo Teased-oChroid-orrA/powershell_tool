@@ -440,3 +440,58 @@ fn precision_and_recall_on_a_labelled_set() {
     // Numbered names without a version token produce no edge.
     assert!(!by("VERSION_OF").iter().any(|(a, _)| a.contains("table_")));
 }
+
+/// Project discovery (#240 P3-2) on a labelled synthetic tree: 10 projects (two of them under one
+/// `old/` folder, each with a doc/ and a data/ subfolder), plus decoys. Prints precision and recall.
+#[test]
+fn project_discovery_precision_and_recall_on_a_labelled_tree() {
+    let mut env = Env::new();
+    let host = |env: &Env, name: &str, ids: &[String], seed: u64| {
+        let lines: Vec<String> = ids.iter().map(|id| format!("see P/N {id} for details")).collect();
+        env.write(name, &format!("{}\n{}", lines.join("\n"), body(seed)));
+    };
+    let mut truth: BTreeSet<String> = BTreeSet::new();
+    let mut seed = 10_000u64;
+    let places: Vec<String> = (0..8).map(|p| format!("work/pr{p}")).chain(["old/prx".to_string(), "old/pry".to_string()]).collect();
+    for (p, place) in places.iter().enumerate() {
+        truth.insert(env.path(place));
+        let ids: Vec<String> = (0..3).map(|k| format!("QX-{}{}-{}", p + 1, k + 1, 100 + p * 7 + k)).collect();
+        for k in 0..7usize {
+            let sub = if k % 2 == 0 { "doc" } else { "data" };
+            // Each file carries two of the project's three identifiers: a connected chain.
+            host(&env, &format!("{place}/{sub}/f{k}.txt"), &[ids[k % 3].clone(), ids[(k + 1) % 3].clone(), "ASTM A36".into()], seed);
+            seed += 1;
+        }
+    }
+    // Decoys: an inbox of unrelated files, a folder of one-off identifiers, and a reference folder whose
+    // files all cite one standard (a real cluster, but not a project: the expected false positive).
+    for k in 0..8u64 {
+        env.write(&format!("inbox/note{k}.txt"), &body(60_000 + k));
+    }
+    for k in 0..6usize {
+        host(&env, &format!("scraps/s{k}.txt"), &[format!("ZZ-{}-{}", 50 + k, 9 + k)], seed);
+        seed += 1;
+    }
+    for k in 0..6usize {
+        host(&env, &format!("refs/r{k}.txt"), &["MIL-STD-810G".to_string()], seed);
+        seed += 1;
+    }
+    env.refresh();
+    env.catalog.rebuild_edges().unwrap();
+
+    let got = env.catalog.project_suggestions().unwrap();
+    let suggested: BTreeSet<String> = got.iter().map(|s| s.folder.clone()).collect();
+    let hits = suggested.intersection(&truth).count();
+    let (precision, recall) = (hits as f64 / suggested.len() as f64, hits as f64 / truth.len() as f64);
+    eprintln!("project discovery: {} suggested, {hits} of {} true projects; precision {precision:.2}, recall {recall:.2}", suggested.len(), truth.len());
+    for s in &got {
+        eprintln!("  {} files={} linked={} cohesion={:.2} evidence={:?}", s.folder.replace(&env.path(""), ""), s.files, s.linked, s.cohesion, s.evidence);
+    }
+    // Never a subfolder of a project, a wrapper of two, a decoy without shared identifiers, or the root.
+    for bad in ["inbox", "scraps", "old", "work"] {
+        assert!(!suggested.contains(&env.path(bad)), "{bad} must not be suggested");
+    }
+    assert!(suggested.iter().all(|f| !f.ends_with("/doc") && !f.ends_with("/data")));
+    assert!(got.iter().all(|s| !s.evidence.is_empty()), "every suggestion carries evidence");
+    assert!(precision >= 0.8 && recall >= 0.8, "precision {precision} recall {recall}");
+}

@@ -3088,6 +3088,24 @@ mod snapshot_tests {
             Some("Report"),
             None,
         );
+        {
+            let mut projects = SearchSession::in_memory();
+            projects.projects_for_snapshot(|| {
+                let p = |folder: &str, files, linked, evidence: &[&str]| search_core::catalog_projects::ProjectSuggestion {
+                    folder: folder.into(),
+                    files,
+                    linked,
+                    cohesion: linked as f64 / files as f64,
+                    evidence: evidence.iter().map(|e| e.to_string()).collect(),
+                };
+                Ok(vec![
+                    p("/Work/Aircraft/Bracket-4410", 23, 21, &["P/N 4410-102", "ASTM A36", "5 versioned files"]),
+                    p("/Work/Aircraft/Lug-Study", 12, 9, &["AN3-5A", "MIL-HDBK-5J"]),
+                    p("/Archive/2024/Fixture-Redesign", 8, 5, &["3 versioned files"]),
+                ])
+            });
+            shoot_with(&projects, "search-projects", false, (1440, 900), Some("Projects"), None);
+        }
         shoot(&session, "search-results-dark", true, (1440, 900));
         shoot(&session, "search-results-light", false, (1440, 900));
         shoot(&session, "search-narrow", true, (860, 760));

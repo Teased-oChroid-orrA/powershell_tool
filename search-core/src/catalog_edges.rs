@@ -478,7 +478,7 @@ impl Catalog {
         self.query_edges("WHERE (src=?1 OR dst=?1) AND class='statistical' AND confidence>=?2", params![path, min_confidence])
     }
 
-    fn query_edges(&self, filter: &str, args: impl rusqlite::Params) -> rusqlite::Result<Vec<StoredEdge>> {
+    pub(crate) fn query_edges(&self, filter: &str, args: impl rusqlite::Params) -> rusqlite::Result<Vec<StoredEdge>> {
         let sql = format!(
             "SELECT src,dst,type,confidence,evidence_json,class,created,source_version FROM relationship {filter}
              ORDER BY type,confidence DESC,src,dst"

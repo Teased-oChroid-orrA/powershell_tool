@@ -36,6 +36,7 @@ use crate::notifications::NotificationQueue;
 use crate::toolboxes::search::{
     self as search, exec, model, persistence, settings_view, SearchToolState,
 };
+use search_core::catalog_projects::ProjectSuggestion;
 use search_core::models::FileSearchResult;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -110,6 +111,10 @@ pub enum SearchAct {
     OpenRelated(usize),
     #[cfg(feature = "semantic-search")]
     CompareRelated(usize),
+    /// Read the catalog for folders that look like projects (suggestions only; nothing is applied).
+    FindProjects,
+    /// Search only inside suggested project `.0` (sets the folder to search; the user's click is the only trigger).
+    UseProject(usize),
     CancelIndex,
     UpdateStaleIndex,
     DismissStale,
@@ -281,6 +286,13 @@ pub struct SearchSession {
     semantic_error: Option<String>,
     /// How the Find text is read (Auto picks from what was typed).
     find_as: find::FindAs,
+    /// Project suggestions read from the catalog on request (#240 P3-2): `None` until asked.
+    projects: Option<Result<Vec<ProjectSuggestion>, String>>,
+    projects_running: bool,
+    projects_tx: mpsc::UnboundedSender<Result<Vec<ProjectSuggestion>, String>>,
+    projects_rx: mpsc::UnboundedReceiver<Result<Vec<ProjectSuggestion>, String>>,
+    /// Where suggestions come from (the machine catalog; a test supplies its own).
+    projects_source: fn() -> Result<Vec<ProjectSuggestion>, String>,
     #[cfg(feature = "semantic-search")]
     related_tx: mpsc::UnboundedSender<RelatedSearchEvent>,
     #[cfg(feature = "semantic-search")]
@@ -700,6 +712,16 @@ impl SearchSession {
         s.st.config.export_html = false;
         s
     }
+    /// Look for projects from `source` and wait for the answer, as the Projects popover's button does.
+    #[cfg(test)]
+    pub(crate) fn projects_for_snapshot(&mut self, source: fn() -> Result<Vec<ProjectSuggestion>, String>) {
+        self.projects_source = source;
+        self.act_search(SearchAct::FindProjects);
+        while self.projects.is_none() {
+            self.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     /// Search `folder` for `words` exactly and semantically with the Index on, and wait for both, as the window does.
     #[cfg(all(test, feature = "semantic-search"))]
     pub(crate) fn words_for_snapshot(&mut self, folder: &Path, words: &str) {
@@ -772,6 +794,7 @@ impl SearchSession {
         let (relevance_tx, relevance_rx) = mpsc::unbounded_channel();
         #[cfg(feature = "neural-search")]
         let (alert_tx, alert_rx) = mpsc::unbounded_channel();
+        let (projects_tx, projects_rx) = mpsc::unbounded_channel();
         #[cfg(feature = "semantic-search")]
         let (semantic_tx, semantic_rx) = mpsc::unbounded_channel();
         #[cfg(feature = "semantic-search")]
@@ -887,6 +910,11 @@ impl SearchSession {
             #[cfg(feature = "semantic-search")]
             semantic_error: None,
             find_as: find::FindAs::Auto,
+            projects: None,
+            projects_running: false,
+            projects_tx,
+            projects_rx,
+            projects_source: crate::toolboxes::search::indexing::project_suggestions,
             #[cfg(feature = "nl-find")]
             nl: nl::NlFind::new(),
             #[cfg(feature = "semantic-search")]
@@ -2232,6 +2260,21 @@ impl SearchSession {
             self.save_settings();
         }
     }
+    /// Reads the catalog's project suggestions on a blocking thread; the result arrives through `poll`.
+    fn find_projects(&mut self) {
+        if self.projects_running {
+            return;
+        }
+        self.projects_running = true;
+        self.status = "Looking for projects in the indexed folders…".into();
+        let (tx, source) = (self.projects_tx.clone(), self.projects_source);
+        self.rt.spawn(async move {
+            let result = tokio::task::spawn_blocking(source)
+                .await
+                .unwrap_or_else(|error| Err(format!("project discovery task failed: {error}")));
+            let _ = tx.send(result);
+        });
+    }
     /// Fills "more folders" with the other indexed folders from the catalog; Find then searches them all.
     fn also_indexed_folders(&mut self) {
         let main = self.st.config.search_path.trim().to_lowercase();
@@ -2283,6 +2326,21 @@ impl SearchSession {
             SearchAct::NextMatch => self.move_match(1),
             SearchAct::OpenSelected => {
                 self.with_current(|r, _| Effect::OpenPath(r.full_name.clone()), "Opened")
+            }
+            SearchAct::FindProjects => self.find_projects(),
+            SearchAct::UseProject(i) => {
+                let folder = match self.projects.as_ref() {
+                    Some(Ok(list)) => list.get(i).map(|p| p.folder.clone()),
+                    _ => None,
+                };
+                match folder {
+                    Some(folder) => {
+                        self.status = format!("Folder: {folder}. Type what to find and press Enter.");
+                        self.st.config.search_path = folder;
+                        self.save_settings();
+                    }
+                    None => self.status = "That project suggestion is no longer listed.".into(),
+                }
             }
             SearchAct::OpenRelatedFile(i) => {
                 let other = self.preview.as_ref().and_then(|p| p.related.get(i)).map(|r| r.other.clone()).filter(|o| !o.is_empty());
@@ -2931,6 +2989,16 @@ impl Authoring for SearchSession {
                     changed = true;
                 }
             }
+        }
+        while let Ok(result) = self.projects_rx.try_recv() {
+            self.projects_running = false;
+            self.status = match &result {
+                Ok(list) if list.is_empty() => "No project stands out in the indexed folders yet.".into(),
+                Ok(list) => format!("{} possible project(s) found. Pick one to search only there.", list.len()),
+                Err(error) => format!("Project suggestions unavailable: {error}"),
+            };
+            self.projects = Some(result);
+            changed = true;
         }
         #[cfg(feature = "nl-find")]
         {

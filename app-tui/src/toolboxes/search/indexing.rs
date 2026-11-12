@@ -291,6 +291,13 @@ pub fn catalogued_folders() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Folders of the machine catalog that look like projects (clusters of files linked by versions and shared
+/// identifiers), as suggestions. Tests never read the user's real catalog.
+pub fn project_suggestions() -> Result<Vec<search_core::catalog_projects::ProjectSuggestion>, String> {
+    let Some(catalog) = catalog_path().filter(|p| !cfg!(test) && p.exists()) else { return Ok(Vec::new()) };
+    search_core::catalog::Catalog::open(&catalog).and_then(|c| c.project_suggestions()).map_err(|e| e.to_string())
+}
+
 /// Why `path` relates to other indexed files (identical copies, versions, shared entities), from the catalog's
 /// stored edges. Empty when there is no catalog or no edge. Tests never read the user's real catalog.
 pub fn related_reasons(path: &str) -> Vec<search_core::catalog_edges::Reason> {

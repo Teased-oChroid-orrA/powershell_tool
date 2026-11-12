@@ -612,6 +612,17 @@ pub(super) fn document(s: &SearchSession) -> Document {
             chips: Vec::new(),
             cards: vec![c.output],
         },
+        DocPanel {
+            label: "Projects".into(),
+            progress: None,
+            badge: match &s.projects {
+                Some(Ok(list)) if !list.is_empty() => Some(list.len().to_string()),
+                _ => None,
+            },
+            inputs: Vec::new(),
+            chips: Vec::new(),
+            cards: vec![projects_card(s)],
+        },
     ];
     let modal = types_card(s).map(|card| DocModal {
         card,
@@ -1967,6 +1978,56 @@ pub(super) fn insight(s: &SearchSession) -> Option<DocInsight> {
 }
 
 /// The file types read from the folder, to tick; shown as a modal while the picker is open.
+/// Suggested projects (#240 P3-2): folders whose files are linked by versions and shared identifiers, read from the
+/// catalog on request. A click on one sets the folder to search; nothing else changes and nothing is applied alone.
+fn projects_card(s: &SearchSession) -> Card {
+    const SHOWN: usize = 6;
+    let mut items = vec![DockItem::text(
+        "Folders whose files share part numbers, standards or version names. These are suggestions only: nothing changes until you pick one.",
+        Tone::Dim,
+    )];
+    items.push(DockItem::row(
+        if s.projects_running {
+            "Looking in the indexed folders…"
+        } else if s.projects.is_some() {
+            "Look again"
+        } else {
+            "Look for projects"
+        },
+        Tone::Title,
+        (!s.projects_running).then(|| act(SearchAct::FindProjects)),
+        false,
+    ));
+    match &s.projects {
+        Some(Ok(list)) if list.is_empty() => items.push(DockItem::text(
+            "No folder stands out. Build the fast index of a folder first: projects come from the files it recorded.",
+            Tone::Dim,
+        )),
+        Some(Ok(list)) => {
+            items.push(DockItem::Heading("Pick one to search only there".into()));
+            for (i, p) in list.iter().take(SHOWN).enumerate() {
+                let parent = super::file_name(search_core::catalog_edges::parent_folder(&p.folder));
+                let name = super::file_name(&p.folder);
+                items.push(DockItem::row(
+                    plain(&format!("{name} · in {parent} · {} of {} files linked", p.linked, p.files)),
+                    Tone::Normal,
+                    Some(act(SearchAct::UseProject(i))),
+                    false,
+                ));
+                if !p.evidence.is_empty() {
+                    items.push(DockItem::text(plain(&format!("Shared: {}", p.evidence.join(", "))), Tone::Dim));
+                }
+            }
+            if list.len() > SHOWN {
+                items.push(DockItem::text(format!("and {} more.", list.len() - SHOWN), Tone::Dim));
+            }
+        }
+        Some(Err(error)) => items.push(DockItem::text(plain(&format!("Unavailable: {error}")), Tone::Warn)),
+        None => {}
+    }
+    Card::new("search-projects", "Possible projects", Relevance::Primary, items)
+}
+
 fn types_card(s: &SearchSession) -> Option<Card> {
     let picker = &s.st.extension_picker;
     if !picker.open {

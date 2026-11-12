@@ -31,6 +31,8 @@ Does not own: running a search, the index, reports or settings persistence (`too
 - The document text is selectable; right-click opens Copy selection, without line numbers. The Open report button appears after an HTML report is written; the report never opens automatically.
 - Both guides must stay true to the parser: `tests::every_example_of_the_exclude_guide_is_a_valid_exclusion` checks the Exclude guide; `tests::every_example_of_the_find_guide_parses_the_way_the_guide_says` parses every example and checks the tag semantics it describes. Change the guide and the parser together.
 
+- **Projects popover (#240 P3-2) is suggestions only.** The `Projects` bar button opens a card whose "Look for projects" row (`SearchAct::FindProjects`) reads the machine catalog on a blocking thread (`SearchSession::find_projects`, source `indexing::project_suggestions`, replaced by a fn pointer in tests); nothing is read until it is clicked. A suggestion row (`SearchAct::UseProject(i)`) only sets the folder to search (the Browse path); nothing else changes and nothing is chosen implicitly. Algorithm, thresholds and measured precision: `search-core/src/catalog_projects.rs`, `docs/knowledge-engine-audit.md` (2026-11-12, P3-2). The popover's header and footer text are per-label in `gui/document.rs`.
+
 ## Pitfalls
 - `Authoring::document()` is rebuilt every frame, but its result rows are cached across unchanged frames. Run start, result count, filter, sort, selection and root path invalidate the cache. The table body is virtualised (`ScrollArea::show_rows`); large runs still clone cached rows each frame.
 - Strings from the terminal toolbox may carry glyphs the window font lacks (`⚠`, `…`); pass them through `view::plain`.
