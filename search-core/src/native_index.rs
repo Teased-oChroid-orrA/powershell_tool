@@ -1324,7 +1324,9 @@ pub async fn narrow_candidates(
         }
         engine.trigram_candidate_paths_for_chunk_sets(&chunk_sets)?
     } else {
-        engine.trigram_candidate_paths(&settings.filters)?
+        // A NEAR query needs both its words in the file: narrow on one of them.
+        let narrowing: Vec<String> = settings.filters.iter().map(|f| crate::near::narrowing_text(f)).collect();
+        engine.trigram_candidate_paths(&narrowing)?
     };
     let Some(indexed_paths) = indexed_paths else {
         return Ok(out);

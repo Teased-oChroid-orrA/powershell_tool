@@ -38,19 +38,25 @@ impl LineExplainer {
         let fold = settings.fold_accents && !settings.use_regex;
         let mut filters = Vec::new();
         for f in settings.all_filters() {
-            let m = if settings.use_regex {
-                Matcher::Regex(case_insensitive(f)?)
-            } else {
-                let needle = if fold { textfold::fold_lower(f) } else { f.to_lowercase() };
-                let whole_word = if settings.whole_word {
-                    Some(case_insensitive(&crate::matching::whole_word_pattern(&needle))?)
+            // A NEAR query shows both of its words (labelled with the whole filter).
+            let texts = if settings.use_regex { vec![f.clone()] } else { crate::near::terms(f) };
+            for text in &texts {
+                let m = if settings.use_regex {
+                    Matcher::Regex(case_insensitive(text)?)
                 } else {
-                    None
+                    let needle = if fold { textfold::fold_lower(text) } else { text.to_lowercase() };
+                    let whole_word = if settings.whole_word {
+                        Some(case_insensitive(&crate::matching::whole_word_pattern(&needle))?)
+                    } else {
+                        None
+                    };
+                    let fuzzy = (settings.typo_tolerance > 0 && texts.len() == 1)
+                        .then(|| FuzzyFilter::new(&needle, settings.typo_tolerance))
+                        .flatten();
+                    Matcher::Text { needle, whole_word, fuzzy }
                 };
-                let fuzzy = (settings.typo_tolerance > 0).then(|| FuzzyFilter::new(&needle, settings.typo_tolerance)).flatten();
-                Matcher::Text { needle, whole_word, fuzzy }
-            };
-            filters.push((f.clone(), m));
+                filters.push((f.clone(), m));
+            }
         }
         Some(Self { filters, fold })
     }

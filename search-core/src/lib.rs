@@ -21,6 +21,7 @@ pub mod line_quality;
 pub mod matching;
 pub mod models;
 pub mod native_index;
+pub mod near;
 #[cfg(feature = "nl-find")]
 pub mod nl_find;
 #[cfg(feature = "nl-find")]

@@ -424,7 +424,8 @@ fn highlight_matches(line: &str, matched_filters: &[String], settings: &SearchSe
     }
 
     let mut ranges: Vec<(usize, usize)> = Vec::new();
-    for f in matched_filters {
+    // A NEAR query highlights both of its words.
+    for f in &crate::near::expand_terms(matched_filters, settings.use_regex) {
         if f.is_empty() {
             continue;
         }
