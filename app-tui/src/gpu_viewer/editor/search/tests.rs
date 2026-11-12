@@ -2116,7 +2116,17 @@ fn related_files_note_lists_reasons_and_marks_the_inferred_ones() {
     let detail = view::document(&s).detail.unwrap();
     let note = detail.notes.iter().find(|n| n.text == "Related files").expect("related note");
     assert_eq!(note.hint, "Identical text to copy.pdf\nShares 2 entities with x.pdf, e.g. AN3-5A (inferred)");
+    let actions = &detail.actions;
+    let labels: Vec<&str> = actions.iter().map(|a| a.label.as_str()).filter(|l| l.starts_with("Open ")).collect();
+    assert_eq!(labels, ["Open copy.pdf", "Open x.pdf"]);
     s.preview.as_mut().unwrap().related.clear();
     let detail = view::document(&s).detail.unwrap();
     assert!(detail.notes.iter().all(|n| n.text != "Related files"));
+}
+
+#[test]
+fn opening_a_related_file_that_is_not_listed_only_reports_it() {
+    let mut s = with_results();
+    s.act_search(SearchAct::OpenRelatedFile(3));
+    assert_eq!(s.status, "That related file is no longer listed.");
 }

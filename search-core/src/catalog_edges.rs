@@ -655,6 +655,21 @@ mod tests {
     }
 
     #[test]
+    fn identical_files_in_different_roots_explain_each_other() {
+        let files = [file("/rootA/docs/spec.txt", Some(7)), file("/rootB/archive/spec copy.txt", Some(7))];
+        let edges = duplicate_edges(&files);
+        let stored: Vec<StoredEdge> = edges
+            .into_iter()
+            .map(|e| StoredEdge { src: e.src, dst: e.dst, kind: e.kind.as_str().into(), confidence: e.confidence, evidence: e.evidence, class: e.class.as_str().into(), created: 0, source_version: e.source_version })
+            .collect();
+        for (me, other) in [("/rootA/docs/spec.txt", "/rootB/archive/spec copy.txt"), ("/rootB/archive/spec copy.txt", "/rootA/docs/spec.txt")] {
+            let reasons = explain(me, &stored);
+            assert_eq!(reasons.len(), 1);
+            assert_eq!(reasons[0].other, other);
+        }
+    }
+
+    #[test]
     fn files_without_text_are_not_duplicates_of_each_other() {
         use sha2::{Digest, Sha256};
         assert_eq!(Sha256::digest(b"").as_slice(), EMPTY_SHA256);

@@ -55,6 +55,8 @@ pub enum SearchAct {
     /// Open result `.0` with the system's default program.
     Open(usize),
     OpenSelected,
+    /// Open related file `.0` of the preview's "Related files" list with the system's default program.
+    OpenRelatedFile(usize),
     Reveal,
     CopyPath,
     ExportHits,
@@ -2279,6 +2281,16 @@ impl SearchSession {
             SearchAct::NextMatch => self.move_match(1),
             SearchAct::OpenSelected => {
                 self.with_current(|r, _| Effect::OpenPath(r.full_name.clone()), "Opened")
+            }
+            SearchAct::OpenRelatedFile(i) => {
+                let other = self.preview.as_ref().and_then(|p| p.related.get(i)).map(|r| r.other.clone()).filter(|o| !o.is_empty());
+                match other {
+                    Some(path) => {
+                        self.status = format!("Opened: {}", file_name(&path));
+                        self.execute(vec![Effect::OpenPath(path)]);
+                    }
+                    None => self.status = "That related file is no longer listed.".into(),
+                }
             }
             SearchAct::Reveal => self.with_current(
                 |r, _| {

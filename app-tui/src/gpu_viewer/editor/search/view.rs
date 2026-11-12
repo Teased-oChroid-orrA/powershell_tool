@@ -1289,31 +1289,15 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
         subtitle,
         signals,
         notes,
-        #[cfg(feature = "neural-search")]
-        actions: if s.feedback_enabled() && s.relevance_score(i).is_some() {
-            vec![
-                Entry::new(
-                    "Relevant",
-                    "",
-                    act(SearchAct::VoteRelevance(
-                        i,
-                        search_core::relevance::FeedbackLabel::Relevant,
-                    )),
-                ),
-                Entry::new(
-                    "Not relevant",
-                    "",
-                    act(SearchAct::VoteRelevance(
-                        i,
-                        search_core::relevance::FeedbackLabel::NotRelevant,
-                    )),
-                ),
-            ]
-        } else {
-            Vec::new()
+        actions: {
+            let mut actions = related_actions(preview);
+            #[cfg(feature = "neural-search")]
+            if s.feedback_enabled() && s.relevance_score(i).is_some() {
+                actions.push(Entry::new("Relevant", "", act(SearchAct::VoteRelevance(i, search_core::relevance::FeedbackLabel::Relevant))));
+                actions.push(Entry::new("Not relevant", "", act(SearchAct::VoteRelevance(i, search_core::relevance::FeedbackLabel::NotRelevant))));
+            }
+            actions
         },
-        #[cfg(not(feature = "neural-search"))]
-        actions: Vec::new(),
         match_navigation: (r.hits.len() > 1).then(|| DocMatchNavigation {
             current: s.match_index + 1,
             total: r.hits.len(),
@@ -1326,6 +1310,21 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
         text,
         empty,
     })
+}
+
+/// One "Open <name>" button per related file, labelled with its folder so a copy in another root is told apart.
+fn related_actions(preview: Option<&super::Preview>) -> Vec<Entry> {
+    let Some(preview) = preview else { return Vec::new() };
+    preview
+        .related
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.other.is_empty())
+        .map(|(i, r)| {
+            let folder = std::path::Path::new(&r.other).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            Entry::new(format!("Open {}", file_name(&r.other)), folder, act(SearchAct::OpenRelatedFile(i)))
+        })
+        .collect()
 }
 
 #[cfg(feature = "neural-search")]
