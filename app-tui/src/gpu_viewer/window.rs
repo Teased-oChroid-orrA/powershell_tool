@@ -561,7 +561,11 @@ impl Viewer {
     }
 
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
-        let window = Arc::new(event_loop.create_window(Window::default_attributes().with_title("FEA GPU viewport")).map_err(|e| e.to_string())?);
+        let mut attributes = Window::default_attributes().with_title("FEA GPU viewport");
+        if self.editor.as_ref().is_some_and(|editor| editor.workbench().is_some()) {
+            attributes = attributes.with_inner_size(winit::dpi::LogicalSize::new(1200.0, 760.0));
+        }
+        let window = Arc::new(event_loop.create_window(attributes).map_err(|e| e.to_string())?);
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -1729,8 +1733,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// The Bushing workbench through the real window: a click on an input starts a typed edit, the typed number reaches the
-    /// solver, the verdict and the housing picture follow, and a step tab brings that step's cards.
+    fn bushing_workbench_text(v: &Viewer) -> String {
+        let workbench = v.editor.as_ref().unwrap().workbench().unwrap();
+        workbench.inputs.iter().chain(&workbench.results)
+            .flat_map(|card| card.items.iter().filter_map(|item| item.plain_text()))
+            .collect::<Vec<_>>().join("\n")
+    }
+
+    fn click_bushing_target(v: &mut Viewer, label: &str) {
+        for _ in 0..8 {
+            let at = target(v, label);
+            move_to(v, at);
+            let after = target(v, label);
+            if (at.1 - after.1).abs() < 1.0 {
+                button(v, MouseButton::Left, true);
+                button(v, MouseButton::Left, false);
+                frame(v);
+                return;
+            }
+        }
+        panic!("{label} kept moving while the pointer approached it");
+    }
+
+    /// The Bushing workbench through the real window: an input click reaches the solver and updates the verdict.
     #[test]
     fn the_bushing_workbench_edits_an_input_by_click_and_typing_and_the_verdict_follows() {
         let dir = std::env::temp_dir().join(format!("window-bushing-{}", std::process::id()));
@@ -1739,8 +1764,8 @@ mod tests {
         let mut v = viewer(Some(Box::new(session)));
         frame(&mut v);
         // The default case already fails the edge-distance check, so that input carries the marker.
-        assert!(property_text(&v).contains("! Edge Distance  0.7500 in"), "{}", property_text(&v));
-        let at = target(&v, "! Edge Distance");
+        assert!(bushing_workbench_text(&v).contains("! Edge Distance  0.7500 in"), "{}", bushing_workbench_text(&v));
+        let at = target(&v, "Edge Distance");
         click(&mut v, at);
         assert!(v.editor.as_ref().unwrap().prompting());
         for c in "0.3".chars() {
@@ -1749,14 +1774,26 @@ mod tests {
         v.input(Input::Key(Key::Named(NamedKey::Enter)));
         frame(&mut v);
         assert!(!v.editor.as_ref().unwrap().prompting());
-        assert!(property_text(&v).contains("Edge Distance  0.3000 in"), "{}", property_text(&v));
-        assert!(property_text(&v).contains("REVIEW") && property_text(&v).contains("margin -"), "a 0.3 in edge distance fails: {}", property_text(&v));
-        // The step tabs bring the other cards; the tree names the failing check.
-        let checks = target(&v, "Checks tab");
-        click(&mut v, checks);
-        assert!(property_text(&v).contains("Contact pressure"), "{}", property_text(&v));
-        assert!(tree_labels(&v).iter().any(|l| l.starts_with("Checks (") && !l.starts_with("Checks (0")), "{:?}", tree_labels(&v));
+        let text = bushing_workbench_text(&v);
+        assert!(text.contains("Edge Distance  0.3000 in"), "{text}");
+        assert!(text.contains("REVIEW") && text.contains("margin -"), "a 0.3 in edge distance fails: {text}");
+        assert!(text.contains("Contact pressure"), "{text}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bushing_fix_action_reopens_a_manually_closed_card() {
+        let path = std::env::temp_dir().join(format!("window-bushing-fixes-{}.json", std::process::id()));
+        let session = crate::gpu_viewer::editor::bushing::BushingSession::open(&path).unwrap();
+        let mut v = viewer(Some(Box::new(session)));
+        v.size_override = Some((1600, 1800));
+        frame(&mut v);
+        v.gui.set_card_open("bushing-fixes", false);
+        assert_eq!(v.gui.card_open("bushing-fixes"), Some(false));
+        let fix = v.gui.target_labels().into_iter().find(|label| label.starts_with("Fixes for ")).expect("verdict fix action");
+        let fix = target(&v, &fix);
+        click(&mut v, fix);
+        assert_eq!(v.gui.card_open("bushing-fixes"), Some(true));
     }
 
     #[test]
@@ -1767,11 +1804,11 @@ mod tests {
         let mut v = viewer(Some(Box::new(session)));
         v.size_override = Some((1600, 1800));
         frame(&mut v);
-        let at = target(&v, "Checks tab");
-        click(&mut v, at);
+        v.gui.set_card_open("bushing-edge-check", true);
+        frame(&mut v);
+        frame(&mut v);
         for label in ["Strength CV (%)", "Stress superposition model CV (%)", "Contact FE (bushing + housing, elastic-plastic) model CV (%)"] {
-            let at = target(&v, label);
-            click(&mut v, at);
+            click_bushing_target(&mut v, label);
             assert!(v.editor.as_ref().unwrap().prompting(), "{label}");
             for c in "12.5".chars() {
                 v.input(Input::Key(Key::Character(c.to_string().into())));
@@ -1779,7 +1816,7 @@ mod tests {
             v.input(Input::Key(Key::Named(NamedKey::Enter)));
             frame(&mut v);
             assert!(!v.editor.as_ref().unwrap().prompting());
-            assert!(property_text(&v).contains(&format!("{label}  12.5")), "{}", property_text(&v));
+            assert!(bushing_workbench_text(&v).contains(&format!("{label}  12.5")), "{}", bushing_workbench_text(&v));
         }
         let _ = std::fs::remove_dir_all(dir);
     }

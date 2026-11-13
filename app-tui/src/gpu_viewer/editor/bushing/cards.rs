@@ -465,8 +465,8 @@ impl BushingSession {
     /// runs or has a result.
     fn quick_fe_card(&self) -> Card {
         let mut items = vec![line("Solves the housing and bushing with fit contact (plane stress) to check the closed-form pressure. The closed-form results stay the verdict.", Tone::Dim)];
-        let solution = self.fea.current_solution();
-        let current = solution.filter(|s| s.problem == self.fea.problem);
+        let solution = self.fea.last_solution();
+        let current = solution.filter(|s| self.fe_note.is_none() && s.problem == self.fea.problem);
         if let Some(t) = self.fea.solve_elapsed() {
             items.push(field("Solve", format!("running, {:.0} s", t.as_secs_f32()), Tone::Warn));
         }
@@ -478,7 +478,7 @@ impl BushingSession {
             if let Some(i) = sum.interfaces.first() {
                 items.push(field("FE mean / peak", format!("{} / {} psi", grouped(i.mean_pressure, 0), grouped(i.peak_pressure, 0)), Tone::Normal));
                 let lame = self.st.model.output.pressure;
-                if lame > 0.0 {
+                if current.is_some() && lame > 0.0 {
                     let delta = i.mean_pressure - lame;
                     items.push(field("Lam\u{e9} closed form", format!("{} psi", grouped(lame, 0)), Tone::Normal));
                     items.push(field("FE minus Lam\u{e9}", format!("{:+.0} psi ({:+.1} %)", delta, 100.0 * delta / lame), if delta.abs() / lame > 0.15 { Tone::Warn } else { Tone::Dim }));
@@ -521,7 +521,7 @@ impl BushingSession {
         if let Ok(l) = fe::layout(m) {
             rows.push(("Housing".to_string(), format!("{:.3} x {:.3} in, {:.3} in thick, {}", l.length, l.height, self.fea.problem.thickness, m.housing_material().name)));
         }
-        rows.push(("Bushing".to_string(), format!("\u{d8}{:.4} x \u{d8}{:.4} in, {}, fit {:.5} in", m.bore_dia, m.id_bushing, m.bushing_material().name, m.output.delta_total)));
+        rows.push(("Bushing".to_string(), format!("\u{d8}{:.4} x \u{d8}{:.4} in, {}, FE overlap {:.5} in", m.bore_dia, m.id_bushing, m.bushing_material().name, self.fea.problem.bushings[0].interference)));
         rows.push(("Load".to_string(), format!("P {} lbf toward the free edge", grouped(m.load, 0))));
         rows.push(("File".to_string(), handoff::fea_path(&self.path).file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
         Dialog {

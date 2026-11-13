@@ -16,7 +16,7 @@ pub use dashboard::DashEvent;
 use super::{
     controller::{Command, Panel, UiAction, Visible},
     display::Background,
-    editor::{adapt::Adapt, authoring::StepState},
+    editor::{adapt::Adapt, authoring::StepState, bushing::BushingAct, session::EditorAction},
     menu::{palette_entries, Entry, Item, Outcome},
     menus::{self, MenuContext},
     results::GuiInput,
@@ -281,6 +281,10 @@ impl Gui {
         self.card_open.get(id).copied()
     }
     #[cfg(test)]
+    pub(crate) fn set_card_open(&mut self, id: &str, open: bool) {
+        self.card_open.insert(id.into(), open);
+    }
+    #[cfg(test)]
     pub(crate) fn nudge(&self) -> Option<&str> {
         self.nudge.as_deref()
     }
@@ -339,6 +343,9 @@ impl Gui {
             }
             self.hover_prev = now;
         }
+        if out.iter().any(|event| matches!(event, Outcome::Action(UiAction::Editor(EditorAction::Bushing(BushingAct::ShowFixes(_) | BushingAct::AllFixes))))) {
+            self.card_open.insert("bushing-fixes".into(), true);
+        }
         (full, out)
     }
 
@@ -390,13 +397,16 @@ impl Gui {
         if let Some(wb) = &wb {
             self.workbench(ui, wb, &p, out, hint);
             self.floating_list(ui.ctx(), &p, out, hint);
-            if !matches!(wb.show, crate::gpu_viewer::ui::WorkbenchView::Sketch(_)) {
+            if wb.dialog.is_none() && !matches!(wb.show, crate::gpu_viewer::ui::WorkbenchView::Sketch(_)) {
                 self.contour_legend(ui.ctx(), input, &p, out);
             }
             self.value_card(ui.ctx(), input, &p, out, hint);
             self.background_picker(ui.ctx(), input.view.background, &p, out);
             self.palette_window(ui.ctx(), &menus, &p, out);
             self.confirm_close_modal(ui.ctx(), out);
+            if let Some(dialog) = &wb.dialog {
+                self.workbench_dialog(ui.ctx(), dialog, &p, out, hint);
+            }
             self.adapt.frame_end();
             return;
         }

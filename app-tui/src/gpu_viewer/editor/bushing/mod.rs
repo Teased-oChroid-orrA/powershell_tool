@@ -511,7 +511,11 @@ impl BushingSession {
             BushingAct::Save => self.save(),
             BushingAct::Export => self.export(),
             BushingAct::SendDialog => match self.send_availability() {
-                Ok(()) => self.dialog_open = true,
+                Ok(()) => {
+                    self.picker = None;
+                    self.prompt = None;
+                    self.dialog_open = true;
+                }
                 Err(why) => self.status = format!("Cannot send to the FEA Workbench: {why}."),
             },
             BushingAct::CloseDialog => self.dialog_open = false,
@@ -645,10 +649,11 @@ impl Authoring for BushingSession {
             changed = true;
             match run {
                 Some(run) => self.st.finish_edge_check(id, run),
-                None => {
+                None if self.st.edge_job.as_ref().is_some_and(|job| job.id == id) => {
                     self.st.edge_job = None;
                     self.status = "The edge check stopped unexpectedly.".into();
                 }
+                None => {}
             }
         }
         let effects = self.st.auto_edge_check();

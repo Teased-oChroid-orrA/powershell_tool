@@ -470,6 +470,9 @@ impl SolidSession {
     pub fn current_solution(&self) -> Option<&Arc<Solved>> {
         self.solved.as_ref().filter(|s| s.problem == self.problem)
     }
+    pub fn last_solution(&self) -> Option<&Arc<Solved>> {
+        self.solved.as_ref()
+    }
     pub fn prompting(&self) -> bool {
         self.prompt.is_some() || self.card.is_some() || self.typing_active()
     }

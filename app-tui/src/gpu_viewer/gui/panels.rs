@@ -538,14 +538,10 @@ impl Gui {
                 });
             }
             DockItem::Figures(figures) => {
-                let n = figures.len().max(1) as f32;
-                let gap = 8.0;
-                let w = ((ui.available_width() - gap * (n - 1.0)) / n).max(60.0);
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = gap;
-                    for f in figures {
+                ui.columns(figures.len().max(1), |columns| {
+                    for (ui, f) in columns.iter_mut().zip(figures) {
                         egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0, p.line)).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
-                            ui.set_width(w - 20.0);
+                            ui.set_width(ui.available_width());
                             ui.label(RichText::new(&f.label).size(11.5).color(p.dim));
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;

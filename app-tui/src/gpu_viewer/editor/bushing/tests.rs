@@ -248,16 +248,26 @@ fn quick_fe_meshes_and_solves_on_demand_beside_the_closed_form_and_an_edit_makes
     assert!(!c.folded && c.tag == "current");
     let fe = texts(&[c]);
     assert!(fe.contains("FE mean / peak") && fe.contains("Lam\u{e9} closed form") && fe.contains("FE minus Lam\u{e9}") && fe.contains("Max von Mises"), "{fe}");
+    edit(&mut s, NumberTarget::EdgeDist, "0.2");
+    let c = card(&s.result_cards(), "bushing-quick-fe");
+    assert_eq!(c.tag, "stale");
+    let stale = texts(&[c]);
+    assert!(stale.contains("Inputs changed since this solve"));
+    assert!(!stale.contains("FE minus Lam\u{e9}"), "stale FE pressure must not be compared with new inputs");
+    edit(&mut s, NumberTarget::EdgeDist, "0.9");
     edit(&mut s, NumberTarget::Load, "2000");
     let c = card(&s.result_cards(), "bushing-quick-fe");
     assert_eq!(c.tag, "stale");
-    assert!(texts(&[c]).contains("Inputs changed since this solve"));
+    assert!(!texts(&[c]).contains("FE minus Lam\u{e9}"));
 }
 
 #[test]
 fn the_send_dialog_shows_what_goes_and_closes_on_escape() {
     let mut s = session();
+    act(&mut s, BushingAct::Row(FieldRow::OpenHousingMaterialPicker));
+    assert!(s.picker.is_some());
     act(&mut s, BushingAct::SendDialog);
+    assert!(s.picker.is_none());
     let d = s.workbench().unwrap().dialog.expect("the dialog is open");
     assert!(d.rows.iter().any(|(l, _)| l == "Housing") && d.rows.iter().any(|(l, _)| l == "Load"));
     let opt = |label: &str| d.options.iter().find(|o| o.label == label).unwrap_or_else(|| panic!("no option {label}"));
@@ -273,6 +283,37 @@ fn the_send_dialog_shows_what_goes_and_closes_on_escape() {
     act(&mut s, BushingAct::SendDialog);
     act(&mut s, BushingAct::CloseDialog);
     assert!(s.workbench().unwrap().dialog.is_none());
+    act(&mut s, BushingAct::Row(FieldRow::Number(NumberTarget::Load)));
+    assert!(s.prompting());
+    act(&mut s, BushingAct::SendDialog);
+    assert!(!s.prompting());
+    s.key(Key::Escape, Mods::default());
+    assert!(s.workbench().unwrap().dialog.is_none());
+}
+
+#[test]
+fn send_dialog_reports_the_overlap_that_fea_receives_for_clearance() {
+    let mut s = session();
+    edit(&mut s, NumberTarget::Interference, "-0.002");
+    assert!(s.model().output.delta_total < 0.0);
+    act(&mut s, BushingAct::SendDialog);
+    let dialog = s.workbench().unwrap().dialog.expect("clearance case can be sent");
+    let bushing = dialog.rows.iter().find(|(label, _)| label == "Bushing").unwrap();
+    assert!(bushing.1.contains("FE overlap 0.00000 in"), "{}", bushing.1);
+}
+
+#[test]
+fn old_edge_worker_disconnect_does_not_clear_the_new_job() {
+    let mut s = session();
+    let old = s.st.start_edge_check(false).remove(0).id;
+    s.st.cancel_edge_check();
+    let new = s.st.start_edge_check(false).remove(0).id;
+    let (tx, rx) = std::sync::mpsc::channel();
+    drop(tx);
+    s.edge_jobs.push((old, rx));
+    s.poll();
+    assert_eq!(s.st.edge_job.as_ref().map(|job| job.id), Some(new));
+    assert_ne!(s.status(), "The edge check stopped unexpectedly.");
 }
 
 #[test]

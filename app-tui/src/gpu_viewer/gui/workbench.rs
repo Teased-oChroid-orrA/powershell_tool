@@ -45,11 +45,27 @@ impl Gui {
             });
         });
         let free = ui.available_rect_before_wrap();
-        let bar = Rect::from_min_size(free.min, Vec2::new(free.width(), TOOLBAR));
+        let narrow = free.width() < STACK_BELOW;
+        let bar_height = if narrow { 92.0 } else { TOOLBAR };
+        let bar = Rect::from_min_size(free.min, Vec2::new(free.width(), bar_height));
         ui.painter().rect_filled(bar, 0.0, p.panel);
         ui.painter().line_segment([bar.left_bottom(), bar.right_bottom()], Stroke::new(1.0, p.line));
         ui.scope_builder(UiBuilder::new().max_rect(bar.shrink2(Vec2::new(10.0, 5.0))).id_salt("wb-toolbar"), |ui| {
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| self.views_toolbar(ui, wb, p, out, hint));
+            if narrow {
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        let width = super::document::segmented_width(ui, &wb.views, p);
+                        self.segmented(ui, &wb.views, width, p, out, hint);
+                    });
+                    ui.horizontal(|ui| self.views_toolbar(ui, wb, p, out, hint));
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    let width = super::document::segmented_width(ui, &wb.views, p);
+                    self.segmented(ui, &wb.views, width, p, out, hint);
+                    self.views_toolbar(ui, wb, p, out, hint);
+                });
+            }
         });
         let body = Rect::from_min_max(Pos2::new(free.left(), bar.bottom()), free.max);
         match wb.show {
@@ -58,7 +74,8 @@ impl Gui {
                 self.model_caption(ui, body, wb, p);
             }
             WorkbenchView::Split => {
-                let model_h = (body.height() * MODEL_SHARE).max(160.0).min(body.height());
+                let share = if narrow { 0.36 } else { MODEL_SHARE };
+                let model_h = (body.height() * share).max(160.0).min(body.height());
                 let model = Rect::from_min_size(body.min, Vec2::new(body.width(), model_h));
                 self.viewport = Some(model);
                 self.model_caption(ui, model, wb, p);
@@ -72,7 +89,7 @@ impl Gui {
                     } else {
                         Rect::from_min_max(Pos2::new(rest.left() + rest.width() * f(k), rest.top()), Pos2::new(rest.left() + rest.width() * f(k + 1), rest.bottom()))
                     };
-                    paint_sketch(ui.painter(), r, s, p);
+                    if wb.dialog.is_none() { paint_sketch(ui.painter(), r, s, p); }
                 }
             }
             WorkbenchView::Sketch(i) => {
@@ -88,19 +105,14 @@ impl Gui {
             }
         }
         self.room = self.viewport;
-        if let Some(d) = &wb.dialog {
-            self.workbench_dialog(ui.ctx(), d, p, out, hint);
-        }
     }
 
     /// The view switch, what the 3D view is coloured by, its switches, and a note at the right.
     fn views_toolbar(&mut self, ui: &mut egui::Ui, wb: &Workbench, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let width = super::document::segmented_width(ui, &wb.views, p);
-        self.segmented(ui, &wb.views, width, p, out, hint);
         if !wb.fields.is_empty() {
             let current = wb.fields.iter().find(|e| e.checked == Some(true)).map_or("", |e| e.label.as_str()).to_string();
-            let r = egui::ComboBox::from_id_salt("wb-field").selected_text(current).width(150.0).show_ui(ui, |ui| {
+            let r = egui::ComboBox::from_id_salt("wb-field").selected_text(current).width(if ui.max_rect().width() < STACK_BELOW { 120.0 } else { 150.0 }).show_ui(ui, |ui| {
                 for e in &wb.fields {
                     let r = ui.selectable_label(e.checked == Some(true), &e.label);
                     self.targets.push((e.label.clone(), r.rect));
@@ -127,7 +139,7 @@ impl Gui {
                 }
             }
         }
-        if !wb.view_note.is_empty() {
+        if !wb.view_note.is_empty() && ui.max_rect().width() > 850.0 {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add(egui::Label::new(RichText::new(&wb.view_note).size(11.5).color(p.dim)).truncate());
             });
@@ -219,7 +231,7 @@ impl Gui {
     }
 
     /// The confirmation over the window: what will be sent, the choices, a note, Cancel and the action.
-    fn workbench_dialog(&mut self, ctx: &egui::Context, d: &Dialog, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
+    pub(super) fn workbench_dialog(&mut self, ctx: &egui::Context, d: &Dialog, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         let shown = egui::Modal::new(Id::new("wb-dialog")).frame(egui::Frame::popup(&ctx.global_style()).fill(p.panel).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(20))).show(ctx, |ui| {
             ui.set_width(460.0);
             ui.label(RichText::new(&d.title).size(17.0).strong());
@@ -267,9 +279,9 @@ impl Gui {
                 ui.add(egui::Label::new(RichText::new(&d.note).size(12.0).color(p.dim)).wrap());
             }
             ui.add_space(12.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                self.doc_button(ui, &d.confirm, p, out, hint, true);
+            ui.horizontal(|ui| {
                 self.doc_button(ui, &d.cancel, p, out, hint, false);
+                self.doc_button(ui, &d.confirm, p, out, hint, true);
             });
         });
         if shown.should_close() {

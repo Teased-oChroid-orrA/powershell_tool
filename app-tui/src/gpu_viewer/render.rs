@@ -1600,6 +1600,7 @@ mod snapshot_tests {
                 let scenes = [scene];
                 let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&*session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
                 draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
             });
         };
