@@ -161,7 +161,7 @@ pub enum Effect {
     /// result action.
     WriteTextFileAndOpen { path: String, contents: String },
     PersistSearchSettings,
-    BuildIndex { settings: SearchSettings, index_dir: std::path::PathBuf, cancel: CancellationToken },
+    BuildIndex { settings: SearchSettings, index_dir: std::path::PathBuf, cancel: CancellationToken, paths: Option<Vec<String>>, embed: search_core::embed_policy::EmbedPolicy },
     ScanExtensions { root: String, exclude_folders: Vec<String>, include_hidden: bool },
     /// Writes the Bushing Workbench's plain-text report
     /// (`bushing::view::build_report_text`, already fully built by the time

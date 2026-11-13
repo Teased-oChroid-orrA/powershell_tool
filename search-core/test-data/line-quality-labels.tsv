@@ -1,0 +1,309 @@
+# label: K must keep, D must drop, M noise the filter still keeps (known misses).  source: text (PDF text layer) or ocr.
+# line: \xNN, \t, \n and \\ are escaped.  Sampled from search-core/benches/data PDFs and the OCR of xlarge-scanned.pdf; see docs/search-ocr-line-quality.md.
+D	text	ÀÃÅÇ
+D	text	ÁÄÆÉ
+D	text	= &
+D	text	m; n
+D	text	"0.$.4
+D	text	i 
+D	text	?>@
+D	text	\\Qs
+D	text	É
+D	text	: : :
+D	text	}
+D	text	.w
+D	text	/
+D	text	- - - -
+D	text	@;
+D	text	y
+D	text	`
+D	text	; `
+D	text	+=
+D	text	"""
+D	text	+
+D	text	\\
+D	text	<
+D	text	x=S
+D	text	@]
+D	text	\\:
+D	text	Æ
+D	text	/*:12*//*16:*/
+D	text	3(*+1$.4
+D	text	p
+D	text	; 
+D	text	/*:13*/
+D	text	u
+D	text	\\+
+D	text	@[
+D	text	q
+D	text	\\)
+D	text	'
+D	text	@.
+D	text	'y'
+D	text	);
+D	text	;t
+D	text	a < 
+D	text	(
+D	text	))
+D	text	7#-+*
+D	text	'x'
+D	text	'i'
+D	text	”,
+D	text	n
+D	text	@&
+D	text	•
+D	text	>
+D	text	4"$'56
+D	text	wv
+D	text	=
+D	text	*
+D	ocr	!
+D	ocr	#eeee116--11eeoeeg
+D	ocr	-
+D	ocr	.
+D	ocr	?
+D	ocr	A
+D	ocr	B
+D	ocr	C
+D	ocr	D
+D	ocr	E
+D	ocr	G
+D	ocr	H
+D	ocr	I
+D	ocr	L
+D	ocr	M
+D	ocr	N
+D	ocr	O
+D	ocr	R
+D	ocr	S
+D	ocr	T
+D	ocr	U
+D	ocr	V
+D	ocr	Wn
+D	ocr	in?tu
+D	ocr	m
+D	ocr	mI
+D	ocr	mN
+D	ocr	mP
+D	ocr	n
+K	text	Existing LLMs usually adopt a similar learn-
+K	text	deploying LLMs in real-world applications. To alleviate
+K	text	majority vote, resulting in higher inference costs due to
+K	text	enables 7B-size models to achieve comparable performance
+K	text	)'. In this case you should help
+K	text	to improve the generation coherence during decoding. Since
+K	text	reinforcement learning (RL) algorithms (
+K	text	typically arises due to that most LLMs were trained on time-
+K	text	series of technical improvements. GPT-4 Turbo is featured
+K	text	Subsequently, the LLM is further instructed to generate in-
+K	text	“Morl-prompt: An empirical analysis of multi-
+K	text	, but it can be used for various purposes within
+K	text	and a pair of top-level comments, one of which is deemed
+K	text	training quantization for large language models,”
+K	text	searchers also propose leveraging the universal knowledge
+K	text	. In earlier literature of pre-trained lan-
+K	text	deployment life-cycle, which aims to effectively reduce the
+K	text	ened with the technology upgrade in improved models,
+K	text	distribution is a critical factor in determining the quality of
+K	text	team of human labelers for feedback data collection.
+K	text	2019 Workshop, New Orleans, Louisiana, United States,
+K	text	sentence based or token based rewards)
+K	text	a subword tokenizer the integer 7481 may be tokenized
+K	text	patterns, APTQ [1005] employs the Hessian trace as a sen-
+K	text	” (since October 2019), respectively. The statistics are calculated using exact match by querying
+K	text	ities in solving complex tasks than GPT-3.5, showing a
+K	text	approach to utilizing LLMs for solving various tasks. Since
+K	text	Different from temperature sampling,
+K	text	tures and pre-training objectives are in need to analyze how
+K	text	memory redundancy, ZeRO, FSDP, and activation recom-
+K	text	further supervised ne-tuning. In our evaluation, we select
+K	text	written texts as the output and synthesize corresponding
+K	text	tional response generation,” in
+K	text	long sequences, which shares a similar idea with sequence
+K	text	long-term dependency, and generate narrative and coherent
+K	text	contrast, long CoT reasoning mitigates this problem by
+K	text	in whatever way you might wish. Some people call these tricks \\special refinements"; others call them
+K	text	transcript from the interview was copied below
+K	text	the test data itself or relevant content has been contained
+K	text	, corresponding to the optimal
+K	text	employed to alleviate the lack of labeled data on target tasks.
+K	text	For example, RRHF [397] samples responses from multi-
+K	text	faithfulness in the generated reasoning steps. To address
+K	text	advanced LLMs still fall short of human-level evaluation in
+K	text	) to the unsorted items and instruct the LLMs to directly output the sorted indicators.
+K	text	we can also reuse existing reward models to select high-
+K	text	as an exponentiation of the
+K	text	trained language models (
+K	text	Different from post-LN, pre-LN [287] is applied
+K	text	to quantize LLMs, especially hidden activations. Next, we
+K	text	a new mechanism called
+K	text	of a programming language, corresponding to long-range
+K	text	”. This enables LLMs to solve the problem from
+K	text	provide two perspectives to understand the advantage of
+K	text	gurable simulation platform for recommender sys-
+K	text	value. Via basis truncation, the out-of-distribution rotation
+K	text	. Unlike BPE and WordPiece, Un-
+K	text	\\def\\lr{L} % this tells whether the left or right column is next
+K	text	and K. Saenko, “Object hallucination in image cap-
+K	text	To evaluate base LLMs, typical
+K	text	2 9.9
+K	text	[299]
+K	text	) or
+K	text	In a
+K	text	9.17 6.64 16.96
+K	text	GPT-2 [26] and BART [24]) or
+K	text	[753]
+K	text	[316]
+K	text	, vol. 298, no. 5598, pp. 1569–
+K	text	sets
+K	text	66.76
+K	text	tasks
+K	text	[756]
+K	text	' macro (e.g., `
+K	text	45.20
+K	text	N 
+K	text	[707]
+K	text	[1035]
+K	text	WebGPT [81] Dec-2021 175 GPT-3 -
+K	text	, pp. 195:1–
+K	text	62.30
+K	text	5
+K	text	[847]
+K	text	if(buffer[1]=='x')break;
+K	text	[643]
+K	text	[863]
+K	text	abs/2301.10035, 2023.
+K	text	[779]
+K	text	, 2023.
+K	text	mllm,”
+K	text	content [1044].
+K	text	[101]
+K	text	, vol. abs/2305.18303, 2023.
+K	text	. IEEE Computer Society, 2018, pp. 197–206.
+K	text	vol. abs/2402.04333, 2024. [Online]. Available:
+K	text	51.39 48.83/48.83/50.83 6.17
+K	text	\\else\\ifx\\nxt\\^\\ifTnum\\addF{0x}\\else\\addF^\\fi % 0x77 -> \\T{\\^77}
+K	text	, vol. abs/2305.08298,
+K	text	[972]
+K	text	{\\catcode`\\~=12 \\gdef\\TILDE/{~}} % ~ in a URL
+K	text	[556]
+K	text	old
+K	text	7.46 0.00/0.00
+K	text	LLaMA 2 (70B) 4M
+K	text	[115]
+K	text	https://doi.org/10.48550/arXiv.2306.08543
+K	text	ers,”
+K	text	abs/2306.06070, 2023.
+K	text	97
+K	text	[448]
+K	text	0x3f
+K	text	2020, pp. 3929–3938.
+K	text	1579, 2002.
+K	text	\\.{CWEB}
+K	text	49.75
+K	text	[4]
+K	text	abs/2306.05685, 2023.
+K	text	= 8
+K	text	Pythia (12B) 37.02 65.45 41.53 32.40 26.17 2.88 1.96 5.22
+K	text	then
+K	text	[653]
+K	text	71.11
+K	text	. mlsys.org, 2023.
+K	text	101
+K	text	[406]
+K	text	, vol. abs/2309.01219, 2023.
+K	text	abs/2308.10882, 2023.
+K	text	122
+K	text	+s
+K	text	Nat. Inst. [179] Apr-2021 193K
+K	text	@<Clear t...@>
+K	text	(2) when
+K	text	text,”
+K	text	, vol. abs/2305.16633, 2023.
+K	text	[600]
+K	text	hot 0.007
+K	text	2309.14717
+K	text	93
+K	text	, vol. abs/2305.16291, 2023.
+K	text	37
+K	ocr	nostru tempor adipiscing lorem id
+K	ocr	nostru orem amet. Adipiscing abore nostrua do nisi
+K	ocr	Exercitation tempor aliquip anim lorem anim veniam sint
+K	ocr	Labore ut abore consectetur laborum anim voluptate
+K	ocr	Section 62: Content Title
+K	ocr	nostru tempor adipiscing lorem i.
+K	ocr	20
+K	ocr	Section 25: Content Title
+K	ocr	Section 47: Content Title
+K	ocr	Website:
+K	ocr	proident voluptate eiusmod nisi enim veniam veniam aute.
+K	ocr	Section 52: Content Title
+K	ocr	Section 7: Content Title
+K	ocr	tempor. o fugiat aliqua incididunt culpa voluptate aute
+K	ocr	aute ex ic elit minim minim orem eiusmod. Lorem sunt
+K	ocr	Section 31: Content Title
+K	ocr	Title 2
+K	ocr	Ulamco sunt sun? aliguip nulla laborum molit fugiat sit
+M	ocr	w lavascri  eI  it Vou we
+K	ocr	3OO
+K	ocr	Section 57: Content Title
+K	ocr	fugiat mollit sit irure aborum officia cillum culpa. Nisi
+K	ocr	#5 styLesheet Link tag apblicationl, ba Pss ieieter w
+K	ocr	?  abore ut abore consectetur laborum anim voluptate
+K	ocr	Section 20: Content Title
+K	ocr	sample-files.com
+K	ocr	Culpa fugiat ?a ad qui exercitation duis sint voluptate
+K	ocr	ms sty Lesheer Link vae "hrtns; rcohys dlaus iere <od lat tbswew
+K	ocr	o fugiat aliqua incididunt culpa voluptate aute fugiat
+K	ocr	Section 21: Content Title
+K	ocr	Ulamco sunt sunt aliguip nulla laborum molit fugiat sit
+K	ocr	Section 44; Content Title
+K	ocr	mollit sit irure laborum officia cillum culpa. Nisi minim
+K	ocr	Section 22: Content Title
+K	ocr	Sample eam
+K	ocr	non sunt adipiscing nostrud dolore. Ut ad quis eiusmod
+K	ocr	anim cupidatat. Sit veniam adipiscing aute esse pariatur
+K	ocr	nostruc orem amet. Adipiscing labore nostrud do nisi
+K	ocr	Section 10: Content Title
+K	ocr	1.0.1100
+K	ocr	oroident voluptate eiusmod nisi enim veniam veniam aute.
+K	ocr	4
+K	ocr	Section 45: Content Title
+K	ocr	Section 66: Content Title
+K	ocr	Section 40; Content Title
+K	ocr	? Labore ut labore consectetur laborum anim voluptate
+K	ocr	nostrud orem amet. Adipiscing abore nostrua do nisi
+K	ocr	Section 41: Content Title
+K	ocr	labore nula lorem dolor. Enim sed culpa qui consequat sit
+K	ocr	Section 63: Content Title
+M	ocr	EEON SEANE
+K	ocr	19 20 21 72
+K	ocr	Section 23: Content Title
+K	ocr	Section 32: Content Title
+K	ocr	Ulamco Sunt Sunt aliquip nullla laborum molit fugiat sit
+K	ocr	10000000
+K	ocr	Section 54: Content Title
+K	ocr	oroident voluptate eiusmoc nisi enim veniam veniam aute.
+K	ocr	Section 30: Content Title
+K	ocr	Consequat est sunt nostrud ex anim ex ipsum ullamco
+M	text	BH
+M	text	ND
+M	text	LTMC
+M	text	BH O
+M	text	%(."+2"
+M	text	BTND
+M	text	n#
+M	text	HH
+M	text	ij
+M	text	; : : : ; d=
+M	text	=d
+M	text	MCc
+M	text	TMCc
+M	text	X X
+M	text	BT
+M	text	BTH
+M	text	XW
+M	text	9(."+2"
+M	text	6)(3,"
+D	text	LTMCrc
+D	text	LTMCc

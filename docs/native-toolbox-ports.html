@@ -1,0 +1,458 @@
+<title>Toolbench Native Ports</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a proposal document; each workbench is a full-width mock of the real native window (Canvas chrome, ADR-017),
+   drawn in the app's own graphite + blue palette (gpu_viewer/gui/theme.rs), followed by its reuse map. */
+:root{
+  --bg:#dfe4e9; --panel:#f7f8f9; --raised:#eef0f2; --line:#d3d9df; --text:#1c2530; --dim:#6a7886;
+  --accent:#2f6feb; --on-accent:#fff; --good:#1b7f4b; --warn:#b4540a; --bad:#c8341e;
+  --page:#f3f5f7; --ink:#1c2530; --muted:#5b6977; --rule:#d6dce2; --chip:#e7ecf1;
+  --viewport:linear-gradient(180deg,#eef1f4,#cfd6dd);
+  --f-display:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SF Mono",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0e1318; --panel:#1a2128; --raised:#222a33; --line:#2c3640; --text:#e1e8ee; --dim:#8697a6;
+  --accent:#6ea2ff; --on-accent:#0b1117; --good:#44c98f; --warn:#f0b43a; --bad:#ff6a52;
+  --page:#11161b; --ink:#e1e8ee; --muted:#93a3b1; --rule:#26303a; --chip:#1f2830;
+  --viewport:linear-gradient(180deg,#1b232b,#0e1318); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e1318; --panel:#1a2128; --raised:#222a33; --line:#2c3640; --text:#e1e8ee; --dim:#8697a6;
+  --accent:#6ea2ff; --on-accent:#0b1117; --good:#44c98f; --warn:#f0b43a; --bad:#ff6a52;
+  --page:#11161b; --ink:#e1e8ee; --muted:#93a3b1; --rule:#26303a; --chip:#1f2830;
+  --viewport:linear-gradient(180deg,#1b232b,#0e1318); color-scheme:dark}
+[hidden]{display:none!important}
+body{background:var(--page);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.55}
+.wrap{max-width:1180px;margin:0 auto;padding-block:40px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:48px}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;letter-spacing:.005em}
+h1{font-size:2.3rem;font-weight:600;line-height:1.1}
+h2{font-size:1.55rem;font-weight:600}
+h3{font-size:1.05rem;font-weight:600}
+p{margin:0;max-width:68ch}
+code,.mono{font-family:var(--f-mono);font-size:.86em}
+.eyebrow{font-family:var(--f-mono);font-size:.74rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+header.top{display:grid;gap:14px}
+.lede{color:var(--muted);font-size:1.05rem}
+.status-row{display:flex;flex-wrap:wrap;gap:10px}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:5px 12px;border-radius:999px;background:var(--chip);font-size:.84rem}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.dot.good{background:var(--good)} .dot.warn{background:var(--warn)} .dot.acc{background:var(--accent)}
+section{display:grid;gap:18px}
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:28px}
+@media (max-width:860px){.split{grid-template-columns:minmax(0,1fr)}}
+.box{border:1px solid var(--rule);border-radius:10px;padding:18px 20px;display:grid;align-content:start;gap:10px;background:var(--panel)}
+ul.plain{margin:0;padding-left:1.1em;display:grid;gap:6px}
+ul.plain li{max-width:70ch}
+.tabs{display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid var(--rule);padding-bottom:10px}
+.tabs button{font:500 .92rem var(--f-body);color:var(--muted);background:transparent;border:1px solid transparent;border-radius:8px;padding:7px 14px;cursor:pointer}
+.tabs button[aria-selected="true"]{color:var(--on-accent);background:var(--accent)}
+.tabs button:focus-visible,.choice:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ---- mock native window ---- */
+.scroller{overflow-x:auto;border-radius:12px}
+.win{min-width:900px;background:var(--bg);border:1px solid var(--line);border-radius:12px;overflow:hidden;color:var(--text);font-size:12.5px;line-height:1.4;display:grid;grid-template-rows:auto minmax(0,1fr) auto;height:520px;box-shadow:0 10px 30px rgb(0 0 0 / .12)}
+.bar{display:flex;align-items:center;gap:10px;background:var(--panel);border-bottom:1px solid var(--line);padding:6px 10px}
+.btn{border:1px solid var(--line);background:var(--raised);border-radius:6px;padding:3px 9px;font-size:12px;color:var(--text);white-space:nowrap}
+.btn.acc{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.title{font-weight:600}
+.steps{display:flex;gap:4px;margin-left:8px}
+.step{display:flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;color:var(--dim)}
+.step.on{background:var(--raised);color:var(--text);box-shadow:inset 0 0 0 1px var(--line)}
+.step i{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block}
+.step i.done{background:var(--good)} .step i.next{background:transparent;box-shadow:0 0 0 2px var(--accent)}
+.spacer{flex:1}
+.body{display:grid;grid-template-columns:190px minmax(0,1fr) 300px;min-height:0}
+.tree{background:var(--panel);border-right:1px solid var(--line);padding:10px 8px;display:grid;align-content:start;gap:2px;overflow:hidden}
+.tree div{padding:3px 6px;border-radius:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tree .h{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-top:6px}
+.tree .sel{background:color-mix(in srgb,var(--accent) 22%,transparent)}
+.vp{position:relative;background:var(--viewport);min-width:0;overflow:hidden}
+.vp svg{position:absolute;inset:0;width:100%;height:100%}
+.toolpill{position:absolute;top:10px;left:50%;transform:translateX(-50%);display:flex;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:4px 6px;box-shadow:0 4px 14px rgb(0 0 0 / .12);white-space:nowrap}
+.toolpill span{padding:2px 9px;border-radius:999px}
+.toolpill span.on{background:var(--accent);color:var(--on-accent)}
+.legend{position:absolute;right:10px;bottom:10px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 8px;display:grid;gap:4px;font-size:11px}
+.ramp{width:150px;height:9px;border-radius:3px;background:linear-gradient(90deg,#2a4bd7,#20b2c9,#47c25a,#e7d43b,#e8692c,#c8241e)}
+.ramp-l{display:flex;justify-content:space-between;color:var(--dim);font-family:var(--f-mono);font-size:10px}
+.insp{background:var(--bg);border-left:1px solid var(--line);padding:8px;display:grid;align-content:start;gap:8px;overflow:hidden}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px 10px;display:grid;gap:3px}
+.card h4{margin:0 0 3px;font-size:11.5px;color:var(--accent);font-weight:600;display:flex;justify-content:space-between}
+.row{display:flex;justify-content:space-between;gap:8px}
+.row span:first-child{color:var(--dim)}
+.row span:last-child{font-family:var(--f-mono);font-size:11.5px;font-variant-numeric:tabular-nums}
+.row .edit{background:var(--raised);box-shadow:inset 0 0 0 1px var(--accent);border-radius:4px;padding:0 4px}
+.verdict{display:flex;align-items:center;gap:8px;font-weight:600}
+.tag{font-family:var(--f-mono);font-size:10.5px;padding:1px 7px;border-radius:999px}
+.tag.good{background:color-mix(in srgb,var(--good) 18%,transparent);color:var(--good)}
+.tag.warn{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.statusbar{background:var(--panel);border-top:1px solid var(--line);padding:4px 10px;color:var(--dim);display:flex;gap:14px;white-space:nowrap;overflow:hidden}
+/* page bench (Material Lookup) */
+.page{display:grid;grid-template-rows:auto minmax(0,1fr);gap:10px;padding:12px;min-height:0}
+.searchbar{display:flex;gap:8px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px}
+.input{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-family:var(--f-mono)}
+.chip{padding:2px 9px;border-radius:999px;border:1px solid var(--line);background:var(--raised);white-space:nowrap}
+.chip.on{border-color:var(--accent);color:var(--accent)}
+.cards2{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:10px;min-height:0}
+.pcard{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px;overflow:hidden;display:grid;align-content:start;gap:6px}
+.pcard .grip{color:var(--dim);font-size:11px;display:flex;gap:6px;align-items:center}
+table.t{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+table.t th{color:var(--dim);font-weight:500;text-align:left;border-bottom:1px solid var(--line);padding:3px 6px;font-size:11.5px;white-space:nowrap}
+table.t td{padding:3px 6px;border-bottom:1px solid color-mix(in srgb,var(--line) 60%,transparent);white-space:nowrap}
+table.t td.n{font-family:var(--f-mono);font-size:11.5px;text-align:right}
+table.t tr.sel td{background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.best{color:var(--good);font-weight:600}
+.mark{color:var(--accent)}
+/* reuse table */
+.reuse{overflow-x:auto}
+.reuse table{border-collapse:collapse;width:100%;min-width:640px;font-size:.9rem}
+.reuse th{text-align:left;font-weight:600;color:var(--muted);font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;border-bottom:1px solid var(--rule);padding:8px 10px}
+.reuse td{border-bottom:1px solid var(--rule);padding:8px 10px;vertical-align:top}
+.k{font-family:var(--f-mono);font-size:.74rem;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.k.reuse{background:color-mix(in srgb,var(--good) 16%,transparent);color:var(--good)}
+.k.expose{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
+.k.new{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+.note{font-size:.84rem;color:var(--muted)}
+.choices{display:grid;gap:14px}
+.q{border:1px solid var(--rule);border-radius:10px;padding:16px 18px;display:grid;gap:10px;background:var(--panel)}
+.opts{display:flex;flex-wrap:wrap;gap:8px}
+.choice{display:flex;gap:8px;align-items:flex-start;border:1px solid var(--rule);border-radius:8px;padding:8px 12px;cursor:pointer;max-width:520px}
+.choice input{margin-top:4px;accent-color:var(--accent)}
+.choice b{font-weight:600}
+.rec{font-family:var(--f-mono);font-size:.7rem;color:var(--good);margin-left:6px}
+ol.order{margin:0;padding-left:1.3em;display:grid;gap:8px}
+@media (prefers-reduced-motion:no-preference){.tabs button{transition:background .15s,color .15s}}
+</style>
+
+<div class="wrap">
+<header class="top">
+  <div class="eyebrow">GS Engineering Toolbench · app-tui · proposal for approval · 2026-11-01</div>
+  <h1>Moving the last four terminal workbenches into native windows</h1>
+  <p class="lede">Pressure Vessel, Lug Analysis, Preload Analysis and Material Lookup still open in a console from the dashboard. This proposes how each one looks and works as a native window, and which existing code each port reuses. Nothing below is built yet except the console fix.</p>
+  <div class="status-row">
+    <span class="pill"><i class="dot good"></i>Console window fix: done, compiles, awaiting Windows CI</span>
+    <span class="pill"><i class="dot acc"></i>4 window ports: awaiting your approval</span>
+  </div>
+</header>
+
+<section>
+  <div class="eyebrow">Already fixed</div>
+  <h2>The blank console beside the dashboard</h2>
+  <div class="split">
+    <div class="box">
+      <h3>Cause</h3>
+      <p><code>app-tui.exe</code> is a console program, because the terminal toolboxes need a console. Windows gives a double-clicked console program its own console window, and that window stayed open, blank, for as long as the dashboard ran.</p>
+    </div>
+    <div class="box">
+      <h3>Fix (new <code>app-tui/src/console.rs</code>)</h3>
+      <ul class="plain">
+        <li>The dashboard, every native workbench and the result viewer let go of a console that only they use (<code>GetConsoleProcessList == 1</code>, then <code>FreeConsole</code>). A console shared with a shell you typed <code>app-tui --gui</code> into is kept.</li>
+        <li>Windows the dashboard or the FEA hand-off start are created with <code>CREATE_NO_WINDOW</code>, so they don't pop a console of their own. Terminal toolboxes still get a real console through <code>cmd /C start</code>.</li>
+        <li>No new dependency: two kernel32 calls. The rest of the exe stays a console program, so <code>--tui</code> and <code>--toolbox</code> work as before.</li>
+      </ul>
+      <p class="note">Limit: this can only be checked on Windows. A console may flash for a moment at start-up. Removing that flash would mean switching the exe to the GUI subsystem, which breaks the terminal toolboxes.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">The proposal</div>
+  <h2>The four windows</h2>
+  <p>Each window uses the same frame as the Fastener Hole and Bushing windows: a step strip, a tree on the left, inspector cards on the right, and a drawing of the part in the middle. Material Lookup has no part to draw, so it is a page like Search. Example values are illustrative, taken from each toolbox's defaults.</p>
+
+  <div class="tabs" role="tablist" aria-label="Workbench">
+    <button role="tab" id="t-pv" aria-selected="true" aria-controls="p-pv">Pressure Vessel</button>
+    <button role="tab" id="t-lug" aria-selected="false" aria-controls="p-lug">Lug Analysis</button>
+    <button role="tab" id="t-pre" aria-selected="false" aria-controls="p-pre">Preload Analysis</button>
+    <button role="tab" id="t-mat" aria-selected="false" aria-controls="p-mat">Material Lookup</button>
+  </div>
+
+  <!-- ================= PRESSURE VESSEL ================= -->
+  <div role="tabpanel" id="p-pv" aria-labelledby="t-pv" class="choices">
+    <div class="scroller"><div class="win">
+      <div class="bar"><span class="btn">☰ Menu</span><span class="title">Pressure Vessel | pressure-vessel-case</span>
+        <div class="steps"><span class="step on"><i class="done"></i>Inputs</span><span class="step"><i class="done"></i>Results</span><span class="step"><i class="next"></i>Report</span></div>
+        <span class="spacer"></span><span class="btn">⌘K Search commands</span></div>
+      <div class="body">
+        <div class="tree">
+          <div class="h">Inputs</div><div class="sel">Geometry</div><div>Pressure &amp; end condition</div><div>Material · 7075-T6</div><div>Analysis options</div>
+          <div class="h">Results</div><div>Failure checks (4)</div><div>Minimum thickness</div><div>Buckling · not applicable</div><div>Numbers</div>
+        </div>
+        <div class="vp">
+          <div class="toolpill"><span class="on">Inputs</span><span>Material…</span><span>Undo</span><span>Save</span></div>
+          <svg viewBox="0 0 520 400" aria-label="Quarter-cut thick-wall cylinder, wall coloured by hoop stress">
+            <defs>
+              <linearGradient id="hoop" x1="0" x2="1"><stop offset="0" stop-color="#c8241e"/><stop offset=".35" stop-color="#e8692c"/><stop offset=".7" stop-color="#e7d43b"/><stop offset="1" stop-color="#47c25a"/></linearGradient>
+              <linearGradient id="shell" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#9aa8b6"/><stop offset="1" stop-color="#6f7f8f"/></linearGradient>
+            </defs>
+            <g transform="translate(260 120)" stroke="#33414f" stroke-width="1">
+              <path d="M-150 0 A150 46 0 0 0 0 46 L0 176 A150 46 0 0 1 -150 130 Z" fill="url(#shell)"/>
+              <path d="M0 31 A100 31 0 0 0 100 0 L100 130 A100 31 0 0 1 0 161 Z" fill="#46525e"/>
+              <rect x="100" y="0" width="50" height="130" fill="url(#hoop)"/>
+              <path d="M150 0 A150 46 0 1 0 0 46 L0 31 A100 31 0 1 1 100 0 Z" fill="#b8c3ce"/>
+              <path d="M0 46 L0 176" fill="none"/>
+              <text x="-150" y="206" stroke="none" font-size="12" font-family="IBM Plex Mono,monospace" style="fill:var(--dim)">OD 6.000 in · t 1.000 in · closed ends · 5,000 psi inside</text>
+              <text x="158" y="12" stroke="none" font-size="11" font-family="IBM Plex Mono,monospace" style="fill:var(--dim)">bore</text>
+            </g>
+          </svg>
+          <div class="legend"><b>Hoop stress (psi)</b><div class="ramp"></div><div class="ramp-l"><span>7,000</span><span>13,000</span></div></div>
+        </div>
+        <div class="insp">
+          <div class="card"><h4>Geometry <span>▾</span></h4>
+            <div class="row"><span>Outer diameter</span><span class="edit">6.000_ in</span></div>
+            <div class="row"><span>Wall thickness</span><span>1.000 in</span></div>
+            <div class="row"><span>Classification</span><span>thick wall (t/ri 0.50)</span></div></div>
+          <div class="card"><h4>Pressure &amp; end condition</h4>
+            <div class="row"><span>Internal pressure</span><span>5,000 psi</span></div>
+            <div class="row"><span>External pressure</span><span>0 psi</span></div>
+            <div class="row"><span>End condition</span><span>Closed ▸</span></div></div>
+          <div class="card"><h4>Result</h4>
+            <div class="verdict"><span class="tag good">PASS</span>Governing: von Mises at bore, MS +3.68</div>
+            <div class="row"><span>Hoop (bore)</span><span>13,000 psi</span></div>
+            <div class="row"><span>Radial (bore)</span><span>−5,000 psi</span></div>
+            <div class="row"><span>Axial</span><span>4,000 psi</span></div>
+            <div class="row"><span>Min thickness for MS 0</span><span>0.27 in</span></div></div>
+        </div>
+      </div>
+      <div class="statusbar"><span>Type a value, Enter applies · Esc cancels</span><span>Ctrl+S save · Ctrl+Z undo</span></div>
+    </div></div>
+    <div class="reuse"><table>
+      <thead><tr><th>Piece</th><th>Source</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>Inputs, solve, failure checks, minimum thickness, buckling, thermal</td><td><code>toolboxes::pressure_vessel</code> → <code>PressureVesselModel</code> over <code>pressure-vessel-solver</code>; rows from <code>model::field_rows()</code>, labels from <code>row_label</code></td><td><span class="k reuse">reuse</span></td></tr>
+        <tr><td>Material picker incl. custom materials</td><td><code>material_picker.rs</code> list + <code>persistence.rs</code> (<code>settings-tui-pressure-vessel.json</code>), shown as a value card</td><td><span class="k reuse">reuse</span></td></tr>
+        <tr><td>Report export</td><td><code>view::build_report_text</code> → <code>&lt;case&gt;.report.txt</code>, same as the terminal's <code>e</code></td><td><span class="k expose">make pub(crate)</span></td></tr>
+        <tr><td>Quarter-cut drawing coloured by Lamé hoop stress through the wall</td><td>Fastener's revolved-profile builder (<code>fastener/drawing.rs</code> <code>Mesh::grid / block / into_scene</code>) moved to a shared <code>editor/drawing.rs</code>; stresses from the solver's own Lamé functions</td><td><span class="k expose">extract shared</span></td></tr>
+        <tr><td>Session (undo, save, recovery, case JSON)</td><td>Same shape as <code>FastenerSession</code> + <code>FastenerFile</code></td><td><span class="k new">new, ~400 lines</span></td></tr>
+      </tbody></table></div>
+  </div>
+
+  <!-- ================= LUG ================= -->
+  <div role="tabpanel" id="p-lug" aria-labelledby="t-lug" class="choices" hidden>
+    <div class="scroller"><div class="win">
+      <div class="bar"><span class="btn">☰ Menu</span><span class="title">Lug Analysis | lug-case</span>
+        <div class="steps"><span class="step"><i class="done"></i>Inputs</span><span class="step on"><i class="done"></i>Results</span><span class="step"><i class="next"></i>Report</span></div>
+        <span class="spacer"></span><span class="btn">⌘K Search commands</span></div>
+      <div class="body">
+        <div class="tree">
+          <div class="h">Inputs</div><div>Lug geometry</div><div>Material · 7075-T7351</div><div>Bushing · off</div><div>Pin</div><div>Load</div><div>Advanced (mesh, solver)</div>
+          <div class="h">Results</div><div class="sel">Von Mises</div><div>Hoop on bore</div><div>Contact pressure</div><div>Checks (5)</div><div>Mesh size test</div>
+        </div>
+        <div class="vp">
+          <div class="toolpill"><span>Inputs</span><span class="on">Contour</span><span>Mesh</span><span>Deformed ×1</span><span>Material…</span></div>
+          <svg viewBox="0 0 520 400" aria-label="Lug plate with von Mises contour around the loaded hole and the pin">
+            <defs>
+              <radialGradient id="vm" cx="0.42" cy="0.5" r="0.62"><stop offset=".18" stop-color="#c8241e"/><stop offset=".28" stop-color="#e8692c"/><stop offset=".38" stop-color="#e7d43b"/><stop offset=".55" stop-color="#47c25a"/><stop offset=".75" stop-color="#20b2c9"/><stop offset="1" stop-color="#2a4bd7"/></radialGradient>
+            </defs>
+            <g transform="translate(150 200)">
+              <path d="M0 -90 A90 90 0 0 0 0 90 L280 90 L280 -90 Z" fill="url(#vm)" stroke="#1d2833" stroke-width="1.2"/>
+              <g stroke="#1d2833" stroke-opacity=".18" fill="none">
+                <circle r="52"/><circle r="66"/><circle r="80"/>
+                <path d="M0 -90 L0 -38 M38 0 L90 0 M0 38 L0 90 M-38 0 L-90 0 M27 -27 L64 -64 M27 27 L64 64 M-27 27 L-64 64 M-27 -27 L-64 -64 M120 -90 L120 90 M180 -90 L180 90 M240 -90 L240 90"/>
+              </g>
+              <circle r="38" fill="var(--bg)" stroke="#1d2833" stroke-width="1.2"/>
+              <circle cx="-3" r="37.6" fill="#7d8b99" stroke="#1d2833"/>
+              <path d="M-120 0 L-48 0" stroke="var(--accent)" stroke-width="3"/>
+              <path d="M-54 -7 L-42 0 L-54 7 Z" fill="var(--accent)"/>
+              <text x="-165" y="-10" font-size="12" font-family="IBM Plex Mono,monospace" style="fill:var(--accent)">4,000 lbf</text>
+              <path d="M280 -90 L280 90" stroke="#1d2833" stroke-width="3" stroke-dasharray="6 4"/>
+              <text x="-90" y="130" font-size="12" font-family="IBM Plex Mono,monospace" style="fill:var(--dim)">D 0.500 · W 1.500 · t 0.250 in · kernel FE, normal mesh</text>
+            </g>
+          </svg>
+          <div class="legend"><b>Von Mises (psi)</b><div class="ramp"></div><div class="ramp-l"><span>0</span><span>48,600</span></div></div>
+        </div>
+        <div class="insp">
+          <div class="card"><h4>Result</h4>
+            <div class="verdict"><span class="tag good">PASS</span>Ultimate MS +0.41 (plastic collapse)</div>
+            <div class="row"><span>Peak hoop on bore</span><span>41,800 psi @ 92°</span></div>
+            <div class="row"><span>Net-section stress</span><span>16,000 psi</span></div>
+            <div class="row"><span>Bearing stress</span><span>32,000 psi</span></div>
+            <div class="row"><span>Contact arc</span><span>162°</span></div>
+            <div class="row"><span>Solution check</span><span>OK · ZZ error 4 %</span></div></div>
+          <div class="card"><h4>Load</h4>
+            <div class="row"><span>Pin load</span><span>4,000 lbf</span></div>
+            <div class="row"><span>Load angle</span><span>0°</span></div></div>
+          <div class="card"><h4>Run</h4>
+            <div class="row"><span>Auto re-run</span><span>on (250 ms after edits)</span></div>
+            <div class="row"><span>Last solve</span><span>1.9 s · model reused</span></div></div>
+        </div>
+      </div>
+      <div class="statusbar"><span>F next field · M mesh · D deformed</span><span>Solved on the general FE kernel</span></div>
+    </div></div>
+    <div class="reuse"><table>
+      <thead><tr><th>Piece</th><th>Source</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>Inputs, advanced section, debounced auto re-run, model cache, checks, notes, report</td><td><code>LugAnalysisState</code> (<code>tick</code>, <code>finish</code>), <code>model::{run, evaluate, report_text}</code>; job on the editor's own worker like Eccentric</td><td><span class="k reuse">reuse</span></td></tr>
+        <tr><td>Material picking (lug and bushing)</td><td>The solid editor's material library card (<code>CardForm::Materials</code> over <code>material_lookup::model</code>)</td><td><span class="k reuse">reuse</span></td></tr>
+        <tr><td>Mesh size test</td><td><code>mesh_test::run</code> + recommendation row</td><td><span class="k reuse">reuse</span></td></tr>
+        <tr><td>Full-field contour (von Mises, hoop, displacement) on the real kernel mesh</td><td><code>FeaLug.mesh</code> + <code>FeaSolution.nl.u</code> are not carried out of <code>model::run</code> today. Add an optional <code>fields</code> (mesh + nodal values) to <code>LugRun</code>, filled by the kernel path, drawn through <code>SceneSource</code> like the Eccentric window</td><td><span class="k expose">expose from lug-solver run</span></td></tr>
+        <tr><td>Session + case JSON</td><td>Fastener / Eccentric session shape</td><td><span class="k new">new</span></td></tr>
+      </tbody></table></div>
+  </div>
+
+  <!-- ================= PRELOAD ================= -->
+  <div role="tabpanel" id="p-pre" aria-labelledby="t-pre" class="choices" hidden>
+    <div class="scroller"><div class="win">
+      <div class="bar"><span class="btn">☰ Menu</span><span class="title">Preload Analysis | preload-case</span>
+        <div class="steps"><span class="step on"><i class="done"></i>Joint</span><span class="step"><i class="done"></i>Results</span><span class="step"><i class="next"></i>Report</span></div>
+        <span class="spacer"></span><span class="btn">⌘K Search commands</span></div>
+      <div class="body">
+        <div class="tree">
+          <div class="h">Joint</div><div>Tightening</div><div>Friction</div><div>Fastener · NAS6204</div><div class="sel">Joint stack (3)</div><div style="padding-left:18px">Washer 0.063</div><div style="padding-left:18px">Plate 0.250 Al</div><div style="padding-left:18px">Fitting 0.375 Ti</div><div>Service load &amp; slip</div>
+          <div class="h">Results</div><div>Preload &amp; torque</div><div>Stiffness &amp; FE check</div><div>Uncertainty</div>
+        </div>
+        <div class="vp">
+          <div class="toolpill"><span>Template…</span><span>Bolt…</span><span class="on">Add member</span><span>Remove</span><span>FE check</span></div>
+          <svg viewBox="0 0 520 400" aria-label="Half section of the bolted joint: head, washer, plates, nut and compression cone">
+            <g transform="translate(260 70)" stroke="#1d2833" stroke-width="1">
+              <rect x="-16" y="-28" width="32" height="28" fill="#8a97a4"/>
+              <rect x="-62" y="-28" width="46" height="28" fill="#8a97a4"/>
+              <rect x="16" y="-28" width="46" height="28" fill="#8a97a4"/>
+              <rect x="-80" y="0" width="160" height="14" fill="#c9b37a"/>
+              <rect x="-150" y="14" width="300" height="72" fill="#b7c4d1"/>
+              <rect x="-150" y="86" width="300" height="108" fill="#a7b1bb"/>
+              <rect x="-16" y="0" width="32" height="236" fill="#6e7c8a"/>
+              <rect x="-62" y="194" width="124" height="42" fill="#8a97a4"/>
+              <path d="M-38 0 L-94 97 L-38 194 M38 0 L94 97 L38 194" stroke="var(--accent)" stroke-dasharray="5 4" fill="none" stroke-width="1.5"/><path d="M-150 97 L150 97" stroke="var(--accent)" stroke-opacity=".45" stroke-dasharray="2 4"/>
+              <path d="M-16 -40 L-16 250 M16 -40 L16 250" stroke="none"/>
+              <path d="M0 -44 L0 256" stroke="#1d2833" stroke-dasharray="10 3 2 3" stroke-opacity=".6"/>
+              <path d="M90 194 L90 86" stroke="var(--accent)" stroke-width="2.5"/>
+              <path d="M84 96 L90 84 L96 96 Z" fill="var(--accent)" stroke="none"/>
+            </g>
+            <g font-family="IBM Plex Mono,monospace" font-size="11.5" style="fill:var(--dim)">
+              <text x="420" y="78">washer</text><text x="420" y="122">plate 2024-T3</text><text x="420" y="212">fitting Ti-6Al-4V</text><text x="410" y="170" style="fill:var(--accent)">FE pressure zone, mid-plane</text>
+              <text x="96" y="342">1/4-28 · 95 in·lb · nut tightened · K 0.19</text>
+            </g>
+          </svg>
+          <div class="legend"><b>Colour key</b><div style="display:flex;gap:10px"><span>■ bolt</span><span style="color:#c9b37a">■ washer</span><span style="color:var(--accent)">■ cone</span></div></div>
+        </div>
+        <div class="insp">
+          <div class="card"><h4>Result</h4>
+            <div class="verdict"><span class="tag good">OK</span>Preload 2,050 lbf (1,640 – 2,460 at 3σ)</div>
+            <div class="row"><span>Thread / bearing torque</span><span>38 / 57 in·lb</span></div>
+            <div class="row"><span>Bolt stress (preload)</span><span>56.4 ksi · 41 % Ftu</span></div>
+            <div class="row"><span>Joint constant C</span><span>0.24</span></div>
+            <div class="row"><span>Slip margin</span><span>+0.62</span></div></div>
+          <div class="card"><h4>Member · Plate 0.250 <span>2 of 3</span></h4>
+            <div class="row"><span>Thickness</span><span class="edit">0.250_ in</span></div>
+            <div class="row"><span>Material</span><span>2024-T3 ▸</span></div>
+            <div class="row"><span>Outer diameter</span><span>auto</span></div></div>
+          <div class="card"><h4>FE member stiffness check</h4>
+            <div class="row"><span>Cone C<sub>m</sub> / FE C<sub>m</sub></span><span>1.00 / 0.93</span></div>
+            <div class="row"><span>Equivalent cone</span><span>32.4°</span></div></div>
+        </div>
+      </div>
+      <div class="statusbar"><span>Click a layer to edit it · Insert adds a member</span><span>FE check current</span></div>
+    </div></div>
+    <div class="reuse"><table>
+      <thead><tr><th>Piece</th><th>Source</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>All inputs, member add/remove, solve, uncertainty, thread load distribution, report</td><td><code>PreloadAnalysisState</code> / <code>PreloadModel</code> over <code>fastened_joint_solver::solve::compute</code>; rows from <code>field_rows(&amp;model)</code></td><td><span class="k reuse">reuse</span></td></tr>
+        <tr><td>Bolt catalog and joint templates</td><td><code>bolt_picker.rs</code>, <code>template_picker.rs</code> / <code>joint_templates.rs</code> lists shown as value cards</td><td><span class="k expose">make lists pub(crate)</span></td></tr>
+        <tr><td>FE member-compliance check on a worker</td><td><code>fe_check::run</code>, <code>PreloadAnalysisState::{tick, finish_fe, sync_fe_angle}</code></td><td><span class="k reuse">reuse</span></td></tr>
+        <tr><td>Half-section drawing (head, washers, plates, nut, cone), click a layer to edit it</td><td>Same data as the terminal's <code>stack_diagram</code>; geometry through the shared revolved-profile builder</td><td><span class="k new">new drawing</span></td></tr>
+      </tbody></table></div>
+  </div>
+
+  <!-- ================= MATERIAL LOOKUP ================= -->
+  <div role="tabpanel" id="p-mat" aria-labelledby="t-mat" class="choices" hidden>
+    <div class="scroller"><div class="win">
+      <div class="bar"><span class="btn">☰ Menu</span><span class="title">Material Lookup</span>
+        <div class="steps"><span class="step on"><i class="done"></i>Browse</span><span class="step"><i class="next"></i>Compare</span></div>
+        <span class="spacer"></span><span class="btn">⌘K Search commands</span></div>
+      <div class="page">
+        <div class="searchbar"><span class="input">7075 plate</span>
+          <span class="chip on">Group: Aluminium</span><span class="chip">Basis: A</span><span class="chip on">Sort: Fty ↓</span><span class="chip">Compare (3)</span><span class="btn">Export</span></div>
+        <div class="cards2">
+          <div class="pcard"><div class="grip">⋮⋮ <b style="color:var(--text)">Materials</b> · 46 of 1,392</div>
+            <table class="t"><thead><tr><th></th><th>Material</th><th>Basis</th><th style="text-align:right">Ftu ksi</th><th style="text-align:right">Fty ksi</th><th style="text-align:right">E Msi</th><th style="text-align:right">ρ lb/in³</th></tr></thead>
+            <tbody>
+              <tr class="sel"><td class="mark">●</td><td>7075-T651 plate 0.250–0.499</td><td>A</td><td class="n">75</td><td class="n">65</td><td class="n">10.3</td><td class="n">0.101</td></tr>
+              <tr><td class="mark">●</td><td>7075-T7351 plate 0.250–2.000</td><td>A</td><td class="n">67</td><td class="n">55</td><td class="n">10.3</td><td class="n">0.101</td></tr>
+              <tr><td></td><td>7075-T651 plate 0.500–1.000</td><td>A</td><td class="n">76</td><td class="n">66</td><td class="n">10.3</td><td class="n">0.101</td></tr>
+              <tr><td class="mark">●</td><td>7075-T7651 plate 0.250–0.499</td><td>A</td><td class="n">71</td><td class="n">60</td><td class="n">10.3</td><td class="n">0.101</td></tr>
+              <tr><td></td><td>7075-T6 sheet 0.040–0.125</td><td>A</td><td class="n">76</td><td class="n">67</td><td class="n">10.3</td><td class="n">0.101</td></tr>
+              <tr><td></td><td>7075 (typical)</td><td>S</td><td class="n">83</td><td class="n">73</td><td class="n">10.4</td><td class="n">—</td></tr>
+            </tbody></table></div>
+          <div class="pcard"><div class="grip">⋮⋮ <b style="color:var(--text)">Compare</b> · 3 marked</div>
+            <table class="t"><thead><tr><th></th><th style="text-align:right">T651</th><th style="text-align:right">T7351</th><th style="text-align:right">T7651</th></tr></thead>
+            <tbody>
+              <tr><td>Ftu ksi</td><td class="n best">75</td><td class="n">67</td><td class="n">71</td></tr>
+              <tr><td>Fty ksi</td><td class="n best">65</td><td class="n">55</td><td class="n">60</td></tr>
+              <tr><td>Fbru e/D 2.0</td><td class="n best">148</td><td class="n">134</td><td class="n">140</td></tr>
+              <tr><td>E ksi</td><td class="n">10,300</td><td class="n">10,300</td><td class="n">10,300</td></tr>
+              <tr><td>Fty / ρ</td><td class="n best">644</td><td class="n">545</td><td class="n">594</td></tr>
+              <tr><td>Elongation %</td><td class="n">7</td><td class="n best">8</td><td class="n">7</td></tr>
+            </tbody></table></div>
+        </div>
+      </div>
+      <div class="statusbar"><span>Type to search · click a row for its properties · ● marks it for Compare (up to 4)</span></div>
+    </div></div>
+    <div class="reuse"><table>
+      <thead><tr><th>Piece</th><th>Source</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>Catalogue, groups, query, sort, basis filter, compare rows with best marks, report</td><td><code>material_lookup::model::{catalog, groups, Query, filter_sort, compare_rows, report_text}</code></td><td><span class="k reuse">reuse</span></td></tr>
+        <tr><td>Page with search bar, table and a second card</td><td>The Search page bench: <code>Authoring::document()</code>, <code>Document / DocTable / DocInput / DocPanel</code>, movable cards from <code>page_layout</code></td><td><span class="k reuse">reuse</span></td></tr>
+        <tr><td>Property panel for the clicked material</td><td><code>widgets/material_detail.rs</code> rows (as plain data for the detail block)</td><td><span class="k expose">split text from ratatui</span></td></tr>
+        <tr><td>Session (marks, query; no case file)</td><td>Same shape as <code>SearchSession</code>, without the runtime</td><td><span class="k new">new, ~300 lines</span></td></tr>
+      </tbody></table></div>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">Applies to all four</div>
+  <h2>Common rules</h2>
+  <div class="split">
+    <div class="box"><h3>One model, two heads</h3>
+      <ul class="plain">
+        <li>No formula, row or label is written again in the window. Each window wraps the terminal toolbox's own state, the same way the Fastener, Bushing and Search windows do.</li>
+        <li>The dashboard tiles switch from <code>Opens::Terminal</code> to <code>Opens::Window</code>. New flags: <code>--gpu-pressure-vessel</code>, <code>--gpu-lug</code>, <code>--gpu-preload</code>, <code>--gpu-materials</code>.</li>
+        <li>Every toolbox item the window needs and cannot reach becomes <code>pub(crate)</code>, and its callers are checked.</li>
+      </ul></div>
+    <div class="box"><h3>Proof for each port</h3>
+      <ul class="plain">
+        <li>Session tests: edit, undo, save, reopen, results equal the terminal model's for the same inputs.</li>
+        <li>Window input tests through real clicks and keys (<code>window.rs</code>), plus a GPU snapshot in both themes that I look at before calling it done.</li>
+        <li><code>cargo test -p app-tui</code> and the dashboard test that checks every tile opens the right way.</li>
+      </ul></div>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">Your call</div>
+  <h2>Decisions before I start</h2>
+  <form class="choices" id="decide" onsubmit="event.preventDefault()">
+    <div class="q"><h3>1 · Lug Analysis viewport</h3>
+      <div class="opts">
+        <label class="choice"><input type="radio" name="lug" id="lug-a" checked><span><b>Full-field contour</b><span class="rec">recommended</span><br>Expose the kernel mesh and nodal fields from the lug run and draw von Mises, hoop and displacement on the real mesh.</span></label>
+        <label class="choice"><input type="radio" name="lug" id="lug-b"><span><b>Geometry with a bore ring</b><br>Draw the lug to scale and colour only the bore by hoop stress, from data the run already returns. No solver change.</span></label>
+      </div></div>
+    <div class="q"><h3>2 · Terminal toolboxes after the port</h3>
+      <div class="opts">
+        <label class="choice"><input type="radio" name="tui" id="tui-a" checked><span><b>Keep them</b><span class="rec">recommended</span><br><code>app-tui --toolbox &lt;slug&gt;</code> keeps working, as Fastener Hole and Bushing did. The dashboard opens the windows.</span></label>
+        <label class="choice"><input type="radio" name="tui" id="tui-b"><span><b>Remove them</b><br>Native only, like Bushing Stackup. Deletes four terminal views and their tests.</span></label>
+      </div></div>
+    <div class="q"><h3>3 · Order of work</h3>
+      <ol class="order">
+        <li><b>Material Lookup</b>: smallest, and proves the page bench outside Search.</li>
+        <li><b>Pressure Vessel</b>: extracts the shared revolved-drawing module from Fastener Hole.</li>
+        <li><b>Preload Analysis</b>: the joint section is drawn from the axisymmetric FE result on fea-core (member stress contour and the compressed zone it finds), with the solver's double frustum (head and nut cones meeting at the stack mid-plane) overlaid for comparison.</li>
+        <li><b>Lug Analysis</b>: largest, needs the worker and the exposed fields.</li>
+      </ol>
+      <p class="note">Each one lands as its own commit with its tests, so you can try each window as soon as it is done.</p></div>
+  </form>
+</section>
+</div>
+
+<script>
+(function(){
+  var tabs=[].slice.call(document.querySelectorAll('[role="tab"]'));
+  function show(t){tabs.forEach(function(b){var on=b===t;b.setAttribute('aria-selected',on);document.getElementById(b.getAttribute('aria-controls')).hidden=!on;});}
+  tabs.forEach(function(b,i){
+    b.addEventListener('click',function(){show(b)});
+    b.addEventListener('keydown',function(e){var d=e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0;if(d){var n=tabs[(i+d+tabs.length)%tabs.length];n.focus();show(n);}});
+  });
+})();
+</script>

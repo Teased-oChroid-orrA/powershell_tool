@@ -1,0 +1,10 @@
+[package]
+name = "search-ml"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+rten = { version = "=0.24.0", default-features = false, features = ["onnx_format"] }
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }

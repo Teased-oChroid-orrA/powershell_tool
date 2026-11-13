@@ -374,7 +374,7 @@ impl Gui {
                                     ui.label(RichText::new(&c.title).small().color(p.dim));
                                 }
                                 ui.end_row();
-                                for row in &table.rows {
+                                for row in table.rows.iter() {
                                     for cell in &row.cells {
                                         ui.label(RichText::new(cell).small());
                                     }

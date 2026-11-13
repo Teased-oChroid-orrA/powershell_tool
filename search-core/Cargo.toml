@@ -17,7 +17,14 @@ name = "search_core"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 regex = "1"
+# Decrypts owner-password-only PDFs (empty user password: RC4 40/128, AES-128,
+# AES-256) so the byte-scanning extractor sees plain streams; see pdf_decrypt.rs.
+# Measured: 31 of 80 KG-RAG PDFs are such files and extracted to nothing without it.
+lopdf = { version = "0.47", default-features = false }
+# Trial text-layer backend (pure Rust, MIT) behind the off-by-default `pdf-yolow` feature; see pdf_yolow.rs.
+yolowpdf = { version = "0.1.2", optional = true }
 # Rust's `regex` crate has no lookaround (no backtracking, by design), but
 # whole-word matching's boundary check needs it (see matching.rs's
 # `whole_word_pattern` doc comment). fancy-regex 0.19 verified by real
@@ -75,6 +82,9 @@ urlencoding = "2"
 # without this feature would need the host to already have a system
 # SQLite library, which win-x64 machines aren't guaranteed to have.
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Opt-in folder watcher (`watch.rs`, #240 P2-2). In-process and user-mode only: ReadDirectoryChangesW on Windows (no admin,
+# no service, no registry or system-file change), FSEvents on macOS, inotify on Linux; the watch handle is closed when dropped.
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 # Structured instrumentation (issue #6 §57/§58) - spans/events around
 # discover/extract/index/query, aggregate-not-per-file log lines. Already
 # pulled into this workspace transitively (dioxus's "logger" feature in
@@ -121,9 +131,66 @@ image = { version = "0.25", optional = true, default-features = false, features 
 # rather than adding more image-format dependencies for formats not yet
 # seen in a real reported case.
 ocr = ["dep:ocrs", "dep:rten", "dep:image"]
+# Trial: yolowpdf text layer, used only when SEARCH_PDF_YOLOW=1; the byte scanner stays the fallback.
+pdf-yolow = ["dep:yolowpdf"]
+neural-search = ["dep:search-ml"]
+semantic-search = ["neural-search"]
+# Natural-language Find: rules (`nl_rules`) split a sentence into conditions and judge passages; no model.
+nl-find = ["semantic-search"]
+
+[[example]]
+name = "retrieval_eval"
+required-features = ["semantic-search"]
+
+[[example]]
+name = "idf_pooling_eval"
+required-features = ["semantic-search"]
+
+[[example]]
+name = "edges_eval"
+required-features = ["semantic-search"]
+
+[[example]]
+name = "projects_eval"
+required-features = ["neural-search"]
+
+[[example]]
+name = "entity_rank_probe"
+required-features = ["neural-search"]
+
+[[example]]
+name = "splade_eval"
+required-features = ["semantic-search"]
+
+[[example]]
+name = "code_nav_probe"
+required-features = ["semantic-search"]
+
+[[example]]
+name = "multilingual_eval"
+required-features = ["semantic-search"]
+
+[[example]]
+name = "semantic_scale"
+required-features = ["semantic-search"]
+
+[[example]]
+name = "edges_cost"
+required-features = ["neural-search"]
+
+[[example]]
+name = "gaps_eval"
+required-features = ["neural-search"]
+
+[dependencies.search-ml]
+path = "../search-ml"
+optional = true
 
 [dev-dependencies]
 tempfile = "3"
+# `examples/splade_eval.rs` runs a SPLADE ONNX model directly (same versions and features as `search-ml`).
+rten = { version = "=0.24.0", default-features = false, features = ["onnx_format"] }
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
 
 # Same philosophy as native-search/benches/indexing_and_search.rs (see
 # docs/benchmarking.md): plain manual timing, harness = false, no

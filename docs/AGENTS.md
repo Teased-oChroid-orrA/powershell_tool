@@ -70,6 +70,10 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | FFI contract (native-search ⟷ app) | `docs/ffi.md` |
 | Benchmarking methodology/results | `docs/benchmarking.md` |
 | Search matching semantics (Unicode, literal/regex) | `docs/search-semantics.md` |
+| PDF/OCR line quality: junk-line filter, `TJ` joining, MiniLM/LLM verdict | `docs/search-ocr-line-quality.md` |
+| Search retrieval benchmarks: BEIR, TREC-COVID, MS MARCO, Cranfield; harness, data, variant results (fusion, stemming) | `docs/search-benchmarks.md` |
+| Local knowledge intelligence engine: audit, privacy evidence, gap analysis, roadmap (issue #240; source directive beside it) | `docs/knowledge-engine-audit.md` |
+| Natural-language Find: parsing, judging, evidence, corpus rounds | `docs/search-natural-language-find.md` |
 | .NET/WinUI (`src/`) deployment | `docs/deployment.md` |
 | Historical Rust (`app/`/`cli/`) deployment | `docs/deployment-rust.md` (obsolete `app/` head and separate CLI workflow) |
 | Offline build (`native-search/` crate) | `docs/offline-build.md` |

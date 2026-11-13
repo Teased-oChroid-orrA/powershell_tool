@@ -132,7 +132,13 @@ impl Viewer {
         self.select_result(next)
     }
     fn window_size(&self) -> (u32, u32) {
-        self.size_override.or_else(|| self.config.as_ref().map(|c| (c.width.max(1), c.height.max(1)))).unwrap_or((1, 1))
+        self.size_override
+            .or_else(|| {
+                self.config
+                    .as_ref()
+                    .map(|c| (c.width.max(1), c.height.max(1)))
+            })
+            .unwrap_or((1, 1))
     }
     fn viewport(&self) -> PxRect {
         self.gui.viewport_px(self.window_size())
@@ -140,7 +146,13 @@ impl Viewer {
     /// Camera for the viewport (aspect of the region the scene is drawn into).
     fn camera(&self) -> Camera {
         let vp = self.viewport();
-        Camera { yaw: self.view.yaw, pitch: self.view.pitch, zoom: self.view.zoom, aspect: vp.w.max(1) as f32 / vp.h.max(1) as f32, pan: self.view.pan }
+        Camera {
+            yaw: self.view.yaw,
+            pitch: self.view.pitch,
+            zoom: self.view.zoom,
+            aspect: vp.w.max(1) as f32 / vp.h.max(1) as f32,
+            pan: self.view.pan,
+        }
     }
     /// Carry out what a ribbon button, tree row, menu entry or property row asks for.
     fn dispatch(&mut self, action: UiAction) {
@@ -207,11 +219,21 @@ impl Viewer {
             LayoutOp::ToggleAdaptive => {
                 let on = !self.gui.adapt_enabled();
                 self.gui.set_adaptive(on);
-                say(self, if on { "Adaptive layout on: tools, cards and the tree follow how you work.".into() } else { "Adaptive layout off: the fixed layout is used.".into() });
+                say(
+                    self,
+                    if on {
+                        "Adaptive layout on: tools, cards and the tree follow how you work.".into()
+                    } else {
+                        "Adaptive layout off: the fixed layout is used.".into()
+                    },
+                );
             }
             LayoutOp::Reset => {
                 self.gui.reset_layout();
-                say(self, "Learned layout forgotten: back to the fixed layout.".into());
+                say(
+                    self,
+                    "Learned layout forgotten: back to the fixed layout.".into(),
+                );
             }
             LayoutOp::Explain => {
                 let text = self.gui.adapt_summary();
@@ -229,10 +251,17 @@ impl Viewer {
         }
         if !ed.switch_bench(bench) {
             if ed.dirty() {
-                ed.set_status(format!("Save the {} model first (Ctrl/Cmd+S) before opening the {} bench.", ed.bench().label(), bench.label()));
+                ed.set_status(format!(
+                    "Save the {} model first (Ctrl/Cmd+S) before opening the {} bench.",
+                    ed.bench().label(),
+                    bench.label()
+                ));
                 return;
             }
-            let dir = ed.path().parent().map_or_else(std::path::PathBuf::new, std::path::Path::to_path_buf);
+            let dir = ed
+                .path()
+                .parent()
+                .map_or_else(std::path::PathBuf::new, std::path::Path::to_path_buf);
             match super::editor::open(bench, &super::editor::bench_file(&dir, bench)) {
                 Ok(new) => self.editor = Some(new),
                 Err(e) => {
@@ -285,7 +314,11 @@ impl Viewer {
         MenuContext {
             view: &self.view,
             scene: self.scene(),
-            results: if self.editor.is_some() { 1 } else { self.project.scenes.len() },
+            results: if self.editor.is_some() {
+                1
+            } else {
+                self.project.scenes.len()
+            },
             editor: self.editor.as_deref(),
             visible: self.gui.visible,
             adaptive: self.gui.adapt_enabled(),
@@ -294,16 +327,24 @@ impl Viewer {
     /// The viewport-relative pixel of a window pixel, if it is inside the viewport and not under a panel or popup.
     fn viewport_point(&self, at: (f64, f64)) -> Option<(f64, f64)> {
         let v = self.viewport();
-        (v.contains(at.0, at.1) && !self.gui.wants_pointer()).then_some((at.0 - v.x as f64, at.1 - v.y as f64))
+        (v.contains(at.0, at.1) && !self.gui.wants_pointer())
+            .then_some((at.0 - v.x as f64, at.1 - v.y as f64))
     }
     /// A press released without dragging: in the editor it is a tool click on the model.
     fn model_click(&mut self, at: (f64, f64)) {
-        let Some(local) = self.viewport_point(at) else { return };
+        let Some(local) = self.viewport_point(at) else {
+            return;
+        };
         let vp = self.viewport();
         let cam = self.camera();
         let additive = self.mods.shift_key();
         if let Some(ed) = &mut self.editor {
-            ed.click_with([local.0 as f32, local.1 as f32], [vp.w as f32, vp.h as f32], &cam, additive);
+            ed.click_with(
+                [local.0 as f32, local.1 as f32],
+                [vp.w as f32, vp.h as f32],
+                &cam,
+                additive,
+            );
             if let Some(items) = ed.take_popup() {
                 self.gui.open_context(at, items);
             }
@@ -311,10 +352,18 @@ impl Viewer {
     }
     /// Left press over the model: does the editor take the gesture (drag a sketch point)?
     fn begin_grab(&mut self, at: (f64, f64)) -> bool {
-        let Some(local) = self.viewport_point(at) else { return false };
+        let Some(local) = self.viewport_point(at) else {
+            return false;
+        };
         let vp = self.viewport();
         let cam = self.camera();
-        self.editor.as_mut().is_some_and(|ed| ed.grab([local.0 as f32, local.1 as f32], [vp.w as f32, vp.h as f32], &cam))
+        self.editor.as_mut().is_some_and(|ed| {
+            ed.grab(
+                [local.0 as f32, local.1 as f32],
+                [vp.w as f32, vp.h as f32],
+                &cam,
+            )
+        })
     }
     /// Cursor moved: a grabbed entity follows it, otherwise the editor may show a hover preview.
     fn editor_pointer(&mut self, at: (f64, f64)) {
@@ -324,7 +373,12 @@ impl Viewer {
         let vp = self.viewport();
         let cam = self.camera();
         let grabbing = self.grabbing;
-        let Some(local) = self.viewport_point(at).or_else(|| grabbing.then_some((at.0 - vp.x as f64, at.1 - vp.y as f64))) else { return };
+        let Some(local) = self
+            .viewport_point(at)
+            .or_else(|| grabbing.then_some((at.0 - vp.x as f64, at.1 - vp.y as f64)))
+        else {
+            return;
+        };
         let (px, size) = ([local.0 as f32, local.1 as f32], [vp.w as f32, vp.h as f32]);
         if let Some(ed) = &mut self.editor {
             if grabbing {
@@ -337,20 +391,37 @@ impl Viewer {
     /// A Shift-drag released over the viewport: box-select in the editor (Ctrl/Cmd adds to the selection).
     fn model_box(&mut self, a: (f64, f64), b: (f64, f64)) {
         let vp = self.viewport();
-        let local = |p: (f64, f64)| [(p.0 - vp.x as f64).clamp(0.0, vp.w as f64) as f32, (p.1 - vp.y as f64).clamp(0.0, vp.h as f64) as f32];
+        let local = |p: (f64, f64)| {
+            [
+                (p.0 - vp.x as f64).clamp(0.0, vp.w as f64) as f32,
+                (p.1 - vp.y as f64).clamp(0.0, vp.h as f64) as f32,
+            ]
+        };
         let additive = self.mods.control_key() || self.mods.super_key();
         let cam = self.camera();
         if let Some(ed) = &mut self.editor {
-            ed.box_select(local(a), local(b), [vp.w as f32, vp.h as f32], &cam, additive);
+            ed.box_select(
+                local(a),
+                local(b),
+                [vp.w as f32, vp.h as f32],
+                &cam,
+                additive,
+            );
         }
     }
     /// Right press in the viewport: select what is under the cursor and open the context menu there.
     fn open_context_menu(&mut self, at: (f64, f64)) {
-        let Some(local) = self.viewport_point(at) else { return };
+        let Some(local) = self.viewport_point(at) else {
+            return;
+        };
         let vp = self.viewport();
         let cam = self.camera();
         if let Some(ed) = &mut self.editor {
-            ed.select_at([local.0 as f32, local.1 as f32], [vp.w as f32, vp.h as f32], &cam);
+            ed.select_at(
+                [local.0 as f32, local.1 as f32],
+                [vp.w as f32, vp.h as f32],
+                &cam,
+            );
         }
         let items = menus::context(&self.menu_context());
         self.gui.open_context(at, items);
@@ -400,7 +471,11 @@ impl Viewer {
         if let Some(ed) = &mut self.editor {
             ed.set_view(&cam, [vp.w as f32, vp.h as f32]);
         }
-        let overlay = self.editor.as_ref().map(|e| e.overlay(&cam, [vp.w as f32, vp.h as f32])).unwrap_or_default();
+        let overlay = self
+            .editor
+            .as_ref()
+            .map(|e| e.overlay(&cam, [vp.w as f32, vp.h as f32]))
+            .unwrap_or_default();
         let input = GuiInput {
             view: &self.view,
             scenes: &self.project.scenes,
@@ -433,7 +508,10 @@ impl Viewer {
     /// Shift the view by a cursor offset in window pixels.
     fn pan_by_pixels(&mut self, (dx, dy): (f64, f64)) {
         let vp = self.viewport();
-        self.command(Command::Pan { dx: (2.0 * dx / vp.w.max(1) as f64) as f32, dy: (-2.0 * dy / vp.h.max(1) as f64) as f32 });
+        self.command(Command::Pan {
+            dx: (2.0 * dx / vp.w.max(1) as f64) as f32,
+            dy: (-2.0 * dy / vp.h.max(1) as f64) as f32,
+        });
     }
     /// Wheel zoom that keeps the model point under the cursor where it is, so a small feature can be approached.
     fn zoom_at(&mut self, lines: f32, at: (f64, f64)) {
@@ -441,9 +519,18 @@ impl Viewer {
         let (old_zoom, old_pan) = (self.view.zoom, self.view.pan);
         self.command(Command::Zoom(lines));
         let k = self.view.zoom / old_zoom;
-        let c = [(2.0 * (at.0 - vp.x as f64) / vp.w.max(1) as f64 - 1.0) as f32, (1.0 - 2.0 * (at.1 - vp.y as f64) / vp.h.max(1) as f64) as f32];
-        let pan = [c[0] - (c[0] - old_pan[0]) * k, c[1] - (c[1] - old_pan[1]) * k];
-        self.command(Command::Pan { dx: pan[0] - self.view.pan[0], dy: pan[1] - self.view.pan[1] });
+        let c = [
+            (2.0 * (at.0 - vp.x as f64) / vp.w.max(1) as f64 - 1.0) as f32,
+            (1.0 - 2.0 * (at.1 - vp.y as f64) / vp.h.max(1) as f64) as f32,
+        ];
+        let pan = [
+            c[0] - (c[0] - old_pan[0]) * k,
+            c[1] - (c[1] - old_pan[1]) * k,
+        ];
+        self.command(Command::Pan {
+            dx: pan[0] - self.view.pan[0],
+            dy: pan[1] - self.view.pan[1],
+        });
     }
     fn command(&mut self, command: Command) {
         let scene = &self.project.scenes[self.project.selected];
@@ -457,14 +544,19 @@ impl Viewer {
     fn attach_display_store(&mut self, path: Option<std::path::PathBuf>) {
         if let Some(p) = &path {
             let s = DisplaySettings::load_from(p);
-            (self.view.style, self.view.background, self.view.key_colours) = (s.style, s.background, s.key_colours);
+            (self.view.style, self.view.background, self.view.key_colours) =
+                (s.style, s.background, s.key_colours);
             self.view.panel_pos = s.panel_pos.map(super::display::sanitize_panel_pos);
-            self.view.page_layout = s.page_layout.and_then(super::display::PageLayout::sanitized);
+            self.view.page_layout = s
+                .page_layout
+                .and_then(super::display::PageLayout::sanitized);
         }
         self.display_file = path;
     }
     fn save_display(&mut self) {
-        let Some(path) = &self.display_file else { return };
+        let Some(path) = &self.display_file else {
+            return;
+        };
         if let Err(e) = self.view.display_settings().save_to(path) {
             self.error = Some(format!("could not save the display settings: {e}"));
         }
@@ -493,7 +585,9 @@ impl Viewer {
             Input::Modifiers(m) => self.mods = m,
             Input::Key(k) => self.key_pressed(&k),
             Input::Press(MouseButton::Left) => {
-                let Some(at) = self.pointer.cursor else { return };
+                let Some(at) = self.pointer.cursor else {
+                    return;
+                };
                 // egui takes the press when it is over a panel, a button or a popup; a popup also closes on a click
                 // anywhere else, and that click is not a model click.
                 let mut consumed = self.gui.wants_pointer();
@@ -503,7 +597,10 @@ impl Viewer {
                 self.egui_press = consumed;
                 self.grabbing = !consumed && !self.mods.shift_key() && self.begin_grab(at);
                 // Shift-drag in an editor is a selection box; elsewhere a drag orbits.
-                self.pointer.press_as(consumed || self.grabbing, self.editor.is_some() && self.mods.shift_key());
+                self.pointer.press_as(
+                    consumed || self.grabbing,
+                    self.editor.is_some() && self.mods.shift_key(),
+                );
             }
             Input::Release(MouseButton::Left) => {
                 if std::mem::take(&mut self.egui_press) {
@@ -527,7 +624,11 @@ impl Viewer {
             // Right: a drag pans, a click (release without travel) opens the context menu. Opening on the
             // release keeps the press egui is still handling from closing the new menu at once.
             Input::Press(button @ (MouseButton::Right | MouseButton::Middle)) => {
-                self.pan_gesture = self.pointer.cursor.filter(|&at| self.viewport_point(at).is_some()).map(|at| (button, PanGesture::begin(at, button == MouseButton::Middle)));
+                self.pan_gesture = self
+                    .pointer
+                    .cursor
+                    .filter(|&at| self.viewport_point(at).is_some())
+                    .map(|at| (button, PanGesture::begin(at, button == MouseButton::Middle)));
             }
             Input::Release(button @ (MouseButton::Right | MouseButton::Middle)) => {
                 if let Some((started, gesture)) = self.pan_gesture.take_if(|(b, _)| *b == button) {
@@ -552,7 +653,10 @@ impl Viewer {
                 self.editor_pointer(at);
             }
             Input::Wheel(d) => {
-                let cursor = self.pointer.cursor.filter(|&at| self.viewport_point(at).is_some());
+                let cursor = self
+                    .pointer
+                    .cursor
+                    .filter(|&at| self.viewport_point(at).is_some());
                 if let Some(at) = cursor {
                     self.zoom_at(d, at);
                 }
@@ -561,9 +665,15 @@ impl Viewer {
     }
 
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
-        let window = Arc::new(event_loop.create_window(Window::default_attributes().with_title("FEA GPU viewport")).map_err(|e| e.to_string())?);
+        let window = Arc::new(
+            event_loop
+                .create_window(Window::default_attributes().with_title("FEA GPU viewport"))
+                .map_err(|e| e.to_string())?,
+        );
         let instance = wgpu::Instance::default();
-        let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+        let surface = instance
+            .create_surface(window.clone())
+            .map_err(|e| e.to_string())?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
@@ -572,10 +682,25 @@ impl Viewer {
         }))
         .map_err(|e| format!("no compatible GPU adapter: {e}"))?;
         let size = window.inner_size();
-        let config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).ok_or("surface has no supported configuration")?;
-        let renderer = pollster::block_on(Renderer::new(&adapter, config.format, self.scene(), config.width, config.height))?;
+        let config = surface
+            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
+            .ok_or("surface has no supported configuration")?;
+        let renderer = pollster::block_on(Renderer::new(
+            &adapter,
+            config.format,
+            self.scene(),
+            config.width,
+            config.height,
+        ))?;
         surface.configure(&renderer.device, &config);
-        self.egui_state = Some(egui_winit::State::new(self.gui.ctx().clone(), egui::ViewportId::ROOT, &*window, Some(window.scale_factor() as f32), window.theme(), Some(renderer.device.limits().max_texture_dimension_2d as usize)));
+        self.egui_state = Some(egui_winit::State::new(
+            self.gui.ctx().clone(),
+            egui::ViewportId::ROOT,
+            &*window,
+            Some(window.scale_factor() as f32),
+            window.theme(),
+            Some(renderer.device.limits().max_texture_dimension_2d as usize),
+        ));
         self.window = Some(window);
         self.surface = Some(surface);
         self.renderer = Some(renderer);
@@ -610,10 +735,16 @@ impl Viewer {
         }
         if self.editor.is_some() {
             if let Some(k) = editor_key(key) {
-                let mods = session::Mods { command: self.mods.control_key() || self.mods.super_key(), shift: self.mods.shift_key(),
+                let mods = session::Mods {
+                    command: self.mods.control_key() || self.mods.super_key(),
+                    shift: self.mods.shift_key(),
                 };
                 // While a number is being typed every key belongs to the prompt.
-                let result = self.editor.as_mut().map(|ed| ed.key(k, mods)).unwrap_or(KeyResult::Unhandled);
+                let result = self
+                    .editor
+                    .as_mut()
+                    .map(|ed| ed.key(k, mods))
+                    .unwrap_or(KeyResult::Unhandled);
                 match result {
                     KeyResult::Handled => return,
                     KeyResult::Command(c) => {
@@ -624,7 +755,14 @@ impl Viewer {
                 }
             }
             // Editor mode: arrows edit properties, so only the remaining viewer keys fall through; a page has no viewer keys.
-            if self.page_mode() || matches!(key, Key::Named(NamedKey::Escape | NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Tab)) {
+            if self.page_mode()
+                || matches!(
+                    key,
+                    Key::Named(
+                        NamedKey::Escape | NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Tab
+                    )
+                )
+            {
                 return;
             }
         }
@@ -674,7 +812,8 @@ impl Viewer {
         let scene = &self.project.scenes[self.project.selected];
         self.view.advance(scene, dt);
         self.sync_editor_scene();
-        let (Some(window), Some(state)) = (self.window.clone(), self.egui_state.as_mut()) else { return;
+        let (Some(window), Some(state)) = (self.window.clone(), self.egui_state.as_mut()) else {
+            return;
         };
         let raw = state.take_egui_input(&window);
         let full = self.run_gui(raw);
@@ -692,26 +831,70 @@ impl Viewer {
         let size = self.window_size();
         let background = self.view.background.colors(self.gui.background_rgb());
         // An empty model has nothing to draw (the start card says how to begin): clear the viewport only.
-        let empty = self.dashboard.is_some() || self.page_mode() || self.editor.as_ref().is_some_and(|e| !e.start_options().is_empty());
+        let empty = self.dashboard.is_some()
+            || self.page_mode()
+            || self
+                .editor
+                .as_ref()
+                .is_some_and(|e| !e.start_options().is_empty());
         let geometry = self.editor.as_ref().is_some_and(|e| e.geometry_view());
-        let scene_rect = if empty { [vp.x, vp.y, 0, 0] } else { [vp.x, vp.y, vp.w, vp.h] };
+        let scene_rect = if empty {
+            [vp.x, vp.y, 0, 0]
+        } else {
+            [vp.x, vp.y, vp.w, vp.h]
+        };
         let ctx = self.gui.ctx().clone();
         let mut full = Some(full);
         if let (Some(s), Some(r), Some(c)) = (&self.surface, &mut self.renderer, &self.config) {
             match s.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                wgpu::CurrentSurfaceTexture::Success(frame)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                     let view = frame.texture.create_view(&Default::default());
                     r.draw_display(
                         &view,
                         &self.project.scenes[self.project.selected],
-                        if self.view.swing(&self.project.scenes[self.project.selected]).is_some() { self.view.clock } else { self.view.time },
-                        if self.view.deformed { self.view.gain } else { 0.0 },
-                        [self.view.yaw, self.view.pitch, self.view.zoom, vp.w.max(1) as f32 / vp.h.max(1) as f32,
+                        if self
+                            .view
+                            .swing(&self.project.scenes[self.project.selected])
+                            .is_some()
+                        {
+                            self.view.clock
+                        } else {
+                            self.view.time
+                        },
+                        if self.view.deformed {
+                            self.view.gain
+                        } else {
+                            0.0
+                        },
+                        [
+                            self.view.yaw,
+                            self.view.pitch,
+                            self.view.zoom,
+                            vp.w.max(1) as f32 / vp.h.max(1) as f32,
                         ],
-                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected], geometry), swing: self.view.swing(&self.project.scenes[self.project.selected]), shade: geometry, key_colours: geometry.then_some(self.view.key_colours), pan: self.view.pan, translucent: self.editor.as_ref().and_then(|e| e.translucent()),
+                        DisplayOptions {
+                            show_mesh: self.view.show_mesh
+                                && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()),
+                            show_contour: self.view.show_contour,
+                            field: self.view.field,
+                            viewport: Some(scene_rect),
+                            background: Some(background),
+                            style: self
+                                .view
+                                .style_for(&self.project.scenes[self.project.selected], geometry),
+                            swing: self.view.swing(&self.project.scenes[self.project.selected]),
+                            shade: geometry,
+                            key_colours: geometry.then_some(self.view.key_colours),
+                            pan: self.view.pan,
+                            translucent: self.editor.as_ref().and_then(|e| e.translucent()),
                         },
                     );
-                    r.paint_egui(&view, &ctx, full.take().expect("painted once"), [size.0, size.1],
+                    r.paint_egui(
+                        &view,
+                        &ctx,
+                        full.take().expect("painted once"),
+                        [size.0, size.1],
                     );
                     r.queue.present(frame);
                 }
@@ -720,7 +903,9 @@ impl Viewer {
                 }
                 // Skip the frame and retry: timeouts and occlusion are transient, and wgpu reports a
                 // surface validation error through its uncaptured-error handler.
-                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Validation => {}
+                wgpu::CurrentSurfaceTexture::Timeout
+                | wgpu::CurrentSurfaceTexture::Occluded
+                | wgpu::CurrentSurfaceTexture::Validation => {}
             }
             // A frame that was not shown still has texture changes the renderer must see.
             if let Some(unshown) = full.take() {
@@ -734,7 +919,11 @@ impl Viewer {
             w.set_title(&match &self.editor {
                 _ if self.dashboard.is_some() => "GS Engineering Toolbench".to_string(),
                 Some(ed) => ed.title(),
-                None => format!("FEA GPU viewport | result {}/{}", self.project.selected + 1, self.project.scenes.len()),
+                None => format!(
+                    "FEA GPU viewport | result {}/{}",
+                    self.project.selected + 1,
+                    self.project.scenes.len()
+                ),
             });
         }
         if self.quit {
@@ -769,7 +958,9 @@ impl ApplicationHandler for Viewer {
             }
             WindowEvent::Resized(size) => {
                 if size.width > 0 && size.height > 0 {
-                    if let (Some(c), Some(r), Some(s)) = (&mut self.config, &mut self.renderer, &self.surface) {
+                    if let (Some(c), Some(r), Some(s)) =
+                        (&mut self.config, &mut self.renderer, &self.surface)
+                    {
                         c.width = size.width;
                         c.height = size.height;
                         s.configure(&r.device, c);
@@ -780,11 +971,19 @@ impl ApplicationHandler for Viewer {
             WindowEvent::ModifiersChanged(m) => self.input(Input::Modifiers(m.state())),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 // Alt composes characters on some platforms (Alt+F is a different glyph on macOS): use the plain key.
-                let key = if self.mods.alt_key() { winit::platform::modifier_supplement::KeyEventExtModifierSupplement::key_without_modifiers(&event) } else { event.logical_key };
+                let key = if self.mods.alt_key() {
+                    winit::platform::modifier_supplement::KeyEventExtModifierSupplement::key_without_modifiers(&event)
+                } else {
+                    event.logical_key
+                };
                 self.input(Input::Key(key))
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                self.input(if state == ElementState::Pressed { Input::Press(button) } else { Input::Release(button) })
+                self.input(if state == ElementState::Pressed {
+                    Input::Press(button)
+                } else {
+                    Input::Release(button)
+                })
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.input(Input::Cursor((position.x, position.y)))
@@ -829,7 +1028,12 @@ impl ApplicationHandler for Viewer {
             self.next_redraw = now;
         }
         // Poll worker completion and linked files without repainting unchanged chrome.
-        e.set_control_flow(ControlFlow::WaitUntil(if self.occluded { now + std::time::Duration::from_millis(250) } else { self.next_redraw.min(now + std::time::Duration::from_millis(250)) }));
+        e.set_control_flow(ControlFlow::WaitUntil(if self.occluded {
+            now + std::time::Duration::from_millis(250)
+        } else {
+            self.next_redraw
+                .min(now + std::time::Duration::from_millis(250))
+        }));
         if self.recovery_flushed.elapsed().as_secs() >= 30 {
             self.recovery_flushed = Instant::now();
             if let Some(ed) = &mut self.editor {
@@ -851,7 +1055,7 @@ impl ApplicationHandler for Viewer {
         }
         if !self.occluded && now >= self.next_redraw {
             if let Some(w) = &self.window {
-            w.request_redraw();
+                w.request_redraw();
             }
         }
     }
@@ -863,7 +1067,10 @@ pub fn run(project: ViewerProject) -> Result<(), String> {
 }
 
 /// Open the native member editor on `problem`, saving to `path`.
-pub fn run_editor(problem: fea_problem::members::MemberProblem, path: std::path::PathBuf) -> Result<(), String> {
+pub fn run_editor(
+    problem: fea_problem::members::MemberProblem,
+    path: std::path::PathBuf,
+) -> Result<(), String> {
     problem.validate()?;
     let mut ed = super::editor::member_session(problem, path);
     let scene = ed.scene()?;
@@ -881,7 +1088,12 @@ pub fn run_solid(problem: fea_problem::Problem, path: std::path::PathBuf) -> Res
 pub fn run_dashboard() -> Result<(), String> {
     let mut app = new_viewer(ViewerProject::single(blank_scene("dashboard")), None);
     let file = super::dashboard::Recents::path();
-    app.dashboard = Some(super::dashboard::Dashboard::new(file.as_deref().map(super::dashboard::Recents::load_from).unwrap_or_default(), file));
+    app.dashboard = Some(super::dashboard::Dashboard::new(
+        file.as_deref()
+            .map(super::dashboard::Recents::load_from)
+            .unwrap_or_default(),
+        file,
+    ));
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     app.gui.attach_layout_store();
     event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
@@ -896,8 +1108,11 @@ pub fn run_bushing(mut session: super::editor::bushing::BushingSession) -> Resul
 
 /// Open the line-reamed bushing stackup as a native page.
 pub fn run_stackup(session: super::editor::stackup::StackupSession) -> Result<(), String> {
-    let _lease=super::editor::stackup::WindowLease::acquire(session.path())?;
-    launch(ViewerProject::single(blank_scene("bushing-stackup")), Some(Box::new(session)))
+    let _lease = super::editor::stackup::WindowLease::acquire(session.path())?;
+    launch(
+        ViewerProject::single(blank_scene("bushing-stackup")),
+        Some(Box::new(session)),
+    )
 }
 
 /// Open the Fastener Hole workbench on `session`.
@@ -926,7 +1141,10 @@ pub fn run_lug(mut session: super::editor::lug::LugSession) -> Result<(), String
 
 /// Open the Search workbench on `session`: a bench without a model, its page drawn where the model would be.
 pub fn run_search(session: super::editor::search::SearchSession) -> Result<(), String> {
-    launch(ViewerProject::single(blank_scene("search")), Some(Box::new(session)))
+    launch(
+        ViewerProject::single(blank_scene("search")),
+        Some(Box::new(session)),
+    )
 }
 
 /// Open a page bench (no model; its page is drawn where the model would be) on `session`.
@@ -936,11 +1154,24 @@ pub fn run_page(session: Box<dyn Authoring>, label: &str) -> Result<(), String> 
 
 /// A one-triangle scene for a window that draws no model (the dashboard, a page bench).
 fn blank_scene(label: &str) -> Scene {
-    Scene { label: label.into(), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() }
+    Scene {
+        label: label.into(),
+        positions: vec![[0.0; 3]; 3],
+        triangles: vec![0, 1, 2],
+        samples: vec![[0.0; 4]; 3],
+        times: vec![0.0],
+        range: [0.0, 1.0],
+        gain: 1.0,
+        harmonic_period: None,
+        field_label: String::new(),
+        fields: Vec::new(),
+    }
 }
 
 /// Open the Eccentric Bushing workbench on `session`.
-pub fn run_eccentric(mut session: super::editor::eccentric::EccentricSession) -> Result<(), String> {
+pub fn run_eccentric(
+    mut session: super::editor::eccentric::EccentricSession,
+) -> Result<(), String> {
     let scene = super::editor::authoring::Authoring::scene(&mut session)?;
     launch(ViewerProject::single(scene), Some(Box::new(session)))
 }
@@ -1002,23 +1233,57 @@ mod tests {
 
     #[test]
     fn winit_keys_map_to_editor_keys() {
-        assert_eq!(editor_key(&Key::Named(NamedKey::Enter)), Some(session::Key::Enter));
-        assert_eq!(editor_key(&Key::Named(NamedKey::Backspace)), Some(session::Key::Backspace));
-        assert_eq!(editor_key(&Key::Named(NamedKey::ArrowUp)), Some(session::Key::Up));
-        assert_eq!(editor_key(&Key::Named(NamedKey::ArrowLeft)), Some(session::Key::Left));
-        assert_eq!(editor_key(&Key::Character("Z".into())), Some(session::Key::Char('Z')));
-        assert_eq!(editor_key(&Key::Character("-".into())), Some(session::Key::Char('-')));
-        assert_eq!(editor_key(&Key::Character("ab".into())), None, "multi-character input (IME) is not a shortcut");
+        assert_eq!(
+            editor_key(&Key::Named(NamedKey::Enter)),
+            Some(session::Key::Enter)
+        );
+        assert_eq!(
+            editor_key(&Key::Named(NamedKey::Backspace)),
+            Some(session::Key::Backspace)
+        );
+        assert_eq!(
+            editor_key(&Key::Named(NamedKey::ArrowUp)),
+            Some(session::Key::Up)
+        );
+        assert_eq!(
+            editor_key(&Key::Named(NamedKey::ArrowLeft)),
+            Some(session::Key::Left)
+        );
+        assert_eq!(
+            editor_key(&Key::Character("Z".into())),
+            Some(session::Key::Char('Z'))
+        );
+        assert_eq!(
+            editor_key(&Key::Character("-".into())),
+            Some(session::Key::Char('-'))
+        );
+        assert_eq!(
+            editor_key(&Key::Character("ab".into())),
+            None,
+            "multi-character input (IME) is not a shortcut"
+        );
         assert_eq!(editor_key(&Key::Named(NamedKey::F5)), None);
     }
     #[test]
     fn the_palette_opens_with_ctrl_or_cmd_k_and_f10_only() {
         let none = ModifiersState::default();
         assert!(opens_palette(&Key::Named(NamedKey::F10), none));
-        assert!(opens_palette(&Key::Character("k".into()), ModifiersState::CONTROL));
-        assert!(opens_palette(&Key::Character("K".into()), ModifiersState::SUPER));
-        assert!(!opens_palette(&Key::Character("k".into()), none), "a plain letter belongs to the editor");
-        assert!(!opens_palette(&Key::Character("m".into()), ModifiersState::CONTROL));
+        assert!(opens_palette(
+            &Key::Character("k".into()),
+            ModifiersState::CONTROL
+        ));
+        assert!(opens_palette(
+            &Key::Character("K".into()),
+            ModifiersState::SUPER
+        ));
+        assert!(
+            !opens_palette(&Key::Character("k".into()), none),
+            "a plain letter belongs to the editor"
+        );
+        assert!(!opens_palette(
+            &Key::Character("m".into()),
+            ModifiersState::CONTROL
+        ));
     }
 
     // ---- the whole input path without a window ------------------------------------------------
@@ -1044,7 +1309,10 @@ mod tests {
         v
     }
     fn member_viewer() -> Viewer {
-        let ed = Session::new(fea_problem::members::blank_planar(), std::env::temp_dir().join("window-input-test.json"));
+        let ed = Session::new(
+            fea_problem::members::blank_planar(),
+            std::env::temp_dir().join("window-input-test.json"),
+        );
         viewer(Some(Box::new(ed)))
     }
     /// One displayed frame: sync the scene and run the chrome twice (the second pass has the measured sizes of the
@@ -1055,7 +1323,10 @@ mod tests {
             let (w, h) = v.window_size();
             v.test_time += 0.016;
             let raw = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(w as f32, h as f32),
+                )),
                 events: std::mem::take(&mut v.test_events),
                 time: Some(v.test_time),
                 ..Default::default()
@@ -1073,9 +1344,22 @@ mod tests {
     }
     fn button(v: &mut Viewer, b: MouseButton, down: bool) {
         let at = v.pointer.cursor.expect("cursor placed");
-        let pb = if b == MouseButton::Right { egui::PointerButton::Secondary } else { egui::PointerButton::Primary };
-        v.test_events.push(egui::Event::PointerButton { pos: pos(at), button: pb, pressed: down, modifiers: Default::default() });
-        v.input(if down { Input::Press(b) } else { Input::Release(b) });
+        let pb = if b == MouseButton::Right {
+            egui::PointerButton::Secondary
+        } else {
+            egui::PointerButton::Primary
+        };
+        v.test_events.push(egui::Event::PointerButton {
+            pos: pos(at),
+            button: pb,
+            pressed: down,
+            modifiers: Default::default(),
+        });
+        v.input(if down {
+            Input::Press(b)
+        } else {
+            Input::Release(b)
+        });
     }
     fn click(v: &mut Viewer, at: (f64, f64)) {
         move_to(v, at);
@@ -1096,8 +1380,20 @@ mod tests {
     }
     /// A key the palette's text field also sees.
     fn egui_key(v: &mut Viewer, k: egui::Key) {
-        v.test_events.push(egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
-        v.test_events.push(egui::Event::Key { key: k, physical_key: None, pressed: false, repeat: false, modifiers: Default::default() });
+        v.test_events.push(egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        });
+        v.test_events.push(egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: Default::default(),
+        });
         frame(v);
     }
     fn type_text(v: &mut Viewer, text: &str) {
@@ -1105,17 +1401,32 @@ mod tests {
         frame(v);
     }
     fn target(v: &Viewer, label: &str) -> (f64, f64) {
-        v.gui.find_target(label).unwrap_or_else(|| panic!("no control {label:?} among {:?}", v.gui.target_labels()))
+        v.gui
+            .find_target(label)
+            .unwrap_or_else(|| panic!("no control {label:?} among {:?}", v.gui.target_labels()))
     }
     fn viewport_centre(v: &Viewer) -> (f64, f64) {
         let r = v.viewport();
         ((r.x + r.w / 2) as f64, (r.y + r.h / 2) as f64)
     }
     fn tree_labels(v: &Viewer) -> Vec<String> {
-        v.editor.as_ref().unwrap().tree().into_iter().map(|n| n.label).collect()
+        v.editor
+            .as_ref()
+            .unwrap()
+            .tree()
+            .into_iter()
+            .map(|n| n.label)
+            .collect()
     }
     fn property_text(v: &Viewer) -> String {
-        v.editor.as_ref().unwrap().properties().into_iter().filter_map(|i| i.plain_text()).collect::<Vec<_>>().join("\n")
+        v.editor
+            .as_ref()
+            .unwrap()
+            .properties()
+            .into_iter()
+            .filter_map(|i| i.plain_text())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -1125,12 +1436,23 @@ mod tests {
         // Tool pill: Add node. The press is taken by the chrome and never reaches the model.
         let button = target(&v, "Add node");
         click(&mut v, button);
-        assert!(property_text(&v).contains("tool Add node"), "{}", property_text(&v));
-        assert!(tree_labels(&v).iter().any(|l| l == "Nodes (0)"), "clicking the chrome placed nothing");
+        assert!(
+            property_text(&v).contains("tool Add node"),
+            "{}",
+            property_text(&v)
+        );
+        assert!(
+            tree_labels(&v).iter().any(|l| l == "Nodes (0)"),
+            "clicking the chrome placed nothing"
+        );
         // Viewport: the node tool places a node.
         let at = viewport_centre(&v);
         click(&mut v, at);
-        assert!(tree_labels(&v).iter().any(|l| l == "Nodes (1)"), "{:?}", tree_labels(&v));
+        assert!(
+            tree_labels(&v).iter().any(|l| l == "Nodes (1)"),
+            "{:?}",
+            tree_labels(&v)
+        );
         // Clicking a dock's empty space does nothing to the model either.
         let vp = v.viewport();
         click(&mut v, (vp.x as f64 - 6.0, (vp.y + vp.h) as f64 - 4.0));
@@ -1151,7 +1473,11 @@ mod tests {
         v.input(Input::Release(MouseButton::Right));
         frame(&mut v);
         assert!(v.gui.context_open(), "right-click opens the context menu");
-        assert!(property_text(&v).contains("x "), "the node under the cursor was selected: {}", property_text(&v));
+        assert!(
+            property_text(&v).contains("x "),
+            "the node under the cursor was selected: {}",
+            property_text(&v)
+        );
         // Escape closes the menu and does not quit.
         key(&mut v, NamedKey::Escape);
         assert!(!v.gui.context_open() && !v.quit);
@@ -1167,36 +1493,63 @@ mod tests {
     /// press was closed by that press ("pressed outside") when its first frame was not under the cursor.
     #[test]
     fn a_right_click_the_egui_also_sees_leaves_the_menu_open_across_frames_and_positions() {
-        for (fx, fy) in [(0.5, 0.5), (0.95, 0.5), (0.5, 0.95), (0.98, 0.98), (0.3, 0.2)] {
+        for (fx, fy) in [
+            (0.5, 0.5),
+            (0.95, 0.5),
+            (0.5, 0.95),
+            (0.98, 0.98),
+            (0.3, 0.2),
+        ] {
             let mut v = member_viewer();
             let vp = v.viewport();
-            move_to(&mut v, (vp.x as f64 + fx * vp.w as f64, vp.y as f64 + fy * vp.h as f64));
+            move_to(
+                &mut v,
+                (
+                    vp.x as f64 + fx * vp.w as f64,
+                    vp.y as f64 + fy * vp.h as f64,
+                ),
+            );
             button(&mut v, MouseButton::Right, true);
             frame(&mut v);
             button(&mut v, MouseButton::Right, false);
             for _ in 0..3 {
                 frame(&mut v);
             }
-            assert!(v.gui.context_open(), "menu closed after a right click at {fx},{fy}");
+            assert!(
+                v.gui.context_open(),
+                "menu closed after a right click at {fx},{fy}"
+            );
         }
     }
 
     #[test]
     fn the_display_style_and_background_persist_between_sessions_and_the_picker_toggles() {
-        let path = std::env::temp_dir().join(format!("window-display-{}", std::process::id())).join("display.json");
+        let path = std::env::temp_dir()
+            .join(format!("window-display-{}", std::process::id()))
+            .join("display.json");
         let _ = std::fs::remove_file(&path);
         let mut v = member_viewer();
         v.attach_display_store(Some(path.clone()));
         assert_eq!(v.view.style, DisplayStyle::Wireframe);
-        v.dispatch(UiAction::Command(Command::SetStyle(DisplayStyle::HiddenLinesRemoved)));
-        v.dispatch(UiAction::Command(Command::SetBackground(Background::BlackToGrey)));
+        v.dispatch(UiAction::Command(Command::SetStyle(
+            DisplayStyle::HiddenLinesRemoved,
+        )));
+        v.dispatch(UiAction::Command(Command::SetBackground(
+            Background::BlackToGrey,
+        )));
         let mut next = member_viewer();
         next.attach_display_store(Some(path.clone()));
-        assert_eq!((next.view.style, next.view.background), (DisplayStyle::HiddenLinesRemoved, Background::BlackToGrey));
+        assert_eq!(
+            (next.view.style, next.view.background),
+            (DisplayStyle::HiddenLinesRemoved, Background::BlackToGrey)
+        );
         // Another command leaves the stored choice alone (and a viewer without a store never writes).
         let mut free = member_viewer();
         free.dispatch(UiAction::Command(Command::SetStyle(DisplayStyle::Shaded)));
-        assert_eq!(DisplaySettings::load_from(&path).style, DisplayStyle::HiddenLinesRemoved);
+        assert_eq!(
+            DisplaySettings::load_from(&path).style,
+            DisplayStyle::HiddenLinesRemoved
+        );
         assert!(!v.gui.background_picker_open());
         v.dispatch(UiAction::BackgroundPicker);
         frame(&mut v);
@@ -1211,7 +1564,13 @@ mod tests {
     fn the_context_menu_is_sized_to_its_entries() {
         let mut v = member_viewer();
         let vp = v.viewport();
-        move_to(&mut v, (vp.x as f64 + 0.3 * vp.w as f64, vp.y as f64 + 0.3 * vp.h as f64));
+        move_to(
+            &mut v,
+            (
+                vp.x as f64 + 0.3 * vp.w as f64,
+                vp.y as f64 + 0.3 * vp.h as f64,
+            ),
+        );
         v.input(Input::Press(MouseButton::Right));
         v.input(Input::Release(MouseButton::Right));
         for _ in 0..3 {
@@ -1221,14 +1580,22 @@ mod tests {
         let (rows, widest) = v.gui.target_rects_inside(area);
         eprintln!("area {area:?} rows {rows} widest {widest}");
         assert!(rows > 0);
-        assert!(area.width() < 380.0 && area.width() <= widest + 24.0, "menu {} wide for entries {} wide", area.width(), widest);
+        assert!(
+            area.width() < 380.0 && area.width() <= widest + 24.0,
+            "menu {} wide for entries {} wide",
+            area.width(),
+            widest
+        );
     }
 
     #[test]
     fn a_middle_or_right_drag_pans_a_right_click_does_not_and_the_wheel_zooms_about_the_cursor() {
         let mut v = member_viewer();
         let vp = v.viewport();
-        let start = (vp.x as f64 + 0.5 * vp.w as f64, vp.y as f64 + 0.5 * vp.h as f64);
+        let start = (
+            vp.x as f64 + 0.5 * vp.w as f64,
+            vp.y as f64 + 0.5 * vp.h as f64,
+        );
         // Middle drag: the view follows the cursor (200 px right = 400/width NDC), y is flipped.
         move_to(&mut v, start);
         button(&mut v, MouseButton::Middle, true);
@@ -1236,7 +1603,11 @@ mod tests {
         move_to(&mut v, (start.0 + 200.0, start.1 + 100.0));
         button(&mut v, MouseButton::Middle, false);
         let want = [(400.0 / vp.w as f64) as f32, (-200.0 / vp.h as f64) as f32];
-        assert!((v.view.pan[0] - want[0]).abs() < 1e-4 && (v.view.pan[1] - want[1]).abs() < 1e-4, "{:?} vs {want:?}", v.view.pan);
+        assert!(
+            (v.view.pan[0] - want[0]).abs() < 1e-4 && (v.view.pan[1] - want[1]).abs() < 1e-4,
+            "{:?} vs {want:?}",
+            v.view.pan
+        );
         assert!(!v.gui.context_open());
         // Right drag pans from the press point (not from where the 4 px threshold was crossed) and opens no menu.
         v.command(Command::ResetCamera);
@@ -1244,7 +1615,11 @@ mod tests {
         button(&mut v, MouseButton::Right, true);
         move_to(&mut v, (start.0 + 40.0, start.1));
         button(&mut v, MouseButton::Right, false);
-        assert!((v.view.pan[0] - 80.0 / vp.w as f32).abs() < 1e-4, "{:?}", v.view.pan);
+        assert!(
+            (v.view.pan[0] - 80.0 / vp.w as f32).abs() < 1e-4,
+            "{:?}",
+            v.view.pan
+        );
         assert!(!v.gui.context_open(), "a drag is not a click");
         // A jitter of 2 px is still a click.
         move_to(&mut v, start);
@@ -1256,14 +1631,23 @@ mod tests {
         v.gui.close_floating();
         // Wheel zoom keeps the model point under the cursor fixed: ndc = s * zoom + pan.
         v.command(Command::ResetCamera);
-        let at = (vp.x as f64 + 0.8 * vp.w as f64, vp.y as f64 + 0.3 * vp.h as f64);
+        let at = (
+            vp.x as f64 + 0.8 * vp.w as f64,
+            vp.y as f64 + 0.3 * vp.h as f64,
+        );
         move_to(&mut v, at);
         let c = [(2.0 * 0.8 - 1.0) as f32, (1.0 - 2.0 * 0.3) as f32];
         let before = [c[0] / v.view.zoom, c[1] / v.view.zoom];
         v.input(Input::Wheel(5.0));
         assert!(v.view.zoom > super::super::controller::DEFAULT_ZOOM);
-        let after = [(c[0] - v.view.pan[0]) / v.view.zoom, (c[1] - v.view.pan[1]) / v.view.zoom];
-        assert!((before[0] - after[0]).abs() < 1e-4 && (before[1] - after[1]).abs() < 1e-4, "{before:?} {after:?}");
+        let after = [
+            (c[0] - v.view.pan[0]) / v.view.zoom,
+            (c[1] - v.view.pan[1]) / v.view.zoom,
+        ];
+        assert!(
+            (before[0] - after[0]).abs() < 1e-4 && (before[1] - after[1]).abs() < 1e-4,
+            "{before:?} {after:?}"
+        );
         // R resets zoom and pan.
         v.input(Input::Key(Key::Character("r".into())));
         assert_eq!(v.view.pan, [0.0, 0.0]);
@@ -1283,7 +1667,10 @@ mod tests {
         assert!(!v.view.show_mesh);
         egui_key(&mut v, egui::Key::Enter);
         assert!(v.view.show_mesh, "Enter ran View: Mesh edges");
-        assert!(!v.gui.palette_open(), "choosing a command closes the palette");
+        assert!(
+            !v.gui.palette_open(),
+            "choosing a command closes the palette"
+        );
         // A disabled command stays findable and says why; the palette stays open.
         v.input(Input::Key(Key::Named(NamedKey::F10)));
         frame(&mut v);
@@ -1331,7 +1718,11 @@ mod tests {
         v.input(Input::Key(Key::Character("7".into())));
         key(&mut v, NamedKey::Enter);
         assert!(!v.editor.as_ref().unwrap().prompting());
-        assert!(property_text(&v).contains("7.000000e0"), "{}", property_text(&v));
+        assert!(
+            property_text(&v).contains("7.000000e0"),
+            "{}",
+            property_text(&v)
+        );
     }
 
     #[test]
@@ -1365,7 +1756,10 @@ mod tests {
         button(&mut v, MouseButton::Left, true);
         move_to(&mut v, (on_dock.0 - 100.0, on_dock.1 + 40.0));
         button(&mut v, MouseButton::Left, false);
-        assert_eq!(v.view.yaw, yaw, "a drag that starts on a dock does not orbit the model");
+        assert_eq!(
+            v.view.yaw, yaw,
+            "a drag that starts on a dock does not orbit the model"
+        );
     }
 
     #[test]
@@ -1373,18 +1767,27 @@ mod tests {
         let mut v = viewer(None);
         let before = v.viewport();
         v.dispatch(UiAction::TogglePanel(super::super::controller::Panel::Tree));
-        v.dispatch(UiAction::TogglePanel(super::super::controller::Panel::Properties));
+        v.dispatch(UiAction::TogglePanel(
+            super::super::controller::Panel::Properties,
+        ));
         frame(&mut v);
         let after = v.viewport();
         assert!(after.w > before.w);
-        assert_eq!(v.camera().aspect, after.w as f32 / after.h as f32, "the camera uses the viewport aspect");
+        assert_eq!(
+            v.camera().aspect,
+            after.w as f32 / after.h as f32,
+            "the camera uses the viewport aspect"
+        );
     }
 
     #[test]
     fn a_solid_model_is_meshed_solved_and_viewed_through_the_chrome() {
         let mut problem = fea_problem::templates::templates().remove(0).1;
         problem.mesh.size = 1.0;
-        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-solid-test.json"));
+        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(
+            problem,
+            std::env::temp_dir().join("window-solid-test.json"),
+        );
         let mut v = viewer(Some(Box::new(ed)));
         let wait = |v: &mut Viewer, done: &dyn Fn(&Viewer) -> bool| {
             let t = Instant::now();
@@ -1400,14 +1803,20 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(400));
         v.editor.as_mut().unwrap().poll();
         frame(&mut v);
-        assert!(v.scene().label.contains("mesh not generated"), "{}", v.scene().label);
+        assert!(
+            v.scene().label.contains("mesh not generated"),
+            "{}",
+            v.scene().label
+        );
         let tab = target(&v, "Mesh tab");
         click(&mut v, tab);
         let generate = target(&v, "Generate mesh");
         click(&mut v, generate);
         // The mesh arrives on a worker and replaces the placeholder scene.
         wait(&mut v, &|v| v.scene().label.contains("geometry"));
-        assert!(tree_labels(&v).iter().any(|l| l.starts_with("Mesh: ") && l.contains("nodes")));
+        assert!(tree_labels(&v)
+            .iter()
+            .any(|l| l.starts_with("Mesh: ") && l.contains("nodes")));
         // Simulation step, Solve button.
         let tab = target(&v, "Simulation tab");
         click(&mut v, tab);
@@ -1416,7 +1825,11 @@ mod tests {
         wait(&mut v, &|v| !v.scene().fields.is_empty());
         assert_eq!(v.scene().fields.len(), 13, "14 fields: the primary plus thirteen selectable ones (stresses, strains, displacements)");
         frame(&mut v);
-        assert!(v.gui.target_labels().iter().any(|l| l == "Result card"), "the Simulation step shows the result card: {:?}", v.gui.target_labels());
+        assert!(
+            v.gui.target_labels().iter().any(|l| l == "Result card"),
+            "the Simulation step shows the result card: {:?}",
+            v.gui.target_labels()
+        );
         // V returns to the editable model.
         v.input(Input::Key(Key::Character("v".into())));
         frame(&mut v);
@@ -1425,8 +1838,21 @@ mod tests {
 
     fn sim_labels(v: &Viewer) -> Vec<String> {
         let ed = v.editor.as_deref().unwrap();
-        let m = ed.menus().into_iter().find(|m| m.title == "Simulation").unwrap();
-        m.items.into_iter().filter_map(|i| if let crate::gpu_viewer::menu::Item::Entry(e) = i { Some(e.label) } else { None }).collect()
+        let m = ed
+            .menus()
+            .into_iter()
+            .find(|m| m.title == "Simulation")
+            .unwrap();
+        m.items
+            .into_iter()
+            .filter_map(|i| {
+                if let crate::gpu_viewer::menu::Item::Entry(e) = i {
+                    Some(e.label)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     #[test]
@@ -1434,30 +1860,68 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("window-bench-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let ed = crate::gpu_viewer::editor::open(Bench::Static, &dir.join("solid-model.json")).unwrap();
+        let ed =
+            crate::gpu_viewer::editor::open(Bench::Static, &dir.join("solid-model.json")).unwrap();
         let mut v = viewer(Some(ed));
-        assert!(sim_labels(&v).contains(&"Solve".to_string()) && !sim_labels(&v).iter().any(|l| l.contains("mode")));
+        assert!(
+            sim_labels(&v).contains(&"Solve".to_string())
+                && !sim_labels(&v).iter().any(|l| l.contains("mode"))
+        );
         v.dispatch(UiAction::SwitchBench(Bench::Modal));
         assert_eq!(v.editor.as_ref().unwrap().bench(), Bench::Modal);
         let labels = sim_labels(&v);
-        assert!(labels.contains(&"Run study".to_string()) && !labels.contains(&"Solve".to_string()), "{labels:?}");
+        assert!(
+            labels.contains(&"Run study".to_string()) && !labels.contains(&"Solve".to_string()),
+            "{labels:?}"
+        );
         assert!(v.editor.as_ref().unwrap().title().starts_with("Modal"));
         // The Window menu lists every bench with the current one checked.
         let bar = menus::bar(&v.menu_context());
         let window = bar.iter().find(|m| m.title == "Window").unwrap();
-        let checked: Vec<_> = window.items.iter().filter_map(|i| if let crate::gpu_viewer::menu::Item::Entry(e) = i { Some((e.label.clone(), e.checked)) } else { None }).filter(|(l, _)| l.starts_with("Bench:")).collect();
+        let checked: Vec<_> = window
+            .items
+            .iter()
+            .filter_map(|i| {
+                if let crate::gpu_viewer::menu::Item::Entry(e) = i {
+                    Some((e.label.clone(), e.checked))
+                } else {
+                    None
+                }
+            })
+            .filter(|(l, _)| l.starts_with("Bench:"))
+            .collect();
         assert_eq!(checked.len(), Bench::ALL.len());
-        assert_eq!(checked.iter().filter(|(_, c)| *c == Some(true)).map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["Bench: Modal / vibration"]);
+        assert_eq!(
+            checked
+                .iter()
+                .filter(|(_, c)| *c == Some(true))
+                .map(|(l, _)| l.as_str())
+                .collect::<Vec<_>>(),
+            ["Bench: Modal / vibration"]
+        );
         // Crossing to the member model loads its own file; unsaved solid edits block the switch.
-        v.editor.as_mut().unwrap().act(session::EditorAction::Solid(crate::gpu_viewer::editor::solid::SolidAction::NextTemplate));
+        v.editor.as_mut().unwrap().act(session::EditorAction::Solid(
+            crate::gpu_viewer::editor::solid::SolidAction::NextTemplate,
+        ));
         assert!(v.editor.as_ref().unwrap().dirty());
         v.dispatch(UiAction::SwitchBench(Bench::Members));
-        assert_eq!(v.editor.as_ref().unwrap().bench(), Bench::Modal, "refused while unsaved");
+        assert_eq!(
+            v.editor.as_ref().unwrap().bench(),
+            Bench::Modal,
+            "refused while unsaved"
+        );
         assert!(v.editor.as_ref().unwrap().status().contains("Save"));
-        v.editor.as_mut().unwrap().act(session::EditorAction::Solid(crate::gpu_viewer::editor::solid::SolidAction::Save));
+        v.editor.as_mut().unwrap().act(session::EditorAction::Solid(
+            crate::gpu_viewer::editor::solid::SolidAction::Save,
+        ));
         v.dispatch(UiAction::SwitchBench(Bench::Members));
         assert_eq!(v.editor.as_ref().unwrap().bench(), Bench::Members);
-        assert!(v.editor.as_ref().unwrap().path().ends_with("member-model.json"));
+        assert!(v
+            .editor
+            .as_ref()
+            .unwrap()
+            .path()
+            .ends_with("member-model.json"));
         // And back: the saved solid model comes back with its template.
         v.dispatch(UiAction::SwitchBench(Bench::Buckling));
         assert_eq!(v.editor.as_ref().unwrap().bench(), Bench::Buckling);
@@ -1492,7 +1956,11 @@ mod tests {
         for dx in [-120.0, 0.0, 120.0] {
             click(&mut v, (cx + dx, cy));
         }
-        assert!(tree_labels(&v).iter().any(|l| l == "Nodes (3)"), "{:?}", tree_labels(&v));
+        assert!(
+            tree_labels(&v).iter().any(|l| l == "Nodes (3)"),
+            "{:?}",
+            tree_labels(&v)
+        );
         let button = target(&v, "Select");
         click(&mut v, button);
         // Shift-drag a box over the left and middle nodes.
@@ -1500,16 +1968,27 @@ mod tests {
         move_to(&mut v, (cx - 200.0, cy - 40.0));
         button_press(&mut v);
         move_to(&mut v, (cx + 60.0, cy + 40.0));
-        assert!(v.pointer.box_drag().is_some(), "the drag is a box, not an orbit");
+        assert!(
+            v.pointer.box_drag().is_some(),
+            "the drag is a box, not an orbit"
+        );
         let yaw = v.view.yaw;
         frame(&mut v);
         button_release(&mut v);
         frame(&mut v);
         assert_eq!(v.view.yaw, yaw, "a box drag never orbits");
-        assert!(property_text(&v).contains("+1 more selected"), "{}", property_text(&v));
+        assert!(
+            property_text(&v).contains("+1 more selected"),
+            "{}",
+            property_text(&v)
+        );
         v.input(Input::Modifiers(ModifiersState::default()));
         key(&mut v, NamedKey::Delete);
-        assert!(tree_labels(&v).iter().any(|l| l == "Nodes (1)"), "{:?}", tree_labels(&v));
+        assert!(
+            tree_labels(&v).iter().any(|l| l == "Nodes (1)"),
+            "{:?}",
+            tree_labels(&v)
+        );
     }
     fn button_press(v: &mut Viewer) {
         button(v, MouseButton::Left, true);
@@ -1522,22 +2001,42 @@ mod tests {
     fn the_step_strip_follows_the_model_and_a_tab_click_swaps_the_tools() {
         let mut problem = fea_problem::templates::templates().remove(0).1;
         problem.mesh.size = 1.0;
-        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-steps-test.json"));
+        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(
+            problem,
+            std::env::temp_dir().join("window-steps-test.json"),
+        );
         let mut v = viewer(Some(Box::new(ed)));
         let labels = v.gui.target_labels();
         for step in ["Model tab", "Mesh tab", "Simulation tab", "View tab"] {
             assert!(labels.iter().any(|l| l == step), "{step} among {labels:?}");
         }
-        assert!(labels.iter().any(|l| l == "Extrude"), "the Model step's tools are shown first: {labels:?}");
+        assert!(
+            labels.iter().any(|l| l == "Extrude"),
+            "the Model step's tools are shown first: {labels:?}"
+        );
         assert!(!labels.iter().any(|l| l == "Generate mesh"));
         let tab = target(&v, "Mesh tab");
         click(&mut v, tab);
         assert!(v.gui.target_labels().iter().any(|l| l == "Generate mesh"));
-        assert!(!v.gui.target_labels().iter().any(|l| l == "Extrude"), "only the selected step's tools are shown");
+        assert!(
+            !v.gui.target_labels().iter().any(|l| l == "Extrude"),
+            "only the selected step's tools are shown"
+        );
         // The Mesh step is still to do; the strip says so through the editor.
         use crate::gpu_viewer::editor::authoring::StepState;
         let ed = v.editor.as_ref().unwrap();
-        assert_eq!((ed.step_state("Model"), ed.step_state("Mesh"), ed.step_state("Simulation")), (Some(StepState::Done), Some(StepState::Todo), Some(StepState::Todo)));
+        assert_eq!(
+            (
+                ed.step_state("Model"),
+                ed.step_state("Mesh"),
+                ed.step_state("Simulation")
+            ),
+            (
+                Some(StepState::Done),
+                Some(StepState::Todo),
+                Some(StepState::Todo)
+            )
+        );
         assert_eq!(ed.step_state("View"), None);
     }
 
@@ -1547,7 +2046,11 @@ mod tests {
         let button = target(&v, "Add node");
         move_to(&mut v, button);
         move_to(&mut v, (button.0 + 1.0, button.1));
-        assert!(v.gui.hint().is_some_and(|h| h.starts_with("Add node")), "{:?}", v.gui.hint());
+        assert!(
+            v.gui.hint().is_some_and(|h| h.starts_with("Add node")),
+            "{:?}",
+            v.gui.hint()
+        );
         let centre = viewport_centre(&v);
         move_to(&mut v, centre);
         assert_eq!(v.gui.hint(), None);
@@ -1557,17 +2060,43 @@ mod tests {
     fn an_empty_model_offers_a_way_to_begin_and_a_template_click_starts_one() {
         use crate::gpu_viewer::editor::solid::{SolidAction, SolidSession};
         let (title, problem) = fea_problem::templates::templates().remove(0);
-        let mut ed = SolidSession::new(problem, std::env::temp_dir().join("window-empty-test.json"));
-        assert!(Authoring::start_options(&ed).is_empty(), "a model with geometry needs no starting card");
+        let mut ed =
+            SolidSession::new(problem, std::env::temp_dir().join("window-empty-test.json"));
+        assert!(
+            Authoring::start_options(&ed).is_empty(),
+            "a model with geometry needs no starting card"
+        );
         ed.act(session::EditorAction::Solid(SolidAction::ClearModel));
-        assert_eq!(Authoring::start_options(&ed).len(), 2 + fea_problem::templates::templates().len(), "new part, every template, open file");
+        assert_eq!(
+            Authoring::start_options(&ed).len(),
+            2 + fea_problem::templates::templates().len(),
+            "new part, every template, open file"
+        );
         let mut v = viewer(Some(Box::new(ed)));
         let labels = v.gui.target_labels();
-        assert!(labels.iter().any(|l| l.starts_with("Open problem")) && labels.iter().any(|l| l == title), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.starts_with("Open problem"))
+                && labels.iter().any(|l| l == title),
+            "{labels:?}"
+        );
         let card = target(&v, title);
         click(&mut v, card);
-        assert!(v.editor.as_ref().unwrap().status().contains("Started from template"), "{}", v.editor.as_ref().unwrap().status());
-        assert!(!v.gui.target_labels().iter().any(|l| l.starts_with("Open problem")), "the card goes away once there is a model");
+        assert!(
+            v.editor
+                .as_ref()
+                .unwrap()
+                .status()
+                .contains("Started from template"),
+            "{}",
+            v.editor.as_ref().unwrap().status()
+        );
+        assert!(
+            !v.gui
+                .target_labels()
+                .iter()
+                .any(|l| l.starts_with("Open problem")),
+            "the card goes away once there is a model"
+        );
     }
 
     fn labels(v: &Viewer) -> Vec<String> {
@@ -1579,7 +2108,11 @@ mod tests {
         let mut v = member_viewer();
         // Nothing selected: no selection card, only the cards for the step.
         assert!(!labels(&v).iter().any(|l| l == "Node 1 card"));
-        assert!(labels(&v).iter().any(|l| l == "Modelling card"), "{:?}", labels(&v));
+        assert!(
+            labels(&v).iter().any(|l| l == "Modelling card"),
+            "{:?}",
+            labels(&v)
+        );
         let close = target(&v, "Close the inspector");
         click(&mut v, close);
         assert!(!labels(&v).iter().any(|l| l == "Modelling card"), "closed");
@@ -1595,19 +2128,32 @@ mod tests {
         v.input(Input::Release(MouseButton::Right));
         frame(&mut v);
         key(&mut v, NamedKey::Escape);
-        assert!(labels(&v).iter().any(|l| l.starts_with("Node ") && l.ends_with(" card")), "{:?}", labels(&v));
+        assert!(
+            labels(&v)
+                .iter()
+                .any(|l| l.starts_with("Node ") && l.ends_with(" card")),
+            "{:?}",
+            labels(&v)
+        );
         // Pinned: it stays when closed and the selection changes.
         let pin = target(&v, "Pin the inspector");
         click(&mut v, pin);
         let close = target(&v, "Close the inspector");
         click(&mut v, close);
-        assert!(labels(&v).iter().any(|l| l.ends_with(" card")), "a pinned inspector ignores Close");
+        assert!(
+            labels(&v).iter().any(|l| l.ends_with(" card")),
+            "a pinned inspector ignores Close"
+        );
     }
 
     #[test]
     fn a_card_folds_and_unfolds_on_a_click() {
         let mut v = member_viewer();
-        assert_eq!(v.gui.card_open("mode"), None, "no choice yet: the default (open) applies");
+        assert_eq!(
+            v.gui.card_open("mode"),
+            None,
+            "no choice yet: the default (open) applies"
+        );
         let card = target(&v, "Modelling card");
         click(&mut v, card);
         assert_eq!(v.gui.card_open("mode"), Some(false));
@@ -1635,18 +2181,33 @@ mod tests {
         for width in [1400u32, 1100, 900, 700] {
             let mut problem = fea_problem::templates::templates().remove(0).1;
             problem.mesh.size = 1.0;
-            let ed = crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-chip-test.json"));
+            let ed = crate::gpu_viewer::editor::solid::SolidSession::new(
+                problem,
+                std::env::temp_dir().join("window-chip-test.json"),
+            );
             let mut v = viewer(Some(Box::new(ed)));
             v.size_override = Some((width, 800));
             frame(&mut v);
             let fold = target(&v, "Fold the feature tree");
             click(&mut v, fold);
             frame(&mut v);
-            let (chip, pill) = (v.gui.chip_rect().expect("the chip is shown"), v.gui.pill_rect().expect("the pill is shown"));
-            assert!(!chip.intersects(pill), "width {width}: chip {chip:?} overlaps the tool pill {pill:?}");
-            assert!(pill.left() >= chip.right(), "width {width}: the pill starts to the right of the chip");
+            let (chip, pill) = (
+                v.gui.chip_rect().expect("the chip is shown"),
+                v.gui.pill_rect().expect("the pill is shown"),
+            );
+            assert!(
+                !chip.intersects(pill),
+                "width {width}: chip {chip:?} overlaps the tool pill {pill:?}"
+            );
+            assert!(
+                pill.left() >= chip.right(),
+                "width {width}: the pill starts to the right of the chip"
+            );
             let vp = v.gui.viewport_px((width, 800));
-            assert!(pill.right() * v.gui.ctx().pixels_per_point() <= (vp.x + vp.w) as f32 + 1.0, "width {width}: the pill stays inside the viewport");
+            assert!(
+                pill.right() * v.gui.ctx().pixels_per_point() <= (vp.x + vp.w) as f32 + 1.0,
+                "width {width}: the pill stays inside the viewport"
+            );
         }
     }
 
@@ -1654,66 +2215,135 @@ mod tests {
     /// is a colour picker whose choice is kept, and the glyphs and the model use it.
     #[test]
     fn the_colour_key_moves_and_its_colours_change_and_persist() {
-        let path = std::env::temp_dir().join(format!("window-key-{}", std::process::id())).join("display.json");
+        let path = std::env::temp_dir()
+            .join(format!("window-key-{}", std::process::id()))
+            .join("display.json");
         let _ = std::fs::remove_file(&path);
         let mut v = member_viewer();
         v.attach_display_store(Some(path.clone()));
         frame(&mut v);
         let id = egui::Id::new("colour-key");
-        let area = |v: &Viewer| v.gui.ctx().memory(|m| m.area_rect(id)).expect("the colour key is shown");
-        for name in ["Body colour", "Support colour", "Load colour", "Selected colour"] {
-            assert!(v.gui.target_labels().iter().any(|l| l == name), "{name} in {:?}", v.gui.target_labels());
+        let area = |v: &Viewer| {
+            v.gui
+                .ctx()
+                .memory(|m| m.area_rect(id))
+                .expect("the colour key is shown")
+        };
+        for name in [
+            "Body colour",
+            "Support colour",
+            "Load colour",
+            "Selected colour",
+        ] {
+            assert!(
+                v.gui.target_labels().iter().any(|l| l == name),
+                "{name} in {:?}",
+                v.gui.target_labels()
+            );
         }
         // Drag it by its heading: the key follows the pointer and stays inside the viewport.
         let before = area(&v);
         let grab = before.min + egui::vec2(24.0, 14.0);
         v.test_events.push(egui::Event::PointerMoved(grab));
         frame(&mut v);
-        v.test_events.push(egui::Event::PointerButton { pos: grab, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        v.test_events.push(egui::Event::PointerButton {
+            pos: grab,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
         frame(&mut v);
         for step in 1..=5 {
-            v.test_events.push(egui::Event::PointerMoved(grab - egui::vec2(24.0 * step as f32, 0.0) + egui::vec2(0.0, 18.0 * step as f32)));
+            v.test_events.push(egui::Event::PointerMoved(
+                grab - egui::vec2(24.0 * step as f32, 0.0) + egui::vec2(0.0, 18.0 * step as f32),
+            ));
             frame(&mut v);
         }
-        v.test_events.push(egui::Event::PointerButton { pos: grab - egui::vec2(120.0, -90.0), button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        v.test_events.push(egui::Event::PointerButton {
+            pos: grab - egui::vec2(120.0, -90.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
         frame(&mut v);
         frame(&mut v);
         let after = area(&v);
-        assert!((after.min.x - (before.min.x - 120.0)).abs() < 3.0 && (after.min.y - (before.min.y + 90.0)).abs() < 3.0, "moved from {before:?} to {after:?}");
+        assert!(
+            (after.min.x - (before.min.x - 120.0)).abs() < 3.0
+                && (after.min.y - (before.min.y + 90.0)).abs() < 3.0,
+            "moved from {before:?} to {after:?}"
+        );
         let vp = v.gui.viewport_px(v.window_size());
         let ppp = v.gui.ctx().pixels_per_point();
-        assert!(after.min.x * ppp >= vp.x as f32 - 1.0 && after.max.x * ppp <= (vp.x + vp.w) as f32 + 1.0, "inside the viewport");
+        assert!(
+            after.min.x * ppp >= vp.x as f32 - 1.0
+                && after.max.x * ppp <= (vp.x + vp.w) as f32 + 1.0,
+            "inside the viewport"
+        );
         // The inspector's column does not fence it in: it can be dragged past the viewport's right edge, beside the cards.
         let room = v.gui.room().expect("the room is laid out");
         let vp_right = (vp.x + vp.w) as f32 / ppp;
-        assert!(room.right() > vp_right + 200.0, "the inspector is shown: room {room:?}, viewport right {vp_right}");
+        assert!(
+            room.right() > vp_right + 200.0,
+            "the inspector is shown: room {room:?}, viewport right {vp_right}"
+        );
         let grab = after.min + egui::vec2(24.0, 14.0);
         let to = egui::pos2(vp_right + 150.0, grab.y);
         v.test_events.push(egui::Event::PointerMoved(grab));
         frame(&mut v);
-        v.test_events.push(egui::Event::PointerButton { pos: grab, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        v.test_events.push(egui::Event::PointerButton {
+            pos: grab,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
         frame(&mut v);
         for step in 1..=6 {
-            v.test_events.push(egui::Event::PointerMoved(grab + (to - grab) * (step as f32 / 6.0)));
+            v.test_events.push(egui::Event::PointerMoved(
+                grab + (to - grab) * (step as f32 / 6.0),
+            ));
             frame(&mut v);
         }
-        v.test_events.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        v.test_events.push(egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
         frame(&mut v);
         frame(&mut v);
         let after = area(&v);
-        assert!((after.min.x - (to.x - 24.0)).abs() < 3.0 && after.max.x > vp_right + 100.0, "dragged past the viewport to {after:?}");
-        assert!(room.contains_rect(after), "still inside what the docks leave: {after:?} in {room:?}");
+        assert!(
+            (after.min.x - (to.x - 24.0)).abs() < 3.0 && after.max.x > vp_right + 100.0,
+            "dragged past the viewport to {after:?}"
+        );
+        assert!(
+            room.contains_rect(after),
+            "still inside what the docks leave: {after:?} in {room:?}"
+        );
         // Where it was left is kept as a fraction of that room, and a new session starts it there.
         let frac = v.view.panel_pos[0].expect("the drag's end is recorded");
-        assert!((room.left() + frac[0] * room.width() - after.min.x).abs() < 3.0 && (room.top() + frac[1] * room.height() - after.min.y).abs() < 3.0, "fraction {frac:?} matches {after:?}");
+        assert!(
+            (room.left() + frac[0] * room.width() - after.min.x).abs() < 3.0
+                && (room.top() + frac[1] * room.height() - after.min.y).abs() < 3.0,
+            "fraction {frac:?} matches {after:?}"
+        );
         assert_eq!(DisplaySettings::load_from(&path).panel_pos[0], Some(frac));
         let mut again = member_viewer();
         again.attach_display_store(Some(path.clone()));
         // The test viewer already drew a frame before the store was attached; the real window attaches it before the first.
         again.gui.ctx().memory_mut(|m| m.reset_areas());
         frame(&mut again);
-        let restored = again.gui.ctx().memory(|m| m.area_rect(id)).expect("the key is shown");
-        assert!((restored.min.x - after.min.x).abs() < 3.0 && (restored.min.y - after.min.y).abs() < 3.0, "restored {restored:?} vs {after:?}");
+        let restored = again
+            .gui
+            .ctx()
+            .memory(|m| m.area_rect(id))
+            .expect("the key is shown");
+        assert!(
+            (restored.min.x - after.min.x).abs() < 3.0
+                && (restored.min.y - after.min.y).abs() < 3.0,
+            "restored {restored:?} vs {after:?}"
+        );
         // A swatch is a colour: choosing one sets it, the view keeps it, and the file keeps it for the next session.
         v.dispatch(UiAction::Command(Command::SetKeyColour(1, [250, 10, 20])));
         assert_eq!(v.view.key_colours[1], [250, 10, 20]);
@@ -1721,11 +2351,17 @@ mod tests {
         next.attach_display_store(Some(path.clone()));
         assert_eq!(next.view.key_colours[1], [250, 10, 20]);
         frame(&mut v);
-        assert!(v.gui.target_labels().iter().any(|l| l == "Reset colours"), "a changed key offers its reset");
+        assert!(
+            v.gui.target_labels().iter().any(|l| l == "Reset colours"),
+            "a changed key offers its reset"
+        );
         let reset = target(&v, "Reset colours");
         click(&mut v, reset);
         frame(&mut v);
-        assert_eq!(v.view.key_colours, crate::gpu_viewer::display::default_key_colours());
+        assert_eq!(
+            v.view.key_colours,
+            crate::gpu_viewer::display::default_key_colours()
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1735,11 +2371,17 @@ mod tests {
     fn the_bushing_workbench_edits_an_input_by_click_and_typing_and_the_verdict_follows() {
         let dir = std::env::temp_dir().join(format!("window-bushing-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let session = crate::gpu_viewer::editor::bushing::BushingSession::open(&dir.join("case.json")).unwrap();
+        let session =
+            crate::gpu_viewer::editor::bushing::BushingSession::open(&dir.join("case.json"))
+                .unwrap();
         let mut v = viewer(Some(Box::new(session)));
         frame(&mut v);
         // The default case already fails the edge-distance check, so that input carries the marker.
-        assert!(property_text(&v).contains("! Edge Distance  0.7500 in"), "{}", property_text(&v));
+        assert!(
+            property_text(&v).contains("! Edge Distance  0.7500 in"),
+            "{}",
+            property_text(&v)
+        );
         let at = target(&v, "! Edge Distance");
         click(&mut v, at);
         assert!(v.editor.as_ref().unwrap().prompting());
@@ -1749,13 +2391,31 @@ mod tests {
         v.input(Input::Key(Key::Named(NamedKey::Enter)));
         frame(&mut v);
         assert!(!v.editor.as_ref().unwrap().prompting());
-        assert!(property_text(&v).contains("Edge Distance  0.3000 in"), "{}", property_text(&v));
-        assert!(property_text(&v).contains("REVIEW") && property_text(&v).contains("margin -"), "a 0.3 in edge distance fails: {}", property_text(&v));
+        assert!(
+            property_text(&v).contains("Edge Distance  0.3000 in"),
+            "{}",
+            property_text(&v)
+        );
+        assert!(
+            property_text(&v).contains("REVIEW") && property_text(&v).contains("margin -"),
+            "a 0.3 in edge distance fails: {}",
+            property_text(&v)
+        );
         // The step tabs bring the other cards; the tree names the failing check.
         let checks = target(&v, "Checks tab");
         click(&mut v, checks);
-        assert!(property_text(&v).contains("Contact pressure"), "{}", property_text(&v));
-        assert!(tree_labels(&v).iter().any(|l| l.starts_with("Checks (") && !l.starts_with("Checks (0")), "{:?}", tree_labels(&v));
+        assert!(
+            property_text(&v).contains("Contact pressure"),
+            "{}",
+            property_text(&v)
+        );
+        assert!(
+            tree_labels(&v)
+                .iter()
+                .any(|l| l.starts_with("Checks (") && !l.starts_with("Checks (0")),
+            "{:?}",
+            tree_labels(&v)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1763,13 +2423,19 @@ mod tests {
     fn bushing_uncertainty_edits_by_click_and_typing() {
         let dir = std::env::temp_dir().join(format!("window-bushing-cv-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let session = crate::gpu_viewer::editor::bushing::BushingSession::open(&dir.join("case.json")).unwrap();
+        let session =
+            crate::gpu_viewer::editor::bushing::BushingSession::open(&dir.join("case.json"))
+                .unwrap();
         let mut v = viewer(Some(Box::new(session)));
         v.size_override = Some((1600, 1800));
         frame(&mut v);
         let at = target(&v, "Checks tab");
         click(&mut v, at);
-        for label in ["Strength CV (%)", "Stress superposition model CV (%)", "Contact FE (bushing + housing, elastic-plastic) model CV (%)"] {
+        for label in [
+            "Strength CV (%)",
+            "Stress superposition model CV (%)",
+            "Contact FE (bushing + housing, elastic-plastic) model CV (%)",
+        ] {
             let at = target(&v, label);
             click(&mut v, at);
             assert!(v.editor.as_ref().unwrap().prompting(), "{label}");
@@ -1779,7 +2445,11 @@ mod tests {
             v.input(Input::Key(Key::Named(NamedKey::Enter)));
             frame(&mut v);
             assert!(!v.editor.as_ref().unwrap().prompting());
-            assert!(property_text(&v).contains(&format!("{label}  12.5")), "{}", property_text(&v));
+            assert!(
+                property_text(&v).contains(&format!("{label}  12.5")),
+                "{}",
+                property_text(&v)
+            );
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1790,10 +2460,16 @@ mod tests {
     fn the_fastener_hole_workbench_edits_by_click_and_typing_and_switches_hole_type() {
         let dir = std::env::temp_dir().join(format!("window-fastener-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let session = crate::gpu_viewer::editor::fastener::FastenerSession::open(&dir.join("case.json")).unwrap();
+        let session =
+            crate::gpu_viewer::editor::fastener::FastenerSession::open(&dir.join("case.json"))
+                .unwrap();
         let mut v = viewer(Some(Box::new(session)));
         frame(&mut v);
-        assert!(property_text(&v).contains("TRANSITION"), "{}", property_text(&v));
+        assert!(
+            property_text(&v).contains("TRANSITION"),
+            "{}",
+            property_text(&v)
+        );
         let at = target(&v, "Hole 2 Diameter Nominal");
         click(&mut v, at);
         assert!(v.editor.as_ref().unwrap().prompting());
@@ -1802,14 +2478,31 @@ mod tests {
         }
         v.input(Input::Key(Key::Named(NamedKey::Enter)));
         frame(&mut v);
-        assert!(property_text(&v).contains("Fit  0.0100 -0.0000/+0.0000 in") && property_text(&v).contains("CLEARANCE"), "{}", property_text(&v));
+        assert!(
+            property_text(&v).contains("Fit  0.0100 -0.0000/+0.0000 in")
+                && property_text(&v).contains("CLEARANCE"),
+            "{}",
+            property_text(&v)
+        );
         let regular = v.scene().positions.len();
         let at = target(&v, "Hole Type");
         click(&mut v, at);
         frame(&mut v);
-        assert!(property_text(&v).contains("Angle (calculated)  90.000"), "{}", property_text(&v));
-        assert_ne!(v.scene().positions.len(), regular, "the drawing follows the hole type");
-        assert!(tree_labels(&v).iter().any(|l| l == "Inputs (Countersunk)"), "{:?}", tree_labels(&v));
+        assert!(
+            property_text(&v).contains("Angle (calculated)  90.000"),
+            "{}",
+            property_text(&v)
+        );
+        assert_ne!(
+            v.scene().positions.len(),
+            regular,
+            "the drawing follows the hole type"
+        );
+        assert!(
+            tree_labels(&v).iter().any(|l| l == "Inputs (Countersunk)"),
+            "{:?}",
+            tree_labels(&v)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1819,10 +2512,15 @@ mod tests {
     fn the_pressure_vessel_workbench_edits_by_click_and_typing_and_opens_the_material_picker() {
         let dir = std::env::temp_dir().join(format!("window-vessel-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let session = crate::gpu_viewer::editor::vessel::VesselSession::open(&dir.join("case.json")).unwrap();
+        let session =
+            crate::gpu_viewer::editor::vessel::VesselSession::open(&dir.join("case.json")).unwrap();
         let mut v = viewer(Some(Box::new(session)));
         frame(&mut v);
-        assert!(property_text(&v).contains("Inner diameter  4.0000 in"), "{}", property_text(&v));
+        assert!(
+            property_text(&v).contains("Inner diameter  4.0000 in"),
+            "{}",
+            property_text(&v)
+        );
         let hoop = v.scene().range;
         let at = target(&v, "Wall Thickness");
         click(&mut v, at);
@@ -1832,10 +2530,17 @@ mod tests {
         }
         v.input(Input::Key(Key::Named(NamedKey::Enter)));
         frame(&mut v);
-        assert!(property_text(&v).contains("Inner diameter  5.0000 in"), "{}", property_text(&v));
+        assert!(
+            property_text(&v).contains("Inner diameter  5.0000 in"),
+            "{}",
+            property_text(&v)
+        );
         assert_ne!(v.scene().range, hoop, "the contour follows the wall");
         let hoop = v.scene().range;
-        for (label, text) in [("Corrosion Allowance", "0.125"), ("Mill Undertolerance", "12.5")] {
+        for (label, text) in [
+            ("Corrosion Allowance", "0.125"),
+            ("Mill Undertolerance", "12.5"),
+        ] {
             let at = target(&v, label);
             click(&mut v, at);
             assert!(v.editor.as_ref().unwrap().prompting());
@@ -1845,14 +2550,33 @@ mod tests {
             v.input(Input::Key(Key::Named(NamedKey::Enter)));
             frame(&mut v);
         }
-        assert!(property_text(&v).contains("Remaining wall  0.3125 in"), "{}", property_text(&v));
-        assert!(property_text(&v).contains("Inner diameter  5.3750 in"), "{}", property_text(&v));
-        assert!(v.scene().range[1] > hoop[1], "both allowances reach the contour through native input");
+        assert!(
+            property_text(&v).contains("Remaining wall  0.3125 in"),
+            "{}",
+            property_text(&v)
+        );
+        assert!(
+            property_text(&v).contains("Inner diameter  5.3750 in"),
+            "{}",
+            property_text(&v)
+        );
+        assert!(
+            v.scene().range[1] > hoop[1],
+            "both allowances reach the contour through native input"
+        );
         // The inspector's Material row (the tree and the ribbon have one too).
-        let at = v.gui.find_target_after("Material card", "Material").unwrap();
+        let at = v
+            .gui
+            .find_target_after("Material card", "Material")
+            .unwrap();
         click(&mut v, at);
         frame(&mut v);
-        assert!(v.editor.as_ref().unwrap().value_card().is_some_and(|c| c.title == "Material"));
+        assert!(v
+            .editor
+            .as_ref()
+            .unwrap()
+            .value_card()
+            .is_some_and(|c| c.title == "Material"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1862,7 +2586,9 @@ mod tests {
     fn the_preload_workbench_edits_the_torque_by_click_and_typing_and_opens_the_bolt_picker() {
         let dir = std::env::temp_dir().join(format!("window-preload-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let session = crate::gpu_viewer::editor::preload::PreloadSession::open(&dir.join("case.json")).unwrap();
+        let session =
+            crate::gpu_viewer::editor::preload::PreloadSession::open(&dir.join("case.json"))
+                .unwrap();
         let mut v = viewer(Some(Box::new(session)));
         frame(&mut v);
         let before = property_text(&v);
@@ -1878,12 +2604,26 @@ mod tests {
         assert!(!v.editor.as_ref().unwrap().prompting());
         let after = property_text(&v);
         assert!(after.contains("Applied Torque  180.00 in-lbf"), "{after}");
-        let preload = |t: &str| t.lines().find(|l| l.starts_with("Preload  ")).map(str::to_string);
-        assert!(preload(&after).is_some() && preload(&after) != preload(&before), "half the torque, another preload: {:?} -> {:?}", preload(&before), preload(&after));
+        let preload = |t: &str| {
+            t.lines()
+                .find(|l| l.starts_with("Preload  "))
+                .map(str::to_string)
+        };
+        assert!(
+            preload(&after).is_some() && preload(&after) != preload(&before),
+            "half the torque, another preload: {:?} -> {:?}",
+            preload(&before),
+            preload(&after)
+        );
         let at = target(&v, "Bolt (AN Standard)");
         click(&mut v, at);
         frame(&mut v);
-        assert!(v.editor.as_ref().unwrap().value_card().is_some_and(|c| c.title == "Bolt"));
+        assert!(v
+            .editor
+            .as_ref()
+            .unwrap()
+            .value_card()
+            .is_some_and(|c| c.title == "Bolt"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1892,7 +2632,8 @@ mod tests {
     fn the_lug_workbench_edits_the_load_by_click_and_typing_and_opens_the_material_picker() {
         let dir = std::env::temp_dir().join(format!("window-lug-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let session = crate::gpu_viewer::editor::lug::LugSession::open(&dir.join("case.json")).unwrap();
+        let session =
+            crate::gpu_viewer::editor::lug::LugSession::open(&dir.join("case.json")).unwrap();
         let mut v = viewer(Some(Box::new(session)));
         frame(&mut v);
         let before = property_text(&v);
@@ -1912,20 +2653,36 @@ mod tests {
         let at = target(&v, "Lug Material");
         click(&mut v, at);
         frame(&mut v);
-        assert!(v.editor.as_ref().unwrap().value_card().is_some_and(|c| c.title == "Lug material"));
+        assert!(v
+            .editor
+            .as_ref()
+            .unwrap()
+            .value_card()
+            .is_some_and(|c| c.title == "Lug material"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A result shows what its colours mean, can be cycled through every field, and so can a mode shape.
     #[test]
-    fn a_result_shows_a_labelled_legend_whose_title_cycles_the_field_and_modes_have_the_same_fields() {
+    fn a_result_shows_a_labelled_legend_whose_title_cycles_the_field_and_modes_have_the_same_fields(
+    ) {
         let mut problem = fea_problem::templates::templates().remove(0).1;
         problem.mesh.size = 1.0;
-        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-legend-test.json"));
+        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(
+            problem,
+            std::env::temp_dir().join("window-legend-test.json"),
+        );
         let mut v = viewer(Some(Box::new(ed)));
         // The model itself: a colour key, no field.
         frame(&mut v);
-        assert!(v.gui.target_labels().iter().all(|l| !l.ends_with(" legend")), "no result yet: {:?}", v.gui.target_labels());
+        assert!(
+            v.gui
+                .target_labels()
+                .iter()
+                .all(|l| !l.ends_with(" legend")),
+            "no result yet: {:?}",
+            v.gui.target_labels()
+        );
         let tab = target(&v, "Simulation tab");
         click(&mut v, tab);
         let solve = target(&v, "Solve");
@@ -1938,7 +2695,12 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         frame(&mut v);
-        let legend = v.gui.target_labels().into_iter().find(|l| l.ends_with(" legend")).expect("a legend for the result");
+        let legend = v
+            .gui
+            .target_labels()
+            .into_iter()
+            .find(|l| l.ends_with(" legend"))
+            .expect("a legend for the result");
         assert!(legend.starts_with("von Mises stress"), "{legend}");
         // Clicking the title shows the next field, and its name is on the legend.
         let first = v.view.field;
@@ -1946,11 +2708,20 @@ mod tests {
         click(&mut v, title);
         frame(&mut v);
         assert_eq!(v.view.field, first + 1);
-        let next = v.gui.target_labels().into_iter().find(|l| l.ends_with(" legend")).unwrap();
+        let next = v
+            .gui
+            .target_labels()
+            .into_iter()
+            .find(|l| l.ends_with(" legend"))
+            .unwrap();
         assert_ne!(next, legend, "the legend names the new field");
         // Strains are among the fields.
         let names: Vec<String> = v.scene().fields.iter().map(|f| f.label.clone()).collect();
-        for want in ["Equivalent strain", "Max principal strain", "Min principal strain"] {
+        for want in [
+            "Equivalent strain",
+            "Max principal strain",
+            "Min principal strain",
+        ] {
             assert!(names.iter().any(|n| n == want), "{want} in {names:?}");
         }
     }
@@ -1959,20 +2730,45 @@ mod tests {
     fn a_right_click_on_a_tree_row_selects_it_and_opens_the_menu_of_its_entity() {
         let mut problem = fea_problem::templates::templates().remove(0).1;
         problem.mesh.size = 1.0;
-        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-treemenu-test.json"));
+        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(
+            problem,
+            std::env::temp_dir().join("window-treemenu-test.json"),
+        );
         let mut v = viewer(Some(Box::new(ed)));
         let row = target(&v, "Mesh: ");
         move_to(&mut v, row);
-        v.test_events.push(egui::Event::PointerButton { pos: pos(row), button: egui::PointerButton::Secondary, pressed: true, modifiers: Default::default() });
-        v.test_events.push(egui::Event::PointerButton { pos: pos(row), button: egui::PointerButton::Secondary, pressed: false, modifiers: Default::default() });
+        v.test_events.push(egui::Event::PointerButton {
+            pos: pos(row),
+            button: egui::PointerButton::Secondary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
+        v.test_events.push(egui::Event::PointerButton {
+            pos: pos(row),
+            button: egui::PointerButton::Secondary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
         frame(&mut v);
         frame(&mut v);
-        assert!(v.gui.context_open(), "the menu opens from the selected state");
+        assert!(
+            v.gui.context_open(),
+            "the menu opens from the selected state"
+        );
         let labels = labels(&v);
         assert!(labels.iter().any(|l| l == "Generate mesh"), "{labels:?}");
-        assert!(labels.iter().any(|l| l.starts_with("Element Type")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.starts_with("Element Type")),
+            "{labels:?}"
+        );
         // Choosing an entry runs it and closes the menu.
-        let generate = v.gui.target_labels().iter().rposition(|l| l == "Generate mesh").map(|_| ()).is_some();
+        let generate = v
+            .gui
+            .target_labels()
+            .iter()
+            .rposition(|l| l == "Generate mesh")
+            .map(|_| ())
+            .is_some();
         assert!(generate);
     }
 
@@ -1994,9 +2790,16 @@ mod tests {
     fn the_tool_pill_learns_which_tools_are_used_first_and_reset_and_off_restore_the_fixed_order() {
         let mut v = member_viewer();
         let x = |v: &Viewer, l: &str| target(v, l).0;
-        assert!(x(&v, "Add support") < x(&v, "Add load"), "the fixed order puts Add support first");
+        assert!(
+            x(&v, "Add support") < x(&v, "Add load"),
+            "the fixed order puts Add support first"
+        );
         train_tool(&mut v, "Add load", 7);
-        assert!(x(&v, "Add load") < x(&v, "Add support"), "the tool that is used moves up: {:?}", labels(&v));
+        assert!(
+            x(&v, "Add load") < x(&v, "Add support"),
+            "the tool that is used moves up: {:?}",
+            labels(&v)
+        );
         // Switching the adaptive layout off restores the fixed order; on again brings the learned one back.
         v.dispatch(UiAction::Layout(LayoutOp::ToggleAdaptive));
         frame(&mut v);
@@ -2010,7 +2813,12 @@ mod tests {
         assert!(x(&v, "Add support") < x(&v, "Add load"));
         assert!(v.editor.as_ref().unwrap().status().contains("forgotten"));
         v.dispatch(UiAction::Layout(LayoutOp::Explain));
-        assert!(v.editor.as_ref().unwrap().status().contains("Adaptive layout"));
+        assert!(v
+            .editor
+            .as_ref()
+            .unwrap()
+            .status()
+            .contains("Adaptive layout"));
     }
 
     #[test]
@@ -2032,20 +2840,32 @@ mod tests {
         let make = |name: &str| {
             let mut problem = fea_problem::templates::templates().remove(0).1;
             problem.mesh.size = 1.0;
-            viewer(Some(Box::new(crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join(name)))))
+            viewer(Some(Box::new(
+                crate::gpu_viewer::editor::solid::SolidSession::new(
+                    problem,
+                    std::env::temp_dir().join(name),
+                ),
+            )))
         };
         // No habit yet: the next step only gets a ring, the tools stay on Mesh.
         let mut v = make("window-nudge-test.json");
         finish_mesh(&mut v);
         assert_eq!(v.gui.nudge(), Some("Simulation"));
-        assert!(labels(&v).iter().any(|l| l == "Generate mesh"), "still on the Mesh step");
+        assert!(
+            labels(&v).iter().any(|l| l == "Generate mesh"),
+            "still on the Mesh step"
+        );
         // With a learned habit (Mesh is followed by Simulation) the step moves on by itself.
         let mut v = make("window-advance-test.json");
         for _ in 0..5 {
             v.gui.adapt_mut().step_taken("Mesh", "Simulation");
         }
         finish_mesh(&mut v);
-        assert!(labels(&v).iter().any(|l| l == "Solve"), "moved to Simulation: {:?}", labels(&v));
+        assert!(
+            labels(&v).iter().any(|l| l == "Solve"),
+            "moved to Simulation: {:?}",
+            labels(&v)
+        );
         assert_eq!(v.gui.nudge(), None);
     }
 
@@ -2054,7 +2874,12 @@ mod tests {
         let mut problem = fea_problem::templates::templates().remove(0).1;
         problem.mesh.size = 1.0;
         problem.supports.clear();
-        let mut v = viewer(Some(Box::new(crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-fixhover-test.json")))));
+        let mut v = viewer(Some(Box::new(
+            crate::gpu_viewer::editor::solid::SolidSession::new(
+                problem,
+                std::env::temp_dir().join("window-fixhover-test.json"),
+            ),
+        )));
         // The mesh first: the preview scene is where surfaces are lit.
         let tab = target(&v, "Mesh tab");
         click(&mut v, tab);
@@ -2069,15 +2894,28 @@ mod tests {
         }
         frame(&mut v);
         // Vertices carrying the "selected" state code (4 is the viewer's colour for it; the session marks highlights 3 -> selected).
-        let lit = |v: &Viewer| v.scene().samples.iter().filter(|s| s[3] >= 3.0 - 1e-6).count();
+        let lit = |v: &Viewer| {
+            v.scene()
+                .samples
+                .iter()
+                .filter(|s| s[3] >= 3.0 - 1e-6)
+                .count()
+        };
         let before = lit(&v);
         let labels = v.gui.target_labels();
-        let fix = labels.iter().find(|l| l.contains("Fix 'left'")).unwrap_or_else(|| panic!("no fix row among {labels:?}")).clone();
+        let fix = labels
+            .iter()
+            .find(|l| l.contains("Fix 'left'"))
+            .unwrap_or_else(|| panic!("no fix row among {labels:?}"))
+            .clone();
         let at = target(&v, &fix);
         move_to(&mut v, at);
         frame(&mut v);
         let on = lit(&v);
-        assert!(on > before, "pointing at 'Fix left' lights the left edge: {before} -> {on}");
+        assert!(
+            on > before,
+            "pointing at 'Fix left' lights the left edge: {before} -> {on}"
+        );
         // Away from every row the preview goes, and nothing was applied.
         let away = viewport_centre(&v);
         move_to(&mut v, away);
@@ -2087,10 +2925,19 @@ mod tests {
 
     #[test]
     fn a_real_mouse_click_on_a_3d_face_picks_it_and_its_menu_adds_a_support_there() {
-        let mut problem = fea_problem::templates::templates().into_iter().find(|(n, _)| n.contains("3D")).unwrap().1;
+        let mut problem = fea_problem::templates::templates()
+            .into_iter()
+            .find(|(n, _)| n.contains("3D"))
+            .unwrap()
+            .1;
         problem.mesh.size = 1.0;
         problem.supports.clear();
-        let mut v = viewer(Some(Box::new(crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-facepick-test.json")))));
+        let mut v = viewer(Some(Box::new(
+            crate::gpu_viewer::editor::solid::SolidSession::new(
+                problem,
+                std::env::temp_dir().join("window-facepick-test.json"),
+            ),
+        )));
         let tab = target(&v, "Mesh tab");
         click(&mut v, tab);
         let generate = target(&v, "Generate mesh");
@@ -2103,7 +2950,12 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         frame(&mut v);
-        let supports = |v: &Viewer| tree_labels(v).into_iter().find(|l| l.starts_with("Supports (")).unwrap();
+        let supports = |v: &Viewer| {
+            tree_labels(v)
+                .into_iter()
+                .find(|l| l.starts_with("Supports ("))
+                .unwrap()
+        };
         assert_eq!(supports(&v), "Supports (0)");
         // Sweep the viewport with real clicks until one lands on the part and opens the surface menu.
         let r = v.viewport();
@@ -2118,25 +2970,63 @@ mod tests {
                 }
             }
         }
-        let (at, item) = picked.expect("some click in the viewport must land on the part and open the surface menu");
-        let face = v.editor.as_ref().unwrap().tree().into_iter().find(|n| n.selected && n.glyph == 's').map(|n| n.label).expect("the picked surface is selected in the tree");
-        assert!(["left", "right", "top", "bottom", "start", "end", "hole1"].contains(&face.as_str()), "a named face of the extruded plate: {face}");
+        let (at, item) = picked
+            .expect("some click in the viewport must land on the part and open the surface menu");
+        let face = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .tree()
+            .into_iter()
+            .find(|n| n.selected && n.glyph == 's')
+            .map(|n| n.label)
+            .expect("the picked surface is selected in the tree");
+        assert!(
+            ["left", "right", "top", "bottom", "start", "end", "hole1"].contains(&face.as_str()),
+            "a named face of the extruded plate: {face}"
+        );
         // The tree shows the picked surface as selected, and choosing the menu entry adds the support on it.
-        let selected: Vec<String> = v.editor.as_ref().unwrap().tree().into_iter().filter(|n| n.selected && n.label == face).map(|n| n.label).collect();
+        let selected: Vec<String> = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .tree()
+            .into_iter()
+            .filter(|n| n.selected && n.label == face)
+            .map(|n| n.label)
+            .collect();
         assert_eq!(selected, std::slice::from_ref(&face), "pointer at {at:?}");
         let entry = target(&v, &item);
         click(&mut v, entry);
-        assert_eq!(supports(&v), "Supports (1)", "{}", v.editor.as_ref().unwrap().status());
-        assert!(v.editor.as_ref().unwrap().status().contains(&face), "{}", v.editor.as_ref().unwrap().status());
+        assert_eq!(
+            supports(&v),
+            "Supports (1)",
+            "{}",
+            v.editor.as_ref().unwrap().status()
+        );
+        assert!(
+            v.editor.as_ref().unwrap().status().contains(&face),
+            "{}",
+            v.editor.as_ref().unwrap().status()
+        );
     }
 
     /// The whole path a person takes: right-click a face of the part, choose Pressure, type the number, press Apply.
     #[test]
     fn a_right_click_on_a_face_chooses_a_pressure_types_the_number_and_applies_it() {
-        let mut problem = fea_problem::templates::templates().into_iter().find(|(n, _)| n.contains("3D")).unwrap().1;
+        let mut problem = fea_problem::templates::templates()
+            .into_iter()
+            .find(|(n, _)| n.contains("3D"))
+            .unwrap()
+            .1;
         problem.mesh.size = 1.0;
         problem.loads.clear();
-        let mut v = viewer(Some(Box::new(crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-bc-card-test.json")))));
+        let mut v = viewer(Some(Box::new(
+            crate::gpu_viewer::editor::solid::SolidSession::new(
+                problem,
+                std::env::temp_dir().join("window-bc-card-test.json"),
+            ),
+        )));
         // The body shows before any mesh exists; wait for it.
         let t = Instant::now();
         while !v.scene().label.contains("body (not meshed)") {
@@ -2146,7 +3036,12 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         frame(&mut v);
-        let loads = |v: &Viewer| tree_labels(v).into_iter().find(|l| l.starts_with("Loads (")).unwrap();
+        let loads = |v: &Viewer| {
+            tree_labels(v)
+                .into_iter()
+                .find(|l| l.starts_with("Loads ("))
+                .unwrap()
+        };
         assert_eq!(loads(&v), "Loads (0)");
         // Find a point of the viewport on the part and right-click it.
         let r = v.viewport();
@@ -2166,36 +3061,90 @@ mod tests {
             }
         }
         let at = at.expect("a right-click on the part opens the face menu");
-        let face = v.editor.as_ref().unwrap().tree().into_iter().find(|n| n.selected && n.glyph == 's').map(|n| n.label).expect("the face is selected");
+        let face = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .tree()
+            .into_iter()
+            .find(|n| n.selected && n.glyph == 's')
+            .map(|n| n.label)
+            .expect("the face is selected");
         let labels_now = labels(&v);
-        for want in ["Fixed", "Hold directions...", "Pressure...", "Force...", "Traction..."] {
-            assert!(labels_now.iter().any(|l| l == want), "{want} in {labels_now:?}");
+        for want in [
+            "Fixed",
+            "Hold directions...",
+            "Pressure...",
+            "Force...",
+            "Traction...",
+        ] {
+            assert!(
+                labels_now.iter().any(|l| l == want),
+                "{want} in {labels_now:?}"
+            );
         }
         let pressure = target(&v, "Pressure...");
         click(&mut v, pressure);
         frame(&mut v);
-        assert!(v.editor.as_ref().unwrap().value_card().is_some(), "choosing Pressure opens its card");
+        assert!(
+            v.editor.as_ref().unwrap().value_card().is_some(),
+            "choosing Pressure opens its card"
+        );
         let field = target(&v, "Pressure field");
         // The card opens beside the face's menu, inside the window.
         let (w, h) = v.window_size();
-        assert!(field.0 > 0.0 && field.0 < w as f64 && field.1 > 0.0 && field.1 < h as f64, "{field:?}");
+        assert!(
+            field.0 > 0.0 && field.0 < w as f64 && field.1 > 0.0 && field.1 < h as f64,
+            "{field:?}"
+        );
         assert_eq!(loads(&v), "Loads (0)", "nothing is added until Apply");
         type_text(&mut v, "2500");
         frame(&mut v);
-        let text = v.editor.as_ref().unwrap().value_card().unwrap().rows.into_iter().find_map(|r| if let crate::gpu_viewer::ui::CardRow::Field { text, .. } = r { Some(text) } else { None }).unwrap();
+        let text = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .value_card()
+            .unwrap()
+            .rows
+            .into_iter()
+            .find_map(|r| {
+                if let crate::gpu_viewer::ui::CardRow::Field { text, .. } = r {
+                    Some(text)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(text, "2500", "the first keys replace the suggested value");
         let apply = target(&v, "Apply");
         click(&mut v, apply);
         frame(&mut v);
-        assert!(v.editor.as_ref().unwrap().value_card().is_none(), "Apply closes the card");
-        assert_eq!(loads(&v), "Loads (1)", "{}", v.editor.as_ref().unwrap().status());
+        assert!(
+            v.editor.as_ref().unwrap().value_card().is_none(),
+            "Apply closes the card"
+        );
+        assert_eq!(
+            loads(&v),
+            "Loads (1)",
+            "{}",
+            v.editor.as_ref().unwrap().status()
+        );
         // Right-clicking the same face now also offers to edit and remove what is on it.
         move_to(&mut v, at);
         v.input(Input::Press(MouseButton::Right));
         v.input(Input::Release(MouseButton::Right));
         frame(&mut v);
         let again = labels(&v);
-        assert!(again.iter().any(|l| l == &format!("Edit the load on '{face}'...")) && again.iter().any(|l| l == &format!("Remove the load on '{face}'")), "{again:?}");
+        assert!(
+            again
+                .iter()
+                .any(|l| l == &format!("Edit the load on '{face}'..."))
+                && again
+                    .iter()
+                    .any(|l| l == &format!("Remove the load on '{face}'")),
+            "{again:?}"
+        );
         // Cancel from a card leaves everything as it was.
         let hold = target(&v, "Hold directions...");
         click(&mut v, hold);
@@ -2204,7 +3153,14 @@ mod tests {
         click(&mut v, cancel);
         frame(&mut v);
         assert!(v.editor.as_ref().unwrap().value_card().is_none());
-        assert_eq!(tree_labels(&v).into_iter().find(|l| l.starts_with("Supports (")).unwrap(), "Supports (1)", "the template's own support; nothing added");
+        assert_eq!(
+            tree_labels(&v)
+                .into_iter()
+                .find(|l| l.starts_with("Supports ("))
+                .unwrap(),
+            "Supports (1)",
+            "the template's own support; nothing added"
+        );
     }
 
     /// The whole STEP workflow with a real mouse: open a cube, mesh it, click a face, cut a hole in it from the Insert menu's
@@ -2215,10 +3171,14 @@ mod tests {
         use crate::gpu_viewer::editor::solid::{stepops::PromptOp, SolidAction, SolidSession};
         let dir = std::env::temp_dir().join(format!("window-step-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let step = solid_kernel::occt::Brep::box_from_corners([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).to_step_text().unwrap();
+        let step = solid_kernel::occt::Brep::box_from_corners([0.0, 0.0, 0.0], [10.0, 10.0, 10.0])
+            .to_step_text()
+            .unwrap();
         let path = dir.join("cube.step");
         std::fs::write(&path, step).unwrap();
-        let mut ed = SolidSession::new(fea_problem::templates::templates().remove(0).1, dir.join("model.json"),
+        let mut ed = SolidSession::new(
+            fea_problem::templates::templates().remove(0).1,
+            dir.join("model.json"),
         );
         ed.open_path(path.to_str().unwrap());
         let mut v = viewer(Some(Box::new(ed)));
@@ -2230,7 +3190,11 @@ mod tests {
         while !v.scene().label.contains("geometry") {
             v.editor.as_mut().unwrap().poll();
             frame(&mut v);
-            assert!(t.elapsed().as_secs() < 180, "timed out: {}", v.editor.as_ref().unwrap().status());
+            assert!(
+                t.elapsed().as_secs() < 180,
+                "timed out: {}",
+                v.editor.as_ref().unwrap().status()
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         frame(&mut v);
@@ -2242,7 +3206,14 @@ mod tests {
                 let at = ((r.x + r.w * ix / 16) as f64, (r.y + r.h * iy / 10) as f64);
                 click(&mut v, at);
                 if labels(&v).iter().any(|l| l == "Fixed") {
-                    first = v.editor.as_ref().unwrap().tree().into_iter().find(|n| n.selected && n.label.starts_with("face")).map(|n| n.label);
+                    first = v
+                        .editor
+                        .as_ref()
+                        .unwrap()
+                        .tree()
+                        .into_iter()
+                        .find(|n| n.selected && n.label.starts_with("face"))
+                        .map(|n| n.label);
                     break 'scan;
                 }
             }
@@ -2256,7 +3227,15 @@ mod tests {
             for ix in 1..16 {
                 let at = ((r.x + r.w * ix / 16) as f64, (r.y + r.h * iy / 10) as f64);
                 click(&mut v, at);
-                if let Some(name) = v.editor.as_ref().unwrap().tree().into_iter().find(|n| n.selected && n.label.starts_with("face")).map(|n| n.label) {
+                if let Some(name) = v
+                    .editor
+                    .as_ref()
+                    .unwrap()
+                    .tree()
+                    .into_iter()
+                    .find(|n| n.selected && n.label.starts_with("face"))
+                    .map(|n| n.label)
+                {
                     if name != held {
                         hole_face = Some(name);
                         break 'scan2;
@@ -2267,13 +3246,19 @@ mod tests {
         let hole_face = hole_face.expect("a second face is pickable");
         // Close the surface menu (it stays selected), then run the hole action on the selection.
         key(&mut v, NamedKey::Escape);
-        v.dispatch(UiAction::Editor(session::EditorAction::Solid(SolidAction::SolidOp(PromptOp::Hole),
+        v.dispatch(UiAction::Editor(session::EditorAction::Solid(
+            SolidAction::SolidOp(PromptOp::Hole),
         )));
         frame(&mut v);
         v.input(Input::Key(Key::Character("2".into())));
         key(&mut v, NamedKey::Enter);
         let status = v.editor.as_ref().unwrap().status();
-        assert!(status.contains("Cut a hole") && status.contains("7 faces") && status.contains("follow their faces"), "{status} (held {held}, hole in {hole_face})");
+        assert!(
+            status.contains("Cut a hole")
+                && status.contains("7 faces")
+                && status.contains("follow their faces"),
+            "{status} (held {held}, hole in {hole_face})"
+        );
         // The support is still on a face of the part: nothing was lost.
         assert!(!status.contains("lost their face"), "{status}");
         let _ = std::fs::remove_dir_all(dir);
@@ -2293,10 +3278,16 @@ mod tests {
             v.gui.flush_layout();
         }
         let mut v = member_viewer();
-        assert!(x(&v, "Add support") < x(&v, "Add load"), "a fresh window starts from the fixed order");
+        assert!(
+            x(&v, "Add support") < x(&v, "Add load"),
+            "a fresh window starts from the fixed order"
+        );
         v.gui.attach_layout_dir(&dir);
         frame(&mut v);
-        assert!(x(&v, "Add load") < x(&v, "Add support"), "the habit came back from the file");
+        assert!(
+            x(&v, "Add load") < x(&v, "Add support"),
+            "the habit came back from the file"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -2304,13 +3295,23 @@ mod tests {
     fn selecting_the_mesh_row_in_the_tree_brings_the_mesh_tools() {
         let mut problem = fea_problem::templates::templates().remove(0).1;
         problem.mesh.size = 1.0;
-        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-focusstep-test.json"));
+        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(
+            problem,
+            std::env::temp_dir().join("window-focusstep-test.json"),
+        );
         let mut v = viewer(Some(Box::new(ed)));
-        assert!(labels(&v).iter().any(|l| l == "Extrude"), "starts on the Model step");
+        assert!(
+            labels(&v).iter().any(|l| l == "Extrude"),
+            "starts on the Model step"
+        );
         let row = target(&v, "Mesh: ");
         click(&mut v, row);
         frame(&mut v);
-        assert!(labels(&v).iter().any(|l| l == "Generate mesh"), "the tools followed the selection: {:?}", labels(&v));
+        assert!(
+            labels(&v).iter().any(|l| l == "Generate mesh"),
+            "the tools followed the selection: {:?}",
+            labels(&v)
+        );
         let row = target(&v, "Material: ");
         click(&mut v, row);
         frame(&mut v);
@@ -2318,32 +3319,49 @@ mod tests {
     }
     #[test]
     fn the_units_dropdown_converts_the_saved_physical_model_through_real_clicks() {
-        let dir=tempfile::tempdir().unwrap();
-        let path=dir.path().join("units.json");
-        let problem=fea_problem::templates::templates().remove(0).1;
-        let physical_e=problem.modulus_pa();
-        let physical_thickness=problem.thickness*problem.units.length_m();
-        let ed=crate::gpu_viewer::editor::solid::SolidSession::new(problem,path.clone());
-        let mut v=viewer(Some(Box::new(ed)));
-        let at=target(&v,"Units:"); click(&mut v,at);
-        let at=target(&v,"Unit system dropdown"); click(&mut v,at);
-        let at=target(&v,"mm, N, MPa");
-        assert_ne!(v.gui.ctx().layer_id_at(pos(at)),Some(egui::LayerId::new(egui::Order::Foreground,egui::Id::new("value-card"))));
-        click(&mut v,at);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("units.json");
+        let problem = fea_problem::templates::templates().remove(0).1;
+        let physical_e = problem.modulus_pa();
+        let physical_thickness = problem.thickness * problem.units.length_m();
+        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(problem, path.clone());
+        let mut v = viewer(Some(Box::new(ed)));
+        let at = target(&v, "Units:");
+        click(&mut v, at);
+        let at = target(&v, "Unit system dropdown");
+        click(&mut v, at);
+        let at = target(&v, "mm, N, MPa");
+        assert_ne!(
+            v.gui.ctx().layer_id_at(pos(at)),
+            Some(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("value-card")
+            ))
+        );
+        click(&mut v, at);
         assert!(v.editor.as_ref().unwrap().status().contains("rescaled"));
-        v.dispatch(UiAction::Editor(crate::gpu_viewer::editor::session::EditorAction::Solid(crate::gpu_viewer::editor::solid::SolidAction::Save)));
-        let converted=fea_problem::Problem::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
-        assert_eq!(converted.units,fea_problem::UnitSystem::MmMpa);
-        assert!((converted.modulus_pa()/physical_e-1.0).abs()<1e-12);
-        assert!((converted.thickness*converted.units.length_m()/physical_thickness-1.0).abs()<1e-12);
+        v.dispatch(UiAction::Editor(
+            crate::gpu_viewer::editor::session::EditorAction::Solid(
+                crate::gpu_viewer::editor::solid::SolidAction::Save,
+            ),
+        ));
+        let converted =
+            fea_problem::Problem::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(converted.units, fea_problem::UnitSystem::MmMpa);
+        assert!((converted.modulus_pa() / physical_e - 1.0).abs() < 1e-12);
+        assert!(
+            (converted.thickness * converted.units.length_m() / physical_thickness - 1.0).abs()
+                < 1e-12
+        );
     }
-
 
     fn stackup_viewer() -> Viewer {
         use crate::gpu_viewer::editor::stackup::StackupSession;
         viewer(Some(Box::new(
-            StackupSession::open(&std::env::temp_dir().join("never-written-stackup-interaction.json"))
-                .unwrap(),
+            StackupSession::open(
+                &std::env::temp_dir().join("never-written-stackup-interaction.json"),
+            )
+            .unwrap(),
         )))
     }
     fn replace_page_text(v: &mut Viewer, label: &str, text: &str) {
@@ -2440,19 +3458,35 @@ mod tests {
         let member = target(&v, "Member settings");
         click(&mut v, member);
         scroll_stackup_inspector(&mut v, -400.0);
-        let datum=target(&v,"Datum direction");
-        click(&mut v,datum);
+        let datum = target(&v, "Datum direction");
+        click(&mut v, datum);
         for _ in 0..8 {
             frame(&mut v);
         }
         scroll_stackup_inspector(&mut v, -220.0);
-        replace_page_text(&mut v,"Datum normal angle (deg) input","0.5");
-        assert!(!v.editor.as_ref().unwrap().document().unwrap().precision.unwrap().current);
-        let datum=target(&v,"Datum direction");
-        click(&mut v,datum);
-        let page=v.editor.as_ref().unwrap().document().unwrap().precision.unwrap();
+        replace_page_text(&mut v, "Datum normal angle (deg) input", "0.5");
+        assert!(
+            !v.editor
+                .as_ref()
+                .unwrap()
+                .document()
+                .unwrap()
+                .precision
+                .unwrap()
+                .current
+        );
+        let datum = target(&v, "Datum direction");
+        click(&mut v, datum);
+        let page = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
         assert!(page.current);
-        assert_eq!(page.inputs.members[0].reference_normal_deg,0.5);
+        assert_eq!(page.inputs.members[0].reference_normal_deg, 0.5);
         scroll_stackup_inspector(&mut v, 600.0);
         replace_page_text(&mut v, "Current hole nominal (in) input", "unfinished");
         egui_key(&mut v, egui::Key::Enter);
@@ -2515,18 +3549,36 @@ mod tests {
         }
         let setup = target(&v, "Stack setup");
         click(&mut v, setup);
-        replace_page_text(&mut v, "Pilot position from stack entrance (in) input", "0.5");
+        replace_page_text(
+            &mut v,
+            "Pilot position from stack entrance (in) input",
+            "0.5",
+        );
         egui_key(&mut v, egui::Key::Enter);
-        replace_page_text(&mut v, "Pilot center offset limit (in, radial) input", "0.001");
+        replace_page_text(
+            &mut v,
+            "Pilot center offset limit (in, radial) input",
+            "0.001",
+        );
         egui_key(&mut v, egui::Key::Enter);
-        let page = v.editor.as_ref().unwrap().document().unwrap().precision.unwrap();
+        let page = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
         assert!(page.current);
         assert_eq!(page.inputs.pilot_z, 0.5);
         assert_eq!(page.inputs.pilot_offset, 0.001);
     }
     fn stackup_bushing_viewer() -> Viewer {
         use crate::gpu_viewer::editor::stackup::{StackupAct, StackupSession};
-        let mut session = StackupSession::open(&std::env::temp_dir().join("never-written-stackup-component-test.json")).unwrap();
+        let mut session = StackupSession::open(
+            &std::env::temp_dir().join("never-written-stackup-component-test.json"),
+        )
+        .unwrap();
         session.inputs.bushing_enabled = true;
         session.act(session::EditorAction::Stackup(StackupAct::Recalculate));
         viewer(Some(Box::new(session)))
@@ -2534,7 +3586,14 @@ mod tests {
     #[test]
     fn the_stackup_drags_only_the_grabbed_member_or_bushing() {
         let mut v = stackup_bushing_viewer();
-        let before = v.editor.as_ref().unwrap().document().unwrap().precision.unwrap();
+        let before = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
         let dirty = v.editor.as_ref().unwrap().dirty();
         assert!(labels(&v).contains(&"Finished axis".into()));
         assert!(labels(&v).contains(&"Original axis".into()));
@@ -2549,41 +3608,64 @@ mod tests {
         assert!(v.gui.stackup_component_offsets()[0].1[0] > moved[0].1[0]);
         let fitted = target(&v, "Fitted");
         click(&mut v, fitted);
-        assert!(v.gui.stackup_component_offsets().iter().all(|(_,offset)| *offset == [0.0,0.0]));
+        assert!(v
+            .gui
+            .stackup_component_offsets()
+            .iter()
+            .all(|(_, offset)| *offset == [0.0, 0.0]));
         let start = target(&v, "Drag bushing 1");
         drag(&mut v, start, (start.0, start.1 - 100.0));
         let moved = v.gui.stackup_component_offsets();
         assert_eq!(moved[0].1[0], 0.0);
         assert!(moved[0].1[1] < 0.0);
-        assert_eq!(moved[1].1, [0.0,0.0]);
+        assert_eq!(moved[1].1, [0.0, 0.0]);
         let canvas = target(&v, "Stack geometry drag");
         let blank = (canvas.0 - 450.0, canvas.1 - 180.0);
-        drag(&mut v, blank, (blank.0,blank.1 - 80.0));
-        assert_eq!(v.gui.stackup_component_offsets(),moved);
-        let after = v.editor.as_ref().unwrap().document().unwrap().precision.unwrap();
-        assert_eq!(before.inputs,after.inputs);
-        assert_eq!(before.result,after.result);
-        assert_eq!(v.editor.as_ref().unwrap().dirty(),dirty);
-        let all = target(&v,"Explode all");
-        click(&mut v,all);
-        assert!(v.gui.stackup_component_offsets().iter().any(|(_,offset)| offset[0] > 0.0));
-        let fitted = target(&v,"Fitted");
-        click(&mut v,fitted);
-        assert!(v.gui.stackup_component_offsets().iter().all(|(_,offset)| *offset == [0.0,0.0]));
+        drag(&mut v, blank, (blank.0, blank.1 - 80.0));
+        assert_eq!(v.gui.stackup_component_offsets(), moved);
+        let after = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
+        assert_eq!(before.inputs, after.inputs);
+        assert_eq!(before.result, after.result);
+        assert_eq!(v.editor.as_ref().unwrap().dirty(), dirty);
+        let all = target(&v, "Explode all");
+        click(&mut v, all);
+        assert!(v
+            .gui
+            .stackup_component_offsets()
+            .iter()
+            .any(|(_, offset)| offset[0] > 0.0));
+        let fitted = target(&v, "Fitted");
+        click(&mut v, fitted);
+        assert!(v
+            .gui
+            .stackup_component_offsets()
+            .iter()
+            .all(|(_, offset)| *offset == [0.0, 0.0]));
     }
     #[test]
     fn component_poses_survive_names_but_reset_for_geometry_changes() {
         let mut v = stackup_viewer();
-        let start = target(&v,"Drag member 1");
-        drag(&mut v,start,(start.0,start.1 - 100.0));
-        let moved=v.gui.stackup_component_offsets();
+        let start = target(&v, "Drag member 1");
+        drag(&mut v, start, (start.0, start.1 - 100.0));
+        let moved = v.gui.stackup_component_offsets();
         assert!(moved[0].1[0] < 0.0);
-        replace_page_text(&mut v,"Member name input","Renamed member");
-        egui_key(&mut v,egui::Key::Enter);
-        assert_eq!(v.gui.stackup_component_offsets(),moved);
-        replace_page_text(&mut v,"Current hole nominal (in) input","0.4");
-        egui_key(&mut v,egui::Key::Enter);
-        assert!(v.gui.stackup_component_offsets().iter().all(|(_,offset)| *offset == [0.0,0.0]));
+        replace_page_text(&mut v, "Member name input", "Renamed member");
+        egui_key(&mut v, egui::Key::Enter);
+        assert_eq!(v.gui.stackup_component_offsets(), moved);
+        replace_page_text(&mut v, "Current hole nominal (in) input", "0.4");
+        egui_key(&mut v, egui::Key::Enter);
+        assert!(v
+            .gui
+            .stackup_component_offsets()
+            .iter()
+            .all(|(_, offset)| *offset == [0.0, 0.0]));
     }
     #[test]
     fn the_search_page_does_not_run_when_an_input_loses_focus() {
@@ -2601,15 +3683,40 @@ mod tests {
     }
 
     #[test]
+    fn a_question_typed_in_find_is_an_ordinary_find_that_needs_a_folder() {
+        use crate::gpu_viewer::editor::search::SearchSession;
+
+        let search = SearchSession::in_memory();
+        let mut v = viewer(Some(Box::new(search)));
+        assert!(v.gui.find_target("Ask").is_none(), "there is no separate Ask panel");
+        let find = target(&v, "Find input");
+        click(&mut v, find);
+        type_text(&mut v, "Where is the design load?");
+        egui_key(&mut v, egui::Key::Enter);
+        frame(&mut v);
+
+        let editor = v.editor.as_ref().unwrap();
+        assert!(!editor.solving(), "no search starts without a folder");
+        assert!(editor.status().contains("search path"), "{}", editor.status());
+    }
+
+    #[test]
     fn the_search_page_takes_typed_input_runs_on_enter_and_a_row_click_shows_its_matches() {
         use crate::gpu_viewer::editor::search::SearchSession;
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("fitting.txt"), "intro\nverify bolt torque\n").unwrap();
+        std::fs::write(
+            dir.path().join("fitting.txt"),
+            "intro\nverify bolt torque\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("other.txt"), "bolt only\n").unwrap();
         let mut v = viewer(Some(Box::new(SearchSession::in_memory())));
         assert!(v.page_mode());
         let labels = v.gui.target_labels();
-        assert!(!labels.iter().any(|l| l == "View tab"), "no 3D View tab on a page bench: {labels:?}");
+        assert!(
+            !labels.iter().any(|l| l == "View tab"),
+            "no 3D View tab on a page bench: {labels:?}"
+        );
         let folder = target(&v, "Folder input");
         click(&mut v, folder);
         type_text(&mut v, &dir.path().to_string_lossy());
@@ -2618,13 +3725,21 @@ mod tests {
         type_text(&mut v, "torque");
         egui_key(&mut v, egui::Key::Enter);
         let t = Instant::now();
-        while v.editor.as_ref().unwrap().solving() || v.gui.find_target("row fitting.txt").is_none() {
-            assert!(t.elapsed().as_secs() < 30, "no result row; status {:?}", v.editor.as_ref().unwrap().status());
+        while v.editor.as_ref().unwrap().solving() || v.gui.find_target("row fitting.txt").is_none()
+        {
+            assert!(
+                t.elapsed().as_secs() < 30,
+                "no result row; status {:?}",
+                v.editor.as_ref().unwrap().status()
+            );
             v.editor.as_mut().unwrap().poll();
             frame(&mut v);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(v.gui.find_target("row other.txt").is_none(), "only the file with the word is listed");
+        assert!(
+            v.gui.find_target("row other.txt").is_none(),
+            "only the file with the word is listed"
+        );
         // Keys typed into the page never reach the viewer (no orbit, no mesh toggle), and a click on the row selects it.
         let row = target(&v, "row fitting.txt");
         click(&mut v, row);
@@ -2639,37 +3754,125 @@ mod tests {
     /// Press at `from`, move to `to` in steps, release there.
     fn drag(v: &mut Viewer, from: (f64, f64), to: (f64, f64)) {
         move_to(v, from);
-        v.test_events.push(egui::Event::PointerButton { pos: pos(from), button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        v.test_events.push(egui::Event::PointerButton {
+            pos: pos(from),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
         frame(v);
         for k in 1..=6 {
             let f = k as f64 / 6.0;
-            move_to(v, (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f));
+            move_to(
+                v,
+                (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f),
+            );
         }
-        v.test_events.push(egui::Event::PointerButton { pos: pos(to), button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        v.test_events.push(egui::Event::PointerButton {
+            pos: pos(to),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
         frame(v);
         frame(v);
     }
 
     #[test]
-    fn the_search_page_exclude_row_opens_from_its_switch_and_the_cards_move_and_resize() {
+    fn search_sidebar_resize_stays_after_pointer_moves() {
+        use crate::gpu_viewer::editor::search::SearchSession;
+        let mut v = viewer(Some(Box::new(SearchSession::in_memory())));
+        v.size_override = Some((800, 900));
+        frame(&mut v);
+        let before = v.viewport().x;
+        let from = (before as f64 - 8.0, 450.0);
+        drag(&mut v, from, (from.0 + 120.0, from.1));
+        move_to(&mut v, (from.0 + 220.0, from.1));
+        let after = v.viewport().x;
+        assert!(
+            after > before + 80,
+            "sidebar width reset: before={before}, after={after}"
+        );
+        move_to(&mut v, (from.0 + 300.0, from.1 + 120.0));
+        let after_pointer_move = v.viewport().x;
+        assert!(
+            after_pointer_move > before + 80,
+            "sidebar width reset after pointer moved: before={before}, after={after_pointer_move}"
+        );
+    }
+
+    #[test]
+    fn search_sidebar_and_controls_reflow_when_window_shrinks() {
+        use crate::gpu_viewer::editor::search::SearchSession;
+        let mut v = viewer(Some(Box::new(SearchSession::in_memory())));
+        v.size_override = Some((725, 740));
+        frame(&mut v);
+        let before = v.viewport().x;
+        drag(
+            &mut v,
+            (before as f64 - 8.0, 400.0),
+            (before as f64 + 72.0, 400.0),
+        );
+        let widened = v.viewport().x;
+        assert!(
+            widened > before,
+            "sidebar did not resize: before={before}, widened={widened}"
+        );
+        v.size_override = Some((600, 700));
+        frame(&mut v);
+        let after = v.viewport().x;
+        assert!(
+            after <= 240,
+            "sidebar did not adapt to narrower window: {after}px"
+        );
+        for control in [
+            "Folder input",
+            "Find input",
+            "Options panel",
+            "Report panel",
+            "Help and shortcuts",
+        ] {
+            let (x, y) = target(&v, control);
+            assert!(
+                x < 600.0 && y < 700.0,
+                "{control} escaped resized window at ({x}, {y})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_search_page_exclude_row_opens_and_results_keep_the_approved_layout() {
         use crate::gpu_viewer::editor::search::SearchSession;
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("fitting.txt"), "verify bolt torque\n").unwrap();
         let mut v = viewer(Some(Box::new(SearchSession::in_memory())));
-        assert!(v.gui.find_target("Exclude input").is_none(), "hidden until switched on");
+        assert!(
+            v.gui.find_target("Exclude input").is_none(),
+            "hidden until switched on"
+        );
         let chip = target(&v, "Exclude");
         click(&mut v, chip);
         frame(&mut v);
-        assert!(v.gui.find_target("Exclude input").is_some(), "the switch shows the row");
+        assert!(
+            v.gui.find_target("Exclude input").is_some(),
+            "the switch shows the row"
+        );
         // The new row has the keyboard: typing goes straight into it.
         type_text(&mut v, "draft");
         let doc = |v: &Viewer| v.editor.as_ref().unwrap().document().unwrap();
         assert_eq!(doc(&v).extra_inputs[0].text, "draft");
         let whole = target(&v, "Whole file");
         click(&mut v, whole);
-        assert!(doc(&v).extra_inputs[0].choices[0].checked == Some(true), "the scope is a choice beside the input");
+        assert!(
+            doc(&v).extra_inputs[0].choices[0].checked == Some(true),
+            "the scope is a choice beside the input"
+        );
         let s = v.editor.as_ref().unwrap();
-        assert!(s.document().unwrap().extra_inputs[0].note.as_deref().unwrap().contains("every file"));
+        assert!(s.document().unwrap().extra_inputs[0]
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("every file"));
         // A result, so both cards are shown.
         let folder = target(&v, "Folder input");
         click(&mut v, folder);
@@ -2679,34 +3882,33 @@ mod tests {
         type_text(&mut v, "torque");
         egui_key(&mut v, egui::Key::Enter);
         let t = Instant::now();
-        while v.editor.as_ref().unwrap().solving() || v.gui.find_target("Move the matches").is_none() {
-            assert!(t.elapsed().as_secs() < 30, "no detail card; status {:?}", v.editor.as_ref().unwrap().status());
+        while v.editor.as_ref().unwrap().solving() || v.gui.find_target("row fitting.txt").is_none()
+        {
+            assert!(
+                t.elapsed().as_secs() < 30,
+                "no detail card; status {:?}",
+                v.editor.as_ref().unwrap().status()
+            );
             v.editor.as_mut().unwrap().poll();
             frame(&mut v);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(v.view.page_layout, None, "the default layout until a card moves");
-        let list_before = target(&v, "Move the results");
-        let grip = target(&v, "Move the matches");
-        assert!(grip.0 > list_before.0, "the matches start on the right");
-        // Drag the matches to the left edge: they go left and the results move right.
-        let gap = target(&v, "Resize the cards");
-        drag(&mut v, grip, (list_before.0 - 40.0, gap.1));
-        let l = v.view.page_layout.expect("the drop is stored");
-        assert!(l.detail_first && !l.stacked, "{l:?}");
-        assert!(target(&v, "Move the matches").0 < target(&v, "Move the results").0, "the cards swapped sides");
-        // The splitter: drag it 150 points right, the first card grows.
-        let gap = target(&v, "Resize the cards");
-        let before = l.split;
-        drag(&mut v, gap, (gap.0 + 150.0, gap.1));
-        let after = v.view.page_layout.unwrap().split;
-        assert!(after > before + 0.05, "{before} -> {after}");
-        let moved = target(&v, "Resize the cards");
-        assert!((moved.0 - (gap.0 + 150.0)).abs() < 3.0, "the splitter follows the pointer: {gap:?} -> {moved:?}");
-        // A click on a grip (no move) changes nothing.
-        let grip = target(&v, "Move the matches");
-        click(&mut v, grip);
-        assert_eq!(v.view.page_layout.unwrap().split, after);
+        assert_eq!(
+            v.view.page_layout, None,
+            "Search keeps artifact's results-left, preview-right layout"
+        );
+        assert!(
+            v.gui.find_target("Move the results").is_none(),
+            "approved layout has no draggable card chrome"
+        );
+        assert!(
+            v.gui.find_target("Move the matches").is_none(),
+            "approved layout has no draggable card chrome"
+        );
+        assert!(
+            v.gui.find_target("Resize the cards").is_none(),
+            "approved layout has no splitter chrome"
+        );
     }
 
     #[test]
@@ -2719,37 +3921,83 @@ mod tests {
         let input = target(&v, "Search input");
         click(&mut v, input);
         type_text(&mut v, "7075");
-        let want = model::filter_sort(&model::Query { text: "7075".into(), ..model::Query::default() });
+        let want = model::filter_sort(&model::Query {
+            text: "7075".into(),
+            ..model::Query::default()
+        });
         assert!(!want.is_empty());
-        assert_eq!(doc(&v).table.rows.len(), want.len(), "typing filters with the toolbox's own query");
+        assert_eq!(
+            doc(&v).table.rows.len(),
+            want.len(),
+            "typing filters with the toolbox's own query"
+        );
         // A header click sorts by that column, largest first.
         let fty = target(&v, "Fty ksi column");
         click(&mut v, fty);
         let d = doc(&v);
-        assert_eq!(d.table.columns.iter().find(|c| c.title == "Fty ksi").unwrap().sorted, Some(false));
+        assert_eq!(
+            d.table
+                .columns
+                .iter()
+                .find(|c| c.title == "Fty ksi")
+                .unwrap()
+                .sorted,
+            Some(false)
+        );
         // Double-click two rows on screen (the sort keeps the highlighted material in view, and a click on a row cut by
         // the list's edge scrolls it in, so look again each time and skip the edge row): both are marked, in order.
         let mut marked: Vec<String> = Vec::new();
         for _ in 0..2 {
-            let shown: Vec<String> = labels(&v).into_iter().filter_map(|l| l.strip_prefix("row ").map(str::to_string)).collect();
-            let name = shown.iter().skip(1).find(|n| !marked.contains(n)).unwrap_or_else(|| panic!("{shown:?}")).clone();
+            let shown: Vec<String> = labels(&v)
+                .into_iter()
+                .filter_map(|l| l.strip_prefix("row ").map(str::to_string))
+                .collect();
+            let name = shown
+                .iter()
+                .skip(1)
+                .find(|n| !marked.contains(n))
+                .unwrap_or_else(|| panic!("{shown:?}"))
+                .clone();
             let row = target(&v, &format!("row {name}"));
             double_click(&mut v, row);
             // The clicked row is the one highlighted, and a row in view does not move (egui's row positions match the
             // painted ones).
-            assert_eq!(target(&v, &format!("row {name}")), row, "a click on a row in view does not scroll the list");
-            assert!(doc(&v).table.rows.iter().any(|r| r.selected && r.cells[0] == name), "the clicked row is highlighted");
+            assert_eq!(
+                target(&v, &format!("row {name}")),
+                row,
+                "a click on a row in view does not scroll the list"
+            );
+            assert!(
+                doc(&v)
+                    .table
+                    .rows
+                    .iter()
+                    .any(|r| r.selected && r.cells[0] == name),
+                "the clicked row is highlighted"
+            );
             marked.push(name);
         }
         let d = doc(&v);
-        let badge = |name: &str| d.table.rows.iter().find(|r| r.cells[0] == name).and_then(|r| r.badge.clone());
-        assert_eq!((badge(&marked[0]), badge(&marked[1])), (Some("#1".into()), Some("#2".into())));
+        let badge = |name: &str| {
+            d.table
+                .rows
+                .iter()
+                .find(|r| r.cells[0] == name)
+                .and_then(|r| r.badge.clone())
+        };
+        assert_eq!(
+            (badge(&marked[0]), badge(&marked[1])),
+            (Some("#1".into()), Some("#2".into()))
+        );
         assert_eq!(d.chips[0].label, "Compare (2)");
         let compare = target(&v, "Compare (2)");
         click(&mut v, compare);
         let detail = doc(&v).detail.unwrap();
         assert!(detail.title.starts_with("Compare"), "{}", detail.title);
-        assert_eq!(detail.grid.unwrap().columns, ["Property", "Unit", "#1", "#2"]);
+        assert_eq!(
+            detail.grid.unwrap().columns,
+            ["Property", "Unit", "#1", "#2"]
+        );
         // Keys typed into the page never reach the viewer.
         let before = v.view.show_mesh;
         v.input(Input::Key(Key::Character("m".into())));
@@ -2761,34 +4009,69 @@ mod tests {
         use crate::gpu_viewer::editor::search::SearchSession;
         let mut v = viewer(Some(Box::new(SearchSession::in_memory())));
         let labels = v.gui.target_labels();
-        assert!(!labels.iter().any(|l| l.ends_with(" tab") || l == "Close the inspector"), "no step strip, tool pill or inspector: {labels:?}");
+        assert!(
+            !labels
+                .iter()
+                .any(|l| l.ends_with(" tab") || l == "Close the inspector"),
+            "no step strip, tool pill or inspector: {labels:?}"
+        );
         let vp = v.viewport();
-        assert!(vp.w > 1600 - 260 - 20, "the page has the whole width beside the tree: {vp:?}");
+        assert!(
+            vp.w > 1600 - 260 - 20,
+            "the page has the whole width beside the tree: {vp:?}"
+        );
         // The guide: open it, click an example, it fills Find and closes.
         let link = target(&v, "How to write a search");
         click(&mut v, link);
         let example = target(&v, "Example bolt, torque [near 3]");
         click(&mut v, example);
-        assert_eq!(v.editor.as_ref().unwrap().document().unwrap().inputs[1].text, "bolt, torque [near 3]");
-        assert!(v.gui.find_target("Example bolt").is_none(), "the guide closed");
+        assert_eq!(
+            v.editor.as_ref().unwrap().document().unwrap().inputs[1].text,
+            "bolt, torque [near 3]"
+        );
+        assert!(
+            v.gui.find_target("Example bolt").is_none(),
+            "the guide closed"
+        );
         // Options: a popover with the settings; a switch flips in place and the popover stays.
         let options = target(&v, "Options panel");
         click(&mut v, options);
         let regex = target(&v, "Use regex");
         click(&mut v, regex);
-        assert!(v.editor.as_ref().unwrap().document().unwrap().chips.iter().any(|c| c.label == "Regex" && c.checked == Some(true)));
-        assert!(v.gui.find_target("Whole word").is_some(), "still open after a change");
+        assert!(v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .chips
+            .iter()
+            .any(|c| c.label == "Regex" && c.checked == Some(true)));
+        assert!(
+            v.gui.find_target("Whole word").is_some(),
+            "still open after a change"
+        );
         key(&mut v, NamedKey::Escape);
-        assert!(v.gui.find_target("Exclude folders").is_none(), "Esc closes it");
+        assert!(
+            v.gui.find_target("Exclude folders").is_none(),
+            "Esc closes it"
+        );
         // Report: the output folder is an input with its own Browse, as the folder to search is.
         let report = target(&v, "Report panel");
         click(&mut v, report);
         let out = target(&v, "Output folder input");
         click(&mut v, out);
         type_text(&mut v, "/reports");
-        assert_eq!(v.editor.as_ref().unwrap().document().unwrap().panels[2].inputs[0].text, "/reports");
+        assert_eq!(
+            v.editor.as_ref().unwrap().document().unwrap().panels.iter().find(|panel| panel.label == "Report").unwrap().inputs[0].text,
+            "/reports"
+        );
         let labels = v.gui.target_labels();
-        assert_eq!(labels.iter().filter(|l| *l == "Browse").count(), 2, "Browse beside both folders: {labels:?}");
+        assert_eq!(
+            labels.iter().filter(|l| *l == "Browse").count(),
+            2,
+            "Browse beside both folders: {labels:?}"
+        );
         assert!(!v.quit, "Esc closed the popover, not the window");
     }
 }

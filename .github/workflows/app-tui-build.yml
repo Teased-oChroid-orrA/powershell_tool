@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          lfs: true
 
       - name: Setup Rust toolchain (stable, MSVC)
         uses: dtolnay/rust-toolchain@stable
@@ -85,9 +87,31 @@ jobs:
           }
           Get-ChildItem -Recurse dist | Format-Table FullName, Length
 
+      - name: Create ZIP package
+        shell: pwsh
+        run: |
+          # Plain ZIP (Deflate, optimal): Windows opens it with Explorer, no extra tool needed.
+          $zip = Join-Path $env:RUNNER_TEMP "app-tui-win-x64.zip"
+          if (Test-Path $zip) { Remove-Item $zip }
+          Compress-Archive -Path dist/app-tui.exe, dist/THIRD-PARTY-NOTICES.md, dist/licenses -DestinationPath $zip -CompressionLevel Optimal
+          Move-Item $zip dist/app-tui-win-x64.zip
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path dist/app-tui-win-x64.zip))
+          try {
+            $names = $archive.Entries | ForEach-Object { $_.FullName }
+            $names
+            if ($names -notcontains "app-tui.exe") { throw "app-tui.exe missing from the ZIP" }
+            $exe = $archive.GetEntry("app-tui.exe")
+            $stream = $exe.Open(); $total = 0; $buf = New-Object byte[] 1MB
+            while (($n = $stream.Read($buf, 0, $buf.Length)) -gt 0) { $total += $n }
+            $stream.Dispose()
+            if ($total -ne $exe.Length) { throw "app-tui.exe did not read back in full from the ZIP" }
+          } finally { $archive.Dispose() }
+
       - name: Upload app-tui release folder
         uses: actions/upload-artifact@v7
         with:
           name: app-tui-win-x64
-          path: dist
+          path: dist/app-tui-win-x64.zip
+          compression-level: 0
           if-no-files-found: error

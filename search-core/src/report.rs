@@ -326,7 +326,7 @@ fn append_file_block(out: &mut String, r: &crate::models::FileSearchResult, sett
 
     if r.low_confidence_pdf {
         out.push_str(
-            "<p class=\"confidence-note\">This PDF's extracted text looks unreliable (often a sign of embedded/subsetted fonts) - if you expected more hits here, open the file directly to check manually.</p>\n",
+            "<p class=\"confidence-note\">This PDF's extracted text may be incomplete or misrecognized - check the original if the matches are important.</p>\n",
         );
     }
 
@@ -424,7 +424,8 @@ fn highlight_matches(line: &str, matched_filters: &[String], settings: &SearchSe
     }
 
     let mut ranges: Vec<(usize, usize)> = Vec::new();
-    for f in matched_filters {
+    // A NEAR query highlights both of its words.
+    for f in &crate::near::expand_terms(matched_filters, settings.use_regex) {
         if f.is_empty() {
             continue;
         }

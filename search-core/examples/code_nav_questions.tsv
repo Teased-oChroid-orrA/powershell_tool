@@ -1,0 +1,34 @@
+# id	corpus	kind	question	exact_query	gold   (gold: def:REGEX | use:REGEX | file:suffix,suffix)
+q01	sc	def	Where is relevance_order defined?	relevance_order	def:fn relevance_order\b
+q02	sc	def	Where is apply_line_matching defined?	apply_line_matching	def:fn apply_line_matching\b
+q03	sc	def	Where is version_chain defined?	version_chain	def:fn version_chain\b
+q04	sc	def	Where is group_similar_documents defined?	group_similar_documents	def:fn group_similar_documents\b
+q05	sc	def	Where is the SemanticIndex type defined?	SemanticIndex	def:struct SemanticIndex\b
+q06	sc	def	Where is index_document defined?	index_document	def:fn index_document\b
+q07	sc	def	Where is open defined?	open	def:fn open\b
+q08	sc	use	What calls apply_line_matching?	apply_line_matching	use:\bapply_line_matching\b
+q09	sc	use	What calls index_entities?	index_entities	use:\bindex_entities\b
+q10	sc	use	What calls is_rare_shape?	is_rare_shape	use:\bis_rare_shape\b
+q11	sc	concept	Which file extracts rare identifier terms for the catalog?	rare identifier terms catalog	file:catalog_entities.rs
+q12	sc	concept	Where are PDF page numbers mapped to text lines?	pdf page numbers text lines	file:pdf_page_map.rs
+q13	sc	concept	Which module orders exact search results by relevance?	orders results relevance	file:ordering.rs
+q14	fc	def	Where is assemble_stiffness defined?	assemble_stiffness	def:fn assemble_stiffness\b
+q15	fc	def	Where is solve_heat_transient defined?	solve_heat_transient	def:fn solve_heat_transient\b
+q16	fc	def	Where is with_friction defined?	with_friction	def:fn with_friction\b
+q17	fc	def	Where is matvec_add defined?	matvec_add	def:fn matvec_add\b
+q18	fc	def	Where is solve defined?	solve	def:fn solve\b
+q19	fc	use	What calls assemble_stiffness?	assemble_stiffness	use:\bassemble_stiffness\b
+q20	fc	use	What calls solve_heat_steady?	solve_heat_steady	use:\bsolve_heat_steady\b
+q21	fc	concept	Where is contact friction handled?	contact friction handled	file:contact.rs
+q22	fc	concept	Where is the algebraic multigrid preconditioner?	algebraic multigrid preconditioner	file:amg.rs
+q23	gm	def	Where is add_torus defined?	add_torus	def:fn add_torus\b
+q24	gm	def	Where is dof_permutation defined?	dof_permutation	def:fn dof_permutation\b
+q25	gm	def	Where is solve_for_active_set defined?	solve_for_active_set	def:fn solve_for_active_set\b
+q26	gm	use	What calls set_mesh?	set_mesh	use:\bset_mesh\b
+q27	gm	use	What calls solve_dynamic?	solve_dynamic	use:\bsolve_dynamic\b
+q28	gs	concept	Which script computes mesh quality?	script computes mesh quality	file:mesh_quality.py
+q29	gs	concept	Which script builds a NACA boundary layer in 2D?	NACA boundary layer 2D	file:naca_boundary_layer_2d.py
+q30	gs	use	Which scripts call occ.synchronize?	synchronize	use:occ\.synchronize\b
+q31	gs	use	Which scripts add a BoundaryLayer field?	BoundaryLayer	use:BoundaryLayer
+q32	gs	concept	Which script opens a custom GUI window?	custom GUI window	file:custom_gui.py
+q33	gs	use	Which scripts call gmsh.model.mesh.generate?	generate	use:mesh\.generate\b

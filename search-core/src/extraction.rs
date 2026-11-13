@@ -39,6 +39,61 @@ use regex::Regex;
 pub struct ExtractedLines {
     pub lines: Vec<String>,
     pub low_confidence_pdf: bool,
+    /// Text came from the local OCR models rather than a PDF text layer.
+    pub ocr_used: bool,
+}
+
+/// Extra metadata used only by the optional semantic corpus index.
+#[cfg(feature = "semantic-search")]
+pub(crate) struct SemanticExtraction {
+    pub(crate) lines: Vec<String>,
+    pub(crate) pages: Option<Vec<Option<std::num::NonZeroU32>>>,
+}
+
+#[cfg(feature = "semantic-search")]
+pub(crate) fn extract_for_semantic_index(
+    extension: &str,
+    bytes: &[u8],
+    pdf_timeout_seconds: u64,
+    ocr_scanned_pdfs: bool,
+) -> Result<SemanticExtraction, ExtractLinesError> {
+    if extension.eq_ignore_ascii_case(".pdf") {
+        // Stream offsets (origins) and the page map must refer to the same bytes.
+        let bytes = &*crate::pdf_decrypt::open_with_empty_password(bytes);
+        let extracted =
+            extract_pdf_lines_with_origins(bytes, pdf_timeout_seconds, None, ocr_scanned_pdfs);
+        let lines = extracted.lines.ok_or(ExtractLinesError::Failed)?;
+        let pages = crate::pdf_page_map::page_by_stream_offset(bytes)
+            .zip(extracted.origins)
+            .map(|(stream_pages, origins)| {
+                origins
+                    .into_iter()
+                    .map(|origin| origin.and_then(|offset| stream_pages.get(&offset).copied()))
+                    .collect()
+            });
+        Ok(SemanticExtraction { lines, pages })
+    } else {
+        let extracted = extract_lines_by_extension(
+            extension,
+            bytes,
+            pdf_timeout_seconds,
+            None,
+            ocr_scanned_pdfs,
+        )?;
+        Ok(SemanticExtraction {
+            lines: extracted.lines,
+            pages: None,
+        })
+    }
+}
+
+/// Points the persistent OCR text cache at `dir` (`None` = memory only). A
+/// no-op without the `ocr` feature. Process-wide, set once per run.
+pub fn configure_ocr_cache(dir: Option<&str>) {
+    #[cfg(feature = "ocr")]
+    crate::ocr::set_cache_dir(dir);
+    #[cfg(not(feature = "ocr"))]
+    let _ = dir;
 }
 
 /// Distinguishes *why* extraction produced no lines - `orchestrator.rs`
@@ -87,6 +142,26 @@ pub trait Extractor: Send + Sync {
         ocr_scanned_pdfs: bool,
     ) -> Option<Vec<String>>;
 
+    fn extract_with_metadata(
+        &self,
+        bytes: &[u8],
+        pdf_timeout_seconds: u64,
+        on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+        ocr_scanned_pdfs: bool,
+    ) -> Option<ExtractedLines> {
+        self.extract(
+            bytes,
+            pdf_timeout_seconds,
+            on_pdf_progress,
+            ocr_scanned_pdfs,
+        )
+        .map(|lines| ExtractedLines {
+            lines,
+            low_confidence_pdf: false,
+            ocr_used: false,
+        })
+    }
+
     /// Only `PdfExtractor` overrides this - see
     /// `pdf_extraction_looks_reliable`'s doc comment for what it detects.
     fn low_confidence(&self, _lines: &[String]) -> bool {
@@ -99,7 +174,13 @@ impl Extractor for DocxExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[".docx"]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
+    fn extract(
+        &self,
+        bytes: &[u8],
+        _pdf_timeout_seconds: u64,
+        _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+        _ocr_scanned_pdfs: bool,
+    ) -> Option<Vec<String>> {
         extract_docx_lines(bytes)
     }
 }
@@ -109,7 +190,13 @@ impl Extractor for PptxExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[".pptx"]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
+    fn extract(
+        &self,
+        bytes: &[u8],
+        _pdf_timeout_seconds: u64,
+        _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+        _ocr_scanned_pdfs: bool,
+    ) -> Option<Vec<String>> {
         extract_pptx_lines(bytes)
     }
 }
@@ -119,7 +206,13 @@ impl Extractor for XlsxExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[".xlsx"]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
+    fn extract(
+        &self,
+        bytes: &[u8],
+        _pdf_timeout_seconds: u64,
+        _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+        _ocr_scanned_pdfs: bool,
+    ) -> Option<Vec<String>> {
         extract_xlsx_lines(bytes)
     }
 }
@@ -129,7 +222,13 @@ impl Extractor for ZipExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[".zip"]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
+    fn extract(
+        &self,
+        bytes: &[u8],
+        _pdf_timeout_seconds: u64,
+        _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+        _ocr_scanned_pdfs: bool,
+    ) -> Option<Vec<String>> {
         extract_zip_archive_lines(bytes, 2)
     }
 }
@@ -146,7 +245,32 @@ impl Extractor for PdfExtractor {
         on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
         ocr_scanned_pdfs: bool,
     ) -> Option<Vec<String>> {
-        extract_pdf_lines(bytes, pdf_timeout_seconds, on_pdf_progress, ocr_scanned_pdfs).0
+        extract_pdf_lines(
+            bytes,
+            pdf_timeout_seconds,
+            on_pdf_progress,
+            ocr_scanned_pdfs,
+        )
+        .0
+    }
+    fn extract_with_metadata(
+        &self,
+        bytes: &[u8],
+        pdf_timeout_seconds: u64,
+        on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+        ocr_scanned_pdfs: bool,
+    ) -> Option<ExtractedLines> {
+        let (lines, _, ocr_used) = extract_pdf_lines_with_metadata(
+            bytes,
+            pdf_timeout_seconds,
+            on_pdf_progress,
+            ocr_scanned_pdfs,
+        );
+        lines.map(|lines| ExtractedLines {
+            low_confidence_pdf: false,
+            lines,
+            ocr_used,
+        })
     }
     fn low_confidence(&self, lines: &[String]) -> bool {
         !pdf_extraction_looks_reliable(lines)
@@ -158,7 +282,13 @@ impl Extractor for RtfExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[".rtf"]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
+    fn extract(
+        &self,
+        bytes: &[u8],
+        _pdf_timeout_seconds: u64,
+        _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+        _ocr_scanned_pdfs: bool,
+    ) -> Option<Vec<String>> {
         extract_rtf_lines(bytes)
     }
 }
@@ -172,7 +302,13 @@ impl Extractor for PlainTextExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
+    fn extract(
+        &self,
+        bytes: &[u8],
+        _pdf_timeout_seconds: u64,
+        _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+        _ocr_scanned_pdfs: bool,
+    ) -> Option<Vec<String>> {
         Some(split_lines(&decode_text(bytes)))
     }
 }
@@ -180,8 +316,14 @@ impl Extractor for PlainTextExtractor {
 /// The registry - add a new format by adding an `Extractor` impl above
 /// and one entry here, not by editing
 /// [`extract_lines_by_extension`]'s dispatch logic itself.
-static EXTRACTORS: &[&dyn Extractor] =
-    &[&DocxExtractor, &PptxExtractor, &XlsxExtractor, &ZipExtractor, &PdfExtractor, &RtfExtractor];
+static EXTRACTORS: &[&dyn Extractor] = &[
+    &DocxExtractor,
+    &PptxExtractor,
+    &XlsxExtractor,
+    &ZipExtractor,
+    &PdfExtractor,
+    &RtfExtractor,
+];
 
 /// Extension-to-extractor dispatch, factored out of `orchestrator.rs`'s
 /// `process_one_file` so the same table backs both the normal search path
@@ -201,7 +343,10 @@ pub fn extract_lines_by_extension(
     on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
     ocr_scanned_pdfs: bool,
 ) -> Result<ExtractedLines, ExtractLinesError> {
-    let registered = EXTRACTORS.iter().find(|e| e.extensions().contains(&ext)).copied();
+    let registered = EXTRACTORS
+        .iter()
+        .find(|e| e.extensions().contains(&ext))
+        .copied();
 
     // Binary sniffing only applies to the plain-text fallback path - every
     // registered format extractor above parses its own container format
@@ -217,11 +362,20 @@ pub fn extract_lines_by_extension(
         }
     };
 
-    let lines = extractor.extract(bytes, pdf_timeout_seconds, on_pdf_progress, ocr_scanned_pdfs);
-    match lines {
-        Some(l) if !l.is_empty() => {
-            let low_confidence_pdf = extractor.low_confidence(&l);
-            Ok(ExtractedLines { lines: l, low_confidence_pdf })
+    let text = extractor.extract_with_metadata(
+        bytes,
+        pdf_timeout_seconds,
+        on_pdf_progress,
+        ocr_scanned_pdfs,
+    );
+    match text {
+        Some(text) if !text.lines.is_empty() => {
+            let low_confidence_pdf =
+                text.low_confidence_pdf || extractor.low_confidence(&text.lines);
+            Ok(ExtractedLines {
+                low_confidence_pdf,
+                ..text
+            })
         }
         _ => Err(ExtractLinesError::Failed),
     }
@@ -427,13 +581,19 @@ fn decode_xml_entities(xml: &str) -> String {
 /// as `extract_zip_entries`'s own per-entry check), then bounds the
 /// actual read with `Read::take` as defense-in-depth against a
 /// deliberately-wrong declared size, not just a trusted-header check.
-fn read_zip_entry_to_string(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<String> {
+fn read_zip_entry_to_string(
+    zip: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    name: &str,
+) -> Option<String> {
     let entry = zip.by_name(name).ok()?;
     if entry.size() as i64 > ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES {
         return None;
     }
     let mut s = String::new();
-    entry.take(ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES as u64).read_to_string(&mut s).ok()?;
+    entry
+        .take(ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES as u64)
+        .read_to_string(&mut s)
+        .ok()?;
     Some(s)
 }
 
@@ -483,7 +643,11 @@ pub fn extract_pptx_lines(bytes: &[u8]) -> Option<Vec<String>> {
 
     let mut slide_entries: Vec<(i32, String)> = names
         .iter()
-        .filter_map(|n| slide_re().captures(n).map(|c| (c[1].parse::<i32>().unwrap(), n.clone())))
+        .filter_map(|n| {
+            slide_re()
+                .captures(n)
+                .map(|c| (c[1].parse::<i32>().unwrap(), n.clone()))
+        })
         .collect();
     slide_entries.sort_by_key(|(num, _)| *num);
 
@@ -611,7 +775,11 @@ pub fn extract_xlsx_lines(bytes: &[u8]) -> Option<Vec<String>> {
     let names: Vec<String> = zip.file_names().map(|s| s.to_string()).collect();
     let mut sheet_entries: Vec<(i32, String)> = names
         .iter()
-        .filter_map(|n| sheet_re().captures(n).map(|c| (c[1].parse::<i32>().unwrap(), n.clone())))
+        .filter_map(|n| {
+            sheet_re()
+                .captures(n)
+                .map(|c| (c[1].parse::<i32>().unwrap(), n.clone()))
+        })
         .collect();
     sheet_entries.sort_by_key(|(num, _)| *num);
 
@@ -724,7 +892,9 @@ fn extract_zip_entries(
 
     for i in 0..zip.len() {
         if state.entries_scanned >= ZIP_MAX_ENTRIES_SCANNED {
-            lines.push("[... zip entry scan limit reached, remaining entries skipped ...]".to_string());
+            lines.push(
+                "[... zip entry scan limit reached, remaining entries skipped ...]".to_string(),
+            );
             return;
         }
 
@@ -733,7 +903,11 @@ fn extract_zip_entries(
                 Ok(e) => e,
                 Err(_) => continue,
             };
-            (entry.name().to_string(), entry.is_dir(), entry.size() as i64)
+            (
+                entry.name().to_string(),
+                entry.is_dir(),
+                entry.size() as i64,
+            )
         };
 
         if is_dir {
@@ -743,7 +917,10 @@ fn extract_zip_entries(
             continue;
         }
         if state.total_bytes_read + entry_len > ZIP_MAX_UNCOMPRESSED_BYTES_TOTAL {
-            lines.push("[... zip total-size scan limit reached, remaining entries skipped ...]".to_string());
+            lines.push(
+                "[... zip total-size scan limit reached, remaining entries skipped ...]"
+                    .to_string(),
+            );
             return;
         }
 
@@ -759,7 +936,11 @@ fn extract_zip_entries(
             // defense-in-depth against a deliberately-wrong declared size
             // (see read_zip_entry_to_string's doc comment for the same
             // reasoning applied to DOCX/PPTX/XLSX entries).
-            if entry.take(ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES as u64).read_to_end(&mut entry_bytes).is_err() {
+            if entry
+                .take(ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES as u64)
+                .read_to_end(&mut entry_bytes)
+                .is_err()
+            {
                 continue;
             }
         }
@@ -792,7 +973,11 @@ fn extract_zip_entries(
             }
             _ => {
                 if !looks_binary(&entry_bytes) {
-                    append_entry_lines(lines, &full_name, Some(split_lines(&decode_text(&entry_bytes))));
+                    append_entry_lines(
+                        lines,
+                        &full_name,
+                        Some(split_lines(&decode_text(&entry_bytes))),
+                    );
                 }
             }
         }
@@ -1037,7 +1222,12 @@ fn stream_re() -> &'static Regex {
 /// assertion around the literal either, so this preserves that exact,
 /// slightly odd but pre-existing behavior rather than "fixing" it as an
 /// incidental side effect of a performance change).
+#[cfg(test)]
 fn find_stream_blocks(raw: &str) -> impl Iterator<Item = (&str, &str)> {
+    find_stream_blocks_with_offsets(raw).map(|(header, body, _)| (header, body))
+}
+
+fn find_stream_blocks_with_offsets(raw: &str) -> impl Iterator<Item = (&str, &str, usize)> {
     // Two positions, deliberately not one - this distinction is exactly
     // the bug the differential tests below caught in an earlier draft.
     // `anchor` is the *lower bound* the header capture can't reach behind
@@ -1054,6 +1244,8 @@ fn find_stream_blocks(raw: &str) -> impl Iterator<Item = (&str, &str)> {
     // after the failed candidate).
     let mut anchor = 0usize;
     let mut probe = 0usize;
+    let mut source_cursor = 0usize;
+    let mut source_chars = 0usize;
     std::iter::from_fn(move || loop {
         let rel = raw.get(probe..)?.find("stream")?;
         let stream_abs = probe + rel;
@@ -1078,8 +1270,22 @@ fn find_stream_blocks(raw: &str) -> impl Iterator<Item = (&str, &str)> {
         // stream keyword. `char_indices().rev().nth(399)` only walks
         // back up to 400 characters regardless of file size, so this
         // stays cheap even on huge files.
-        let header_start = raw[..stream_abs].char_indices().rev().nth(399).map(|(idx, _)| idx).unwrap_or(0).max(anchor);
+        let header_start = raw[..stream_abs]
+            .char_indices()
+            .rev()
+            .nth(399)
+            .map(|(idx, _)| idx)
+            .unwrap_or(0)
+            .max(anchor);
+        // The window can reach back into the previous object. Word writes the
+        // page object (`/ProcSet [/PDF /Text /ImageB ...]`) right before its
+        // content stream, and `/Image` in that text made `skip_marker_re`
+        // discard every page. A header starts at its own `obj` keyword.
+        let header_start = raw[header_start..stream_abs]
+            .rfind("obj")
+            .map_or(header_start, |at| header_start + at + "obj".len());
         let header = &raw[header_start..stream_abs];
+        let source_body_start = source_chars + raw[source_cursor..body_start].chars().count();
 
         return match raw.get(body_start..)?.find("endstream") {
             Some(end_rel) => {
@@ -1087,16 +1293,71 @@ fn find_stream_blocks(raw: &str) -> impl Iterator<Item = (&str, &str)> {
                 let body = &raw[body_start..end_abs];
                 anchor = end_abs + "endstream".len();
                 probe = anchor;
-                Some((header, body))
+                source_chars += raw[source_cursor..anchor].chars().count();
+                source_cursor = anchor;
+                Some((header, body, source_body_start))
             }
             None => None,
         };
     })
 }
 
+#[cfg(test)]
 fn text_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\((?:\\.|[^()])*\)").unwrap())
+}
+
+/// A whole `[(Do)-32(c)1(um)-326(ent)]TJ` array (balanced strings and
+/// numbers only) or, failing that, one lone `(string)`. Matching the array
+/// as a unit is what keeps a word the typesetter kerned apart in one piece
+/// (see [`join_tj_array`]); the lone-string arm is the old behaviour.
+fn text_run_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"\[(?:\s*(?:\((?:\\.|[^()])*\)|-?[0-9]*\.?[0-9]+))*\s*\]\s*TJ|\((?:\\.|[^()])*\)",
+        )
+        .unwrap()
+    })
+}
+
+/// A page content stream is operators and numbers with some text strings, so
+/// it is overwhelmingly printable ASCII; an embedded font program or image
+/// that merely contains the bytes `Tj` is not (random bytes are about 40%
+/// printable), and its "strings" were the binary-looking lines in the index.
+fn looks_like_content_stream(bytes: &[u8]) -> bool {
+    let printable = bytes
+        .iter()
+        .filter(|b| matches!(**b, b'\t' | b'\n' | b'\r') || (0x20..0x7f).contains(*b))
+        .count();
+    printable * 10 >= bytes.len() * 6
+}
+
+fn tj_piece_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\((?:\\.|[^()])*\)|-?[0-9]*\.?[0-9]+").unwrap())
+}
+
+/// A `TJ` position adjustment this far left (thousandths of an em) is a word
+/// space; smaller ones are kerning inside a word. Kerns seen in real
+/// LaTeX/Word output are 0 to about -90, word spaces about -250 to -450.
+const TJ_WORD_GAP: f64 = -150.0;
+
+/// Joins one `TJ` array into a line: strings are concatenated, and a large
+/// negative adjustment between two strings becomes one space. Without this
+/// every kerned fragment was its own "line" (`Do` / `c` / `um` / `en`).
+fn join_tj_array(array: &str) -> String {
+    let mut out = String::new();
+    for piece in tj_piece_re().find_iter(array) {
+        let p = piece.as_str();
+        if let Some(inner) = p.strip_prefix('(') {
+            out.push_str(&unescape_pdf_string(&inner[..inner.len() - 1]));
+        } else if p.parse::<f64>().is_ok_and(|n| n <= TJ_WORD_GAP) && !out.is_empty() && !out.ends_with(' ') {
+            out.push(' ');
+        }
+    }
+    out
 }
 
 fn skip_marker_re() -> &'static Regex {
@@ -1153,7 +1414,9 @@ fn bfchar_entry_re() -> &'static Regex {
 /// resolver follows).
 fn bfrange_entry_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>").unwrap()
+    })
 }
 
 /// The other legal `bfrange` form: `<start> <end> [<dst1> <dst2> ...]` -
@@ -1163,7 +1426,10 @@ fn bfrange_entry_re() -> &'static Regex {
 /// there, so each regex only ever matches its own real syntax.
 fn bfrange_array_entry_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?s)<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*\[\s*((?:<[0-9A-Fa-f]+>\s*)+)\]").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"(?s)<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*\[\s*((?:<[0-9A-Fa-f]+>\s*)+)\]")
+            .unwrap()
+    })
 }
 
 /// Parses a `/ToUnicode` CMap stream's decompressed PostScript-ish text
@@ -1185,7 +1451,12 @@ fn parse_tounicode_cmap(content: &str, map: &mut HashMap<u32, String>) {
     }
     for block in bfrange_block_re().captures_iter(content) {
         for entry in bfrange_entry_re().captures_iter(&block[1]) {
-            let (Ok(start), Ok(end)) = (u32::from_str_radix(&entry[1], 16), u32::from_str_radix(&entry[2], 16)) else { continue };
+            let (Ok(start), Ok(end)) = (
+                u32::from_str_radix(&entry[1], 16),
+                u32::from_str_radix(&entry[2], 16),
+            ) else {
+                continue;
+            };
             // A malformed range (end before start, or absurdly wide -
             // real fonts never legitimately need more than a few hundred
             // thousand code points) is skipped rather than looped, so a
@@ -1204,7 +1475,9 @@ fn parse_tounicode_cmap(content: &str, map: &mut HashMap<u32, String>) {
             if dst_hex.len() != 4 {
                 continue;
             }
-            let Ok(dst_start) = u32::from_str_radix(dst_hex, 16) else { continue };
+            let Ok(dst_start) = u32::from_str_radix(dst_hex, 16) else {
+                continue;
+            };
             for (i, cid) in (start..=end).enumerate() {
                 if let Some(ch) = char::from_u32(dst_start + i as u32) {
                     map.insert(cid, ch.to_string());
@@ -1218,11 +1491,19 @@ fn parse_tounicode_cmap(content: &str, map: &mut HashMap<u32, String>) {
         // unbounded or out-of-range loop; no separate sanity cap needed
         // here the way the sequential form above requires one.
         for entry in bfrange_array_entry_re().captures_iter(&block[1]) {
-            let (Ok(start), Ok(end)) = (u32::from_str_radix(&entry[1], 16), u32::from_str_radix(&entry[2], 16)) else { continue };
+            let (Ok(start), Ok(end)) = (
+                u32::from_str_radix(&entry[1], 16),
+                u32::from_str_radix(&entry[2], 16),
+            ) else {
+                continue;
+            };
             if end < start {
                 continue;
             }
-            let dsts: Vec<&str> = hex_string_re().find_iter(&entry[3]).map(|m| &m.as_str()[1..m.as_str().len() - 1]).collect();
+            let dsts: Vec<&str> = hex_string_re()
+                .find_iter(&entry[3])
+                .map(|m| &m.as_str()[1..m.as_str().len() - 1])
+                .collect();
             for (cid, dst_hex) in (start..=end).zip(dsts) {
                 if let Some(text) = utf16be_hex_to_string(dst_hex) {
                     map.insert(cid, text);
@@ -1263,8 +1544,12 @@ fn hex_string_to_unicode(hex: &str, map: &HashMap<u32, String>) -> String {
         if chunk.len() != 4 {
             break; // trailing odd nibble(s) - malformed per this function's caller's regex guarantee, but defensive anyway
         }
-        let Ok(chunk_str) = std::str::from_utf8(chunk) else { continue };
-        let Ok(cid) = u32::from_str_radix(chunk_str, 16) else { continue };
+        let Ok(chunk_str) = std::str::from_utf8(chunk) else {
+            continue;
+        };
+        let Ok(cid) = u32::from_str_radix(chunk_str, 16) else {
+            continue;
+        };
         if let Some(text) = map.get(&cid) {
             out.push_str(text);
         }
@@ -1324,33 +1609,42 @@ pub(crate) struct OcrCandidateImage {
     pub rgb: Vec<u8>,
 }
 
-#[cfg(feature = "ocr")]
+#[cfg(all(feature = "ocr", test))]
 fn find_jpeg_image_streams(raw: &str) -> Vec<OcrCandidateImage> {
-    let mut out = Vec::new();
-    for (header, stream_text) in find_stream_blocks(raw) {
-        if !header.contains("/Image") || !header.contains("/DCTDecode") || stream_text.is_empty() {
-            continue;
-        }
-        let jpeg_bytes = if header.contains("/ASCII85Decode") {
-            decode_ascii85(stream_text)
-        } else {
-            encode_latin1(stream_text)
-        };
-        if jpeg_bytes.is_empty() {
-            continue;
-        }
-        let Ok(decoded) = image::load_from_memory(&jpeg_bytes) else { continue };
-        let rgb_img = decoded.into_rgb8();
-        let (width, height) = rgb_img.dimensions();
-        out.push(OcrCandidateImage { width, height, rgb: rgb_img.into_raw() });
+    find_stream_blocks(raw)
+        .filter_map(|(header, stream_text)| jpeg_image_from_stream(header, stream_text))
+        .collect()
+}
+
+/// Decodes one `/Image` + `/DCTDecode` stream to RGB8; `None` if the stream is
+/// not such an image or does not decode.
+#[cfg(feature = "ocr")]
+fn jpeg_image_from_stream(header: &str, stream_text: &str) -> Option<OcrCandidateImage> {
+    if !header.contains("/Image") || !header.contains("/DCTDecode") || stream_text.is_empty() {
+        return None;
     }
-    out
+    let jpeg_bytes = if header.contains("/ASCII85Decode") {
+        decode_ascii85(stream_text)
+    } else {
+        encode_latin1(stream_text)
+    };
+    if jpeg_bytes.is_empty() {
+        return None;
+    }
+    let rgb_img = image::load_from_memory(&jpeg_bytes).ok()?.into_rgb8();
+    let (width, height) = rgb_img.dimensions();
+    Some(OcrCandidateImage { width, height, rgb: rgb_img.into_raw() })
 }
 
 #[cfg(feature = "ocr")]
 fn header_u32(header: &str, key: &str) -> Option<u32> {
     let idx = header.find(key)?;
-    header[idx + key.len()..].trim_start().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+    header[idx + key.len()..]
+        .trim_start()
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// Finds `/Image` streams encoded as raw, uncompressed pixel data behind
@@ -1364,27 +1658,48 @@ fn header_u32(header: &str, key: &str) -> Option<u32> {
 /// other than 8, a `ColorSpace` other than the two handled, or an
 /// inflated byte count that doesn't match `width * height *
 /// bytes_per_pixel` exactly) is skipped, not guessed at.
-#[cfg(feature = "ocr")]
+#[cfg(all(feature = "ocr", test))]
 fn find_raw_flate_image_streams(raw: &str) -> Vec<OcrCandidateImage> {
-    let mut out = Vec::new();
-    for (header, stream_text) in find_stream_blocks(raw) {
-        if !header.contains("/Image") || !header.contains("/FlateDecode") || header.contains("/DCTDecode") || stream_text.is_empty() {
-            continue;
+    find_stream_blocks(raw)
+        .filter_map(|(header, stream_text)| raw_flate_image_from_stream(header, stream_text))
+        .collect()
+}
+
+/// Decodes one raw `/Image` + `/FlateDecode` stream (see above) to RGB8;
+/// `None` for anything outside the handled shape.
+#[cfg(feature = "ocr")]
+fn raw_flate_image_from_stream(header: &str, stream_text: &str) -> Option<OcrCandidateImage> {
+    {
+        if !header.contains("/Image")
+            || !header.contains("/FlateDecode")
+            || header.contains("/DCTDecode")
+            || stream_text.is_empty()
+        {
+            return None;
         }
-        let (Some(width), Some(height), Some(bits_per_component)) = (header_u32(header, "/Width"), header_u32(header, "/Height"), header_u32(header, "/BitsPerComponent")) else {
-            continue;
+        let (Some(width), Some(height), Some(bits_per_component)) = (
+            header_u32(header, "/Width"),
+            header_u32(header, "/Height"),
+            header_u32(header, "/BitsPerComponent"),
+        ) else {
+            return None;
         };
         if bits_per_component != 8 {
-            continue; // 1/2/4/16-bit-per-component images not handled - see doc comment
+            return None; // 1/2/4/16-bit-per-component images not handled - see doc comment
         }
         let bytes_per_pixel: u32 = if header.contains("/DeviceRGB") {
             3
         } else if header.contains("/DeviceGray") {
             1
         } else {
-            continue; // DeviceCMYK and indexed/ICC color spaces not handled
+            return None; // DeviceCMYK and indexed/ICC color spaces not handled
         };
-        let Some(expected_len) = (width as u64).checked_mul(height as u64).and_then(|n| n.checked_mul(bytes_per_pixel as u64)) else { continue };
+        let Some(expected_len) = (width as u64)
+            .checked_mul(height as u64)
+            .and_then(|n| n.checked_mul(bytes_per_pixel as u64))
+        else {
+            return None;
+        };
         // A real full-page scan at a few hundred DPI in DeviceRGB (no
         // subsampling) is genuinely 20-100MB of raw pixel data - well
         // past `inflate_raw_deflate`'s shared 20MB deflate-bomb cap
@@ -1399,14 +1714,16 @@ fn find_raw_flate_image_streams(raw: &str) -> Vec<OcrCandidateImage> {
         // (a claimed Width/Height large enough to make even `expected_len`
         // itself an unreasonable allocation, before any inflating starts).
         if expected_len > 300_000_000 {
-            continue;
+            return None;
         }
 
         let working_bytes = encode_latin1(stream_text);
         if working_bytes.len() <= 2 {
-            continue;
+            return None;
         }
-        let Some(inflated) = bounded_inflate_to_exact_len(&working_bytes[2..], expected_len) else { continue };
+        let Some(inflated) = bounded_inflate_to_exact_len(&working_bytes[2..], expected_len) else {
+            return None;
+        };
 
         let rgb = if bytes_per_pixel == 3 {
             inflated
@@ -1418,9 +1735,8 @@ fn find_raw_flate_image_streams(raw: &str) -> Vec<OcrCandidateImage> {
             }
             rgb
         };
-        out.push(OcrCandidateImage { width, height, rgb });
+        Some(OcrCandidateImage { width, height, rgb })
     }
-    out
 }
 
 /// An image-only/scanned PDF (no text-showing operators at all, just a
@@ -1433,17 +1749,120 @@ fn find_raw_flate_image_streams(raw: &str) -> Vec<OcrCandidateImage> {
 pub fn extract_pdf_lines(
     bytes: &[u8],
     overall_timeout_seconds: u64,
-    mut on_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+    on_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
     ocr_scanned_pdfs: bool,
 ) -> (Option<Vec<String>>, bool) {
+    let (lines, truncated, _) = extract_pdf_lines_with_metadata(
+        bytes,
+        overall_timeout_seconds,
+        on_progress,
+        ocr_scanned_pdfs,
+    );
+    (lines, truncated)
+}
+
+fn extract_pdf_lines_with_metadata(
+    bytes: &[u8],
+    overall_timeout_seconds: u64,
+    mut on_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+    ocr_scanned_pdfs: bool,
+) -> (Option<Vec<String>>, bool, bool) {
+    let extracted = extract_pdf_lines_capture(
+        bytes,
+        overall_timeout_seconds,
+        on_progress.take(),
+        ocr_scanned_pdfs,
+        false,
+    );
+    (extracted.lines, extracted.truncated, extracted.ocr_used)
+}
+
+#[cfg(feature = "semantic-search")]
+fn extract_pdf_lines_with_origins(
+    bytes: &[u8],
+    overall_timeout_seconds: u64,
+    on_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+    ocr_scanned_pdfs: bool,
+) -> PdfExtraction {
+    extract_pdf_lines_capture(
+        bytes,
+        overall_timeout_seconds,
+        on_progress,
+        ocr_scanned_pdfs,
+        true,
+    )
+}
+
+struct PdfExtraction {
+    lines: Option<Vec<String>>,
+    truncated: bool,
+    ocr_used: bool,
+    #[cfg_attr(not(feature = "semantic-search"), allow(dead_code))]
+    origins: Option<Vec<Option<usize>>>,
+}
+
+const MAX_PDF_PROVENANCE_LINES: usize = 100_000;
+
+fn record_pdf_origin(origins: &mut Option<Vec<Option<usize>>>, origin: Option<usize>) {
+    if origins
+        .as_ref()
+        .is_some_and(|origins| origins.len() == MAX_PDF_PROVENANCE_LINES)
+    {
+        *origins = None;
+        // Dropping the vector signals that this document's provenance budget was exceeded.
+        return;
+    }
+    if let Some(origins) = origins {
+        origins.push(origin);
+    }
+}
+
+/// Switches the opt-in `yolowpdf` text-layer backend for this process (no-op without the `pdf-yolow` feature).
+pub fn configure_pdf_yolow(on: bool) {
+    #[cfg(feature = "pdf-yolow")]
+    crate::pdf_yolow::configure(on);
+    #[cfg(not(feature = "pdf-yolow"))]
+    let _ = on;
+}
+
+fn extract_pdf_lines_capture(
+    bytes: &[u8],
+    overall_timeout_seconds: u64,
+    mut on_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+    ocr_scanned_pdfs: bool,
+    collect_origins: bool,
+) -> PdfExtraction {
+    let bytes = &*crate::pdf_decrypt::open_with_empty_password(bytes);
+    // Trial backend: only text-layer documents; scans, errors and empty
+    // results fall through to the scanner below (which also runs OCR).
+    #[cfg(feature = "pdf-yolow")]
+    if !collect_origins {
+        if let Some(lines) = crate::pdf_yolow::extract_lines(bytes) {
+            return PdfExtraction {
+                lines: Some(lines),
+                truncated: false,
+                ocr_used: false,
+                origins: None,
+            };
+        }
+    }
     let raw = decode_latin1(bytes);
 
     let mut lines: Vec<String> = Vec::new();
+    let mut origins = if collect_origins {
+        Some(Vec::new())
+    } else {
+        None
+    };
     let start = Instant::now();
     let mut last_progress_report = Duration::ZERO;
     let mut streams_scanned: i32 = 0;
     const MAX_CONTENT_CHARS: usize = 2_000_000;
     let mut truncated_by_time = false;
+    #[cfg(feature = "ocr")]
+    let mut ocr_used = false;
+    #[cfg(not(feature = "ocr"))]
+    let ocr_used = false;
 
     // A ToUnicode CMap can appear anywhere in the file relative to the
     // content stream(s) that need it - in practice, usually *after*
@@ -1453,9 +1872,9 @@ pub fn extract_pdf_lines(
     // scanned and `cid_to_unicode` is as complete as it's going to get,
     // rather than requiring CMap-before-content file ordering.
     let mut cid_to_unicode: HashMap<u32, String> = HashMap::new();
-    let mut pending_hex_strings: Vec<String> = Vec::new();
+    let mut pending_hex_strings: Vec<(String, usize)> = Vec::new();
 
-    for (header, stream_text) in find_stream_blocks(&raw) {
+    for (header, stream_text, stream_offset) in find_stream_blocks_with_offsets(&raw) {
         let elapsed = start.elapsed();
         if elapsed.as_secs_f64() >= overall_timeout_seconds as f64 {
             truncated_by_time = true;
@@ -1514,13 +1933,17 @@ pub fn extract_pdf_lines(
                     parse_tounicode_cmap(&content, &mut cid_to_unicode);
                 }
 
-                if tj_re().is_match(&content) {
-                    for tm in text_re().find_iter(&content) {
+                if tj_re().is_match(&content) && looks_like_content_stream(&cb_bytes[..content_len]) {
+                    for tm in text_run_re().find_iter(&content) {
                         let s = tm.as_str();
-                        let raw_inner = &s[1..s.len() - 1];
-                        let inner = unescape_pdf_string(raw_inner);
+                        let inner = if s.starts_with('[') {
+                            join_tj_array(s)
+                        } else {
+                            unescape_pdf_string(&s[1..s.len() - 1])
+                        };
                         if !inner.trim().is_empty() {
                             lines.push(inner);
+                            record_pdf_origin(&mut origins, Some(stream_offset));
                         }
                     }
                     // CID-keyed/Type0 fonts show text as hex-string
@@ -1546,19 +1969,25 @@ pub fn extract_pdf_lines(
                         stream_hex_text.push_str(&s[1..s.len() - 1]);
                     }
                     if !stream_hex_text.is_empty() {
-                        pending_hex_strings.push(stream_hex_text);
+                        pending_hex_strings.push((stream_hex_text, stream_offset));
                     }
                 }
             }
         }
     }
 
-    for hex in &pending_hex_strings {
+    for (hex, stream_offset) in &pending_hex_strings {
         let text = hex_string_to_unicode(hex, &cid_to_unicode);
         if !text.trim().is_empty() {
             lines.push(text);
+            record_pdf_origin(&mut origins, Some(*stream_offset));
         }
     }
+
+    // Drop binary residue and undecoded glyph runs before anything is indexed
+    // or shown. Done before the OCR check so a text layer that is all junk
+    // still falls back to OCR (see `line_quality`).
+    crate::line_quality::clean_lines(&mut lines, crate::line_quality::Source::TextLayer, origins.as_mut());
 
     // OCR fallback (opt-in, feature-gated) - only attempted when every
     // extraction path above found nothing at all. Never runs for a PDF
@@ -1567,29 +1996,46 @@ pub fn extract_pdf_lines(
     if ocr_scanned_pdfs && lines.is_empty() && !truncated_by_time {
         #[cfg(feature = "ocr")]
         {
-            let mut candidates = find_jpeg_image_streams(&raw);
-            candidates.extend(find_raw_flate_image_streams(&raw));
-            // Real full-page OCR measured around 0.6-1s per page against
-            // a real scanned document - a multi-page scanned PDF could
-            // easily have dozens of page images, which would blow far
-            // past `overall_timeout_seconds` if run unconditionally.
-            // Checked before *every* image (not just once up front), so
-            // a run that's already close to the timeout after the normal
-            // extraction pass still gets bounded correctly, and results
-            // already found are always kept - this never trades a
-            // completed page's real text away because a later page would
-            // have run over.
+            // Pages are decoded and recognised one at a time, in file order:
+            // decoding them all first would hold every page's pixels (about
+            // 26 MB for an A4 scan at 300 dpi) at once and stay silent until
+            // the first page was done.
             let mut ocr_truncated = false;
-            for image in &candidates {
+            let mut images_done: i32 = 0;
+            for (header, stream_text, _) in find_stream_blocks_with_offsets(&raw) {
+                if !header.contains("/Image") || !(header.contains("/DCTDecode") || header.contains("/FlateDecode")) || stream_text.is_empty() {
+                    continue;
+                }
                 if start.elapsed().as_secs_f64() >= overall_timeout_seconds as f64 {
                     ocr_truncated = true;
                     break;
                 }
                 if let Some(cb) = on_progress.as_deref_mut() {
-                    cb(streams_scanned, start.elapsed());
+                    cb(streams_scanned + images_done, start.elapsed());
                 }
-                if let Some(ocr_lines) = crate::ocr::ocr_image(image) {
-                    lines.extend(ocr_lines);
+                images_done += 1;
+                let key = crate::ocr::cache_key(header, stream_text);
+                let recognised = match crate::ocr::cached_lines(&key) {
+                    Some(lines) => Some(lines),
+                    None => {
+                        let image = jpeg_image_from_stream(header, stream_text)
+                            .or_else(|| raw_flate_image_from_stream(header, stream_text));
+                        let lines = image.as_ref().and_then(crate::ocr::ocr_image);
+                        if let Some(lines) = &lines {
+                            crate::ocr::store_lines(&key, lines);
+                        }
+                        lines
+                    }
+                };
+                if let Some(mut ocr_lines) = recognised {
+                    crate::line_quality::clean_lines(&mut ocr_lines, crate::line_quality::Source::Ocr, None);
+                    if !ocr_lines.is_empty() {
+                        ocr_used = true;
+                        for _ in &ocr_lines {
+                            record_pdf_origin(&mut origins, None);
+                        }
+                        lines.extend(ocr_lines);
+                    }
                 }
             }
             if ocr_truncated {
@@ -1613,10 +2059,16 @@ pub fn extract_pdf_lines(
             "[... PDF text extraction stopped early after {} seconds on this large/complex file - some text may be missing ...]",
             overall_timeout_seconds
         ));
+        record_pdf_origin(&mut origins, None);
     }
 
     let result = if lines.is_empty() { None } else { Some(lines) };
-    (result, truncated_by_time)
+    PdfExtraction {
+        lines: result,
+        truncated: truncated_by_time,
+        ocr_used,
+        origins,
+    }
 }
 
 /// Issue #6 §62 "Security/Safety" - a PDF content stream declares itself
@@ -1634,7 +2086,10 @@ fn inflate_raw_deflate(data: &[u8]) -> Option<Vec<u8>> {
     use flate2::read::DeflateDecoder;
     let decoder = DeflateDecoder::new(data);
     let mut out = Vec::new();
-    decoder.take(PDF_MAX_INFLATED_STREAM_BYTES).read_to_end(&mut out).ok()?;
+    decoder
+        .take(PDF_MAX_INFLATED_STREAM_BYTES)
+        .read_to_end(&mut out)
+        .ok()?;
     Some(out)
 }
 
@@ -1700,7 +2155,12 @@ pub fn pdf_extraction_looks_reliable(lines: &[String]) -> bool {
         return false;
     }
 
-    let sample_text = lines.iter().take(200).cloned().collect::<Vec<_>>().join(" ");
+    let sample_text = lines
+        .iter()
+        .take(200)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
     if sample_text.is_empty() {
         return false;
     }
@@ -1830,14 +2290,22 @@ mod tests {
         // would mangle every one of the correct multi-byte characters into
         // mojibake ("cafÃ©", "â€œquoteâ€"); the fix should instead keep
         // them intact and only replace the single bad byte.
-        let mut bytes = "apple caf\u{e9} \u{201c}quote\u{201d} banana".as_bytes().to_vec();
+        let mut bytes = "apple caf\u{e9} \u{201c}quote\u{201d} banana"
+            .as_bytes()
+            .to_vec();
         let stray_pos = bytes.len() / 2;
         bytes.insert(stray_pos, 0xFF);
 
         let decoded = decode_text(&bytes);
         assert!(decoded.contains("café"), "decoded={decoded:?}");
-        assert!(decoded.contains("apple") && decoded.contains("banana"), "decoded={decoded:?}");
-        assert!(decoded.contains('\u{FFFD}'), "expected a replacement char for the stray byte: {decoded:?}");
+        assert!(
+            decoded.contains("apple") && decoded.contains("banana"),
+            "decoded={decoded:?}"
+        );
+        assert!(
+            decoded.contains('\u{FFFD}'),
+            "expected a replacement char for the stray byte: {decoded:?}"
+        );
     }
 
     #[test]
@@ -1897,7 +2365,10 @@ mod tests {
             writer.write_all(&vec![b'a'; oversized_len]).unwrap();
             writer.finish().unwrap();
         }
-        assert!(extract_docx_lines(&buf).is_none(), "an entry over the declared-size cap must be rejected, not decompressed");
+        assert!(
+            extract_docx_lines(&buf).is_none(),
+            "an entry over the declared-size cap must be rejected, not decompressed"
+        );
     }
 
     #[test]
@@ -1974,13 +2445,19 @@ mod tests {
     // implementations - not "close enough."
 
     fn old_regex_blocks(raw: &str) -> Vec<(&str, &str)> {
-        stream_re().captures_iter(raw).map(|c| (c.get(1).unwrap().as_str(), c.get(2).unwrap().as_str())).collect()
+        stream_re()
+            .captures_iter(raw)
+            .map(|c| (c.get(1).unwrap().as_str(), c.get(2).unwrap().as_str()))
+            .collect()
     }
 
     fn assert_same_blocks(raw: &str) {
         let old: Vec<(&str, &str)> = old_regex_blocks(raw);
         let new: Vec<(&str, &str)> = find_stream_blocks(raw).collect();
-        assert_eq!(old, new, "find_stream_blocks must match the original regex exactly for: {raw:?}");
+        assert_eq!(
+            old, new,
+            "find_stream_blocks must match the original regex exactly for: {raw:?}"
+        );
     }
 
     #[test]
@@ -1989,7 +2466,9 @@ mod tests {
         assert_same_blocks("no stream markers here at all");
         assert_same_blocks("");
         assert_same_blocks("stream\n\nendstream"); // empty body
-        assert_same_blocks("/Filter/FlateDecode stream\r\nBODY1endstream junk /Filter2 stream\nBODY2endstream");
+        assert_same_blocks(
+            "/Filter/FlateDecode stream\r\nBODY1endstream junk /Filter2 stream\nBODY2endstream",
+        );
     }
 
     #[test]
@@ -2023,8 +2502,30 @@ mod tests {
         // Unicode scalar, so bytes 0x80-0xFF become 2-byte UTF-8
         // sequences; Latin-1 byte 0xE9 was chosen arbitrarily as one such
         // character).
-        let padding_with_high_byte: String = std::iter::repeat('a').take(398).chain(std::iter::once('\u{e9}')).collect();
+        let padding_with_high_byte: String = std::iter::repeat('a')
+            .take(398)
+            .chain(std::iter::once('\u{e9}'))
+            .collect();
         assert_same_blocks(&format!("{padding_with_high_byte} stream\nbody endstream"));
+    }
+
+    /// Bodies are identical to the original regex's; a header is the same
+    /// 400-character window cut to start after its own `obj` keyword (it used
+    /// to carry the previous object's text, see `find_stream_blocks_with_offsets`).
+    fn assert_same_blocks_but_headers_start_at_their_obj(old: &[(&str, &str)], new: &[(&str, &str)], what: &str) {
+        for (i, ((old_header, old_body), (new_header, new_body))) in old.iter().zip(new).enumerate() {
+            assert_eq!(old_body, new_body, "body {i} of {what}");
+            assert!(old_header.ends_with(new_header), "header {i} of {what}");
+            assert!(!new_header.contains("obj"), "header {i} of {what} still spans objects");
+        }
+    }
+
+    #[test]
+    fn a_content_stream_after_a_procset_page_object_is_not_taken_for_an_image() {
+        // Word's layout: the page object lists /ImageB in /ProcSet, then the content stream.
+        let pdf = b"%PDF-1.7\n3 0 obj\n<</Type/Page/Resources<</ProcSet[/PDF/Text/ImageB/ImageC/ImageI]>>/Contents 4 0 R>>\nendobj\n4 0 obj\n<</Length 40>>\nstream\nBT /F1 12 Tf 72 700 Td (Word text survives) Tj ET\nendstream\nendobj\n";
+        let (lines, _) = extract_pdf_lines(pdf, 30, None, false);
+        assert_eq!(lines.unwrap_or_default(), vec!["Word text survives".to_string()]);
     }
 
     #[test]
@@ -2043,7 +2544,7 @@ mod tests {
             let old = old_regex_blocks(&raw);
             let new: Vec<(&str, &str)> = find_stream_blocks(&raw).collect();
             assert_eq!(old.len(), new.len(), "block count must match for {path}");
-            assert_eq!(old, new, "blocks must be byte-for-byte identical for {path}");
+            assert_same_blocks_but_headers_start_at_their_obj(&old, &new, &path);
         }
     }
 
@@ -2068,8 +2569,12 @@ mod tests {
         let raw = decode_latin1(&bytes);
         let old = old_regex_blocks(&raw);
         let new: Vec<(&str, &str)> = find_stream_blocks(&raw).collect();
-        assert_eq!(old.len(), new.len(), "block count must match for xlarge-scanned.pdf");
-        assert_eq!(old, new, "blocks must be byte-for-byte identical for xlarge-scanned.pdf");
+        assert_eq!(
+            old.len(),
+            new.len(),
+            "block count must match for xlarge-scanned.pdf"
+        );
+        assert_same_blocks_but_headers_start_at_their_obj(&old, &new, "xlarge-scanned.pdf");
     }
 
     /// `xlarge-scanned.pdf` is a real, legitimately-sourced ~38.6MB PDF
@@ -2125,15 +2630,24 @@ mod tests {
             "  skipped_by_marker={skipped_by_marker} flate_streams={flate_count} rejected_by_20MB_cap={flate_rejected_by_size_cap} inflate_empty={flate_produced_no_text}"
         );
         let (pdf_result, _) = extract_pdf_lines(&pdf_bytes, 15, None, false);
-        eprintln!("  extract_pdf_lines final: {:?} lines", pdf_result.as_ref().map(|l| l.len()));
+        eprintln!(
+            "  extract_pdf_lines final: {:?} lines",
+            pdf_result.as_ref().map(|l| l.len())
+        );
         assert!(
             pdf_result.map(|l| l.is_empty()).unwrap_or(true),
             "xlarge-scanned.pdf is image-only (no Tj/TJ operators) - extraction has no OCR, so this must stay empty/None, not regress into a panic or spurious text"
         );
 
-        eprintln!("\nxlarge-recordheavy.xlsx: {} bytes on disk", xlsx_bytes.len());
+        eprintln!(
+            "\nxlarge-recordheavy.xlsx: {} bytes on disk",
+            xlsx_bytes.len()
+        );
         let xlsx_result = extract_xlsx_lines(&xlsx_bytes);
-        eprintln!("  extract_xlsx_lines result: {:?}", xlsx_result.as_ref().map(|l| l.len()));
+        eprintln!(
+            "  extract_xlsx_lines result: {:?}",
+            xlsx_result.as_ref().map(|l| l.len())
+        );
         assert!(
             xlsx_result.is_none(),
             "xlarge-recordheavy.xlsx's worksheet entry decompresses to ~328MB - the ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES guard must keep rejecting it, not regress into decompressing it"
@@ -2215,7 +2729,10 @@ mod tests {
         let cmap = "1 beginbfrange\n<0000> <FFFFFF> <0041>\nendbfrange\n";
         let mut map = HashMap::new();
         parse_tounicode_cmap(cmap, &mut map); // must return promptly, not loop ~16M times
-        assert!(map.is_empty(), "a range wider than the sanity cap must be skipped entirely, not partially applied");
+        assert!(
+            map.is_empty(),
+            "a range wider than the sanity cap must be skipped entirely, not partially applied"
+        );
     }
 
     #[test]
@@ -2225,7 +2742,11 @@ mod tests {
         map.insert(0x0042, "i".to_string());
         // 0x0043 deliberately absent from the map.
         assert_eq!(hex_string_to_unicode("00410042", &map), "Hi");
-        assert_eq!(hex_string_to_unicode("00410043", &map), "H", "an unmapped CID must be skipped, not guessed as a literal codepoint");
+        assert_eq!(
+            hex_string_to_unicode("00410043", &map),
+            "H",
+            "an unmapped CID must be skipped, not guessed as a literal codepoint"
+        );
     }
 
     #[test]
@@ -2235,6 +2756,39 @@ mod tests {
         map.insert(0x0000, "\0".to_string());
         map.insert(0x0042, "b".to_string());
         assert_eq!(hex_string_to_unicode("004100000042", &map), "a b");
+    }
+
+    /// Kerned text arrives as one `TJ` array per line; each string used to
+    /// become its own "line" (`Do` / `c` / `um` / ...). A big negative
+    /// adjustment is a word space, a small one is kerning inside a word.
+    #[test]
+    fn extract_pdf_lines_joins_tj_arrays_into_words_and_lines() {
+        let pdf = concat!(
+            "%PDF-1.4\n",
+            "10 0 obj\n<< /Length 200 >>\nstream\n",
+            "BT /F1 10 Tf [(Do)-32(c)1(um)-1(en)31(ta)-1(ti)-1(on)-385(of)-326(Ftu)] TJ\n",
+            "[(A)] TJ [(\\050V)84(e)-1(rsion)-333(3.)1(64\\051)] TJ (plain \\(lit\\)) Tj ET\n",
+            "endstream\nendobj\n",
+        );
+        let (result, _) = extract_pdf_lines(pdf.as_bytes(), 15, None, false);
+        assert_eq!(
+            result.expect("text present"),
+            ["Documentation of Ftu", "A", "(Version 3.64)", "plain (lit)"]
+        );
+    }
+
+    /// An embedded font program that happens to contain the bytes `Tj` is not
+    /// a content stream (it was the source of ~4,000 binary "lines" from
+    /// `benches/data/large.pdf`).
+    #[test]
+    fn binary_streams_are_not_scanned_for_text() {
+        let mut pdf = b"%PDF-1.4\n10 0 obj\n<< /Length 300 >>\nstream\n".to_vec();
+        for i in 0..100u32 {
+            pdf.extend_from_slice(&[0x80 + (i % 100) as u8, 0xE0, 0x01, 0xFF, 0x90]);
+        }
+        pdf.extend_from_slice(b"(garbage) Tj\nendstream\nendobj\n");
+        let (result, _) = extract_pdf_lines(&pdf, 15, None, false);
+        assert!(result.is_none(), "{result:?}");
     }
 
     /// End-to-end proof, built from a small synthetic (uncompressed, no
@@ -2263,7 +2817,9 @@ mod tests {
         );
         let (result, low_confidence) = extract_pdf_lines(pdf.as_bytes(), 15, None, false);
         assert!(!low_confidence);
-        let lines = result.expect("must extract the CID-hex-encoded text via the ToUnicode CMap, not return None");
+        let lines = result.expect(
+            "must extract the CID-hex-encoded text via the ToUnicode CMap, not return None",
+        );
         assert!(
             lines.iter().any(|l| l.contains("Hi!?")),
             "expected a line containing the concatenated, correctly-mapped text \"Hi!?\" (one line per stream, glyphs joined - not fragmented into one line per Tj call); got: {lines:?}"
@@ -2276,11 +2832,20 @@ mod tests {
     /// no interaction with the new hex-string/CMap path.
     #[test]
     fn extract_pdf_lines_still_handles_plain_literal_tj_operands_unchanged() {
-        let pdf = concat!("10 0 obj\n<< /Length 40 >>\nstream\n", "BT (Hello) Tj (World) Tj ET\n", "endstream\nendobj\n",);
+        let pdf = concat!(
+            "10 0 obj\n<< /Length 40 >>\nstream\n",
+            "BT (Hello) Tj (World) Tj ET\n",
+            "endstream\nendobj\n",
+        );
         let (result, _) = extract_pdf_lines(pdf.as_bytes(), 15, None, false);
         let lines = result.expect("plain literal-string Tj text must still extract");
         assert!(lines.contains(&"Hello".to_string()));
         assert!(lines.contains(&"World".to_string()));
+        let (_, _, ocr_used) = extract_pdf_lines_with_metadata(pdf.as_bytes(), 15, None, true);
+        assert!(
+            !ocr_used,
+            "an existing PDF text layer must bypass OCR even when enabled"
+        );
     }
 
     // ---- PDF extraction profiling (issue #8 follow-up, 2026-08-26) ----
@@ -2342,8 +2907,11 @@ mod tests {
             let has_flate = header.contains("/FlateDecode");
 
             let t = std::time::Instant::now();
-            let working_bytes: Vec<u8> =
-                if has_ascii85 { decode_ascii85(stream_text) } else { encode_latin1(stream_text) };
+            let working_bytes: Vec<u8> = if has_ascii85 {
+                decode_ascii85(stream_text)
+            } else {
+                encode_latin1(stream_text)
+            };
             if has_ascii85 {
                 b.ascii85_decode += t.elapsed();
             }
@@ -2351,7 +2919,11 @@ mod tests {
             let t = std::time::Instant::now();
             let content_bytes: Option<Vec<u8>> = if !working_bytes.is_empty() {
                 if has_flate {
-                    if working_bytes.len() > 2 { inflate_raw_deflate(&working_bytes[2..]) } else { None }
+                    if working_bytes.len() > 2 {
+                        inflate_raw_deflate(&working_bytes[2..])
+                    } else {
+                        None
+                    }
                 } else {
                     Some(working_bytes)
                 }
@@ -2377,7 +2949,10 @@ mod tests {
 
                     if has_tj {
                         let t = std::time::Instant::now();
-                        let matches: Vec<String> = text_re().find_iter(&content).map(|m| m.as_str().to_string()).collect();
+                        let matches: Vec<String> = text_re()
+                            .find_iter(&content)
+                            .map(|m| m.as_str().to_string())
+                            .collect();
                         b.text_extract_regex += t.elapsed();
 
                         let t = std::time::Instant::now();
@@ -2405,24 +2980,48 @@ mod tests {
         let b = profile_pdf_extraction(&bytes);
         let total = total_start.elapsed();
 
-        eprintln!("\n=== {label} ({} bytes) - total {:.2}ms ===", bytes.len(), total.as_secs_f64() * 1000.0);
+        eprintln!(
+            "\n=== {label} ({} bytes) - total {:.2}ms ===",
+            bytes.len(),
+            total.as_secs_f64() * 1000.0
+        );
         eprintln!(
             "  streams: {} total, {} skipped (image/font/ICC/metadata marker), {} decoded-but-no-Tj/TJ",
             b.streams_total, b.streams_skipped_by_marker, b.streams_with_no_tj
         );
         let phases: &[(&str, std::time::Duration)] = &[
-            ("decode_latin1 (whole file, once)", b.decode_latin1_whole_file),
-            ("find_stream_blocks scan (find all stream..endstream)", b.stream_regex_scan),
-            ("ascii85 decode (per ASCII85Decode stream)", b.ascii85_decode),
+            (
+                "decode_latin1 (whole file, once)",
+                b.decode_latin1_whole_file,
+            ),
+            (
+                "find_stream_blocks scan (find all stream..endstream)",
+                b.stream_regex_scan,
+            ),
+            (
+                "ascii85 decode (per ASCII85Decode stream)",
+                b.ascii85_decode,
+            ),
             ("inflate (per FlateDecode stream)", b.inflate),
-            ("decode_latin1 (per decoded stream)", b.decode_latin1_per_stream),
+            (
+                "decode_latin1 (per decoded stream)",
+                b.decode_latin1_per_stream,
+            ),
             ("Tj/TJ probe regex (per stream)", b.tj_probe_regex),
-            ("text_re find_iter (per stream with Tj/TJ)", b.text_extract_regex),
+            (
+                "text_re find_iter (per stream with Tj/TJ)",
+                b.text_extract_regex,
+            ),
             ("unescape_pdf_string (per matched text run)", b.unescape),
         ];
         for (name, dur) in phases {
             let pct = 100.0 * dur.as_secs_f64() / total.as_secs_f64();
-            eprintln!("  {:<45} {:>8.2}ms  ({:>5.1}%)", name, dur.as_secs_f64() * 1000.0, pct);
+            eprintln!(
+                "  {:<45} {:>8.2}ms  ({:>5.1}%)",
+                name,
+                dur.as_secs_f64() * 1000.0,
+                pct
+            );
         }
     }
 
@@ -2434,8 +3033,14 @@ mod tests {
         print_pdf_profile("tiny.pdf", &format!("{fixtures_dir}/test.pdf"));
         print_pdf_profile("medium.pdf", &format!("{data_dir}/medium.pdf"));
         print_pdf_profile("large.pdf", &format!("{data_dir}/large.pdf"));
-        print_pdf_profile("xlarge.pdf (real text, arXiv paper)", &format!("{data_dir}/xlarge.pdf"));
-        print_pdf_profile("xlarge-scanned.pdf (image-only, no text)", &format!("{data_dir}/xlarge-scanned.pdf"));
+        print_pdf_profile(
+            "xlarge.pdf (real text, arXiv paper)",
+            &format!("{data_dir}/xlarge.pdf"),
+        );
+        print_pdf_profile(
+            "xlarge-scanned.pdf (image-only, no text)",
+            &format!("{data_dir}/xlarge-scanned.pdf"),
+        );
     }
 
     // ---- OCR (feature-gated, "ocr" Cargo feature) ----
@@ -2444,7 +3049,12 @@ mod tests {
     fn tiny_jpeg_bytes() -> Vec<u8> {
         let img = image::RgbImage::from_pixel(32, 32, image::Rgb([255, 255, 255]));
         let mut bytes = Vec::new();
-        image::DynamicImage::ImageRgb8(img).write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Jpeg).unwrap();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
         bytes
     }
 
@@ -2469,7 +3079,11 @@ mod tests {
         let raw = decode_latin1(&raw_bytes);
 
         let found = find_jpeg_image_streams(&raw);
-        assert_eq!(found.len(), 1, "must find exactly the one /Image + /DCTDecode stream");
+        assert_eq!(
+            found.len(),
+            1,
+            "must find exactly the one /Image + /DCTDecode stream"
+        );
         // Proves the extracted bytes really did decode as a valid,
         // undamaged JPEG through the real `image` crate decoder (not
         // merely "some bytes came out") - the round-trip through
@@ -2508,9 +3122,16 @@ mod tests {
         let jpeg = tiny_jpeg_bytes();
         let decoded = image::load_from_memory(&jpeg).unwrap().into_rgb8();
         let (width, height) = decoded.dimensions();
-        let candidate = OcrCandidateImage { width, height, rgb: decoded.into_raw() };
+        let candidate = OcrCandidateImage {
+            width,
+            height,
+            rgb: decoded.into_raw(),
+        };
         let result = crate::ocr::ocr_image(&candidate);
-        assert!(result.is_some(), "the bundled models must load successfully");
+        assert!(
+            result.is_some(),
+            "the bundled models must load successfully"
+        );
     }
 
     /// `#[ignore]`d (real ~12MB model load + real ~1s/page inference,
@@ -2531,15 +3152,19 @@ mod tests {
     fn ocr_extracts_real_text_from_the_real_scanned_pdf_fixture() {
         let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/benches/data");
         let bytes = std::fs::read(format!("{data_dir}/xlarge-scanned.pdf")).unwrap();
-        let raw = decode_latin1(&bytes);
-        let candidates = find_raw_flate_image_streams(&raw);
-        assert!(!candidates.is_empty(), "must find this fixture's raw-FlateDecode page images");
-        assert_eq!((candidates[0].width, candidates[0].height), (2479, 3509));
-
-        let lines = crate::ocr::ocr_image(&candidates[0]).expect("OCR must run against the bundled models");
-        let joined = lines.join(" ");
+        let (lines, _, ocr_used) = extract_pdf_lines_with_metadata(&bytes, 15, None, true);
+        assert!(
+            ocr_used,
+            "text returned from this scanned PDF must be marked OCR-derived"
+        );
+        let joined = lines
+            .expect("OCR must return text from the scanned PDF")
+            .join(" ");
         for expected in ["PDF", "Testing", "sample-files.com"] {
-            assert!(joined.contains(expected), "expected {expected:?} in real OCR output, got: {lines:?}");
+            assert!(
+                joined.contains(expected),
+                "expected {expected:?} in real OCR output, got: {joined:?}"
+            );
         }
     }
 
@@ -2575,7 +3200,10 @@ mod tests {
         let found = find_raw_flate_image_streams(&raw);
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].width, found[0].height), (width, height));
-        assert_eq!(found[0].rgb, pixels, "decoded pixel bytes must match exactly, not just have the right length");
+        assert_eq!(
+            found[0].rgb, pixels,
+            "decoded pixel bytes must match exactly, not just have the right length"
+        );
     }
 
     #[cfg(feature = "ocr")]
@@ -2615,5 +3243,38 @@ mod tests {
         // has none) - this proves the pipeline doesn't panic and
         // completes, which is what this integration point can break.
         let _ = result;
+    }
+
+    // ----- Damaged / hostile PDFs must finish quickly -----
+
+    fn timed_extract(bytes: &[u8]) -> (Option<Vec<String>>, bool, Duration) {
+        let t = Instant::now();
+        let (lines, truncated) = extract_pdf_lines(bytes, 15, None, false);
+        (lines, truncated, t.elapsed())
+    }
+
+    #[test]
+    fn truncated_encrypted_and_stream_flooded_pdfs_finish_without_hanging() {
+        // A real PDF cut off mid-stream keeps the text before the cut.
+        let medium = include_bytes!("../benches/data/medium.pdf");
+        let (lines, _, took) = timed_extract(&medium[..medium.len() / 2]);
+        assert!(took < Duration::from_secs(60), "{took:?}");
+        assert!(lines.is_some_and(|l| !l.is_empty()));
+
+        // Encrypted streams are flate-looking noise: no text, no hang.
+        let mut encrypted = b"%PDF-1.6\n1 0 obj\n<< /Filter /FlateDecode /Length 4000 >>\nstream\n".to_vec();
+        encrypted.extend((0..4000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8));
+        encrypted.extend_from_slice(b"\nendstream\nendobj\ntrailer << /Encrypt 9 0 R >>\n%%EOF");
+        let (lines, _, took) = timed_extract(&encrypted);
+        assert!(lines.is_none() && took < Duration::from_secs(60), "{took:?}");
+
+        // Tens of thousands of tiny and unterminated streams stay linear.
+        let mut flood = Vec::new();
+        for _ in 0..30_000 {
+            flood.extend_from_slice(b"<< /Length 3 >>\nstream\nBT\nendstream\nstream\n");
+        }
+        let (_, _, took) = timed_extract(&flood);
+        // The 15 s extraction budget bounds this; the margin is for loaded debug builds.
+        assert!(took < Duration::from_secs(60), "{took:?}");
     }
 }

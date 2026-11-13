@@ -20,7 +20,16 @@ pub struct TreeNode {
 }
 impl TreeNode {
     pub fn new(id: u32, depth: u8, glyph: char, label: impl Into<String>) -> Self {
-        Self { id, depth, label: label.into(), glyph, collapsible: false, selected: false, tone: Tone::Normal, action: None }
+        Self {
+            id,
+            depth,
+            label: label.into(),
+            glyph,
+            collapsible: false,
+            selected: false,
+            tone: Tone::Normal,
+            action: None,
+        }
     }
     pub fn folder(mut self) -> Self {
         self.collapsible = true;
@@ -41,7 +50,10 @@ impl TreeNode {
 }
 
 /// Nodes hidden because an ancestor folder in `collapsed` is closed.
-pub fn visible_nodes<'a>(nodes: &'a [TreeNode], collapsed: &std::collections::HashSet<u32>) -> Vec<&'a TreeNode> {
+pub fn visible_nodes<'a>(
+    nodes: &'a [TreeNode],
+    collapsed: &std::collections::HashSet<u32>,
+) -> Vec<&'a TreeNode> {
     let mut out = Vec::new();
     let mut hide_below: Option<u8> = None;
     for n in nodes {
@@ -72,10 +84,16 @@ pub struct RibbonTab {
 }
 impl RibbonTab {
     pub fn new(title: impl Into<String>) -> Self {
-        Self { title: title.into(), groups: Vec::new() }
+        Self {
+            title: title.into(),
+            groups: Vec::new(),
+        }
     }
     pub fn group(mut self, title: impl Into<String>, buttons: Vec<Entry>) -> Self {
-        self.groups.push(RibbonGroup { title: title.into(), buttons });
+        self.groups.push(RibbonGroup {
+            title: title.into(),
+            buttons,
+        });
         self
     }
 }
@@ -85,25 +103,72 @@ impl RibbonTab {
 pub enum DockItem {
     Heading(String),
     /// `hover`: `(on, off)` actions sent when the pointer enters / leaves the row (a preview of what a click would do).
-    Line { text: String, tone: Tone, action: Option<UiAction>, focused: bool, hover: Option<(UiAction, UiAction)> },
+    Line {
+        text: String,
+        tone: Tone,
+        action: Option<UiAction>,
+        focused: bool,
+        hover: Option<(UiAction, UiAction)>,
+    },
     /// A label with its value; a click (when `action` is set) edits it.
-    Field { label: String, value: String, tone: Tone, action: Option<UiAction>, focused: bool },
+    Field {
+        label: String,
+        value: String,
+        tone: Tone,
+        action: Option<UiAction>,
+        focused: bool,
+    },
     Gap,
     /// Verified lower part of a live search bracket, from zero to `upper`.
-    Bracket { lower: f64, upper: f64 },
+    Bracket {
+        lower: f64,
+        upper: f64,
+    },
     /// Contour colour bar with its value range.
-    Legend { lo: f32, hi: f32 },
+    Legend {
+        lo: f32,
+        hi: f32,
+    },
 }
 impl DockItem {
     pub fn text(text: impl Into<String>, tone: Tone) -> Self {
-        DockItem::Line { text: text.into(), tone, action: None, focused: false, hover: None }
+        DockItem::Line {
+            text: text.into(),
+            tone,
+            action: None,
+            focused: false,
+            hover: None,
+        }
     }
-    pub fn row(text: impl Into<String>, tone: Tone, action: Option<UiAction>, focused: bool) -> Self {
-        DockItem::Line { text: text.into(), tone, action, focused, hover: None }
+    pub fn row(
+        text: impl Into<String>,
+        tone: Tone,
+        action: Option<UiAction>,
+        focused: bool,
+    ) -> Self {
+        DockItem::Line {
+            text: text.into(),
+            tone,
+            action,
+            focused,
+            hover: None,
+        }
     }
     /// A clickable row that also previews its effect while the pointer is on it (`on`), and stops when it leaves (`off`).
-    pub fn row_with_preview(text: impl Into<String>, tone: Tone, action: UiAction, on: UiAction, off: UiAction) -> Self {
-        DockItem::Line { text: text.into(), tone, action: Some(action), focused: false, hover: Some((on, off)) }
+    pub fn row_with_preview(
+        text: impl Into<String>,
+        tone: Tone,
+        action: UiAction,
+        on: UiAction,
+        off: UiAction,
+    ) -> Self {
+        DockItem::Line {
+            text: text.into(),
+            tone,
+            action: Some(action),
+            focused: false,
+            hover: Some((on, off)),
+        }
     }
     /// The row as plain text (labels and values joined), for tests and logs.
     pub fn plain_text(&self) -> Option<String> {
@@ -113,8 +178,20 @@ impl DockItem {
             _ => None,
         }
     }
-    pub fn field(label: impl Into<String>, value: impl Into<String>, tone: Tone, action: Option<UiAction>, focused: bool) -> Self {
-        DockItem::Field { label: label.into(), value: value.into(), tone, action, focused }
+    pub fn field(
+        label: impl Into<String>,
+        value: impl Into<String>,
+        tone: Tone,
+        action: Option<UiAction>,
+        focused: bool,
+    ) -> Self {
+        DockItem::Field {
+            label: label.into(),
+            value: value.into(),
+            tone,
+            action,
+            focused,
+        }
     }
 }
 
@@ -142,10 +219,16 @@ mod tests {
         let t = tree();
         assert_eq!(ids(&visible_nodes(&t, &HashSet::new())), [1, 2, 3, 4, 5, 6]);
         assert_eq!(ids(&visible_nodes(&t, &HashSet::from([1]))), [1, 4, 5, 6]);
-        assert_eq!(ids(&visible_nodes(&t, &HashSet::from([4]))), [1, 2, 3, 4, 6]);
+        assert_eq!(
+            ids(&visible_nodes(&t, &HashSet::from([4]))),
+            [1, 2, 3, 4, 6]
+        );
         assert_eq!(ids(&visible_nodes(&t, &HashSet::from([1, 4]))), [1, 4, 6]);
         // Collapsing a leaf (not a folder) does nothing.
-        assert_eq!(ids(&visible_nodes(&t, &HashSet::from([6, 2]))), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            ids(&visible_nodes(&t, &HashSet::from([6, 2]))),
+            [1, 2, 3, 4, 5, 6]
+        );
     }
 
     #[test]
@@ -166,15 +249,33 @@ mod tests {
 #[derive(Clone, Debug, PartialEq)]
 pub enum CardRow {
     /// A dropdown that dispatches the selected typed command.
-    Select { label: String, selected: String, options: Vec<(String, super::controller::UiAction)> },
+    Select {
+        label: String,
+        selected: String,
+        options: Vec<(String, super::controller::UiAction)>,
+    },
     /// A switch (a held direction, a support kept in a case).
-    Toggle { label: String, on: bool, action: super::controller::UiAction },
+    Toggle {
+        label: String,
+        on: bool,
+        action: super::controller::UiAction,
+    },
     /// A text field; edits are reported with `index` (`Authoring::card_field`).
-    Field { label: String, text: String, index: usize, unit: String },
+    Field {
+        label: String,
+        text: String,
+        index: usize,
+        unit: String,
+    },
     /// A line of explanation.
     Text(String),
     /// A pickable line (a material of the library): `label`, a dim `detail`, and what choosing it does.
-    Choice { label: String, detail: String, action: super::controller::UiAction, current: bool },
+    Choice {
+        label: String,
+        detail: String,
+        action: super::controller::UiAction,
+        current: bool,
+    },
 }
 
 /// A small form the window shows next to the face it concerns: a constraint's directions, a load's numbers, a
@@ -199,6 +300,10 @@ pub struct ValueCard {
 pub struct Document {
     pub precision: Option<super::editor::stackup::PrecisionPage>,
     pub policy: Option<DocTable>,
+    /// Optional native page shell for a document-style workbench.
+    pub sidebar: Option<DocSidebar>,
+    /// Optional page heading and orientation text.
+    pub header: Option<DocHeader>,
     pub inputs: Vec<DocInput>,
     /// A second row of inputs under the first, the bar's full width (Exclude, while its switch is on).
     pub extra_inputs: Vec<DocInput>,
@@ -217,6 +322,53 @@ pub struct Document {
     pub panels: Vec<DocPanel>,
     /// A card the page must answer before going on (the file types to search), centred over a dimmed page.
     pub modal: Option<DocModal>,
+    /// A thin status strip along the page's bottom edge (Search: index state, counts, a warning).
+    pub ribbon: Option<DocRibbon>,
+    /// A card between the bar and the results for what Find found besides files (passages, conditions).
+    pub insight: Option<DocInsight>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocInsight {
+    pub title: String,
+    /// Pills under the title (a sentence's conditions).
+    pub chips: Vec<Entry>,
+    pub items: Vec<DockItem>,
+}
+
+/// The page's bottom status strip: a state dot with its label, quiet facts, an optional progress track and a warning.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocRibbon {
+    pub state: String,
+    pub tone: Tone,
+    pub facts: Vec<String>,
+    /// A segmented progress track (0..=1) labelled `progress_label`, shown while something is being built.
+    pub progress: Option<(String, f32)>,
+    pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocSidebar {
+    pub recent_searches: Vec<DocSidebarRecent>,
+    pub clear_recents: Option<UiAction>,
+    pub index_state: String,
+    pub index_name: String,
+    pub index_detail: String,
+    pub index_action: Option<Entry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocSidebarRecent {
+    pub label: String,
+    pub action: UiAction,
+    pub remove: UiAction,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocHeader {
+    pub eyebrow: String,
+    pub title: String,
+    pub subtitle: String,
 }
 
 /// A bar button and the cards its popover shows.
@@ -225,8 +377,12 @@ pub struct DocPanel {
     pub label: String,
     /// A short state shown on the button (the index is on).
     pub badge: Option<String>,
+    /// Work in progress, 0..=1: the button's border (or, once opened, the popover's border) fills clockwise.
+    pub progress: Option<f32>,
     /// Text inputs drawn above the cards (the output folder, with its Browse button).
     pub inputs: Vec<DocInput>,
+    /// Pills drawn under the inputs and above the cards (Search's parsed conditions).
+    pub chips: Vec<Entry>,
     pub cards: Vec<crate::gpu_viewer::editor::authoring::Card>,
 }
 
@@ -300,6 +456,8 @@ pub struct DocProgress {
     pub detail: String,
     /// What is being worked on right now: name and its own status.
     pub active: Vec<(String, String)>,
+    /// Compact metrics kept inside the progress dock.
+    pub metrics: Vec<(String, String)>,
     pub cancel: Option<Entry>,
 }
 
@@ -309,7 +467,7 @@ pub struct DocTable {
     /// A filter over the rows, drawn in the table's header.
     pub filter: Option<DocInput>,
     pub columns: Vec<DocColumn>,
-    pub rows: Vec<DocRow>,
+    pub rows: std::sync::Arc<Vec<DocRow>>,
     /// Shown instead of the rows when there are none.
     pub empty_title: String,
     pub empty_body: String,
@@ -348,12 +506,52 @@ pub struct DocDetail {
     pub grid: Option<DocGrid>,
     pub title: String,
     pub subtitle: String,
+    /// Measured scores behind this result, drawn as labelled meters under the subtitle.
+    pub signals: Vec<DocSignal>,
+    /// Short facts about the result (a PDF to double-check, entity suggestions), drawn as pills.
+    pub notes: Vec<DocNote>,
     pub actions: Vec<Entry>,
+    /// Previous/next match controls shown in the detail heading.
+    pub match_navigation: Option<DocMatchNavigation>,
+    /// One-based source line to bring into view in the detail's own scroll area.
+    pub scroll_to_line: Option<i32>,
+    /// Changes on each requested match navigation, so the view consumes each scroll request once.
+    pub scroll_request: Option<u64>,
     pub blocks: Vec<DocBlock>,
     /// Full extracted document, when the page offers selectable text.
     pub text: Option<DocText>,
     /// Shown when there are no blocks.
     pub empty: String,
+}
+
+/// A short fact drawn as a pill; `hint` (when set) is the longer explanation shown on hover.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocNote {
+    pub text: String,
+    pub hint: String,
+}
+impl DocNote {
+    pub fn new(text: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self { text: text.into(), hint: hint.into() }
+    }
+}
+
+/// One score in `0..=1` with a plain-language explanation shown when the pointer rests on its meter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocSignal {
+    pub label: String,
+    pub fraction: f32,
+    pub hint: String,
+    /// The headline score: drawn first and in the accent colour.
+    pub primary: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocMatchNavigation {
+    pub current: usize,
+    pub total: usize,
+    pub previous: UiAction,
+    pub next: UiAction,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -393,6 +591,15 @@ pub struct DocBlock {
 
 /// Engineering-coordinate section, transformed once by the native painter.
 #[derive(Clone, Debug, PartialEq)]
-pub struct DocDrawing { pub bounds: [[f64;2];2], pub paths: Vec<DocPath> }
+pub struct DocDrawing {
+    pub bounds: [[f64; 2]; 2],
+    pub paths: Vec<DocPath>,
+}
 #[derive(Clone, Debug, PartialEq)]
-pub struct DocPath { pub points: Vec<[f64;2]>, pub label: String, pub kind: u8, pub selected: bool, pub select: Option<UiAction> }
+pub struct DocPath {
+    pub points: Vec<[f64; 2]>,
+    pub label: String,
+    pub kind: u8,
+    pub selected: bool,
+    pub select: Option<UiAction>,
+}
