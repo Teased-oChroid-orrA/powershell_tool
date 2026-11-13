@@ -298,6 +298,13 @@ pub fn project_suggestions() -> Result<Vec<search_core::catalog_projects::Projec
     search_core::catalog::Catalog::open(&catalog).and_then(|c| c.project_suggestions()).map_err(|e| e.to_string())
 }
 
+/// Things the catalog suggests are missing or inconsistent (standards cited but never filed, identifiers a newest
+/// version dropped), as notes to ignore or follow. Tests never read the user's real catalog.
+pub fn knowledge_gaps() -> Result<Vec<search_core::catalog_gaps::Gap>, String> {
+    let Some(catalog) = catalog_path().filter(|p| !cfg!(test) && p.exists()) else { return Ok(Vec::new()) };
+    search_core::catalog::Catalog::open(&catalog).and_then(|c| c.knowledge_gaps()).map_err(|e| e.to_string())
+}
+
 /// Why `path` relates to other indexed files (identical copies, versions, shared entities), from the catalog's
 /// stored edges. Empty when there is no catalog or no edge. Tests never read the user's real catalog.
 pub fn related_reasons(path: &str) -> Vec<search_core::catalog_edges::Reason> {

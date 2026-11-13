@@ -36,6 +36,7 @@ use crate::notifications::NotificationQueue;
 use crate::toolboxes::search::{
     self as search, exec, model, persistence, settings_view, SearchToolState,
 };
+use search_core::catalog_gaps::Gap;
 use search_core::catalog_projects::ProjectSuggestion;
 use search_core::models::FileSearchResult;
 use std::cell::RefCell;
@@ -115,6 +116,8 @@ pub enum SearchAct {
     FindProjects,
     /// Search only inside suggested project `.0` (sets the folder to search; the user's click is the only trigger).
     UseProject(usize),
+    /// Read the catalog for possible knowledge gaps (notes only; nothing is applied).
+    FindGaps,
     CancelIndex,
     UpdateStaleIndex,
     DismissStale,
@@ -293,6 +296,11 @@ pub struct SearchSession {
     projects_rx: mpsc::UnboundedReceiver<Result<Vec<ProjectSuggestion>, String>>,
     /// Where suggestions come from (the machine catalog; a test supplies its own).
     projects_source: fn() -> Result<Vec<ProjectSuggestion>, String>,
+    gaps: Option<Result<Vec<Gap>, String>>,
+    gaps_running: bool,
+    gaps_tx: mpsc::UnboundedSender<Result<Vec<Gap>, String>>,
+    gaps_rx: mpsc::UnboundedReceiver<Result<Vec<Gap>, String>>,
+    gaps_source: fn() -> Result<Vec<Gap>, String>,
     #[cfg(feature = "semantic-search")]
     related_tx: mpsc::UnboundedSender<RelatedSearchEvent>,
     #[cfg(feature = "semantic-search")]
@@ -712,6 +720,15 @@ impl SearchSession {
         s.st.config.export_html = false;
         s
     }
+    /// Look for gaps from `source` and wait for the answer, as the gaps button does.
+    pub(crate) fn gaps_for_snapshot(&mut self, source: fn() -> Result<Vec<Gap>, String>) {
+        self.gaps_source = source;
+        self.act_search(SearchAct::FindGaps);
+        while self.gaps.is_none() {
+            self.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     /// Look for projects from `source` and wait for the answer, as the Projects popover's button does.
     #[cfg(test)]
     pub(crate) fn projects_for_snapshot(&mut self, source: fn() -> Result<Vec<ProjectSuggestion>, String>) {
@@ -795,6 +812,7 @@ impl SearchSession {
         #[cfg(feature = "neural-search")]
         let (alert_tx, alert_rx) = mpsc::unbounded_channel();
         let (projects_tx, projects_rx) = mpsc::unbounded_channel();
+        let (gaps_tx, gaps_rx) = mpsc::unbounded_channel();
         #[cfg(feature = "semantic-search")]
         let (semantic_tx, semantic_rx) = mpsc::unbounded_channel();
         #[cfg(feature = "semantic-search")]
@@ -915,6 +933,11 @@ impl SearchSession {
             projects_tx,
             projects_rx,
             projects_source: crate::toolboxes::search::indexing::project_suggestions,
+            gaps: None,
+            gaps_running: false,
+            gaps_tx,
+            gaps_rx,
+            gaps_source: crate::toolboxes::search::indexing::knowledge_gaps,
             #[cfg(feature = "nl-find")]
             nl: nl::NlFind::new(),
             #[cfg(feature = "semantic-search")]
@@ -2275,6 +2298,21 @@ impl SearchSession {
             let _ = tx.send(result);
         });
     }
+    /// Reads the catalog's possible gaps on a blocking thread; the result arrives through `poll`.
+    fn find_gaps(&mut self) {
+        if self.gaps_running {
+            return;
+        }
+        self.gaps_running = true;
+        self.status = "Looking for gaps in the indexed folders…".into();
+        let (tx, source) = (self.gaps_tx.clone(), self.gaps_source);
+        self.rt.spawn(async move {
+            let result = tokio::task::spawn_blocking(source)
+                .await
+                .unwrap_or_else(|error| Err(format!("gap detection task failed: {error}")));
+            let _ = tx.send(result);
+        });
+    }
     /// Fills "more folders" with the other indexed folders from the catalog; Find then searches them all.
     fn also_indexed_folders(&mut self) {
         let main = self.st.config.search_path.trim().to_lowercase();
@@ -2328,6 +2366,7 @@ impl SearchSession {
                 self.with_current(|r, _| Effect::OpenPath(r.full_name.clone()), "Opened")
             }
             SearchAct::FindProjects => self.find_projects(),
+            SearchAct::FindGaps => self.find_gaps(),
             SearchAct::UseProject(i) => {
                 let folder = match self.projects.as_ref() {
                     Some(Ok(list)) => list.get(i).map(|p| p.folder.clone()),
@@ -2989,6 +3028,16 @@ impl Authoring for SearchSession {
                     changed = true;
                 }
             }
+        }
+        while let Ok(result) = self.gaps_rx.try_recv() {
+            self.gaps_running = false;
+            self.status = match &result {
+                Ok(list) if list.is_empty() => "No gaps noticed in the indexed folders.".into(),
+                Ok(list) => format!("{} possible gap(s) noted. They are hints only; nothing was changed.", list.len()),
+                Err(error) => format!("Gap hints unavailable: {error}"),
+            };
+            self.gaps = Some(result);
+            changed = true;
         }
         while let Ok(result) = self.projects_rx.try_recv() {
             self.projects_running = false;

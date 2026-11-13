@@ -2,6 +2,7 @@ pub mod cache;
 pub mod catalog;
 pub mod catalog_chains;
 pub mod catalog_edges;
+pub mod catalog_gaps;
 pub mod catalog_projects;
 #[cfg(feature = "neural-search")]
 mod catalog_entities;

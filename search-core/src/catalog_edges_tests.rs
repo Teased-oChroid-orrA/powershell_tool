@@ -495,3 +495,98 @@ fn project_discovery_precision_and_recall_on_a_labelled_tree() {
     assert!(got.iter().all(|s| !s.evidence.is_empty()), "every suggestion carries evidence");
     assert!(precision >= 0.8 && recall >= 0.8, "precision {precision} recall {recall}");
 }
+
+/// Knowledge gaps (#240 P4-4) on a labelled tree; the labels are planted by construction.
+#[test]
+fn knowledge_gaps_precision_and_recall_on_a_labelled_tree() {
+    use crate::catalog_gaps::GapKind;
+    let mut env = Env::new();
+    let seed = std::cell::Cell::new(200_000u64);
+    let next = || {
+        seed.set(seed.get() + 1);
+        seed.get()
+    };
+    let cite = |ids: &[&str]| ids.iter().map(|id| format!("per {id} requirements")).collect::<Vec<_>>().join("\n");
+
+    // Missing documents. True gaps: standards cited by three files with no file named after them.
+    let absent = ["AMS 5643", "NAS1352", "MIL-DTL-5541", "ASME B18.2"];
+    for (i, std) in absent.iter().enumerate() {
+        for k in 0..3 {
+            env.write(&format!("jobs/j{i}/plan{k}.txt"), &format!("{}\n{}", cite(&[std]), body(next())));
+        }
+    }
+    // Not gaps: the document is present (named after it, in any spacing/case), or one file cites it.
+    for (std, name) in [("ASTM A36", "ASTM_A36_spec.txt"), ("MIL-STD-810G", "mil-std-810g.txt"), ("AMS 2759", "AMS2759 rev C.txt")] {
+        env.write(&format!("library/{name}"), &body(next()));
+        for k in 0..3 {
+            env.write(&format!("jobs/cites_{}_{k}.txt", name.len()), &format!("{}\n{}", cite(&[std]), body(next())));
+        }
+    }
+    env.write("jobs/once.txt", &format!("{}\n{}", cite(&["SAE J429"]), body(next())));
+    // Planted limit: the document is present but its name does not carry the number (a false positive).
+    env.write("library/socket_head_screws.txt", &body(next()));
+    for k in 0..2 {
+        env.write(&format!("jobs/screws{k}.txt"), &format!("{}\n{}", cite(&["NAS1351"]), body(next())));
+    }
+    let missing_truth: BTreeSet<String> = absent.iter().map(|s| s.to_string()).collect();
+
+    // Dropped identifiers: version groups of four. `true` = the newest dropped an identifier every
+    // earlier version holds and nothing explains it.
+    let chain = |env: &Env, stem: &str, ids: [&[&str]; 4], newest_body: bool| {
+        for (v, ids) in ids.iter().enumerate() {
+            let text = if v == 3 && !newest_body { String::new() } else { format!("{}\n{}", cite(ids), body(next())) };
+            env.write(&format!("specs/{stem}_v{}.txt", v + 1), &text);
+        }
+    };
+    let keep: [&[&str]; 4] = [&["QX-100-A", "QX-200-B"]; 4];
+    let drop_b: [&[&str]; 4] = [&["QX-100-A", "QX-200-B"], &["QX-100-A", "QX-200-B"], &["QX-100-A", "QX-200-B"], &["QX-100-A"]];
+    let mut dropped_truth: BTreeSet<String> = BTreeSet::new();
+    for (n, id) in ["QX-310-B", "QX-320-B", "QX-330-B"].iter().enumerate() {
+        let stem = format!("drop{n}");
+        chain(&env, &stem, [&["QX-100-A", id], &["QX-100-A", id], &["QX-100-A", id], &["QX-100-A"]], true);
+        dropped_truth.insert(format!("{stem}:{id}"));
+    }
+    chain(&env, "keepa", keep, true);
+    chain(&env, "keepb", keep, true);
+    chain(&env, "unread", drop_b, false); // newest has no text: nothing to compare
+    // Renumbered: the old identifier is replaced, not lost (false positives by construction).
+    for n in 0..2 {
+        let (old, new) = (format!("QX-9{n}1-C"), format!("QX-9{n}2-C"));
+        chain(&env, &format!("renum{n}"), [&["QX-100-A", &old], &["QX-100-A", &old], &["QX-100-A", &old], &["QX-100-A", &new]], true);
+    }
+    // Held by only two of the three earlier versions: not a unanimous drop.
+    chain(&env, "partial", [&["QX-100-A", "QX-440-D"], &["QX-100-A"], &["QX-100-A", "QX-440-D"], &["QX-100-A"]], true);
+    // Ordered by file time only (status words): the order is weak, so nothing is claimed.
+    for (k, name) in ["draft", "final", "latest", "backup"].iter().enumerate() {
+        let ids: &[&str] = if k == 3 { &["QX-100-A"] } else { &["QX-100-A", "QX-550-E"] };
+        env.write(&format!("specs/weak_{name}.txt"), &format!("{}\n{}", cite(ids), body(next())));
+    }
+    env.refresh();
+    env.catalog.rebuild_edges().unwrap();
+
+    let gaps = env.catalog.knowledge_gaps().unwrap();
+    let missing: BTreeSet<String> = gaps.iter().filter(|g| g.kind == GapKind::MissingDocument).map(|g| g.subject.clone()).collect();
+    let dropped: BTreeSet<String> = gaps
+        .iter()
+        .filter(|g| g.kind == GapKind::DroppedIdentifier)
+        .map(|g| format!("{}:{}", Path::new(&g.files[0]).file_name().unwrap().to_string_lossy().split('_').next().unwrap(), g.subject))
+        .collect();
+    let score = |name: &str, got: &BTreeSet<String>, truth: &BTreeSet<String>| {
+        let tp = got.intersection(truth).count();
+        let (p, r) = (tp as f64 / got.len().max(1) as f64, tp as f64 / truth.len() as f64);
+        eprintln!("{name}: {} flagged, {tp} of {} true; precision {p:.2}, recall {r:.2}; flagged {got:?}", got.len(), truth.len());
+        (p, r)
+    };
+    let (mp, mr) = score("missing documents", &missing, &missing_truth);
+    let (dp, dr) = score("dropped identifiers", &dropped, &dropped_truth);
+    // The planted limits are the only expected errors.
+    assert!(missing.contains("NAS1351"), "document not named by number is a known false positive");
+    assert!(dropped.iter().any(|d| d.starts_with("renum")), "a renumbering is a known false positive");
+    for never in ["ASTM A36", "MIL-STD-810G", "AMS 2759", "SAE J429"] {
+        assert!(!missing.contains(never), "{never}");
+    }
+    assert!(dropped.iter().all(|d| !d.starts_with("keep") && !d.starts_with("unread") && !d.starts_with("partial") && !d.starts_with("weak")), "{dropped:?}");
+    assert!(gaps.iter().all(|g| !g.files.is_empty() && !g.detail.is_empty()));
+    assert!(mr == 1.0 && dr == 1.0, "recall {mr} {dr}");
+    assert!(mp >= 0.8 && dp >= 0.5, "precision {mp} {dp}");
+}

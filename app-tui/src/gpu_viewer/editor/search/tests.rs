@@ -2227,3 +2227,44 @@ fn project_suggestions_report_an_empty_catalog_and_errors_plainly() {
     }
     assert_eq!(s.status, "Project suggestions unavailable: catalog locked");
 }
+
+fn two_gaps() -> Result<Vec<search_core::catalog_gaps::Gap>, String> {
+    use search_core::catalog_gaps::{Gap, GapKind};
+    Ok(vec![
+        Gap { kind: GapKind::MissingDocument, subject: "AMS 5643".into(), detail: "cited in 3 files; no file name contains it".into(), files: vec!["/w/a/plan0.txt".into()], support: 3 },
+        Gap { kind: GapKind::DroppedIdentifier, subject: "QX-200-B".into(), detail: "in all 3 earlier versions, not in the newest, s_v4.txt".into(), files: vec!["/w/s_v4.txt".into()], support: 3 },
+    ])
+}
+
+#[test]
+fn gap_hints_wait_for_a_click_and_never_change_anything() {
+    let mut s = SearchSession::in_memory();
+    s.gaps_source = two_gaps;
+    s.st.config.search_path = "/w/other".into();
+    let lines = |s: &SearchSession| -> Vec<String> {
+        let doc = view::document(s);
+        let panel = doc.panels.iter().find(|p| p.label == "Projects").expect("Projects panel");
+        let card = panel.cards.iter().find(|c| c.id == "search-gaps").expect("gaps card");
+        card.items.iter().filter_map(|i| match i { DockItem::Line { text, .. } => Some(text.clone()), _ => None }).collect()
+    };
+    assert!(lines(&s).iter().all(|l| !l.contains("AMS 5643")), "nothing before the click");
+    s.act_search(SearchAct::FindGaps);
+    let started = Instant::now();
+    while s.gaps.is_none() {
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        s.poll();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let shown = lines(&s);
+    assert!(shown.contains(&"Cited, not filed: AMS 5643".to_string()), "{shown:?}");
+    assert!(shown.contains(&"Dropped in newest version: QX-200-B".to_string()));
+    assert_eq!(s.st.config.search_path, "/w/other");
+    s.gaps = None;
+    s.gaps_source = || Err("catalog locked".into());
+    s.act_search(SearchAct::FindGaps);
+    while s.gaps.is_none() {
+        s.poll();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(s.status, "Gap hints unavailable: catalog locked");
+}

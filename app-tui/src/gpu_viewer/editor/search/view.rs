@@ -621,7 +621,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
             },
             inputs: Vec::new(),
             chips: Vec::new(),
-            cards: vec![projects_card(s)],
+            cards: vec![projects_card(s), gaps_card(s)],
         },
     ];
     let modal = types_card(s).map(|card| DocModal {
@@ -2026,6 +2026,49 @@ fn projects_card(s: &SearchSession) -> Card {
         None => {}
     }
     Card::new("search-projects", "Possible projects", Relevance::Primary, items)
+}
+
+/// Possible knowledge gaps (#240 P4-4): a standard cited by several files that no file is named after, or an
+/// identifier every earlier version holds and the newest lacks. Read from the catalog on request; hints only, they
+/// can be wrong (a renumbered part, a standard kept elsewhere) and nothing is applied or hidden because of them.
+fn gaps_card(s: &SearchSession) -> Card {
+    use search_core::catalog_gaps::GapKind;
+    const SHOWN: usize = 6;
+    let mut items = vec![DockItem::text(
+        "Hints about what may be missing: standards cited but not filed, identifiers a newest version dropped. They can be wrong; nothing changes because of them.",
+        Tone::Dim,
+    )];
+    items.push(DockItem::row(
+        if s.gaps_running {
+            "Looking in the indexed folders…"
+        } else if s.gaps.is_some() {
+            "Look again"
+        } else {
+            "Look for gaps"
+        },
+        Tone::Title,
+        (!s.gaps_running).then(|| act(SearchAct::FindGaps)),
+        false,
+    ));
+    match &s.gaps {
+        Some(Ok(list)) if list.is_empty() => items.push(DockItem::text("Nothing noticed in the indexed folders.", Tone::Dim)),
+        Some(Ok(list)) => {
+            for g in list.iter().take(SHOWN) {
+                let what = match g.kind {
+                    GapKind::MissingDocument => "Cited, not filed",
+                    GapKind::DroppedIdentifier => "Dropped in newest version",
+                };
+                items.push(DockItem::row(plain(&format!("{what}: {}", g.subject)), Tone::Normal, None, false));
+                items.push(DockItem::text(plain(&format!("{}; e.g. {}", g.detail, g.files.iter().map(|f| super::file_name(f)).collect::<Vec<_>>().join(", "))), Tone::Dim));
+            }
+            if list.len() > SHOWN {
+                items.push(DockItem::text(format!("and {} more.", list.len() - SHOWN), Tone::Dim));
+            }
+        }
+        Some(Err(error)) => items.push(DockItem::text(plain(&format!("Unavailable: {error}")), Tone::Warn)),
+        None => {}
+    }
+    Card::new("search-gaps", "Possible gaps", Relevance::Context, items)
 }
 
 fn types_card(s: &SearchSession) -> Option<Card> {

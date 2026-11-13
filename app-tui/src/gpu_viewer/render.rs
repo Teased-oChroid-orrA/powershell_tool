@@ -3090,6 +3090,13 @@ mod snapshot_tests {
         );
         {
             let mut projects = SearchSession::in_memory();
+            projects.gaps_for_snapshot(|| {
+                use search_core::catalog_gaps::{Gap, GapKind};
+                Ok(vec![
+                    Gap { kind: GapKind::MissingDocument, subject: "AMS 5643".into(), detail: "cited in 3 files; no file name contains it".into(), files: vec!["/Work/Aircraft/Lug-Study/plan0.txt".into()], support: 3 },
+                    Gap { kind: GapKind::DroppedIdentifier, subject: "P/N 4410-102".into(), detail: "in all 3 earlier versions, not in the newest, Bracket_v4.docx".into(), files: vec!["/Work/Aircraft/Bracket-4410/Bracket_v4.docx".into()], support: 3 },
+                ])
+            });
             projects.projects_for_snapshot(|| {
                 let p = |folder: &str, files, linked, evidence: &[&str]| search_core::catalog_projects::ProjectSuggestion {
                     folder: folder.into(),
