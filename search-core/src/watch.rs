@@ -159,6 +159,7 @@ mod tests {
         let seen = wait_for(&watcher, |c| c.paths.contains(&new) && c.paths.contains(&old));
         assert!(seen.paths.contains(&new), "{:?}", seen.paths);
         assert!(seen.paths.contains(&old), "{:?}", seen.paths);
+        assert!(!seen.paths.iter().any(|p| Path::new(p) == root), "{:?}", seen.paths);
         assert!(!seen.paths.iter().any(|p| p.contains("skip") || p.contains(crate::native_index::INDEX_FOLDER_NAME)), "{:?}", seen.paths);
         #[cfg(not(windows))]
         assert!(!seen.paths.iter().any(|p| p.contains(".hidden")), "{:?}", seen.paths);
