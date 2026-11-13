@@ -32,6 +32,7 @@ pub mod model;
 pub mod persistence;
 pub mod reamer_persistence;
 pub mod reamer_picker;
+pub mod report;
 pub mod size_filter;
 pub mod view;
 
@@ -463,7 +464,7 @@ impl BushingState {
     /// The exported report: the model's own text plus the cross-check, if it
     /// has been run for the current inputs.
     pub fn report_text(&self) -> String {
-        let mut text = view::build_report_text(&self.model);
+        let mut text = report::build_report_text(&self.model);
         if let Some(run) = self.edge_check.as_ref().filter(|run| !edge_check::is_stale_with(&self.model, &self.edge_settings, run)) {
             text.push_str(&edge_check::report_text(run));
         }
