@@ -81,9 +81,9 @@ fn shell_renders_at_narrow_breakpoint_without_the_rail() {
     // Narrow (<70 cols) drops the persistent rail entirely per the plan's
     // responsive design - "Search Files" (a rail label) should not appear,
     // but the topbar's breadcrumb (built from the same tool title) does,
-    // so assert on a rail-only marker instead: the "Bushing" rail entry
+    // so assert on a rail-only marker instead: the "Fastener Holes" rail entry
     // text, which only the rail (not the topbar/workspace) ever renders.
-    assert!(!text.contains("Bushing"), "narrow layout should have no persistent rail:\n{text}");
+    assert!(!text.contains("Fastener Holes"), "narrow layout should have no persistent rail:\n{text}");
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn shell_renders_at_wide_breakpoint_with_a_full_rail() {
     let state = AppState::default();
     let buffer = render_shell(&state, 120, 40);
     let text = buffer_text(&buffer);
-    assert!(text.contains("Bushing"), "wide layout should show full rail labels:\n{text}");
+    assert!(text.contains("Fastener Holes"), "wide layout should show full rail labels:\n{text}");
     assert!(text.contains("GS Toolbench"), "topbar breadcrumb should render:\n{text}");
 }
 

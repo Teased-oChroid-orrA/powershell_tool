@@ -787,13 +787,16 @@ impl Gui {
                         self.select_tab(i, tabs);
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let compact_workbench = wb.is_some() && ui.ctx().content_rect().width() < 1280.0;
                         let dark = ui.ctx().theme() == egui::Theme::Dark;
                         let r = ui.add_visible(
-                            theme::is_circadian(),
+                            compact_workbench || theme::is_circadian(),
                             egui::Button::new(if dark { "Light" } else { "Dark" }).small(),
                         );
-                        theme::theme_picker(ui);
-                        theme::circadian_control(ui, p);
+                        if !compact_workbench {
+                            theme::theme_picker(ui);
+                            theme::circadian_control(ui, p);
+                        }
                         self.targets.push(("Theme".into(), r.rect));
                         if r.on_hover_text("Switch between the light and the dark theme")
                             .clicked()
