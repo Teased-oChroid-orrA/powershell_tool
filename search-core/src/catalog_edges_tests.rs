@@ -33,6 +33,7 @@ impl Env {
         let root = tmp.path().join("root");
         let index_dir = tmp.path().join("index");
         std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
         native_index::ensure_index_directory_exists(&index_dir).unwrap();
         let catalog = Catalog::open_in_memory().unwrap();
         catalog.register_root(root.to_str().unwrap(), &index_dir).unwrap();

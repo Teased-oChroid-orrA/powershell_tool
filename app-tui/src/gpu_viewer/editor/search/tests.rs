@@ -2088,7 +2088,7 @@ fn keep_index_current_updates_the_index_for_changed_files_only() {
 
     let index_dir = crate::toolboxes::search::indexing::index_directory(s.st.config.index.location, &s.st.config.search_path, "");
     let engine = native_search::engine::NativeSearchEngine::open_or_create(&index_dir).unwrap();
-    let mut ids: Vec<String> = engine.all_document_ids().unwrap().into_iter().map(|p| p.rsplit('/').next().unwrap().to_string()).collect();
+    let mut ids: Vec<String> = engine.all_document_ids().unwrap().into_iter().map(|p| std::path::Path::new(&p).file_name().unwrap().to_string_lossy().into_owned()).collect();
     ids.sort();
     assert_eq!(ids, ["a.txt", "c.txt"], "edit kept, new added, removed gone");
     let hits = search_core::native_index::search(&engine, "charlie", 5).unwrap();

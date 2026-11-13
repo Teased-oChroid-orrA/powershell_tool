@@ -40,9 +40,15 @@ pub(super) fn classify(text: &str, pinned: FindAs) -> Intent {
         FindAs::Words => Intent::Words,
         FindAs::Sentence => Intent::Sentence,
         FindAs::Auto => {
-            if cfg!(feature = "nl-find") && super::nl::looks_like_sentence(text) {
+            #[cfg(feature = "nl-find")]
+            if super::nl::looks_like_sentence(text) {
                 Intent::Sentence
             } else {
+                Intent::Words
+            }
+            #[cfg(not(feature = "nl-find"))]
+            {
+                let _ = text;
                 Intent::Words
             }
         }

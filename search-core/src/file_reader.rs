@@ -363,13 +363,16 @@ pub(crate) fn path_in_scope(root: &str, path: &Path, include_hidden: bool, exclu
     let Ok(relative) = path.strip_prefix(root) else { return false };
     let mut current = root.to_path_buf();
     let components: Vec<_> = relative.components().collect();
+    if components.is_empty() {
+        return false;
+    }
     for (i, component) in components.iter().enumerate() {
         current.push(component);
         let is_last = i + 1 == components.len();
         if !include_hidden && is_hidden(&current) {
             return false;
         }
-        if is_last {
+        if is_last && current.is_file() {
             break;
         }
         let name = component.as_os_str().to_string_lossy();

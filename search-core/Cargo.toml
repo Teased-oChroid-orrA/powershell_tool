@@ -162,6 +162,26 @@ required-features = ["neural-search"]
 name = "splade_eval"
 required-features = ["semantic-search"]
 
+[[example]]
+name = "code_nav_probe"
+required-features = ["semantic-search"]
+
+[[example]]
+name = "multilingual_eval"
+required-features = ["semantic-search"]
+
+[[example]]
+name = "semantic_scale"
+required-features = ["semantic-search"]
+
+[[example]]
+name = "edges_cost"
+required-features = ["neural-search"]
+
+[[example]]
+name = "gaps_eval"
+required-features = ["neural-search"]
+
 [dependencies.search-ml]
 path = "../search-ml"
 optional = true

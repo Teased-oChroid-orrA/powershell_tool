@@ -273,8 +273,11 @@ fn record_in(catalog: &Path, root: &str, index_dir: &Path) -> Result<usize, Stri
     c.register_root(root, index_dir).map_err(|e| e.to_string())?;
     let files = c.sync_root(root)?;
     // Identifying strings (part numbers, standards) for "files sharing X"; only new or changed files are read.
-    let extracted = c.index_entities(root, None)?;
-    log("INDEX", format!("catalog: entities extracted for {extracted} file(s)"));
+    #[cfg(feature = "neural-search")]
+    {
+        let extracted = c.index_entities(root, None)?;
+        log("INDEX", format!("catalog: entities extracted for {extracted} file(s)"));
+    }
     // Relationships (folder, duplicate, version, shared-entity edges) are derived from the rows just written; about
     // 5 s for 100,000 files, on top of the entity pass (docs/knowledge-engine-audit.md, section 8).
     let edges = c.rebuild_edges()?;
