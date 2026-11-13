@@ -64,10 +64,22 @@ pub struct Card {
     /// Steps (ribbon tabs) this card belongs to; empty: every step.
     pub steps: Vec<&'static str>,
     pub items: Vec<DockItem>,
+    /// Starts folded (a workbench pane's secondary section); a click opens it.
+    pub folded: bool,
+    /// A short note at the right of the title (a source, a state).
+    pub tag: String,
 }
 impl Card {
     pub fn new(id: impl Into<String>, title: impl Into<String>, relevance: Relevance, items: Vec<DockItem>) -> Self {
-        Self { id: id.into(), title: title.into(), relevance, steps: Vec::new(), items }
+        Self { id: id.into(), title: title.into(), relevance, steps: Vec::new(), items, folded: false, tag: String::new() }
+    }
+    pub fn folded(mut self) -> Self {
+        self.folded = true;
+        self
+    }
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = tag.into();
+        self
     }
     pub fn for_steps(mut self, steps: &[&'static str]) -> Self {
         self.steps = steps.to_vec();
@@ -269,4 +281,14 @@ pub trait Authoring {
     }
     /// The text of input `id` of the document changed.
     fn document_field(&mut self, _id: u8, _text: String) {}
+
+    /// A workbench drawn as three fixed panes (inputs, views, results) instead of the tree, ribbon and inspector.
+    /// `None`: the usual chrome.
+    fn workbench(&self) -> Option<crate::gpu_viewer::ui::Workbench> {
+        None
+    }
+    /// Cheap form of `workbench().is_some()`, asked on every input event.
+    fn has_workbench(&self) -> bool {
+        false
+    }
 }

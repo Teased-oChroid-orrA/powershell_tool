@@ -10,6 +10,7 @@ mod document;
 mod page_layout;
 mod panels;
 pub mod theme;
+mod workbench;
 pub use dashboard::DashEvent;
 
 use super::{
@@ -380,9 +381,24 @@ impl Gui {
             }
         }
 
-        self.top_bar(ui, input, &menus, &tabs, &p, out, hint);
+        let wb = input.editor.and_then(|e| e.workbench());
+        self.top_bar(ui, input, &menus, &tabs, wb.as_ref(), &p, out, hint);
         if self.visible.status {
             self.status_bar(ui, input, &p, out, hint);
+        }
+        // A workbench of three fixed panes has no tree, tool pill or inspector: its own panes and toolbar.
+        if let Some(wb) = &wb {
+            self.workbench(ui, wb, &p, out, hint);
+            self.floating_list(ui.ctx(), &p, out, hint);
+            if !matches!(wb.show, crate::gpu_viewer::ui::WorkbenchView::Sketch(_)) {
+                self.contour_legend(ui.ctx(), input, &p, out);
+            }
+            self.value_card(ui.ctx(), input, &p, out, hint);
+            self.background_picker(ui.ctx(), input.view.background, &p, out);
+            self.palette_window(ui.ctx(), &menus, &p, out);
+            self.confirm_close_modal(ui.ctx(), out);
+            self.adapt.frame_end();
+            return;
         }
         let document=input.editor.and_then(|e|e.document());
         let precision=document.as_ref().is_some_and(|d|d.precision.is_some());
@@ -425,8 +441,14 @@ impl Gui {
         self.value_card(ui.ctx(), input, &p, out, hint);
         self.background_picker(ui.ctx(), input.view.background, &p, out);
         self.palette_window(ui.ctx(), &menus, &p, out);
+        self.confirm_close_modal(ui.ctx(), out);
+        self.adapt.frame_end();
+    }
+
+    /// Unsaved changes when the window is closing: save, discard or keep editing.
+    fn confirm_close_modal(&mut self, ctx: &egui::Context, out: &mut Vec<Outcome>) {
         if self.confirm_close {
-            egui::Modal::new(Id::new("confirm-close")).show(ui.ctx(), |ui| {
+            egui::Modal::new(Id::new("confirm-close")).show(ctx, |ui| {
                 ui.heading("Save changes before closing?");
                 ui.label("Your model has unsaved changes.");
                 ui.horizontal(|ui| {
@@ -444,7 +466,6 @@ impl Gui {
                 });
             });
         }
-        self.adapt.frame_end();
     }
 
     /// Watch the steps: a finished step either moves on to the one this person usually takes next (once that is a

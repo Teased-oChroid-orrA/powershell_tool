@@ -93,6 +93,127 @@ pub enum DockItem {
     Bracket { lower: f64, upper: f64 },
     /// Contour colour bar with its value range.
     Legend { lo: f32, hi: f32 },
+    /// A verdict banner: the headline (PASS / REVIEW) in its tone, a line under it and buttons.
+    Verdict { headline: String, detail: String, tone: Tone, actions: Vec<Entry> },
+    /// Large figures side by side (install and retained force).
+    Figures(Vec<Figure>),
+    /// A result: label and value, a short state or margin at the right in `note_tone`, and a dim line under it.
+    Stat { label: String, value: String, note: String, note_tone: Tone, detail: String, action: Option<UiAction> },
+    /// Horizontal bars on one scale from `lo` to `hi` with zero marked (margins of safety).
+    Bars { rows: Vec<Bar>, lo: f64, hi: f64 },
+    /// A small x-y plot.
+    Plot(Plot),
+}
+
+/// One large figure: its label, value and unit, and dim lines under it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Figure {
+    pub label: String,
+    pub value: String,
+    pub unit: String,
+    pub detail: Vec<String>,
+}
+
+/// One bar: the value it is drawn to, its text, tone and a small tag (governing); a click runs `action`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bar {
+    pub label: String,
+    pub value: f64,
+    pub text: String,
+    pub tone: Tone,
+    pub tag: String,
+    pub action: Option<UiAction>,
+}
+
+/// Curves over x with shaded x bands (the parts), marked values, and axis titles.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Plot {
+    pub x_label: String,
+    pub y_label: String,
+    pub series: Vec<Series>,
+    pub bands: Vec<Band>,
+    pub marks: Vec<Mark>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct Series {
+    pub label: String,
+    pub points: Vec<[f64; 2]>,
+    /// Which of the plot colours (0: accent, 1: warning, 2: good).
+    pub color: u8,
+    pub dashed: bool,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct Band {
+    pub x0: f64,
+    pub x1: f64,
+    pub label: String,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mark {
+    pub at: [f64; 2],
+    pub text: String,
+    pub color: u8,
+}
+
+/// A workbench drawn as three fixed panes under the top bar (Bushing): the inputs, the views of the model and the
+/// results. No tree, ribbon or step strip; the actions sit in the top bar. Plain data; `gui/workbench.rs` draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Workbench {
+    /// Small chips after the title: the units, the verdict.
+    pub chips: Vec<(String, Tone)>,
+    /// The case's actions; the last is the main one (drawn in the accent colour).
+    pub actions: Vec<Entry>,
+    pub inputs: Vec<crate::gpu_viewer::editor::authoring::Card>,
+    /// A dim line under the inputs.
+    pub inputs_note: String,
+    /// The view switch (`checked`: the one shown).
+    pub views: Vec<Entry>,
+    pub show: WorkbenchView,
+    /// What the 3D view is coloured by (`checked`: current).
+    pub fields: Vec<Entry>,
+    /// Switches and buttons of the views (Quarter cut, Reset view).
+    pub switches: Vec<Entry>,
+    /// Right of the switches (view only: the inputs drive the picture).
+    pub view_note: String,
+    /// Title over the 3D view and a hint under it.
+    pub model_title: String,
+    pub model_hint: String,
+    pub sketches: Vec<crate::gpu_viewer::sketch::Sketch>,
+    pub results: Vec<crate::gpu_viewer::editor::authoring::Card>,
+    /// A confirmation shown over the window.
+    pub dialog: Option<Dialog>,
+}
+
+/// Which views the centre pane shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkbenchView {
+    /// The 3D view over the drawings.
+    Split,
+    /// The 3D view alone.
+    Model,
+    /// One drawing alone.
+    Sketch(usize),
+}
+
+/// A confirmation: what will be done, the choices it has, a note, and Cancel / the action.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dialog {
+    pub title: String,
+    pub intro: String,
+    /// Label and text, one row each (what goes to the other window).
+    pub rows: Vec<(String, String)>,
+    pub options: Vec<DialogOption>,
+    pub note: String,
+    pub cancel: Entry,
+    pub confirm: Entry,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct DialogOption {
+    pub label: String,
+    pub detail: String,
+    pub on: bool,
+    pub enabled: bool,
+    pub action: Option<UiAction>,
 }
 impl DockItem {
     pub fn text(text: impl Into<String>, tone: Tone) -> Self {
@@ -110,6 +231,10 @@ impl DockItem {
         match self {
             DockItem::Line { text, .. } => Some(text.clone()),
             DockItem::Field { label, value, .. } => Some(format!("{label}  {value}")),
+            DockItem::Stat { label, value, note, detail, .. } => Some(format!("{label}  {value}  {note}  {detail}").trim_end().to_string()),
+            DockItem::Verdict { headline, detail, .. } => Some(format!("{headline}  {detail}")),
+            DockItem::Figures(f) => Some(f.iter().map(|f| format!("{}  {} {}  {}", f.label, f.value, f.unit, f.detail.join("  "))).collect::<Vec<_>>().join("  |  ")),
+            DockItem::Bars { rows, .. } => Some(rows.iter().map(|b| format!("{}  {}  {}", b.label, b.text, b.tag).trim_end().to_string()).collect::<Vec<_>>().join("  |  ")),
             _ => None,
         }
     }

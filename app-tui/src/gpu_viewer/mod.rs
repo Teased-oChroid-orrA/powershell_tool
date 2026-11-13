@@ -13,6 +13,7 @@ pub mod results;
 #[cfg(feature = "gpu-viewer")]
 pub mod render;
 pub mod scene;
+pub mod sketch;
 pub mod text;
 pub mod transient;
 pub mod transport;

@@ -7,9 +7,11 @@
 //! lists the groups and checks, the ribbon has the steps Inputs, Checks and Simulation. Nothing here computes
 //! engineering results: `bushing-solver`, `edge-check` and the FE kernel do.
 mod cards;
+pub mod drawing;
 pub mod fe;
 pub mod file;
 mod picker;
+pub mod sketch;
 
 use super::{
     authoring::{Authoring, Card, Overlay},
