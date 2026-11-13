@@ -16,7 +16,6 @@ use crate::theme::Theme;
 pub enum Command {
     SwitchToSearch,
     SwitchToFastenerHole,
-    SwitchToBushing,
     SwitchToEccentricBushing,
     SwitchToFeaWorkbench,
     SwitchToDupes,
@@ -39,11 +38,6 @@ pub enum Command {
     /// Fastener Holes has no Numbers panel (see `app-tui/AGENTS.md`'s
     /// Pitfalls for why) - `e` export is its only palette-worthy action.
     ExportFastenerHoleReport,
-    ToggleBushingNumbersPanel,
-    ExportBushingReport,
-    OpenReamerPicker,
-    OpenHousingMaterialPicker,
-    OpenBushingMaterialPicker,
     SolveFeaWorkbench,
     SaveFeaWorkbenchProblem,
     ExportFeaWorkbenchReport,
@@ -55,7 +49,6 @@ impl Command {
     pub const ALL: &'static [Command] = &[
         Command::SwitchToSearch,
         Command::SwitchToFastenerHole,
-        Command::SwitchToBushing,
         Command::SwitchToEccentricBushing,
         Command::SwitchToFeaWorkbench,
         Command::SwitchToDupes,
@@ -72,11 +65,6 @@ impl Command {
         Command::CancelIndexBuild,
         Command::OpenDebugLog,
         Command::ExportFastenerHoleReport,
-        Command::ToggleBushingNumbersPanel,
-        Command::ExportBushingReport,
-        Command::OpenReamerPicker,
-        Command::OpenHousingMaterialPicker,
-        Command::OpenBushingMaterialPicker,
         Command::SolveFeaWorkbench,
         Command::SaveFeaWorkbenchProblem,
         Command::ExportFeaWorkbenchReport,
@@ -88,7 +76,6 @@ impl Command {
         match self {
             Command::SwitchToSearch => "Switch to: Search Files",
             Command::SwitchToFastenerHole => "Switch to: Fastener Holes",
-            Command::SwitchToBushing => "Switch to: Bushing Workbench",
             Command::SwitchToEccentricBushing => "Switch to: Eccentric Bushing",
             Command::SwitchToFeaWorkbench => "Switch to: FEA Workbench",
             Command::SwitchToDupes => "Switch to: Duplicate Finder (soon)",
@@ -105,11 +92,6 @@ impl Command {
             Command::CancelIndexBuild => "Stop running index build",
             Command::OpenDebugLog => "Open debug log (toolbench-debug.log)",
             Command::ExportFastenerHoleReport => "Export report",
-            Command::ToggleBushingNumbersPanel => "Toggle Numbers panel",
-            Command::ExportBushingReport => "Export report",
-            Command::OpenReamerPicker => "Open reamer catalog (Bore Diameter)",
-            Command::OpenHousingMaterialPicker => "Open Housing Material picker",
-            Command::OpenBushingMaterialPicker => "Open Bushing Material picker",
             Command::SolveFeaWorkbench => "Solve the problem",
             Command::SaveFeaWorkbenchProblem => "Save problem (JSON)",
             Command::ExportFeaWorkbenchReport => "Export report",
@@ -126,7 +108,6 @@ impl Command {
         match self {
             Command::SwitchToSearch
             | Command::SwitchToFastenerHole
-            | Command::SwitchToBushing
             | Command::SwitchToEccentricBushing
             | Command::SwitchToFeaWorkbench
             | Command::SwitchToDupes
@@ -144,9 +125,6 @@ impl Command {
             | Command::BuildIndex
             | Command::CancelIndexBuild => Some(ToolId::Search),
             Command::ExportFastenerHoleReport => Some(ToolId::FastenerHole),
-            Command::ToggleBushingNumbersPanel | Command::ExportBushingReport | Command::OpenReamerPicker | Command::OpenHousingMaterialPicker | Command::OpenBushingMaterialPicker => {
-                Some(ToolId::Bushing)
-            }
             Command::SolveFeaWorkbench | Command::SaveFeaWorkbenchProblem | Command::ExportFeaWorkbenchReport | Command::ExportFeaWorkbenchVtu => Some(ToolId::FeaWorkbench),
         }
     }
@@ -162,7 +140,7 @@ impl CommandPalette {
     /// Commands visible right now: always-global ones (`Command::scope() ==
     /// None`) plus whichever toolbox-scoped ones belong to `active_tool`,
     /// narrowed further by the typed query - so switching tabs never shows
-    /// a Search-only command while on the Bushing tab, and vice versa.
+    /// a Search-only command while on the FEA Workbench tab, and vice versa.
     pub fn matches(&self, active_tool: ToolId) -> Vec<Command> {
         let q = self.query.to_lowercase();
         Command::ALL
@@ -310,22 +288,22 @@ mod tests {
     fn empty_query_matches_every_global_command_plus_the_active_tools_own() {
         let palette = CommandPalette::default();
         let global_count = Command::ALL.iter().filter(|c| c.scope().is_none()).count();
-        let bushing_count = Command::ALL.iter().filter(|c| c.scope() == Some(ToolId::Bushing)).count();
-        assert_eq!(palette.matches(ToolId::Bushing).len(), global_count + bushing_count);
+        let fea_count = Command::ALL.iter().filter(|c| c.scope() == Some(ToolId::FeaWorkbench)).count();
+        assert_eq!(palette.matches(ToolId::FeaWorkbench).len(), global_count + fea_count);
     }
 
     #[test]
     fn a_toolbox_scoped_command_is_absent_while_a_different_tool_is_active() {
         let palette = CommandPalette::default();
-        assert!(!palette.matches(ToolId::Search).contains(&Command::ExportBushingReport), "Bushing-only command must not show while Search is active");
-        assert!(palette.matches(ToolId::Bushing).contains(&Command::ExportBushingReport), "Bushing-only command must show while Bushing is active");
+        assert!(!palette.matches(ToolId::Search).contains(&Command::ExportFeaWorkbenchReport), "FEA-only command must not show while Search is active");
+        assert!(palette.matches(ToolId::FeaWorkbench).contains(&Command::ExportFeaWorkbenchReport), "FEA-only command must show while the FEA Workbench is active");
     }
 
     #[test]
     fn a_global_command_is_present_regardless_of_active_tool() {
         let palette = CommandPalette::default();
         assert!(palette.matches(ToolId::Search).contains(&Command::Quit));
-        assert!(palette.matches(ToolId::Bushing).contains(&Command::Quit));
+        assert!(palette.matches(ToolId::FeaWorkbench).contains(&Command::Quit));
     }
 
     #[test]

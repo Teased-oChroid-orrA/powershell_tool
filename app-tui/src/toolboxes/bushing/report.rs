@@ -92,3 +92,27 @@ pub fn build_report_text(model: &BushingModel) -> String {
     }
     s
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_report_text_mentions_the_governing_mode() {
+        let model = BushingModel::default();
+        let text = build_report_text(&model);
+        assert!(text.contains("Governing:"));
+        assert!(text.contains(model.output.governing.name));
+    }
+
+    #[test]
+    fn the_report_names_the_service_temperature_change_and_the_install_thermal_assist() {
+        let mut model = BushingModel::default();
+        model.commit_number(model::NumberTarget::DeltaT, 100.0);
+        assert!(!build_report_text(&model).contains("install thermal assist"));
+        model.toggle_assembly_thermal_enabled();
+        model.commit_number(model::NumberTarget::AssemblyBushingTemp, -100.0);
+        let report = build_report_text(&model);
+        assert!(report.contains("Delta interference, service temp change") && report.contains("install thermal assist"), "{report}");
+    }
+}

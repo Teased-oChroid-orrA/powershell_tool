@@ -178,6 +178,11 @@ mod flow {
     fn bushing_act(s: &mut BushingSession, a: BushingAct) {
         s.act(EditorAction::Bushing(a));
     }
+    /// "Send joint to FEM...", then the dialog's Send.
+    fn send(s: &mut BushingSession) {
+        bushing_act(s, BushingAct::SendDialog);
+        bushing_act(s, BushingAct::ConfirmSend);
+    }
     /// Another window wrote the case file: make this window's next look at it due.
     fn due(s: &mut BushingSession) {
         s.make_watch_due();
@@ -193,7 +198,7 @@ mod flow {
         let case = d.join("wing.json");
         let mut s = BushingSession::open(&case).unwrap();
         launched();
-        bushing_act(&mut s, BushingAct::OpenInFea);
+        send(&mut s);
         assert!(case.exists(), "the case is saved first: what comes back goes into it");
         let fea = fea_path(&case);
         let on_disk = fea_problem::Problem::from_json(&std::fs::read_to_string(&fea).unwrap()).unwrap();
@@ -203,12 +208,12 @@ mod flow {
         // The FEA window is open: asking again opens nothing and leaves its file alone.
         beat(&fea);
         std::fs::write(&fea, "edited in the FEA window").unwrap();
-        bushing_act(&mut s, BushingAct::OpenInFea);
+        send(&mut s);
         assert!(launched().is_empty() && s.status().contains("already open"), "{}", s.status());
         assert_eq!(std::fs::read_to_string(&fea).unwrap(), "edited in the FEA window");
         // Closed again: the FEA file that differs is kept before it is replaced.
         clear_beat(&fea);
-        bushing_act(&mut s, BushingAct::OpenInFea);
+        send(&mut s);
         assert!(fea.with_extension("previous.json").exists());
         assert_eq!(launched().len(), 1);
     }
@@ -218,7 +223,7 @@ mod flow {
         let d = dir("loop");
         let case = d.join("wing.json");
         let mut s = BushingSession::open(&case).unwrap();
-        bushing_act(&mut s, BushingAct::OpenInFea);
+        send(&mut s);
         let fea = fea_path(&case);
         launched();
         // The FEA workbench: open the file it was given, move the hole, widen the bore, add load, send.
