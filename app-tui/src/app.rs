@@ -22,7 +22,7 @@ use crate::mouse::{self, ClickTarget, MouseRegions};
 use crate::nav::{FocusArea, FocusState, NavigationState, ToolId};
 use crate::notifications::NotificationQueue;
 use crate::theme::{StatusTone, Theme};
-use crate::toolboxes::bushing::{self, BushingState};
+use crate::toolboxes::bushing::model::BushingModel;
 use crate::toolboxes::fastener_hole::{self, FastenerHoleState};
 use crate::toolboxes::fea_workbench::{self, FeaWorkbenchState};
 use crate::toolboxes::eccentric_bushing::{self, EccentricState};
@@ -38,7 +38,7 @@ pub struct AppState {
     pub should_quit: bool,
     pub search: SearchToolState,
     pub fastener_hole: FastenerHoleState,
-    pub bushing: BushingState,
+    pub bushing_model: BushingModel,
     pub eccentric: EccentricState,
     pub fea_workbench: FeaWorkbenchState,
     /// What the last left-click landed on and when - compared against the
@@ -59,7 +59,7 @@ impl Default for AppState {
             should_quit: false,
             search: SearchToolState::default(),
             fastener_hole: FastenerHoleState::default(),
-            bushing: BushingState::default(),
+            bushing_model: BushingModel::default(),
             eccentric: EccentricState::default(),
             fea_workbench: FeaWorkbenchState::default(),
             last_click: None,
@@ -74,7 +74,6 @@ impl AppState {
         match self.nav.active_tool {
             ToolId::Search => search::PANE_COUNT,
             ToolId::FastenerHole => fastener_hole::PANE_COUNT,
-            ToolId::Bushing => bushing::PANE_COUNT,
             ToolId::EccentricBushing => eccentric_bushing::PANE_COUNT,
             ToolId::FeaWorkbench => fea_workbench::PANE_COUNT,
             _ => 0,
@@ -105,21 +104,6 @@ pub enum AppEvent {
     /// since the build); the UI offers an update once the search finishes.
     IndexStale { new_or_changed: usize, removed: usize },
     ExtensionsScanned(Result<Vec<String>, String>),
-    /// Result of reading a user-typed path for the reamer-library "Import"
-    /// action (`toolboxes/bushing/reamer_picker.rs`) - file I/O, so it goes
-    /// through the same `Effect`-request / `AppEvent`-response round trip
-    /// as `ScanExtensions`/`ExtensionsScanned`, never a direct filesystem
-    /// read from inside `handle_key`.
-    ReamerLibraryFileRead(Result<String, String>),
-    /// Same round trip as `ReamerLibraryFileRead`, for the Bushing material
-    /// library's own "Import" prompt (`toolboxes/bushing/material_picker.rs`).
-    BushingMaterialLibraryFileRead(Result<String, String>),
-    /// Same round trip, for the Bushing ID library
-    /// (`toolboxes/bushing/bushing_id_picker.rs`).
-    BushingIdLibraryFileRead(Result<String, String>),
-    /// A worker finished the Bushing edge-distance cross-check `id`
-    /// (`Effect::RunEdgeCheck`); a cancelled or superseded id is ignored.
-    EdgeCheckFinished { id: u64, run: Box<crate::toolboxes::bushing::edge_check::EdgeCheckRun> },
     /// A worker finished Eccentric Bushing job `id` (`Effect::RunEccentric`).
     EccentricFinished { id: u64, result: Box<Result<eccentric_bushing::model::Output, String>> },
     /// A worker finished FEA Workbench mesh preview `id` (`Effect::RunFeaPreview`).
@@ -163,16 +147,6 @@ pub enum Effect {
     PersistSearchSettings,
     BuildIndex { settings: SearchSettings, index_dir: std::path::PathBuf, cancel: CancellationToken },
     ScanExtensions { root: String, exclude_folders: Vec<String>, include_hidden: bool },
-    /// Writes the Bushing Workbench's plain-text report
-    /// (`bushing::view::build_report_text`, already fully built by the time
-    /// this effect is constructed - pure text generation, no I/O) to its
-    /// fixed report path and opens it.
-    ExportBushingReport(String),
-    /// Runs the Bushing edge-distance cross-check (~0.3 s quick, ~3 s with
-    /// the contact FE) on a blocking worker and reports back with
-    /// `AppEvent::EdgeCheckFinished`; the input was already validated by
-    /// `edge_check::prepare`.
-    RunEdgeCheck { id: u64, input: ::edge_check::runner::EdgeInput, cfg: ::edge_check::runner::EdgeConfig, deep: bool },
     /// Runs one Eccentric Bushing task (contact FE, seconds to tens of seconds) on a blocking worker and reports back
     /// with `AppEvent::EccentricFinished`.
     RunEccentric { id: u64, task: eccentric_bushing::model::Task, input: Box<eccentric_bushing::model::Inputs>, control: ::eccentric_bushing::Control },
@@ -187,32 +161,8 @@ pub enum Effect {
     /// Reads the text file at `path` for `purpose`; reports back with `AppEvent::TextFileRead`.
     ReadTextFile { purpose: fea_workbench::FilePurpose, path: String },
     /// Writes the Fastener Holes toolbox's plain-text report to its fixed
-    /// report path and opens it - same pattern as `ExportBushingReport`.
+    /// report path and opens it.
     ExportFastenerHoleReport(String),
-    /// Reads the file at `path` (a user-typed path from the reamer
-    /// library's "Import" prompt) and reports the result via
-    /// `AppEvent::ReamerLibraryFileRead` - reading is I/O, so it can't
-    /// happen synchronously inside `handle_key`.
-    ImportReamerLibraryFile(String),
-    /// Writes `contents` (already-built JSON, pure and synchronous - see
-    /// `library::export_json`) to `path`, creating the parent directory if
-    /// needed - the reamer library's "Export" action.
-    ExportReamerLibraryFile { path: String, contents: String },
-    /// Snapshots `state.bushing.reamer_picker.library` and writes it to
-    /// disk - same "derive from current state at execution time" pattern
-    /// as `PersistSearchSettings`.
-    PersistReamerLibrary,
-    /// Same trio as the three `*ReamerLibraryFile`/`PersistReamerLibrary`
-    /// effects above, for the Bushing material library
-    /// (`toolboxes/bushing/material_picker.rs`).
-    ImportBushingMaterialLibraryFile(String),
-    ExportBushingMaterialLibraryFile { path: String, contents: String },
-    PersistBushingMaterialLibrary,
-    /// Same trio, for the Bushing ID library
-    /// (`toolboxes/bushing/bushing_id_picker.rs`).
-    ImportBushingIdLibraryFile(String),
-    ExportBushingIdLibraryFile { path: String, contents: String },
-    PersistBushingIdLibrary,
 }
 
 pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
@@ -223,9 +173,7 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
         AppEvent::Terminal(_) => Vec::new(),
         AppEvent::Tick => {
             state.notifications.expire();
-            state.bushing.expire_edge_notice();
             match state.nav.active_tool {
-                crate::nav::ToolId::Bushing => state.bushing.auto_edge_check(),
                 crate::nav::ToolId::FeaWorkbench => state.fea_workbench.tick(),
                 _ => Vec::new(),
             }
@@ -246,20 +194,8 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
             }
             effects
         }
-        AppEvent::ReamerLibraryFileRead(result) => handle_reamer_library_file_read(state, result),
-        AppEvent::BushingMaterialLibraryFileRead(result) => handle_bushing_material_library_file_read(state, result),
-        AppEvent::BushingIdLibraryFileRead(result) => handle_bushing_id_library_file_read(state, result),
-        AppEvent::EdgeCheckFinished { id, run } => {
-            // A quick automatic re-run is silent; manual and deep runs get a toast.
-            let was_running = state.bushing.edge_job.as_ref().is_some_and(|j| j.id == id && (!j.auto || j.deep));
-            state.bushing.finish_edge_check(id, *run);
-            if was_running {
-                state.notifications.push("Edge check finished - see the Edge-Distance Cross-Check in Bushing Results", StatusTone::Success);
-            }
-            Vec::new()
-        }
         AppEvent::EccentricFinished { id, result } => {
-            state.eccentric.finish(id, *result, &state.bushing.model)
+            state.eccentric.finish(id, *result, &state.bushing_model)
         }
         AppEvent::FeaPreviewFinished { id, result } => {
             state.fea_workbench.finish_preview(id, *result);
@@ -300,94 +236,6 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
             Vec::new()
         }
     }
-}
-
-/// Applies a just-read reamer-library import file: parses it, classifies
-/// every item against the existing library (`library::classify_import`),
-/// immediately applies additions/label-merges, and queues any real
-/// conflicts for interactive resolution (`ReamerPickerState::handle_key`).
-/// A parse failure or unreadable file surfaces as a toast, never a panic or
-/// a silently-dropped import.
-fn handle_reamer_library_file_read(state: &mut AppState, result: Result<String, String>) -> Vec<Effect> {
-    let text = match result {
-        Ok(text) => text,
-        Err(e) => {
-            state.notifications.push(e, StatusTone::Danger);
-            return Vec::new();
-        }
-    };
-    let incoming = match crate::library::import_json::<crate::toolboxes::bushing::reamer_persistence::PersistedReamer>(&text) {
-        Ok(items) => items,
-        Err(e) => {
-            state.notifications.push(e, StatusTone::Danger);
-            return Vec::new();
-        }
-    };
-    let outcomes = crate::library::classify_import(&state.bushing.reamer_picker.library, incoming, |p| p.size_label.clone());
-    let (queue, added, merged) = crate::library::ConflictQueue::new(outcomes, &mut state.bushing.reamer_picker.library);
-    let conflicts_remaining = !queue.is_empty();
-    state.bushing.reamer_picker.pending_conflicts = if conflicts_remaining { Some(queue) } else { None };
-    state.bushing.model.sync_user_reamers(&state.bushing.reamer_picker.library);
-    let suffix = if conflicts_remaining { " - conflicts need review (k: keep, o: overwrite, a/z: apply to all)" } else { "" };
-    state.notifications.push(format!("Reamer library: {added} added, {merged} label update(s){suffix}"), StatusTone::Success);
-    vec![Effect::PersistReamerLibrary]
-}
-
-/// Same shape as `handle_reamer_library_file_read`, for the Bushing
-/// material library - additionally re-syncs `BushingModel::custom_materials`
-/// from the merged library, since a leaked `&'static Material` can't be
-/// mutated in place to reflect an overwrite (see
-/// `BushingModel::sync_custom_materials_from_library`'s own doc comment).
-fn handle_bushing_material_library_file_read(state: &mut AppState, result: Result<String, String>) -> Vec<Effect> {
-    let text = match result {
-        Ok(text) => text,
-        Err(e) => {
-            state.notifications.push(e, StatusTone::Danger);
-            return Vec::new();
-        }
-    };
-    let incoming = match crate::library::import_json::<crate::toolboxes::bushing::material_persistence::PersistedMaterial>(&text) {
-        Ok(items) => items,
-        Err(e) => {
-            state.notifications.push(e, StatusTone::Danger);
-            return Vec::new();
-        }
-    };
-    let outcomes = crate::library::classify_import(&state.bushing.material_picker.library, incoming, |p| p.name.clone());
-    let (queue, added, merged) = crate::library::ConflictQueue::new(outcomes, &mut state.bushing.material_picker.library);
-    let conflicts_remaining = !queue.is_empty();
-    state.bushing.material_picker.pending_conflicts = if conflicts_remaining { Some(queue) } else { None };
-    state.bushing.model.sync_custom_materials_from_library(&state.bushing.material_picker.library);
-    let suffix = if conflicts_remaining { " - conflicts need review (k: keep, o: overwrite, a/z: apply to all)" } else { "" };
-    state.notifications.push(format!("Material library: {added} added, {merged} label update(s){suffix}"), StatusTone::Success);
-    vec![Effect::PersistBushingMaterialLibrary]
-}
-
-/// Same shape as `handle_reamer_library_file_read`, for the Bushing ID
-/// library - no combined-catalog re-sync needed (unlike materials), since
-/// this library has no built-in catalog to merge against.
-fn handle_bushing_id_library_file_read(state: &mut AppState, result: Result<String, String>) -> Vec<Effect> {
-    let text = match result {
-        Ok(text) => text,
-        Err(e) => {
-            state.notifications.push(e, StatusTone::Danger);
-            return Vec::new();
-        }
-    };
-    let incoming = match crate::library::import_json::<crate::toolboxes::bushing::bushing_id_persistence::PersistedBushingId>(&text) {
-        Ok(items) => items,
-        Err(e) => {
-            state.notifications.push(e, StatusTone::Danger);
-            return Vec::new();
-        }
-    };
-    let outcomes = crate::library::classify_import(&state.bushing.bushing_id_picker.library, incoming, |p| p.label.clone());
-    let (queue, added, merged) = crate::library::ConflictQueue::new(outcomes, &mut state.bushing.bushing_id_picker.library);
-    let conflicts_remaining = !queue.is_empty();
-    state.bushing.bushing_id_picker.pending_conflicts = if conflicts_remaining { Some(queue) } else { None };
-    let suffix = if conflicts_remaining { " - conflicts need review (k: keep, o: overwrite, a/z: apply to all)" } else { "" };
-    state.notifications.push(format!("Bushing ID library: {added} added, {merged} label update(s){suffix}"), StatusTone::Success);
-    vec![Effect::PersistBushingIdLibrary]
 }
 
 /// If the search that just ended found the fast index out of date, asks
@@ -449,14 +297,8 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                     return effects;
                 }
             }
-            ToolId::Bushing => {
-                let (consumed, effects) = bushing::handle_key(&mut state.bushing, key);
-                if consumed {
-                    return effects;
-                }
-            }
             ToolId::EccentricBushing => {
-                let (consumed, effects) = eccentric_bushing::handle_key(&mut state.eccentric, &state.bushing.model, key);
+                let (consumed, effects) = eccentric_bushing::handle_key(&mut state.eccentric, &state.bushing_model, key);
                 if consumed {
                     return effects;
                 }
@@ -500,18 +342,8 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             let idx = ToolId::ALL.iter().position(|t| *t == state.nav.active_tool).unwrap_or(0);
             let len = ToolId::ALL.len();
             let step: i32 = if key.code == KeyCode::Left { -1 } else { 1 };
-            // Skip past disabled entries to the nearest enabled one in the
-            // pressed direction (wrapping), rather than stopping at the
-            // first (possibly disabled) neighbor - `idx` is recomputed from
-            // `state.nav.active_tool` every keypress, and `activate` is a
-            // no-op on a disabled target, so landing on a disabled neighbor
-            // once would otherwise permanently block reaching any enabled
-            // tool beyond it (a real bug this exposed, back when `Bushing`
-            // was still disabled: the tool after it became unreachable via
-            // Left/Right, since disabled `Bushing` sat directly between it
-            // and `FastenerHole` in `ToolId::ALL` - the same skip logic
-            // still matters for the disabled `Dupes`/`Rename`/`Logs` run at
-            // the end of the list).
+            // Skip disabled entries; otherwise a disabled neighbor blocks
+            // access to enabled tools beyond it.
             for offset in 1..=len {
                 let next = ((idx as i32 + step * offset as i32).rem_euclid(len as i32)) as usize;
                 if ToolId::ALL[next].enabled() {
@@ -594,27 +426,13 @@ fn is_double_click(last_click: &mut Option<(Instant, ClickTarget)>, target: Clic
 pub fn handle_mouse(state: &mut AppState, regions: &MouseRegions, event: MouseEvent) -> Vec<Effect> {
     let (col, row) = (event.column, event.row);
     match event.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
-            // A click closes the finished-run tooltip (a running one stays).
-            state.bushing.edge_notice = None;
-            handle_click(state, regions, col, row)
-        }
+        MouseEventKind::Down(MouseButton::Left) => handle_click(state, regions, col, row),
         MouseEventKind::ScrollUp => {
             handle_scroll(state, regions, col, row, -1);
             Vec::new()
         }
         MouseEventKind::ScrollDown => {
             handle_scroll(state, regions, col, row, 1);
-            Vec::new()
-        }
-        // Plain movement only drives the Bushing cross-check tooltips.
-        MouseEventKind::Moved => {
-            if state.nav.active_tool == ToolId::Bushing {
-                state.bushing.edge_hover = match mouse::hit(&regions.bushing_actions, col, row) {
-                    Some(bushing::BushingAction::EdgeInfo(topic)) => Some((topic, col, row)),
-                    _ => None,
-                };
-            }
             Vec::new()
         }
         // Right/middle click and drag have no bound action in this phase -
@@ -641,23 +459,6 @@ fn handle_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16
         return Vec::new();
     }
 
-    // Bushing Fixes window: modal for the mouse - only its own tabs, rows and
-    // buttons react; a click anywhere else is swallowed.
-    if state.nav.active_tool == ToolId::Bushing && state.bushing.advice.open {
-        if let Some(action) = mouse::hit(&regions.bushing_actions, col, row) {
-            if let bushing::BushingAction::AdviceRow(i) = action {
-                let double = is_double_click(&mut state.last_click, ClickTarget::BushingAdviceRow(i));
-                state.bushing.perform(action);
-                if double {
-                    return state.bushing.perform(bushing::BushingAction::AdviceApply);
-                }
-                return Vec::new();
-            }
-            return state.bushing.perform(action);
-        }
-        return Vec::new();
-    }
-
     // The FEA Workbench material browser is modal for the mouse.
     if state.nav.active_tool == ToolId::FeaWorkbench {
         if let Some(browser) = state.fea_workbench.material_browser.as_mut() {
@@ -671,28 +472,6 @@ fn handle_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16
         }
     }
 
-    if state.bushing.material_picker.open {
-        if let Some(i) = mouse::hit(&regions.material_rows, col, row) {
-            state.bushing.material_picker.cursor = i;
-            if is_double_click(&mut state.last_click, ClickTarget::MaterialRow(i)) {
-                let (_, effects) = bushing::material_picker::handle_key(&mut state.bushing.material_picker, &mut state.bushing.model, synthetic_key(KeyCode::Enter));
-                return effects;
-            }
-        }
-        return Vec::new();
-    }
-
-    if state.bushing.reamer_picker.open {
-        if let Some(i) = mouse::hit(&regions.reamer_rows, col, row) {
-            state.bushing.reamer_picker.cursor = i;
-            if is_double_click(&mut state.last_click, ClickTarget::ReamerRow(i)) {
-                let (_, effects) = bushing::reamer_picker::handle_key(&mut state.bushing.reamer_picker, &mut state.bushing.model, synthetic_key(KeyCode::Enter));
-                return effects;
-            }
-        }
-        return Vec::new();
-    }
-
     if let Some(tool) = mouse::hit(&regions.rail, col, row) {
         state.nav.activate(tool);
         state.focus.area = FocusArea::Rail;
@@ -702,7 +481,6 @@ fn handle_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16
     match state.nav.active_tool {
         ToolId::Search => handle_search_click(state, regions, col, row),
         ToolId::FastenerHole => handle_fastener_click(state, regions, col, row),
-        ToolId::Bushing => handle_bushing_click(state, regions, col, row),
         ToolId::EccentricBushing => handle_eccentric_click(state, regions, col, row),
         ToolId::FeaWorkbench => handle_fea_workbench_click(state, regions, col, row),
         _ => Vec::new(),
@@ -841,32 +619,6 @@ fn handle_fastener_click(state: &mut AppState, regions: &MouseRegions, col: u16,
     Vec::new()
 }
 
-fn handle_bushing_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
-    // Results pane: action-bar buttons and flagged check lines.
-    if let Some(action) = mouse::hit(&regions.bushing_actions, col, row) {
-        state.focus.area = FocusArea::Workspace(bushing::PANE_MAIN);
-        return state.bushing.perform(action);
-    }
-    if let Some(i) = mouse::hit(&regions.bushing_rows, col, row) {
-        state.focus.area = FocusArea::Workspace(bushing::PANE_MAIN);
-        state.bushing.selected = i;
-        state.bushing.clamp_selection();
-        // A section header opens and closes on a single click.
-        if bushing::model::field_rows(&state.bushing.model).get(state.bushing.selected) == Some(&bushing::model::FieldRow::AdvancedSection) {
-            return bushing::handle_key(&mut state.bushing, synthetic_key(KeyCode::Enter)).1;
-        }
-        if is_double_click(&mut state.last_click, ClickTarget::BushingRow(i)) {
-            let (_, effects) = bushing::handle_key(&mut state.bushing, synthetic_key(KeyCode::Enter));
-            return effects;
-        }
-        return Vec::new();
-    }
-    if let Some(pane) = mouse::hit(&regions.workspace_panes, col, row) {
-        state.focus.area = FocusArea::Workspace(pane);
-    }
-    Vec::new()
-}
-
 fn handle_eccentric_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
     if let Some(i) = mouse::hit(&regions.eccentric_rows, col, row) {
         state.focus.area = FocusArea::Workspace(eccentric_bushing::PANE_MAIN);
@@ -874,10 +626,10 @@ fn handle_eccentric_click(state: &mut AppState, regions: &MouseRegions, col: u16
         state.eccentric.clamp_selection();
         // A section header opens and closes on a single click.
         if state.eccentric.selected_row() == Some(eccentric_bushing::model::FieldRow::AdvancedSection) {
-            return eccentric_bushing::handle_key(&mut state.eccentric, &state.bushing.model, synthetic_key(KeyCode::Enter)).1;
+            return eccentric_bushing::handle_key(&mut state.eccentric, &state.bushing_model, synthetic_key(KeyCode::Enter)).1;
         }
         if is_double_click(&mut state.last_click, ClickTarget::EccentricRow(i)) {
-            return eccentric_bushing::handle_key(&mut state.eccentric, &state.bushing.model, synthetic_key(KeyCode::Enter)).1;
+            return eccentric_bushing::handle_key(&mut state.eccentric, &state.bushing_model, synthetic_key(KeyCode::Enter)).1;
         }
         return Vec::new();
     }
@@ -928,13 +680,6 @@ fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u1
         return;
     }
 
-    if state.nav.active_tool == ToolId::Bushing && state.bushing.advice.open {
-        if regions.advice_window.map(|r| mouse::contains(r, col, row)).unwrap_or(false) {
-            bushing::handle_key(&mut state.bushing, key);
-        }
-        return;
-    }
-
     if state.nav.active_tool == ToolId::FeaWorkbench {
         if let Some(browser) = state.fea_workbench.material_browser.as_mut() {
             if mouse::hit(&regions.material_lookup_rows, col, row).is_some() {
@@ -942,20 +687,6 @@ fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u1
             }
             return;
         }
-    }
-
-    if state.bushing.material_picker.open {
-        if mouse::hit(&regions.material_rows, col, row).is_some() {
-            bushing::material_picker::handle_key(&mut state.bushing.material_picker, &mut state.bushing.model, key);
-        }
-        return;
-    }
-
-    if state.bushing.reamer_picker.open {
-        if mouse::hit(&regions.reamer_rows, col, row).is_some() {
-            bushing::reamer_picker::handle_key(&mut state.bushing.reamer_picker, &mut state.bushing.model, key);
-        }
-        return;
     }
 
     match state.nav.active_tool {
@@ -980,18 +711,9 @@ fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u1
                 fastener_hole::handle_key(&mut state.fastener_hole, key);
             }
         }
-        ToolId::Bushing => {
-            if mouse::hit(&regions.bushing_rows, col, row).is_some() {
-                bushing::handle_key(&mut state.bushing, key);
-            } else if regions.bushing_results.map(|r| mouse::contains(r, col, row)).unwrap_or(false) {
-                // Wheel over the Results readout scrolls it (3 rows a notch).
-                let step = 3u16;
-                state.bushing.results_scroll = if delta < 0 { state.bushing.results_scroll.saturating_sub(step) } else { state.bushing.results_scroll.saturating_add(step) };
-            }
-        }
         ToolId::EccentricBushing => {
             if mouse::hit(&regions.eccentric_rows, col, row).is_some() {
-                eccentric_bushing::handle_key(&mut state.eccentric, &state.bushing.model, key);
+                eccentric_bushing::handle_key(&mut state.eccentric, &state.bushing_model, key);
             }
         }
         ToolId::FeaWorkbench => {
@@ -1011,10 +733,6 @@ fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
         }
         Command::SwitchToFastenerHole => {
             state.nav.activate(ToolId::FastenerHole);
-            Vec::new()
-        }
-        Command::SwitchToBushing => {
-            state.nav.activate(ToolId::Bushing);
             Vec::new()
         }
         Command::SwitchToEccentricBushing => {
@@ -1102,25 +820,6 @@ fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
         Command::ExportFastenerHoleReport => {
             vec![Effect::ExportFastenerHoleReport(fastener_hole::view::build_report_text(&state.fastener_hole.model))]
         }
-        Command::ToggleBushingNumbersPanel => {
-            state.bushing.show_numbers = !state.bushing.show_numbers;
-            Vec::new()
-        }
-        Command::ExportBushingReport => {
-            vec![Effect::ExportBushingReport(state.bushing.report_text())]
-        }
-        Command::OpenReamerPicker => {
-            state.bushing.reamer_picker = bushing::reamer_picker::ReamerPickerState::open_near(&state.bushing.model);
-            Vec::new()
-        }
-        Command::OpenHousingMaterialPicker => {
-            state.bushing.material_picker = bushing::material_picker::MaterialPickerState::open_for(bushing::material_picker::MaterialTarget::Housing);
-            Vec::new()
-        }
-        Command::OpenBushingMaterialPicker => {
-            state.bushing.material_picker = bushing::material_picker::MaterialPickerState::open_for(bushing::material_picker::MaterialTarget::Bushing);
-            Vec::new()
-        }
         Command::Quit => {
             request_quit(state);
             Vec::new()
@@ -1150,34 +849,6 @@ mod tests {
         assert!(matches!(state.modal, ModalState::Palette(_)));
         handle_event(&mut state, press(KeyCode::Esc));
         assert!(!state.modal.is_open());
-    }
-
-    #[test]
-    fn command_palette_is_toolbox_scoped_end_to_end() {
-        // Regression guard for the Ctrl+P palette used to show every
-        // Search-only command regardless of the active toolbox - see
-        // `Command::scope`/`CommandPalette::matches`'s own doc comments.
-        let mut state = AppState::default();
-        state.nav.activate(ToolId::Bushing);
-        handle_event(&mut state, press_with(KeyCode::Char('p'), KeyModifiers::CONTROL));
-        let ModalState::Palette(palette) = &state.modal else { panic!("expected the palette to be open") };
-        let matches = palette.matches(ToolId::Bushing);
-        assert!(matches.contains(&Command::ToggleBushingNumbersPanel));
-        assert!(!matches.contains(&Command::RunSearch), "a Search-only command must not appear while Bushing is active");
-    }
-
-    #[test]
-    fn executing_a_toolbox_scoped_command_via_the_palette_applies_it() {
-        let mut state = AppState::default();
-        state.nav.activate(ToolId::Bushing);
-        assert!(!state.bushing.show_numbers);
-        handle_event(&mut state, press_with(KeyCode::Char('p'), KeyModifiers::CONTROL));
-        for c in "toggle numbers".chars() {
-            handle_event(&mut state, press(KeyCode::Char(c)));
-        }
-        handle_event(&mut state, press(KeyCode::Enter));
-        assert!(!state.modal.is_open());
-        assert!(state.bushing.show_numbers);
     }
 
     #[test]
@@ -1788,21 +1459,4 @@ mod tests {
         handle_mouse(&mut state, &regions, scroll(MouseEventKind::ScrollDown, 5, 0));
         assert_eq!(state.search.selected_result, 0);
     }
-}    #[test]
-    fn the_edge_check_round_trip_runs_through_an_effect_and_an_event() {
-        let mut state = AppState::default();
-        state.nav.activate(crate::nav::ToolId::Bushing);
-        let effects = state.bushing.perform(bushing::BushingAction::EdgeCheck);
-        let [Effect::RunEdgeCheck { id, input, cfg, deep: false }] = effects.as_slice() else { panic!("{effects:?}") };
-        assert!(state.bushing.edge_job.is_some());
-        let run = bushing::edge_check::execute(input.clone(), cfg);
-        handle_event(&mut state, AppEvent::EdgeCheckFinished { id: *id, run: Box::new(run.clone()) });
-        assert!(state.bushing.edge_job.is_none() && state.bushing.edge_check.is_some());
-        assert!(state.notifications.visible().iter().any(|t| t.message.contains("Edge check finished")));
-        // A late result for a job that is no longer current changes nothing and adds no toast.
-        let toasts = state.notifications.visible().len();
-        handle_event(&mut state, AppEvent::EdgeCheckFinished { id: *id + 7, run: Box::new(run) });
-        assert_eq!(state.notifications.visible().len(), toasts);
-    }
-
-
+}

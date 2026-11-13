@@ -335,8 +335,7 @@ fn tolerance_tokens(text: &str) -> Vec<&str> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldRow {
-    /// A non-selectable section divider - navigation skips over it (see
-    /// `BushingState::move_selection`). Purely organizational: splits the
+    /// A non-selectable section divider. Purely organizational: splits the
     /// ~45-field list into the same logical groups an engineer would fill
     /// out on a paper bushing-fit worksheet, so the list reads as a form
     /// with sections rather than one long undifferentiated column.

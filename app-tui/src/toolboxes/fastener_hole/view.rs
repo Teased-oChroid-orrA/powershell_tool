@@ -208,7 +208,7 @@ fn error_line<'a>(theme: &'a Theme, label: &'a str, err: GeometryError) -> Line<
 /// Plain-text export - every input field plus the full Secondary/Derived +
 /// Fit Analysis (or Calculated + Secondary/Derived) content. Pure and
 /// synchronous, no filesystem access, same "the toolbox builds the string,
-/// `main.rs` writes it" pattern as `bushing::view::build_report_text` -
+/// `main.rs` writes it" pattern as `bushing::report::build_report_text` -
 /// deliberately a separate, independent builder rather than converting the
 /// `Line`-based `regular_readout_lines`/`countersink_readout_lines`
 /// content, matching how `bushing`/`pressure_vessel` keep their own

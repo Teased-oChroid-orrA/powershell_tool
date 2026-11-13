@@ -22,10 +22,6 @@ use tokio::sync::mpsc;
 
 use app_tui::app::{handle_event, handle_mouse, AppEvent, AppState, Effect};
 use app_tui::mouse::MouseRegions;
-use app_tui::toolboxes::bushing::persistence as bushing_persistence;
-use app_tui::toolboxes::bushing::bushing_id_persistence;
-use app_tui::toolboxes::bushing::material_persistence as bushing_material_persistence;
-use app_tui::toolboxes::bushing::reamer_persistence;
 use app_tui::toolboxes::fastener_hole::persistence as fastener_hole_persistence;
 use app_tui::toolboxes::search::{exec as search_exec, persistence};
 use app_tui::widgets::shell;
@@ -217,13 +213,6 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
         | Effect::PersistSearchSettings
         | Effect::BuildIndex { .. }
         | Effect::ScanExtensions { .. } => unreachable!("carried out by search_exec::execute"),
-        Effect::RunEdgeCheck { id, input, cfg, deep: _ } => {
-            let tx = tx.clone();
-            tokio::task::spawn_blocking(move || {
-                let run = app_tui::toolboxes::bushing::edge_check::execute(input, &cfg);
-                let _ = tx.send(AppEvent::EdgeCheckFinished { id, run: Box::new(run) });
-            });
-        }
         Effect::RunEccentric { id, task, input, control } => {
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {
@@ -292,17 +281,6 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                 let _ = tx.send(AppEvent::TextFileRead { purpose, path, result });
             });
         }
-        Effect::ExportBushingReport(contents) => {
-            tokio::task::spawn_blocking(move || {
-                let Some(path) = bushing_persistence::report_path() else { return };
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if std::fs::write(&path, contents).is_ok() {
-                    let _ = open::that(&path);
-                }
-            });
-        }
         Effect::ExportFastenerHoleReport(contents) => {
             tokio::task::spawn_blocking(move || {
                 let Some(path) = fastener_hole_persistence::report_path() else { return };
@@ -314,62 +292,6 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                 }
             });
         }
-        Effect::ImportReamerLibraryFile(path) => {
-            let tx = tx.clone();
-            tokio::task::spawn_blocking(move || {
-                let result = std::fs::read_to_string(&path).map_err(|e| format!("Couldn't read '{path}': {e}"));
-                let _ = tx.send(AppEvent::ReamerLibraryFileRead(result));
-            });
-        }
-        Effect::ExportReamerLibraryFile { path, contents } => {
-            tokio::task::spawn_blocking(move || {
-                if let Some(parent) = std::path::Path::new(&path).parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&path, contents);
-            });
-        }
-        Effect::PersistReamerLibrary => {
-            let items = state.bushing.reamer_picker.library.clone();
-            tokio::task::spawn_blocking(move || reamer_persistence::save(&items));
-        }
-        Effect::ImportBushingMaterialLibraryFile(path) => {
-            let tx = tx.clone();
-            tokio::task::spawn_blocking(move || {
-                let result = std::fs::read_to_string(&path).map_err(|e| format!("Couldn't read '{path}': {e}"));
-                let _ = tx.send(AppEvent::BushingMaterialLibraryFileRead(result));
-            });
-        }
-        Effect::ExportBushingMaterialLibraryFile { path, contents } => {
-            tokio::task::spawn_blocking(move || {
-                if let Some(parent) = std::path::Path::new(&path).parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&path, contents);
-            });
-        }
-        Effect::PersistBushingMaterialLibrary => {
-            let items = state.bushing.material_picker.library.clone();
-            tokio::task::spawn_blocking(move || bushing_material_persistence::save(&items));
-        }
-        Effect::ImportBushingIdLibraryFile(path) => {
-            let tx = tx.clone();
-            tokio::task::spawn_blocking(move || {
-                let result = std::fs::read_to_string(&path).map_err(|e| format!("Couldn't read '{path}': {e}"));
-                let _ = tx.send(AppEvent::BushingIdLibraryFileRead(result));
-            });
-        }
-        Effect::ExportBushingIdLibraryFile { path, contents } => {
-            tokio::task::spawn_blocking(move || {
-                if let Some(parent) = std::path::Path::new(&path).parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&path, contents);
-            });
-        }
-        Effect::PersistBushingIdLibrary => {
-            let items = state.bushing.bushing_id_picker.library.clone();
-            tokio::task::spawn_blocking(move || bushing_id_persistence::save(&items));
-        }
+
     }
 }

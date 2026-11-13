@@ -20,10 +20,6 @@ pub enum ClickTarget {
     PresetRow(usize),
     SettingsFieldRow(usize),
     FastenerRow(usize),
-    BushingRow(usize),
-    BushingAdviceRow(usize),
-    ReamerRow(usize),
-    MaterialRow(usize),
     MaterialLookupRow(usize),
     EccentricRow(usize),
     FeaWorkbenchRow(usize),
@@ -51,26 +47,9 @@ pub struct MouseRegions {
     /// workspace pane index.
     pub settings_section_panes: Vec<(Rect, crate::toolboxes::search::settings_view::Section)>,
     pub fastener_rows: Vec<(Rect, usize)>,
-    pub bushing_rows: Vec<(Rect, usize)>,
-    /// Everything clickable in the Bushing Results pane (action bar buttons,
-    /// failing-check lines) - or, while the Fixes window is open, only that
-    /// window's tabs/rows/buttons.
-    pub bushing_actions: Vec<(Rect, crate::toolboxes::bushing::BushingAction)>,
-    /// The Bushing Results pane body, for mouse-wheel scrolling.
-    pub bushing_results: Option<Rect>,
-    /// The Fixes window's outer rect while it is open.
-    pub advice_window: Option<Rect>,
-    pub reamer_rows: Vec<(Rect, usize)>,
-    pub material_rows: Vec<(Rect, usize)>,
     pub material_lookup_rows: Vec<(Rect, usize)>,
     pub eccentric_rows: Vec<(Rect, usize)>,
     pub fea_workbench_rows: Vec<(Rect, usize)>,
-    /// Row regions for the Bushing friction-coefficient picker - navigable
-    /// by keyboard (Up/Down/Enter) only for now, tracked here purely so
-    /// `friction_picker::render` can call `list_row_regions` the same way
-    /// every other picker in this crate does.
-    pub friction_rows: Vec<(Rect, usize)>,
-    pub bushing_id_rows: Vec<(Rect, usize)>,
     pub palette_rows: Vec<(Rect, usize)>,
     pub extension_rows: Vec<(Rect, usize)>,
     pub confirm_yes: Option<Rect>,

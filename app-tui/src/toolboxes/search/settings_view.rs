@@ -235,8 +235,7 @@ impl SettingsView {
         self.selected = next as usize;
     }
 
-    /// Nudges off a `Header` row - same technique
-    /// `toolboxes/bushing/mod.rs::BushingState::clamp_selection` uses.
+    /// Nudges off a `Header` row.
     /// Needed after a mouse click lands exactly on a header (arrow-key
     /// navigation via `move_selection` already never stops on one).
     pub(crate) fn clamp_selection(&mut self) {

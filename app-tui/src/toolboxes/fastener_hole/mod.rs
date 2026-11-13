@@ -60,9 +60,7 @@ impl FastenerHoleState {
         }
     }
 
-    /// Steps `delta` rows at a time, skipping non-selectable `Header` rows -
-    /// same technique `toolboxes/bushing/mod.rs::BushingState::move_selection`
-    /// uses.
+    /// Steps `delta` rows at a time, skipping non-selectable `Header` rows.
     fn move_selection(&mut self, delta: i32) {
         let rows = model::field_rows(&self.model);
         if rows.is_empty() {

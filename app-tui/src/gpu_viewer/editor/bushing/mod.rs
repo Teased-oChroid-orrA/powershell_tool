@@ -20,7 +20,6 @@ use super::{
     session::{EditorAction, Key, KeyResult, Mods},
     solid::{SolidAction, SolidSession},
 };
-use crate::app::Effect;
 use crate::gpu_viewer::{
     bench::Bench,
     controller::StandardView,
@@ -32,7 +31,7 @@ use crate::toolboxes::bushing::{
     advice::{CheckKind, Severity},
     edge_check::{self, EdgeCheckRun},
     model::{self, FieldRow, NumberTarget},
-    BushingState,
+    BushingState, EdgeRequest,
 };
 use file::BushingFile;
 use std::path::{Path, PathBuf};
@@ -354,10 +353,8 @@ impl BushingSession {
             FieldRow::Number(t) => self.begin_prompt(row, model::format_for_edit(self.st.model.number_value(t))),
             FieldRow::Tol(g) => self.begin_prompt(row, self.st.model.tolerance_edit_text(g)),
             _ => {
-                let Some(i) = self.rows().iter().position(|r| *r == row) else { return };
                 self.checkpoint();
-                self.st.selected = i;
-                self.st.activate_selected();
+                self.st.activate(row);
                 self.changed();
             }
         }
@@ -416,20 +413,18 @@ impl BushingSession {
 
     // ------------------------------------------------------------------ checks, fixes, edge check
 
-    fn run_effects(&mut self, effects: Vec<Effect>) {
-        for e in effects {
-            if let Effect::RunEdgeCheck { id, input, cfg, .. } = e {
-                let (tx, rx) = channel();
-                let spawned = std::thread::Builder::new().name("bushing-edge-check".into()).spawn(move || {
-                    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| edge_check::execute(input, &cfg))).ok();
-                    let _ = tx.send(run);
-                });
-                match spawned {
-                    Ok(_) => self.edge_jobs.push((id, rx)),
-                    Err(e) => {
-                        self.st.edge_job = None;
-                        self.status = format!("Could not start the edge check: {e}");
-                    }
+    fn run_effects(&mut self, effects: Vec<EdgeRequest>) {
+        for EdgeRequest { id, input, cfg } in effects {
+            let (tx, rx) = channel();
+            let spawned = std::thread::Builder::new().name("bushing-edge-check".into()).spawn(move || {
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| edge_check::execute(input, &cfg))).ok();
+                let _ = tx.send(run);
+            });
+            match spawned {
+                Ok(_) => self.edge_jobs.push((id, rx)),
+                Err(e) => {
+                    self.st.edge_job = None;
+                    self.status = format!("Could not start the edge check: {e}");
                 }
             }
         }
@@ -661,7 +656,6 @@ impl Authoring for BushingSession {
             self.run_effects(effects);
             changed = true;
         }
-        self.st.expire_edge_notice();
         changed
     }
     fn prompting(&self) -> bool {
