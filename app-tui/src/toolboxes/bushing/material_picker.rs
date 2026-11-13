@@ -1,12 +1,6 @@
 //! Material catalog filtering for the native Bushing window.
 use super::model::BushingModel;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MaterialTarget {
-    Housing,
-    Bushing,
-}
-
 #[derive(Default)]
 pub struct MaterialPickerState {
     pub filter_text: String,
