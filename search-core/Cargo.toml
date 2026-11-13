@@ -158,12 +158,19 @@ required-features = ["neural-search"]
 name = "entity_rank_probe"
 required-features = ["neural-search"]
 
+[[example]]
+name = "splade_eval"
+required-features = ["semantic-search"]
+
 [dependencies.search-ml]
 path = "../search-ml"
 optional = true
 
 [dev-dependencies]
 tempfile = "3"
+# `examples/splade_eval.rs` runs a SPLADE ONNX model directly (same versions and features as `search-ml`).
+rten = { version = "=0.24.0", default-features = false, features = ["onnx_format"] }
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
 
 # Same philosophy as native-search/benches/indexing_and_search.rs (see
 # docs/benchmarking.md): plain manual timing, harness = false, no
