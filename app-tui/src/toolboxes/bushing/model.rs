@@ -335,8 +335,7 @@ fn tolerance_tokens(text: &str) -> Vec<&str> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldRow {
-    /// A non-selectable section divider - navigation skips over it (see
-    /// `BushingState::move_selection`). Purely organizational: splits the
+    /// A non-selectable section divider. Purely organizational: splits the
     /// ~45-field list into the same logical groups an engineer would fill
     /// out on a paper bushing-fit worksheet, so the list reads as a form
     /// with sections rather than one long undifferentiated column.
@@ -736,6 +735,7 @@ impl Default for BushingModel {
     }
 }
 
+#[cfg(not(test))]
 fn catalog_size_from(r: &super::reamer_persistence::PersistedReamer) -> CatalogSize {
     CatalogSize { label: r.size_label.clone(), nominal: r.nominal_in, tol_plus: r.tool_tolerance_plus_in, tol_minus: r.tool_tolerance_minus_in, source: "saved", common: false }
 }
@@ -774,12 +774,6 @@ impl BushingModel {
         all
     }
 
-    /// Re-reads the user reamer library after an import (see `app.rs`).
-    pub fn sync_user_reamers(&mut self, library: &[crate::library::LibraryItem<super::reamer_persistence::PersistedReamer>]) {
-        self.user_reamers = library.iter().map(|li| catalog_size_from(&li.item)).collect();
-        self.recompute();
-    }
-
     /// Built-in materials first, then user-added/imported custom ones, in
     /// the order they were added - `housing_material_index`/
     /// `bushing_material_index` are indices into exactly this sequence.
@@ -807,36 +801,6 @@ impl BushingModel {
             self.bushing_material_index = index;
             self.recompute();
         }
-    }
-
-    /// Rebuilds `custom_materials` entirely from `library` (fresh leak per
-    /// entry) - called after an import merges new/overwritten entries into
-    /// `MaterialPickerState::library`, since a leaked `&'static Material`
-    /// can't be mutated in place to reflect an overwrite. Leaking is
-    /// bounded by how often a user actually imports a library file in a
-    /// session, not by anything that scales with runtime.
-    pub fn sync_custom_materials_from_library(&mut self, library: &[crate::library::LibraryItem<super::material_persistence::PersistedMaterial>]) {
-        self.custom_materials = library.iter().map(|li| leak_custom_material(li.item.clone())).collect();
-        self.housing_material_index = self.housing_material_index.min(self.material_catalog().len().saturating_sub(1));
-        self.bushing_material_index = self.bushing_material_index.min(self.material_catalog().len().saturating_sub(1));
-        self.recompute();
-    }
-
-    /// Adds a user-entered material to the catalog and selects it into
-    /// `target` immediately - validation (non-empty name, finite/positive
-    /// numeric fields) is the caller's job
-    /// (`material_picker.rs::AddMaterialForm::validate`), not this
-    /// method's; it trusts its inputs, same discipline
-    /// `PressureVesselModel::add_custom_material` documents.
-    pub fn add_custom_material(&mut self, target: super::material_picker::MaterialTarget, material: super::material_persistence::PersistedMaterial) {
-        let material = leak_custom_material(material);
-        self.custom_materials.push(material);
-        let index = self.material_catalog().len() - 1;
-        match target {
-            super::material_picker::MaterialTarget::Housing => self.housing_material_index = index,
-            super::material_picker::MaterialTarget::Bushing => self.bushing_material_index = index,
-        }
-        self.recompute();
     }
 
     fn build_inputs(&self) -> BushingInputs {

@@ -746,9 +746,7 @@ pub(crate) fn assert_columns_align(text: &[Vec<char>]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Effect;
-    use crate::toolboxes::bushing::BushingState;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crate::toolboxes::bushing::{BushingState, EdgeRequest};
 
     fn target_with_capacity(capacity_lbf: f64, capacity_no_fit_lbf: f64) -> TargetResult {
         TargetResult {
@@ -941,16 +939,12 @@ mod tests {
         assert!(state.auto_edge_check().is_empty(), "no automatic run at start-up");
 
         // The user runs a check; it is current, so no re-run.
-        let (_, effects) = crate::toolboxes::bushing::handle_key(&mut state, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
-        for e in effects {
-            if let Effect::RunEdgeCheck { id, input, cfg, .. } = e {
-                state.finish_edge_check(id, execute(input, &cfg));
-            }
+        for EdgeRequest { id, input, cfg } in state.start_edge_check(false) {
+            state.finish_edge_check(id, execute(input, &cfg));
         }
         assert!(!is_stale(&state.model, state.edge_check.as_ref().unwrap()));
         assert!(state.auto_edge_check().is_empty());
 
-        state.edge_notice = None; // the manual run's completion tooltip
         // An edit makes it stale; nothing runs until the value has settled.
         state.model.edge_dist = 0.9;
         state.model.recompute();
@@ -959,7 +953,7 @@ mod tests {
         assert!(state.edge_job.is_none());
         std::thread::sleep(std::time::Duration::from_millis(crate::toolboxes::bushing::EDGE_AUTO_DEBOUNCE_MS + 50));
         let effects = state.auto_edge_check();
-        assert!(matches!(effects.as_slice(), [Effect::RunEdgeCheck { deep: false, .. }]), "{effects:?}");
+        assert_eq!(effects.len(), 1, "{effects:?}");
         assert!(state.edge_job.as_ref().is_some_and(|j| j.auto));
 
         // A further change while it runs cancels it and restarts once settled.
@@ -969,13 +963,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(crate::toolboxes::bushing::EDGE_AUTO_DEBOUNCE_MS + 50));
         let effects = state.auto_edge_check();
         assert_eq!(effects.len(), 1);
-        for e in effects {
-            if let Effect::RunEdgeCheck { id, input, cfg, .. } = e {
-                state.finish_edge_check(id, execute(input, &cfg));
-            }
+        for EdgeRequest { id, input, cfg } in effects {
+            state.finish_edge_check(id, execute(input, &cfg));
         }
         assert!(!is_stale(&state.model, state.edge_check.as_ref().unwrap()));
-        assert!(state.edge_notice.is_none(), "a quick automatic re-run is silent");
         assert!(state.auto_edge_check().is_empty(), "up to date: nothing more to do");
     }
 

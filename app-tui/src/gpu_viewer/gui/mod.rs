@@ -10,13 +10,14 @@ mod document;
 mod page_layout;
 mod panels;
 pub mod theme;
+mod workbench;
 pub mod theme_library;
 pub use dashboard::DashEvent;
 
 use super::{
     controller::{Command, Panel, UiAction, Visible},
     display::Background,
-    editor::{adapt::Adapt, authoring::StepState},
+    editor::{adapt::Adapt, authoring::StepState, bushing::BushingAct, session::EditorAction},
     menu::{palette_entries, Entry, Item, Outcome},
     menus::{self, MenuContext},
     results::GuiInput,
@@ -326,6 +327,10 @@ impl Gui {
         self.card_open.get(id).copied()
     }
     #[cfg(test)]
+    pub(crate) fn set_card_open(&mut self, id: &str, open: bool) {
+        self.card_open.insert(id.into(), open);
+    }
+    #[cfg(test)]
     pub(crate) fn nudge(&self) -> Option<&str> {
         self.nudge.as_deref()
     }
@@ -396,6 +401,9 @@ impl Gui {
             }
             self.hover_prev = now;
         }
+        if out.iter().any(|event| matches!(event, Outcome::Action(UiAction::Editor(EditorAction::Bushing(BushingAct::ShowFixes(_) | BushingAct::AllFixes))))) {
+            self.card_open.insert("bushing-fixes".into(), true);
+        }
         (full, out)
     }
 
@@ -454,6 +462,7 @@ impl Gui {
             }
         }
 
+        let wb = input.editor.and_then(|e| e.workbench());
         let document = input.editor.and_then(|e| e.document());
         let is_search_page = document.as_ref().is_some_and(|d| d.sidebar.is_some());
         let sidebar = document.as_ref().and_then(|d| d.sidebar.as_ref());
@@ -469,10 +478,26 @@ impl Gui {
             }
             self.search_status_bar(ui, input, &p);
         } else {
-            self.top_bar(ui, input, &menus, &tabs, &p, out, hint);
+            self.top_bar(ui, input, &menus, &tabs, wb.as_ref(), &p, out, hint);
             if self.visible.status {
                 self.status_bar(ui, input, &p, out, hint);
             }
+        }
+        if let Some(wb) = &wb {
+            self.workbench(ui, wb, &p, out, hint);
+            self.floating_list(ui.ctx(), &p, out, hint);
+            if wb.dialog.is_none() && !matches!(wb.show, crate::gpu_viewer::ui::WorkbenchView::Sketch(_)) {
+                self.contour_legend(ui.ctx(), input, &p, out);
+            }
+            self.value_card(ui.ctx(), input, &p, out, hint);
+            self.background_picker(ui.ctx(), input.view.background, &p, out);
+            self.palette_window(ui.ctx(), &menus, &p, out);
+            self.confirm_close_modal(ui.ctx(), out);
+            if let Some(dialog) = &wb.dialog {
+                self.workbench_dialog(ui.ctx(), dialog, &p, out, hint);
+            }
+            self.adapt.frame_end();
+            return;
         }
         let precision = document.as_ref().is_some_and(|d| d.precision.is_some());
         let tree_open = self.tree_is_open();
@@ -539,8 +564,14 @@ impl Gui {
         self.value_card(ui.ctx(), input, &p, out, hint);
         self.background_picker(ui.ctx(), input.view.background, &p, out);
         self.palette_window(ui.ctx(), &menus, &p, out);
+        self.confirm_close_modal(ui.ctx(), out);
+        self.adapt.frame_end();
+    }
+
+    /// Unsaved changes when the window is closing: save, discard or keep editing.
+    fn confirm_close_modal(&mut self, ctx: &egui::Context, out: &mut Vec<Outcome>) {
         if self.confirm_close {
-            egui::Modal::new(Id::new("confirm-close")).show(ui.ctx(), |ui| {
+            egui::Modal::new(Id::new("confirm-close")).show(ctx, |ui| {
                 ui.heading("Save changes before closing?");
                 ui.label("Your model has unsaved changes.");
                 ui.horizontal(|ui| {
@@ -558,7 +589,6 @@ impl Gui {
                 });
             });
         }
-        self.adapt.frame_end();
     }
 
     /// Watch the steps: a finished step either moves on to the one this person usually takes next (once that is a

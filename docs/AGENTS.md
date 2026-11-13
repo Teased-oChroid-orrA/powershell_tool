@@ -67,6 +67,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | Looking for... | Go to |
 |---|---|
 | Overall project structure / what goes where | `docs/architecture.md` |
+| Native Bushing Workbench redesign, validation, and known limits | `docs/bushing-workbench-redesign.md` |
 | FFI contract (native-search ⟷ app) | `docs/ffi.md` |
 | Benchmarking methodology/results | `docs/benchmarking.md` |
 | Search matching semantics (Unicode, literal/regex) | `docs/search-semantics.md` |

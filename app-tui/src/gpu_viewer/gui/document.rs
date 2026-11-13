@@ -1328,15 +1328,7 @@ impl Gui {
     }
 
     /// One choice of a few, as a segmented control: the checked entry raised and tinted.
-    fn segmented(
-        &mut self,
-        ui: &mut egui::Ui,
-        entries: &[Entry],
-        width: f32,
-        p: &Palette,
-        out: &mut Vec<Outcome>,
-        hint: &mut Option<String>,
-    ) {
+    pub(super) fn segmented(&mut self, ui: &mut egui::Ui, entries: &[Entry], width: f32, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 34.0), Sense::hover());
         ui.painter().rect(
             rect,
@@ -1477,25 +1469,9 @@ impl Gui {
     }
 
     /// A button for an entry; `primary` is filled with the accent colour.
-    fn doc_button(
-        &mut self,
-        ui: &mut egui::Ui,
-        e: &Entry,
-        p: &Palette,
-        out: &mut Vec<Outcome>,
-        hint: &mut Option<String>,
-        primary: bool,
-    ) {
-        let label = if primary && e.enabled {
-            RichText::new(&e.label).strong().color(p.on_accent)
-        } else if e.enabled {
-            RichText::new(&e.label)
-        } else {
-            RichText::new(&e.label).color(p.dim.gamma_multiply(0.75))
-        };
-        let mut b = egui::Button::new(label)
-            .corner_radius(CornerRadius::same(8))
-            .min_size(Vec2::new(0.0, 34.0));
+    pub(super) fn doc_button(&mut self, ui: &mut egui::Ui, e: &Entry, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>, primary: bool) {
+        let label = if primary && e.enabled { RichText::new(&e.label).strong().color(p.on_accent) } else if e.enabled { RichText::new(&e.label) } else { RichText::new(&e.label).color(p.dim.gamma_multiply(0.75)) };
+        let mut b = egui::Button::new(label).corner_radius(CornerRadius::same(8)).min_size(Vec2::new(0.0, 34.0));
         if primary && e.enabled {
             b = b.fill(p.accent).stroke(Stroke::NONE);
         }
@@ -1504,13 +1480,7 @@ impl Gui {
         self.entry_click(&r, e, out, hint);
     }
 
-    fn entry_click(
-        &mut self,
-        r: &egui::Response,
-        e: &Entry,
-        out: &mut Vec<Outcome>,
-        hint: &mut Option<String>,
-    ) {
+    pub(super) fn entry_click(&mut self, r: &egui::Response, e: &Entry, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         if r.hovered() {
             *hint = Some(e.hover_text());
         }
@@ -1663,14 +1633,7 @@ impl Gui {
     }
 
     /// A rounded switch pill: tinted when on.
-    pub(super) fn chip(
-        &mut self,
-        ui: &mut egui::Ui,
-        e: &Entry,
-        p: &Palette,
-        out: &mut Vec<Outcome>,
-        hint: &mut Option<String>,
-    ) {
+    pub(super) fn chip(&mut self, ui: &mut egui::Ui, e: &Entry, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         let on = e.checked == Some(true);
         let galley = ui.painter().layout_no_wrap(
             e.label.clone(),
@@ -2697,7 +2660,7 @@ fn segment_width(ui: &egui::Ui, label: &str, p: &Palette) -> f32 {
         + 26.0
 }
 /// The width of a segmented control (0 when there is none).
-fn segmented_width(ui: &egui::Ui, entries: &[Entry], p: &Palette) -> f32 {
+pub(super) fn segmented_width(ui: &egui::Ui, entries: &[Entry], p: &Palette) -> f32 {
     if entries.is_empty() {
         0.0
     } else {

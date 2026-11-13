@@ -2408,8 +2408,9 @@ mod snapshot_tests {
         });
     }
 
-    /// The Bushing workbench: the inputs with the housing and bushing drawn, the checks with the edge-distance table, and the
-    /// solved model, as raw RGBA dumps: `FEA_SNAPSHOT_BUSHING_OUT=/dir cargo test ... bushing_snapshot -- --ignored`.
+    /// The Bushing workbench's three panes (inputs | 3D over the two dimensioned sections | results, install force first):
+    /// a failing case with the checks and fixes open, dark and light, a narrow window, the Send dialog, and the quick FE
+    /// check solved, as raw RGBA dumps: `FEA_SNAPSHOT_BUSHING_OUT=/dir cargo test ... bushing_snapshot -- --ignored`.
     #[test]
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_BUSHING_OUT"]
     fn bushing_snapshot() {
@@ -2435,27 +2436,14 @@ mod snapshot_tests {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         };
-        wait(&mut session, &|s| s.fea().preview_summary().is_ok());
         session.act(EditorAction::Bushing(BushingAct::EdgeCheck(false)));
-        wait(&mut session, &|s| {
-            !s.model().recommendations.is_empty() && !s.solving()
-        });
-        let scenes_of = |s: &mut BushingSession| s.scene().unwrap();
-        pollster::block_on(async {
-            let adapter = test_adapter().await.expect("adapter required");
-            let (w, h) = (1360u32, 860u32);
-            let scene = scenes_of(&mut session);
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
-                .await
-                .unwrap();
-            let shoot = |r: &mut Renderer,
-                         session: &mut BushingSession,
-                         step: &str,
-                         name: &str,
-                         dark: bool| {
-                let scene = scenes_of(session);
-                r.set_scene(&scene).unwrap();
-                let texture = target(r, w, h);
+        wait(&mut session, &|s| s.model().recommendations.is_empty() || !s.status().starts_with("Edge check running"));
+        let shoot = |session: &mut BushingSession, name: &str, dark: bool, (w, h): (u32, u32)| {
+            pollster::block_on(async {
+                let adapter = test_adapter().await.expect("adapter required");
+                let scene = session.scene().unwrap();
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let texture = target(&r, w, h);
                 let mut gui = Gui::new();
                 gui.ctx().set_theme(if dark {
                     egui::Theme::Dark
@@ -2464,64 +2452,24 @@ mod snapshot_tests {
                 });
                 let view = ViewState::new(&scene);
                 let scenes = [scene];
-                let input = GuiInput {
-                    view: &view,
-                    scenes: &scenes,
-                    selected: 0,
-                    editor: Some(session as &dyn Authoring),
-                    error: None,
-                    box_drag: None,
-                    overlay: &[],
-                };
-                gui.select_tab_named(&input, step);
-                draw(r, &mut gui, &texture, &input, [0.0, 0.0], true);
-                std::fs::write(format!("{dir}/{name}.rgba"), read_back(r, &texture)).unwrap();
-            };
-            shoot(&mut r, &mut session, "Inputs", "bushing-inputs", true);
-            session.act(EditorAction::Bushing(BushingAct::AllFixes));
-            shoot(&mut r, &mut session, "Checks", "bushing-checks", true);
-            shoot(
-                &mut r,
-                &mut session,
-                "Checks",
-                "bushing-checks-light",
-                false,
-            );
-        });
-        session.act(EditorAction::Bushing(BushingAct::Solve));
-        wait(&mut session, &|s| {
-            s.fea().current_solution().is_some() && !s.solving()
-        });
-        session.act(EditorAction::Bushing(BushingAct::Step("Simulation")));
-        pollster::block_on(async {
-            let adapter = test_adapter().await.expect("adapter required");
-            let (w, h) = (1360u32, 860u32);
-            let scene = scenes_of(&mut session);
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
-                .await
-                .unwrap();
-            let texture = target(&r, w, h);
-            let mut gui = Gui::new();
-            gui.ctx().set_theme(egui::Theme::Dark);
-            let view = ViewState::new(&scene);
-            let scenes = [scene];
-            let input = GuiInput {
-                view: &view,
-                scenes: &scenes,
-                selected: 0,
-                editor: Some(&session as &dyn Authoring),
-                error: None,
-                box_drag: None,
-                overlay: &[],
-            };
-            gui.select_tab_named(&input, "Simulation");
-            draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
-            std::fs::write(
-                format!("{dir}/bushing-result.rgba"),
-                read_back(&r, &texture),
-            )
-            .unwrap();
-        });
+                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&*session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        };
+        shoot(&mut session, "bushing-workbench", true, (1360, 860));
+        session.act(EditorAction::Bushing(BushingAct::Why));
+        session.act(EditorAction::Bushing(BushingAct::AllFixes));
+        shoot(&mut session, "bushing-checks", true, (1360, 860));
+        shoot(&mut session, "bushing-checks-light", false, (1360, 860));
+        shoot(&mut session, "bushing-narrow", true, (980, 720));
+        session.act(EditorAction::Bushing(BushingAct::SendDialog));
+        shoot(&mut session, "bushing-send", true, (1360, 860));
+        session.act(EditorAction::Bushing(BushingAct::CloseDialog));
+        session.act(EditorAction::Bushing(BushingAct::QuickFe));
+        wait(&mut session, &|s| s.fea().current_solution().is_some() && !s.solving());
+        shoot(&mut session, "bushing-quick-fe", true, (1360, 860));
     }
 
     /// The Fastener Hole workbench (regular fit, countersink dark and light, the Report step), as raw RGBA dumps:

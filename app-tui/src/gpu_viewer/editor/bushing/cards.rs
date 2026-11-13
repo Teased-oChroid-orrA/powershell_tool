@@ -1,21 +1,22 @@
-//! What the Bushing workbench shows: the inspector's cards for each step, the tree, the ribbon and the menus. Plain data
-//! built from the model; the window draws it. The numbers and wording come from the workbench's own model, checks and
-//! edge-check report; only the layout is new.
-use super::{fe, BushingAct, BushingSession};
+//! What the Bushing workbench shows: the three panes (`ui::Workbench`: inputs, views, results), the Send dialog and the
+//! menus. Plain data built from the model; the window draws it. The numbers and wording come from the workbench's own
+//! model, checks and edge-check report; only the layout is new.
+use super::{drawing::Field, fe, sketch, BushingAct, BushingSession};
 use crate::gpu_viewer::{
     controller::UiAction,
     editor::{
-        authoring::{Authoring, Card, Relevance},
+        authoring::{Card, Relevance},
+        handoff,
         session::{EditorAction, Tone},
     },
     menu::{Entry, Item, Menu},
-    ui::{DockItem, RibbonTab, TreeNode},
+    ui::{Band, Bar, Dialog, DialogOption, DockItem, Figure, Mark, Plot, Series, Workbench, WorkbenchView},
 };
 use crate::toolboxes::bushing::{
     advice::{self, CheckKind, Severity},
     edge_check::{self, TableRow},
-    model::{FieldRow, NumberTarget},
-    view,
+    model::{self, FieldRow, NumberTarget},
+    report,
 };
 use bushing_solver::tolerance::ToleranceStatus;
 
@@ -26,7 +27,7 @@ fn entry(label: &str, shortcut: &str, a: BushingAct) -> Entry {
     Entry::new(label, shortcut, act(a))
 }
 /// Text of the model, the advice and the edge check, for a window font that lacks arrows and a few symbols.
-fn plain(s: &str) -> String {
+pub(super) fn plain(s: &str) -> String {
     s.replace('\u{2192}', "->").replace('\u{2265}', ">=").replace('\u{2264}', "<=").replace('\u{2248}', "~").replace('\u{26a0}', "!").replace('\u{2717}', "x").replace('\u{2713}', "ok").replace('\u{25b8}', ">")
 }
 fn slug(t: &str) -> String {
@@ -52,32 +53,69 @@ fn line(text: impl Into<String>, tone: Tone) -> DockItem {
 fn field(label: &str, value: impl Into<String>, tone: Tone) -> DockItem {
     DockItem::field(label, value, tone, None, false)
 }
+fn stat(label: &str, value: impl Into<String>, note: impl Into<String>, note_tone: Tone, detail: impl Into<String>, action: Option<UiAction>) -> DockItem {
+    DockItem::Stat { label: label.into(), value: value.into(), note: note.into(), note_tone, detail: detail.into(), action }
+}
+/// `v` rounded to `decimals`, with thousands grouped by commas (1036.04 -> "1,036.0").
+pub(super) fn grouped(v: f64, decimals: usize) -> String {
+    let s = format!("{:.*}", decimals, v.abs());
+    let (int, frac) = s.split_once('.').map_or((s.as_str(), ""), |(i, f)| (i, f));
+    let mut g = String::new();
+    for (k, c) in int.chars().enumerate() {
+        if k > 0 && (int.len() - k) % 3 == 0 {
+            g.push(',');
+        }
+        g.push(c);
+    }
+    let sign = if v < 0.0 && s.chars().any(|c| c != '0' && c != '.') { "-" } else { "" };
+    if frac.is_empty() {
+        format!("{sign}{g}")
+    } else {
+        format!("{sign}{g}.{frac}")
+    }
+}
+
+/// The units of every input and result (the solver is US customary only).
+pub(super) const UNITS_CHIP: &str = "in \u{b7} lbf \u{b7} ksi \u{b7} \u{b0}F";
 
 impl BushingSession {
-    // ------------------------------------------------------------------ inspector
+    // ------------------------------------------------------------------ the three panes
 
-    pub(super) fn inspector_cards(&self) -> Vec<Card> {
-        let mut cards = self.input_cards();
-        if let Some(source)=&self.stackup {
-            let member=source.inputs.members.iter().find(|m|m.id==source.member_id);
-            let policy=member.map(|m|bushing_solver::stackup::wall_policy(&source.inputs,m));
-            cards.insert(0,Card::new("stackup-machining-source","Calculated stackup hole",Relevance::Primary,vec![line(format!("Source {} / member #{} / revision {}",source.source_file,source.member_id,source.source_revision),Tone::Dim),line(format!("Current hole {:.5} in; angularity cleanup {:.5} in; adopted member hole {:.5} in",member.map_or(0.0,|m|m.hole.nominal),source.angularity_cleanup,source.adopted_hole.nominal),Tone::Normal),line(source.enlargement_reason.as_ref().map_or_else(||"Not enlarged for the bushing".into(),|reason|format!("ENLARGED: {reason}")),Tone::Title),line(format!("Source wall policy {policy:?}. Provenance retained when target inputs are edited. Target load/fit are editable defaults; its plane FE uses an extended far boundary."),Tone::Dim)]));
+    pub(super) fn workbench_data(&self) -> Workbench {
+        let m = &self.st.model;
+        let failing = self.failing();
+        let mut chips = vec![(UNITS_CHIP.to_string(), Tone::Normal)];
+        chips.push(if failing == 0 { ("PASS".to_string(), Tone::On) } else { (format!("REVIEW \u{b7} {failing} check{} failing", if failing == 1 { "" } else { "s" }), Tone::Warn) });
+        if handoff::Link::exists(&handoff::fea_path(&self.path)) {
+            chips.push(("linked to the FEA Workbench".to_string(), Tone::Dim));
         }
-        cards.push(self.verdict_card());
-        if let Some(c) = self.fixes_card() {
-            cards.push(c);
+        let view = |label: &str, v: WorkbenchView| entry(label, "", BushingAct::View(v)).checked(self.show == v);
+        Workbench {
+            chips,
+            actions: vec![
+                entry("Undo", "Ctrl/Cmd+Z", BushingAct::Undo).when(self.undo_availability()),
+                entry("Redo", "Ctrl/Cmd+Shift+Z", BushingAct::Redo).when(self.redo_availability()),
+                entry("Save", "Ctrl/Cmd+S", BushingAct::Save),
+                entry("Export report", "", BushingAct::Export),
+                entry("Send joint to FEM...", "", BushingAct::SendDialog).when(self.send_availability()),
+            ],
+            inputs: self.input_cards(),
+            inputs_note: "US customary inputs only. ! marks an input a failing check points at.".into(),
+            views: vec![view("Split", WorkbenchView::Split), view("3D", WorkbenchView::Model), view("Axial section", WorkbenchView::Sketch(0)), view("Cross-section", WorkbenchView::Sketch(1))],
+            show: self.show,
+            fields: Field::ALL.iter().map(|f| entry(f.label(), "", BushingAct::Field(*f)).checked(self.field == *f)).collect(),
+            switches: vec![entry("Quarter cut", "", BushingAct::QuarterCut).checked(self.quarter_cut), entry("Reset view", "", BushingAct::ResetView)],
+            view_note: "View only \u{b7} the inputs drive the picture".into(),
+            model_title: if self.quarter_cut { "three-quarter section".into() } else { "whole joint".into() },
+            model_hint: "Drag to orbit \u{b7} closed-form Lam\u{e9} field, no mesh".into(),
+            sketches: sketch::sketches(m),
+            results: self.result_cards(),
+            dialog: self.dialog_open.then(|| self.send_dialog()),
         }
-        cards.push(self.edge_card());
-        cards.push(self.numbers_card());
-        cards.push(self.fe_card());
-        if let Some(card) = self.fit_pressure_card() {
-            cards.push(card);
-        }
-        cards
     }
 
-    /// One card per section of the input form (`field_rows`), in the form's own order.
-    fn input_cards(&self) -> Vec<Card> {
+    /// One card per section of the input form (`field_rows`), in the form's own order; the stackup's source first.
+    pub(super) fn input_cards(&self) -> Vec<Card> {
         let m = &self.st.model;
         let related: Vec<NumberTarget> = m.checks.iter().filter(|c| c.severity == Severity::Fail).flat_map(|c| c.kind.related_inputs().iter().copied()).collect();
         let mut sections: Vec<(String, Vec<DockItem>)> = Vec::new();
@@ -90,13 +128,12 @@ impl BushingSession {
                 FieldRow::AdvancedSection => DockItem::field("Advanced settings", if m.advanced_open { "shown" } else { "hidden" }, Tone::Dim, Some(act(BushingAct::Row(row))), false),
                 _ => {
                     let editing = self.prompt.as_ref().filter(|p| p.target == super::PromptTarget::Input(row));
-                    let value = editing.map_or_else(|| view::display_value(m, row), |p| format!("{}_", p.text));
+                    let value = editing.map_or_else(|| report::display_value(m, row), |p| format!("{}_", p.text));
                     let flagged = matches!(row, FieldRow::Number(t) if related.contains(&t));
-                    let tone = if editing.is_some() { Tone::Warn } else { Tone::Normal };
                     // The window draws an edit box on a Warn value, so a flagged input is marked in its label instead.
-                    let label = view::row_text(m.tolerance_mode, row);
-                    let (label, tone) = if flagged && editing.is_none() { (format!("! {label}"), Tone::Normal) } else { (label.to_string(), if editing.is_some() { tone } else { Tone::Normal }) };
-                    DockItem::field(label, value, tone, Some(act(BushingAct::Row(row))), editing.is_some())
+                    let label = report::row_text(m.tolerance_mode, row);
+                    let label = if flagged && editing.is_none() { format!("! {label}") } else { label.to_string() };
+                    DockItem::field(label, value, if editing.is_some() { Tone::Warn } else { Tone::Normal }, Some(act(BushingAct::Row(row))), editing.is_some())
                 }
             };
             match sections.last_mut() {
@@ -105,10 +142,7 @@ impl BushingSession {
             }
         }
         let editing_hint = self.prompt.is_some();
-        if let Some((_, items)) = sections.first_mut() {
-            items.insert(0, line("US customary inputs only: in, lbf, ksi, deg F. Convert metric values before entry.", Tone::Warn));
-        }
-        sections
+        let mut cards: Vec<Card> = sections
             .into_iter()
             .enumerate()
             .map(|(k, (title, mut items))| {
@@ -116,47 +150,234 @@ impl BushingSession {
                     items.push(line("Type a value, Enter applies, Esc cancels.", Tone::Dim));
                 }
                 let title = if title.is_empty() { "Inputs".to_string() } else { title };
-                Card::new(format!("bushing-{}", slug(&title)), title, if k < 2 { Relevance::Primary } else { Relevance::Context }, items).for_steps(&["Inputs"])
+                Card::new(format!("bushing-{}", slug(&title)), title, if k < 2 { Relevance::Primary } else { Relevance::Context }, items)
             })
-            .collect()
+            .collect();
+        if let Some(source) = &self.stackup {
+            let member = source.inputs.members.iter().find(|m| m.id == source.member_id);
+            let policy = member.map(|m| bushing_solver::stackup::wall_policy(&source.inputs, m));
+            cards.insert(
+                0,
+                Card::new(
+                    "stackup-machining-source",
+                    "Calculated stackup hole",
+                    Relevance::Primary,
+                    vec![
+                        line(format!("Source {} / member #{} / revision {}", source.source_file, source.member_id, source.source_revision), Tone::Dim),
+                        line(format!("Current hole {:.5} in; angularity cleanup {:.5} in; adopted member hole {:.5} in", member.map_or(0.0, |m| m.hole.nominal), source.angularity_cleanup, source.adopted_hole.nominal), Tone::Normal),
+                        line(source.enlargement_reason.as_ref().map_or_else(|| "Not enlarged for the bushing".into(), |reason| format!("ENLARGED: {reason}")), Tone::Title),
+                        line(format!("Source wall policy {policy:?}. Provenance retained when target inputs are edited. Target load/fit are editable defaults; its plane FE uses an extended far boundary."), Tone::Dim),
+                    ],
+                ),
+            );
+        }
+        cards
     }
 
-    /// Pass / fail at a glance and every check that needs attention; shown while editing the inputs and in the Checks step.
+    /// The results pane, top to bottom: the verdict, then what the fit does, then the cross-checks.
+    pub(super) fn result_cards(&self) -> Vec<Card> {
+        let mut cards = vec![self.verdict_card(), self.install_card(), self.fit_card(), self.stress_card(), self.edge_card(), self.margins_card(), self.through_wall_card()];
+        if let Some(c) = self.fixes_card() {
+            cards.push(c);
+        }
+        cards.push(self.cross_check_card());
+        cards.push(self.quick_fe_card());
+        cards
+    }
+
+    /// The failing check a "Fixes for" button opens: the governing one when it fails, else the first failing with a fix.
+    fn fix_target(&self) -> Option<CheckKind> {
+        let m = &self.st.model;
+        let has_fix = |k: CheckKind| m.recommendations.iter().any(|r| r.fixes == k);
+        let gov = CheckKind::from_candidate_name(m.output.governing.name).filter(|k| advice::severity_of(&m.checks, *k) == Severity::Fail && has_fix(*k));
+        gov.or_else(|| m.checks.iter().find(|c| c.severity == Severity::Fail && has_fix(c.kind)).map(|c| c.kind))
+    }
+
+    /// PASS / REVIEW, what governs, and (behind "Why?") every check that needs attention.
     fn verdict_card(&self) -> Card {
         let m = &self.st.model;
         let out = &m.output;
         let failing = self.failing();
-        let mut items = vec![DockItem::row(
-            format!("{}  governing: {} ({})", if failing == 0 { "PASS" } else { "REVIEW" }, out.governing.name, margin(out.governing.margin)),
-            if failing == 0 { Tone::On } else { Tone::Warn },
-            None,
-            false,
-        )];
-        if failing > 0 {
-            items.push(line(format!("{failing} check(s) failing"), Tone::Warn));
+        let mut actions = Vec::new();
+        if let Some(k) = self.fix_target() {
+            actions.push(entry(&format!("Fixes for {}", k.label()), "", BushingAct::ShowFixes(k)));
         }
-        for c in m.checks.iter().filter(|c| c.severity != Severity::Pass) {
-            let has_fix = m.recommendations.iter().any(|r| r.fixes == c.kind);
-            let glyph = if c.severity == Severity::Fail { "x" } else { "!" };
-            items.push(DockItem::row(plain(&format!("{glyph} {}: {}{}", c.kind.label(), c.detail, if has_fix { "   fixes" } else { "" })), Tone::Warn, has_fix.then(|| act(BushingAct::ShowFixes(c.kind))), false));
+        actions.push(entry(if self.why { "Hide checks" } else { "Why?" }, "", BushingAct::Why));
+        let headline = if failing == 0 { "PASS".to_string() } else { format!("REVIEW \u{b7} {failing} failing") };
+        let mut items = vec![DockItem::Verdict { headline, detail: format!("governing: {} {}", out.governing.name, margin(out.governing.margin)), tone: if failing == 0 { Tone::On } else { Tone::Warn }, actions }];
+        if self.why {
+            let attention: Vec<&advice::Check> = m.checks.iter().filter(|c| c.severity != Severity::Pass).collect();
+            for c in &attention {
+                let has_fix = m.recommendations.iter().any(|r| r.fixes == c.kind);
+                let glyph = if c.severity == Severity::Fail { "x" } else { "!" };
+                items.push(DockItem::row(plain(&format!("{glyph} {}: {}", c.kind.label(), c.detail)), Tone::Warn, has_fix.then(|| act(BushingAct::ShowFixes(c.kind))), false));
+            }
+            for a in edge_check::advisories(self.st.edge_check.as_ref(), !self.edge_current()).iter().take(1) {
+                items.push(line(plain(&format!("! {}", a.text)), Tone::Warn));
+            }
+            if attention.is_empty() {
+                items.push(line("Every check passes.", Tone::Dim));
+            }
         }
-        let advisories = edge_check::advisories(self.st.edge_check.as_ref(), !self.edge_current());
-        for a in advisories.iter().take(1) {
-            items.push(line(plain(&format!("! {}", a.text)), Tone::Warn));
-        }
-        if failing == 0 {
-            items.push(line("Every check passes.", Tone::Dim));
-        }
-        if !m.recommendations.is_empty() {
-            items.push(DockItem::row(format!("Fixes ({})", m.recommendations.len()), Tone::Title, Some(act(BushingAct::AllFixes)), false));
+        if let Some(why) = &self.st.input_error {
+            items.push(line(plain(&format!("x {why}")), Tone::Warn));
         }
         if let Some(a) = &self.st.last_applied {
             items.push(line(plain(&format!("ok Applied: {a}")), Tone::On));
         }
-        Card::new("bushing-verdict", "Verdict", Relevance::Primary, items).for_steps(&["Inputs", "Checks"])
+        Card::new("bushing-verdict", "Verdict", Relevance::Primary, items)
     }
 
-    /// The verified fixes: pick one to see what it does to everything else, then apply it.
+    /// Install force first (the figure the shop asks for), with the retained force and the formula behind it.
+    fn install_card(&self) -> Card {
+        let m = &self.st.model;
+        let out = &m.output;
+        let mut retained = vec![if m.delta_t != 0.0 { format!("at service \u{394}T {:+.0} \u{b0}F", m.delta_t) } else { "in service".to_string() }];
+        if m.assembly_thermal_enabled {
+            retained.push("install uses the thermal assist".into());
+        }
+        let mut items = vec![DockItem::Figures(vec![
+            Figure { label: "Install force".into(), value: grouped(out.install_force, 0), unit: "lbf".into(), detail: vec![format!("range {} to {}", grouped(out.install_force_range.min, 0), grouped(out.install_force_range.max, 0))] },
+            Figure { label: "Retained".into(), value: grouped(out.retained_install_force, 0), unit: "lbf".into(), detail: retained },
+        ])];
+        // The formula, printed only while it reproduces the solver's number (it always should; a mismatch prints nothing
+        // rather than a wrong equation).
+        let f = m.friction * out.install_pressure * std::f64::consts::PI * m.bore_dia * m.housing_len;
+        if out.install_force > 0.0 && ((f - out.install_force) / out.install_force).abs() < 0.005 {
+            items.push(line(format!("F = \u{3bc} \u{b7} p \u{b7} \u{3c0} \u{b7} D \u{b7} L = {:.2} \u{b7} {} \u{b7} \u{3c0} \u{b7} {:.3} \u{b7} {:.3} = {} lbf", m.friction, grouped(out.install_pressure, 0), m.bore_dia, m.housing_len, grouped(out.install_force, 1)), Tone::Dim));
+        }
+        Card::new("bushing-install", "Install", Relevance::Primary, items)
+    }
+
+    fn candidate(&self, kind: CheckKind) -> Option<f64> {
+        self.st.model.output.candidates.iter().find(|c| CheckKind::from_candidate_name(c.name) == Some(kind)).map(|c| c.margin)
+    }
+    /// A result tied to a check: its margin at the right (warning tone and a fixes link while the check fails).
+    fn checked_stat(&self, label: &str, value: String, kind: CheckKind, ms: Option<f64>, detail: String) -> DockItem {
+        let m = &self.st.model;
+        let sev = advice::severity_of(&m.checks, kind);
+        let has_fix = m.recommendations.iter().any(|r| r.fixes == kind);
+        let ms = ms.or_else(|| self.candidate(kind));
+        let note = match (sev, ms) {
+            (Severity::Fail, Some(v)) => format!("MS {}  fixes", margin(v)),
+            (Severity::Fail, None) => "FAIL  fixes".into(),
+            (_, Some(v)) => format!("MS {}", margin(v)),
+            (_, None) => "OK".into(),
+        };
+        let tone = if sev == Severity::Pass { ms.map_or(Tone::On, margin_tone) } else { Tone::Warn };
+        stat(label, value, note, tone, detail, (sev == Severity::Fail && has_fix).then(|| act(BushingAct::ShowFixes(kind))))
+    }
+
+    fn fit_card(&self) -> Card {
+        let m = &self.st.model;
+        let out = &m.output;
+        let mut detail = format!("target {:.4} \u{b7} range {:.4} to {:.4}", m.interference, out.achieved_interference_tol.lower, out.achieved_interference_tol.upper);
+        if m.delta_t != 0.0 {
+            detail.push_str(&format!(" \u{b7} thermal \u{394} {:+.5}", out.delta_thermal));
+        }
+        if m.assembly_thermal_enabled {
+            detail.push_str(&format!(" \u{b7} install assist {:+.5} (at install {:.5})", out.assembly_thermal_delta, out.install_delta));
+        }
+        let tol = match out.tolerance_status {
+            ToleranceStatus::Ok => "OK",
+            ToleranceStatus::Clamped => "clamped",
+            ToleranceStatus::Infeasible => "INFEASIBLE",
+        };
+        let mut items = vec![
+            stat("OD installed", format!("{:.4} in", out.od_installed), "", Tone::Normal, format!("range {:.4} to {:.4}", out.od_tol.lower, out.od_tol.upper), None),
+            stat("Interference", format!("{:.4} in", out.delta_total), "", Tone::Normal, detail, None),
+            self.checked_stat("Straight wall", format!("{:.4} in", out.wall_straight), CheckKind::StraightWall, None, format!("range {:.4} to {:.4}", out.wall_straight_range.min, out.wall_straight_range.max)),
+            self.checked_stat("Neck wall", format!("{:.4} in", out.wall_neck), CheckKind::NeckWall, None, String::new()),
+            self.checked_stat("Tolerance", tol.to_string(), CheckKind::Tolerance, None, format!("{} note(s)", out.tolerance_notes.len())),
+        ];
+        for n in &out.tolerance_notes {
+            items.push(line(plain(&format!("! {n}")), Tone::Warn));
+        }
+        if matches!(m.fit_type, model::FitType::Clearance | model::FitType::Slip) && m.interference > 0.0 {
+            items.push(line(format!("! Fit type is {} but the target interference is positive ({:.4} in): informational only.", model::label_fit_type(m.fit_type), m.interference), Tone::Warn));
+        }
+        Card::new("bushing-fit", "Fit", Relevance::Primary, items)
+    }
+
+    fn stress_card(&self) -> Card {
+        let m = &self.st.model;
+        let out = &m.output;
+        let mut items = vec![
+            stat("Contact pressure", format!("{} psi", grouped(out.pressure, 0)), "", Tone::Normal, format!("range {} to {}", grouped(out.pressure_range.min, 0), grouped(out.pressure_range.max, 0)), None),
+            self.checked_stat("Housing hoop", format!("{} psi", grouped(out.stress_hoop_housing, 0)), CheckKind::HousingStress, Some(out.housing_ms), String::new()),
+            self.checked_stat("Bushing hoop", format!("{} psi", grouped(out.stress_hoop_bushing, 0)), CheckKind::BushingStress, Some(out.bushing_ms), String::new()),
+        ];
+        items.push(if out.axial_constraint_factor > 0.0 {
+            stat("Axial, housing / bushing", format!("{} / {} psi", grouped(out.stress_axial_housing, 0), grouped(out.stress_axial_bushing, 0)), "", Tone::Normal, model::label_end_constraint(m.end_constraint), None)
+        } else {
+            line(format!("Axial, both 0 psi ({})", model::label_end_constraint(m.end_constraint)), Tone::Dim)
+        });
+        Card::new("bushing-stress", "Contact & stress", Relevance::Primary, items)
+    }
+
+    fn edge_card(&self) -> Card {
+        let m = &self.st.model;
+        let out = &m.output;
+        let items = vec![
+            stat("Actual e/D", format!("{:.3}", out.ed_actual), "", Tone::Normal, format!("e {:.3} in \u{b7} D {:.4} in", m.edge_dist, m.bore_dia), None),
+            self.checked_stat("Needs, sequencing", format!("{:.3}", out.ed_min_sequence), CheckKind::EdgeSequencing, Some(out.sequence_margin), String::new()),
+            self.checked_stat("Needs, strength", format!("{:.3}", out.ed_min_strength), CheckKind::EdgeStrength, Some(out.strength_margin), String::new()),
+        ];
+        Card::new("bushing-edge", "Edge distance", Relevance::Primary, items)
+    }
+
+    /// Every margin the solver weighs, on one scale; the governing one tagged.
+    fn margins_card(&self) -> Card {
+        let m = &self.st.model;
+        let out = &m.output;
+        let rows = out
+            .candidates
+            .iter()
+            .map(|c| {
+                let kind = CheckKind::from_candidate_name(c.name);
+                let fails = kind.is_some_and(|k| advice::severity_of(&m.checks, k) == Severity::Fail);
+                Bar {
+                    label: c.name.to_string(),
+                    value: if c.margin.is_finite() { c.margin } else { 1.0 },
+                    text: margin(c.margin),
+                    tone: if fails { Tone::Warn } else { margin_tone(c.margin) },
+                    tag: if c.name == out.governing.name { "governing".into() } else { String::new() },
+                    action: kind.filter(|k| fails && m.recommendations.iter().any(|r| r.fixes == *k)).map(|k| act(BushingAct::ShowFixes(k))),
+                }
+            })
+            .collect();
+        Card::new("bushing-margins", "Margins of safety", Relevance::Context, vec![DockItem::Bars { rows, lo: -0.5, hi: 1.0 }])
+    }
+
+    /// Hoop and radial stress from the bore of the bushing out through the housing (the closed-form Lamé field).
+    fn through_wall_card(&self) -> Card {
+        let out = &self.st.model.output;
+        let all: Vec<&mechanics_core::lame::LameSample> = out.bushing_stress_field.iter().chain(out.housing_stress_field.iter()).collect();
+        if all.is_empty() {
+            return Card::new("bushing-through-wall", "Through-wall stress", Relevance::Context, vec![line("No stress field for these inputs.", Tone::Dim)]);
+        }
+        let ri = out.bushing_stress_field.first().map_or(0.0, |s| s.r);
+        let a = out.bushing_stress_field.last().map_or(0.0, |s| s.r);
+        let ro = out.housing_stress_field.last().map_or(a, |s| s.r);
+        let mut bands = vec![Band { x0: ri, x1: a, label: "Bushing".into() }];
+        if ro > a {
+            bands.push(Band { x0: a, x1: ro, label: "Housing to equivalent OD".into() });
+        }
+        let marks = out.housing_stress_field.first().map(|s| Mark { at: [s.r, s.sigma_theta], text: format!("{} psi", grouped(s.sigma_theta, 0)), color: 0 }).into_iter().collect();
+        let plot = Plot {
+            x_label: "r (in)".into(),
+            y_label: "psi".into(),
+            series: vec![
+                Series { label: "\u{3c3}\u{3b8} hoop".into(), points: all.iter().map(|s| [s.r, s.sigma_theta]).collect(), color: 0, dashed: false },
+                Series { label: "\u{3c3}r radial".into(), points: all.iter().map(|s| [s.r, s.sigma_r]).collect(), color: 1, dashed: true },
+            ],
+            bands,
+            marks,
+        };
+        Card::new("bushing-through-wall", "Through-wall stress", Relevance::Context, vec![DockItem::Plot(plot)])
+    }
+
+    /// The verified fixes: pick one to see what it does to everything else, then apply it. Folded until a fixes link opens it.
     fn fixes_card(&self) -> Option<Card> {
         let m = &self.st.model;
         let recs: Vec<(usize, &advice::Recommendation)> = m.recommendations.iter().enumerate().filter(|(_, r)| self.fix_kind.is_none_or(|k| r.fixes == k)).collect();
@@ -182,11 +403,13 @@ impl BushingSession {
         if self.fix_kind.is_some() {
             items.push(DockItem::row("Show every fix", Tone::Dim, Some(act(BushingAct::AllFixes)), false));
         }
-        Some(Card::new("bushing-fixes", "Fixes", Relevance::Primary, items).for_steps(&["Checks"]))
+        let title = self.fix_kind.map_or_else(|| "Fixes".to_string(), |k| format!("Fixes for {}", k.label()));
+        let card = Card::new("bushing-fixes", title, Relevance::Primary, items).tag(format!("{}", m.recommendations.len()));
+        Some(if self.show_fixes { card } else { card.folded() })
     }
 
     /// The independent edge-distance cross-check: the minimum e/D each model asks for, against what the housing has.
-    fn edge_card(&self) -> Card {
+    fn cross_check_card(&self) -> Card {
         let m = &self.st.model;
         let mut items = Vec::new();
         if let Some(j) = &self.st.edge_job {
@@ -223,181 +446,119 @@ impl BushingSession {
             items.push(DockItem::field(label, value, if editing.is_some() { Tone::Warn } else { Tone::Normal }, Some(act(BushingAct::EdgeCv(id))), editing.is_some()));
         }
         items.push(line("Edits rerun after 400 ms. Settings last this session only.", Tone::Dim));
-        items.push(DockItem::row("Run quick check", Tone::Title, Some(act(BushingAct::EdgeCheck(false))), false));
-        items.push(DockItem::row("Run with contact FE (about 3 s)", Tone::Title, Some(act(BushingAct::EdgeCheck(true))), false));
-        Card::new("bushing-edge-check", "Edge-distance cross-check", Relevance::Context, items).for_steps(&["Checks"])
-    }
-
-    /// The solver's numbers behind the verdict.
-    fn numbers_card(&self) -> Card {
-        let m = &self.st.model;
-        let out = &m.output;
-        let tol = match out.tolerance_status {
-            ToleranceStatus::Ok => "OK",
-            ToleranceStatus::Clamped => "clamped",
-            ToleranceStatus::Infeasible => "INFEASIBLE",
+        if self.st.edge_job.is_some() {
+            items.push(DockItem::row("Cancel", Tone::Warn, Some(act(BushingAct::CancelEdgeCheck)), false));
+        } else {
+            items.push(DockItem::row("Run quick check", Tone::Title, Some(act(BushingAct::EdgeCheck(false))), false));
+            items.push(DockItem::row("Run with contact FE (about 3 s)", Tone::Title, Some(act(BushingAct::EdgeCheck(true))), false));
+        }
+        let tag = match (&self.st.edge_check, self.st.edge_job.is_some(), self.edge_current()) {
+            (_, true, _) => "running",
+            (None, false, _) => "not run",
+            (Some(_), false, true) => "current",
+            (Some(_), false, false) => "stale",
         };
-        let sev = |k: CheckKind| advice::severity_of(&m.checks, k);
-        let tone = |k: CheckKind| if sev(k) == Severity::Pass { Tone::Normal } else { Tone::Warn };
-        let mut items = vec![
-            field("OD installed", format!("{:.4} in", out.od_installed), Tone::Normal),
-            field("Interference", format!("{:.4} in (target {:.4})", out.delta_total, m.interference), Tone::Normal),
-            field("Tolerance", tol, if sev(CheckKind::Tolerance) == Severity::Pass { Tone::Normal } else { Tone::Warn }),
-            field("Straight wall", format!("{:.4} in", out.wall_straight), tone(CheckKind::StraightWall)),
-            field("Contact pressure", format!("{:.0} psi ({:.0} to {:.0})", out.pressure, out.pressure_range.min, out.pressure_range.max), Tone::Normal),
-            field("Housing hoop stress", format!("{:.0} psi, MS {}", out.stress_hoop_housing, margin(out.housing_ms)), if sev(CheckKind::HousingStress) == Severity::Pass { margin_tone(out.housing_ms) } else { Tone::Warn }),
-            field("Bushing hoop stress", format!("{:.0} psi, MS {}", out.stress_hoop_bushing, margin(out.bushing_ms)), if sev(CheckKind::BushingStress) == Severity::Pass { margin_tone(out.bushing_ms) } else { Tone::Warn }),
-            field("Install force", format!("{:.1} lbf ({:.1} to {:.1})", out.install_force, out.install_force_range.min, out.install_force_range.max), Tone::Normal),
-            field("Retained force", format!("{:.1} lbf", out.retained_install_force), Tone::Normal),
-            field("Edge e/D", format!("{:.3}", out.ed_actual), tone(CheckKind::EdgeSequencing)),
-            field("Needs, sequencing", format!("{:.3}", out.ed_min_sequence), tone(CheckKind::EdgeSequencing)),
-            field("Needs, strength", format!("{:.3}", out.ed_min_strength), tone(CheckKind::EdgeStrength)),
-        ];
-        if m.delta_t != 0.0 {
-            items.push(field("Service \u{394}T", format!("{:+.1} \u{b0}F, {:+.5} in", m.delta_t, out.delta_thermal), Tone::Normal));
-        }
-        for n in &out.tolerance_notes {
-            items.push(line(plain(&format!("! {n}")), Tone::Warn));
-        }
-        Card::new("bushing-numbers", "Fit and stress", Relevance::Info, items).for_steps(&["Checks"])
+        Card::new("bushing-edge-check", "Cross-checks", Relevance::Context, items).folded().tag(tag)
     }
 
-    /// The finite-element picture: what is drawn, the state of its mesh and solve, and what the solve found.
-    fn fe_card(&self) -> Card {
-        let m = &self.st.model;
-        let mut items = Vec::new();
-        match fe::layout(m) {
-            Ok(l) => {
-                items.push(line(format!("Housing {:.3} x {:.3} in, {:.3} in thick; the bore centre is {:.3} in from the free edge.", l.length, l.height, self.fea.problem.thickness, l.edge), Tone::Normal));
-                items.push(line("Held at the far end; the pin pulls the bushing toward the edge. Flanges and countersinks are not drawn.", Tone::Dim));
-            }
-            Err(why) => items.push(line(format!("No picture yet: {why}."), Tone::Warn)),
-        }
-        match self.fea.preview_summary() {
-            Ok((nodes, elements)) => items.push(field("Mesh", format!("{elements} elements, {nodes} nodes"), Tone::Normal)),
-            Err(_) if self.fea.meshing() => items.push(field("Mesh", "generating...", Tone::Warn)),
-            Err(_) => items.push(field("Mesh", "not generated", Tone::Dim)),
-        }
-        if let Some(t) = self.fea.solving_for() {
+    /// The FE solve of this joint (plane stress, fit contact), as a check on the closed-form fit pressure. Open while it
+    /// runs or has a result.
+    fn quick_fe_card(&self) -> Card {
+        let mut items = vec![line("Solves the housing and bushing with fit contact (plane stress) to check the closed-form pressure. The closed-form results stay the verdict.", Tone::Dim)];
+        let solution = self.fea.last_solution();
+        let current = solution.filter(|s| self.fe_note.is_none() && s.problem == self.fea.problem);
+        if let Some(t) = self.fea.solve_elapsed() {
             items.push(field("Solve", format!("running, {:.0} s", t.as_secs_f32()), Tone::Warn));
         }
-        match self.fea.current_solution().filter(|s| s.problem == self.fea.problem) {
-            None => items.push(field("Solve", "not run for these inputs", Tone::Dim)),
-            Some(s) => {
-                let sum = &s.summary;
-                items.push(field("Max von Mises", format!("{:.0} psi", sum.max_von_mises.value), Tone::Normal));
-                if let Some(i) = sum.interfaces.first() {
-                    items.push(field("Open arc", format!("{:.0}\u{b0}", i.open_arc_deg), if i.open_arc_deg > 0.0 { Tone::Warn } else { Tone::Normal }));
-                    items.push(field("Friction torque capacity", format!("{:.1} lbf in", i.torque_capacity), Tone::Normal));
-                    items.push(field("Slipping share", format!("{:.0} %", 100.0 * i.slip_share), Tone::Normal));
-                }
-                for n in sum.notes.iter().take(2) {
-                    items.push(line(plain(n), Tone::Dim));
-                }
+        if let Some(s) = solution {
+            if current.is_none() {
+                items.push(line("! Inputs changed since this solve: run it again for these inputs.", Tone::Warn));
             }
-        }
-        if self.fea.mesh_availability().is_ok() {
-            items.push(DockItem::row("Generate mesh", Tone::Title, Some(act(BushingAct::GenerateMesh)), false));
-        }
-        if self.fea.solve_availability().is_ok() {
-            items.push(DockItem::row("Solve fit and load (about 8 s)", Tone::Title, Some(act(BushingAct::Solve)), false));
+            let sum = &s.summary;
+            if let Some(i) = sum.interfaces.first() {
+                items.push(field("FE mean / peak", format!("{} / {} psi", grouped(i.mean_pressure, 0), grouped(i.peak_pressure, 0)), Tone::Normal));
+                let lame = self.st.model.output.pressure;
+                if current.is_some() && lame > 0.0 {
+                    let delta = i.mean_pressure - lame;
+                    items.push(field("Lam\u{e9} closed form", format!("{} psi", grouped(lame, 0)), Tone::Normal));
+                    items.push(field("FE minus Lam\u{e9}", format!("{:+.0} psi ({:+.1} %)", delta, 100.0 * delta / lame), if delta.abs() / lame > 0.15 { Tone::Warn } else { Tone::Dim }));
+                }
+                items.push(field("Open arc", format!("{:.0}\u{b0}", i.open_arc_deg), if i.open_arc_deg > 0.0 { Tone::Warn } else { Tone::Normal }));
+            }
+            items.push(field("Max von Mises", format!("{} psi", grouped(sum.max_von_mises.value, 0)), Tone::Normal));
+            items.push(line("The FE uses a finite rectangular housing and discretized contact; Lam\u{e9} assumes ideal concentric cylinders. Treat the difference as a cross-check, not a correction.", Tone::Dim));
         }
         if self.fea.solving() {
-            items.push(DockItem::row("Cancel solve", Tone::Warn, Some(act(BushingAct::CancelSolve)), false));
-        }
-        Card::new("bushing-fe", "Finite-element model", Relevance::Primary, items).for_steps(&["Simulation"])
-    }
-
-    fn fit_pressure_card(&self) -> Option<Card> {
-        let solved = self.fea.current_solution().filter(|s| s.problem == self.fea.problem)?;
-        let fit = solved.summary.interfaces.first()?;
-        let lame = self.st.model.output.pressure;
-        let mut items = vec![field("FE mean / peak", format!("{:.0} / {:.0} psi", fit.mean_pressure, fit.peak_pressure), Tone::Normal)];
-        if lame > 0.0 {
-            let delta = fit.mean_pressure - lame;
-            items.push(field("Lame closed form", format!("{lame:.0} psi"), Tone::Normal));
-            items.push(field("FE minus Lame", format!("{delta:+.0} psi ({:+.1} %)", 100.0 * delta / lame), if delta.abs() / lame > 0.15 { Tone::Warn } else { Tone::Dim }));
-            items.push(line("The FE uses finite rectangular housing and discretized contact; Lame assumes ideal concentric cylinders. Treat the difference as a cross-check, not a correction.", Tone::Dim));
-        }
-        Some(Card::new("bushing-fit-comparison", "Fit pressure comparison", Relevance::Context, items).for_steps(&["Simulation"]))
-    }
-
-    // ------------------------------------------------------------------ tree
-
-    pub(super) fn tree_nodes(&self) -> Vec<TreeNode> {
-        let m = &self.st.model;
-        let step = |s: &'static str| act(BushingAct::Step(s));
-        let mut out = vec![TreeNode::new(1, 0, 'B', format!("Bushing: {}", self.name)).selected(false).on_click(step("Inputs"))];
-        out.push(TreeNode::new(2, 1, '+', "Inputs").folder().selected(self.step == "Inputs").on_click(step("Inputs")));
-        for (k, r) in self.rows().into_iter().enumerate() {
-            if let FieldRow::Header(h) = r {
-                out.push(TreeNode::new(10 + k as u32, 2, '#', h).on_click(step("Inputs")));
+            items.push(DockItem::row("Cancel", Tone::Warn, Some(act(BushingAct::CancelSolve)), false));
+        } else {
+            match self.quick_fe_availability() {
+                Ok(()) => items.push(DockItem::row("Run quick FE check (about 8 s)", Tone::Title, Some(act(BushingAct::QuickFe)), false)),
+                Err(why) => items.push(line(format!("Not available: {why}."), Tone::Dim)),
             }
         }
-        let failing = self.failing();
-        out.push(TreeNode::new(3, 1, '+', format!("Checks ({failing} failing)")).folder().selected(self.step == "Checks").on_click(step("Checks")));
-        for (k, c) in m.checks.iter().enumerate() {
-            let (glyph, tone) = match c.severity {
-                Severity::Pass => ('^', Tone::On),
-                Severity::Warn => ('>', Tone::Warn),
-                Severity::Fail => ('!', Tone::Warn),
-            };
-            let has_fix = m.recommendations.iter().any(|r| r.fixes == c.kind);
-            out.push(TreeNode::new(100 + k as u32, 2, glyph, c.kind.label()).tone(tone).on_click(if has_fix { act(BushingAct::ShowFixes(c.kind)) } else { step("Checks") }));
+        let tag = if self.fea.solving() {
+            "running"
+        } else if current.is_some() {
+            "current"
+        } else if solution.is_some() {
+            "stale"
+        } else {
+            "not run"
+        };
+        let card = Card::new("bushing-quick-fe", "Quick FE check", Relevance::Context, items).tag(tag);
+        if self.fea.solving() || solution.is_some() {
+            card
+        } else {
+            card.folded()
         }
-        out.push(TreeNode::new(4, 1, 'R', format!("Edge-distance cross-check{}", match (&self.st.edge_check, self.edge_current()) { (None, _) => "", (Some(_), true) => "", (Some(_), false) => " (stale)" })).on_click(step("Checks")));
-        if !m.recommendations.is_empty() {
-            out.push(TreeNode::new(5, 1, 'f', format!("Fixes ({})", m.recommendations.len())).on_click(act(BushingAct::AllFixes)));
-        }
-        out.push(TreeNode::new(6, 1, '+', "Finite-element model").folder().selected(self.step == "Simulation").on_click(step("Simulation")));
-        out.push(TreeNode::new(7, 2, 'M', "Housing").on_click(step("Simulation")));
-        out.push(TreeNode::new(8, 2, 'B', "Bushing").on_click(step("Simulation")));
-        if self.fea.current_solution().is_some_and(|s| s.problem == self.fea.problem) {
-            out.push(TreeNode::new(9, 2, 'f', "Result").on_click(step("Simulation")));
-        }
-        out
     }
 
-    // ------------------------------------------------------------------ ribbon and menus
+    // ------------------------------------------------------------------ the Send dialog
 
-    pub(super) fn ribbon_tabs(&self) -> Vec<RibbonTab> {
-        let row = |label: &str, r: FieldRow| entry(label, "", BushingAct::Row(r));
-        let edge = self.edge_availability();
-        vec![
-            RibbonTab::new("Inputs")
-                .group("Fit", vec![row("Fit type", FieldRow::ToggleFitType), row("Bore diameter", FieldRow::Number(NumberTarget::BoreDia)), row("Bushing ID", FieldRow::Number(NumberTarget::IdBushing)), row("Interference", FieldRow::Number(NumberTarget::Interference)), row("Friction", FieldRow::Number(NumberTarget::Friction))])
-                .group("Materials", vec![row("Housing material", FieldRow::OpenHousingMaterialPicker), row("Bushing material", FieldRow::OpenBushingMaterialPicker)])
-                .group("Housing and load", vec![row("Edge distance", FieldRow::Number(NumberTarget::EdgeDist)), row("Width", FieldRow::Number(NumberTarget::HousingWidth)), row("Length", FieldRow::Number(NumberTarget::HousingLen)), row("Pin load", FieldRow::Number(NumberTarget::Load))])
-                .group("FEA workbench", vec![entry("Edit in the FEA workbench", "", BushingAct::OpenInFea).when(self.fe_note.as_ref().map_or(Ok(()), |why| Err(format!("no FE model yet: {why}"))))])
-                .group("Edit", vec![entry("Undo", "Ctrl/Cmd+Z", BushingAct::Undo).when(self.undo_availability()), entry("Redo", "Ctrl/Cmd+Shift+Z", BushingAct::Redo).when(self.redo_availability()), entry("Save", "Ctrl/Cmd+S", BushingAct::Save)]),
-            RibbonTab::new("Checks")
-                .group("Cross-check", vec![entry("Edge check", "", BushingAct::EdgeCheck(false)).when(edge.clone()), entry("Edge check + contact FE", "", BushingAct::EdgeCheck(true)).when(edge), entry("Cancel", "Esc", BushingAct::CancelEdgeCheck).when(self.cancel_edge_availability())])
-                .group("Fixes", vec![entry("Fixes", "", BushingAct::AllFixes).when(if self.st.model.recommendations.is_empty() { Err("no check is failing".to_string()) } else { Ok(()) })])
-                .group("Report", vec![entry("Export report", "", BushingAct::Export)]),
-            RibbonTab::new("Simulation").group(
-                "Finite-element model",
-                vec![
-                    entry("Generate mesh", "", BushingAct::GenerateMesh).when(self.fea.mesh_availability()),
-                    entry("Solve fit and load", "Ctrl/Cmd+Enter", BushingAct::Solve).when(self.fea.solve_availability()),
-                    entry("Cancel solve", "", BushingAct::CancelSolve).when(if self.fea.solving() { Ok(()) } else { Err("nothing is solving".to_string()) }),
-                    entry(if self.fea.show_results { "Show geometry" } else { "Show result" }, "V", BushingAct::ToggleResults).when(self.fea.results_availability()),
-                ],
-            ),
-        ]
+    fn send_dialog(&self) -> Dialog {
+        let m = &self.st.model;
+        let mut rows = Vec::new();
+        if let Ok(l) = fe::layout(m) {
+            rows.push(("Housing".to_string(), format!("{:.3} x {:.3} in, {:.3} in thick, {}", l.length, l.height, self.fea.problem.thickness, m.housing_material().name)));
+        }
+        rows.push(("Bushing".to_string(), format!("\u{d8}{:.4} x \u{d8}{:.4} in, {}, FE overlap {:.5} in", m.bore_dia, m.id_bushing, m.bushing_material().name, self.fea.problem.bushings[0].interference)));
+        rows.push(("Load".to_string(), format!("P {} lbf toward the free edge", grouped(m.load, 0))));
+        rows.push(("File".to_string(), handoff::fea_path(&self.path).file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
+        Dialog {
+            title: "Send joint to the FEA Workbench".into(),
+            intro: "Opens a full finite-element study of this joint in the FEA Workbench. The closed-form results here stay the verdict. The case is saved first.".into(),
+            rows,
+            options: vec![
+                DialogOption { label: "Plane stress, 2D with fit contact".into(), detail: String::new(), on: true, enabled: false, action: None },
+                DialogOption { label: "3D solid".into(), detail: "Not available: bushing contact runs in plane analyses only (fea-problem, issue #241)".into(), on: false, enabled: false, action: None },
+                DialogOption { label: "Keep linked".into(), detail: "Always on: Send back from the FEA Workbench updates this case.".into(), on: true, enabled: false, action: None },
+            ],
+            note: "Solve time for this joint is about 8 s.".into(),
+            cancel: entry("Cancel", "Esc", BushingAct::CloseDialog),
+            confirm: entry("Send and open FEA Workbench", "", BushingAct::ConfirmSend).when(self.send_availability()),
+        }
     }
 
+    // ------------------------------------------------------------------ availability and menus
+
+    pub(super) fn send_availability(&self) -> Result<(), String> {
+        match &self.fe_note {
+            Some(why) => Err(format!("no FE model for these inputs: {why}")),
+            None => Ok(()),
+        }
+    }
+    pub(super) fn quick_fe_availability(&self) -> Result<(), String> {
+        self.send_availability()?;
+        if self.fea.solving() {
+            return Err("a solve is already running".into());
+        }
+        self.fea.solve_availability()
+    }
     fn edge_availability(&self) -> Result<(), String> {
         if self.st.edge_job.is_some() {
             return Err("an edge check is already running".into());
         }
         edge_check::prepare(&self.st.model, false).map(|_| ())
-    }
-    fn cancel_edge_availability(&self) -> Result<(), String> {
-        if self.st.edge_job.is_some() {
-            Ok(())
-        } else {
-            Err("no edge check is running".into())
-        }
     }
     fn undo_availability(&self) -> Result<(), String> {
         if self.undo.is_empty() {
@@ -413,16 +574,47 @@ impl BushingSession {
             Ok(())
         }
     }
+    fn running(on: bool, what: &str) -> Result<(), String> {
+        if on {
+            Ok(())
+        } else {
+            Err(format!("no {what} is running"))
+        }
+    }
 
     pub(super) fn menu_bar(&self) -> Vec<Menu> {
-        let tabs = self.ribbon_tabs();
-        let all = |tab: &str| tabs.iter().find(|t| t.title == tab).map(|t| t.groups.iter().flat_map(|g| g.buttons.clone()).collect::<Vec<_>>()).unwrap_or_default();
-        let pick = |tab: &str, labels: &[&str]| all(tab).into_iter().filter(|e| labels.contains(&e.label.as_str())).map(Item::Entry).collect::<Vec<_>>();
+        let view = |label: &str, v: WorkbenchView| Item::Entry(entry(label, "", BushingAct::View(v)).checked(self.show == v));
+        let edge = self.edge_availability();
         vec![
-            Menu { title: "File".into(), items: [pick("Inputs", &["Save", "Edit in the FEA workbench"]), pick("Checks", &["Export report"])].concat() },
-            Menu { title: "Edit".into(), items: pick("Inputs", &["Undo", "Redo"]) },
-            Menu { title: "Tools".into(), items: [pick("Checks", &["Edge check", "Edge check + contact FE", "Cancel", "Fixes"])].concat() },
-            Menu { title: "Simulation".into(), items: all("Simulation").into_iter().map(Item::Entry).collect() },
+            Menu {
+                title: "File".into(),
+                items: vec![
+                    Item::Entry(entry("Save", "Ctrl/Cmd+S", BushingAct::Save)),
+                    Item::Entry(entry("Export report", "", BushingAct::Export)),
+                    Item::Entry(entry("Send joint to FEM...", "", BushingAct::SendDialog).when(self.send_availability())),
+                ],
+            },
+            Menu { title: "Edit".into(), items: vec![Item::Entry(entry("Undo", "Ctrl/Cmd+Z", BushingAct::Undo).when(self.undo_availability())), Item::Entry(entry("Redo", "Ctrl/Cmd+Shift+Z", BushingAct::Redo).when(self.redo_availability()))] },
+            Menu {
+                title: "View".into(),
+                items: [
+                    vec![view("Split", WorkbenchView::Split), view("3D", WorkbenchView::Model), view("Axial section", WorkbenchView::Sketch(0)), view("Cross-section", WorkbenchView::Sketch(1))],
+                    Field::ALL.iter().map(|f| Item::Entry(entry(f.label(), "", BushingAct::Field(*f)).checked(self.field == *f))).collect(),
+                    vec![Item::Entry(entry("Quarter cut", "", BushingAct::QuarterCut).checked(self.quarter_cut)), Item::Entry(entry("Reset view", "", BushingAct::ResetView))],
+                ]
+                .concat(),
+            },
+            Menu {
+                title: "Tools".into(),
+                items: vec![
+                    Item::Entry(entry("Edge check", "", BushingAct::EdgeCheck(false)).when(edge.clone())),
+                    Item::Entry(entry("Edge check + contact FE", "", BushingAct::EdgeCheck(true)).when(edge)),
+                    Item::Entry(entry("Cancel edge check", "Esc", BushingAct::CancelEdgeCheck).when(Self::running(self.st.edge_job.is_some(), "edge check"))),
+                    Item::Entry(entry("Fixes", "", BushingAct::AllFixes).when(if self.st.model.recommendations.is_empty() { Err("no check is failing".to_string()) } else { Ok(()) })),
+                    Item::Entry(entry("Quick FE check", "Ctrl/Cmd+Enter", BushingAct::QuickFe).when(self.quick_fe_availability())),
+                    Item::Entry(entry("Cancel FE check", "", BushingAct::CancelSolve).when(Self::running(self.fea.solving(), "FE check"))),
+                ],
+            },
         ]
     }
 }

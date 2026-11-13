@@ -157,13 +157,9 @@ fn draw_workspace(frame: &mut Frame, area: Rect, state: &AppState, tick: u64, re
             let focused = matches!(state.focus.area, FocusArea::Workspace(_));
             crate::toolboxes::fastener_hole::view::draw(frame, area, &state.theme, &state.fastener_hole, focused, regions);
         }
-        ToolId::Bushing => {
-            let focused = matches!(state.focus.area, FocusArea::Workspace(_));
-            crate::toolboxes::bushing::view::draw(frame, area, &state.theme, &state.bushing, focused, regions);
-        }
         ToolId::EccentricBushing => {
             let focused = matches!(state.focus.area, FocusArea::Workspace(_));
-            crate::toolboxes::eccentric_bushing::view::draw(frame, area, &state.theme, &state.eccentric, &state.bushing.model, focused, regions);
+            crate::toolboxes::eccentric_bushing::view::draw(frame, area, &state.theme, &state.eccentric, &state.bushing_model, focused, regions);
         }
         ToolId::FeaWorkbench => {
             let focused = matches!(state.focus.area, FocusArea::Workspace(_));
@@ -237,11 +233,6 @@ fn contextual_hint(state: &AppState) -> Vec<help::KeyHint> {
         ToolId::FastenerHole if matches!(state.focus.area, FocusArea::Workspace(_)) => {
             vec![help::KeyHint { key: "e", label: "Export" }]
         }
-        ToolId::Bushing
-            if !state.bushing.material_picker.open && !state.bushing.reamer_picker.open && matches!(state.focus.area, FocusArea::Workspace(_)) =>
-        {
-            vec![help::KeyHint { key: "d", label: "Numbers" }, help::KeyHint { key: "e", label: "Export" }]
-        }
         ToolId::EccentricBushing if matches!(state.focus.area, FocusArea::Workspace(_)) => {
             vec![help::KeyHint { key: "r", label: "Analyse" }, help::KeyHint { key: "m", label: "Max offset" }, help::KeyHint { key: "l", label: "Max load" }, help::KeyHint { key: "e", label: "Export" }]
         }
@@ -288,25 +279,13 @@ fn draw_help(frame: &mut Frame, area: Rect, state: &AppState, regions: &mut Mous
         help::KeyHint { key: "Lateral Area", label: "Always calculated, always read-only - never a direct input, even in Preserve Area mode" },
         help::KeyHint { key: "[TAG]s", label: "INPUT/CALCULATED/TRANSFERRED/PRESERVED/DERIVED/INVALID mark every value's origin" },
     ];
-    let bushing: &[help::KeyHint] = &[
-        help::KeyHint { key: "Up/Down", label: "Move field selection" },
-        help::KeyHint { key: "Space/Enter", label: "Toggle OD/ID Geometry etc., open a material/reamer picker, or edit a value" },
-        help::KeyHint { key: "Enter/Esc", label: "While editing: commit / cancel" },
-        help::KeyHint { key: "d", label: "Toggle the Numbers panel (per-radius hoop/radial/axial stress breakdown)" },
-        help::KeyHint { key: "e", label: "Export a plain-text report and open it" },
-        help::KeyHint { key: "Bore Diameter", label: "Enter opens the aircraft reamer catalog; m inside it types an exact value instead" },
-        help::KeyHint { key: "Reamer/Material picker", label: "/ filters the list, Enter selects, Esc closes without changing anything" },
-        help::KeyHint { key: "Reamer picker", label: "i: import a library file, x: export current + built-in catalog, n: tag the highlighted size Preferred" },
-        help::KeyHint { key: "Friction/Fit Type", label: "Enter on Friction opens typical values with usage notes ('m' types an exact value); Fit Type is a label - Shrink also enables Install Thermal Assist" },
-        help::KeyHint { key: "Bushing ID/Material pickers", label: "n saves the current value/opens the add-material form, i: import a library file, x: export it" },
-    ];
     let eccentric: &[help::KeyHint] = &[
         help::KeyHint { key: "Up/Down", label: "Move field selection" },
         help::KeyHint { key: "Enter/Space", label: "Edit a value, toggle the axial condition, or run the selected action" },
         help::KeyHint { key: "r", label: "Analyse the entered offset: pressure map, friction torque capacity against F e sin(angle), margin" },
         help::KeyHint { key: "m / l", label: "Find the largest offset that still holds / the largest pin load that is held" },
         help::KeyHint { key: "d / e", label: "Toggle the interface pressure profile / export a text report" },
-        help::KeyHint { key: "Inputs", label: "Bore, ID, interference, friction, length, load and materials come from the Bushing Workbench" },
+        help::KeyHint { key: "Inputs", label: "Uses the default bushing case until a window hand-off is available" },
     ];
     let fea_workbench: &[help::KeyHint] = &[
         help::KeyHint { key: "Up/Down", label: "Move field selection" },
@@ -320,11 +299,10 @@ fn draw_help(frame: &mut Frame, area: Rect, state: &AppState, regions: &mut Mous
         help::KeyHint { key: "Geometry From", label: "Imported: read a Gmsh .msh or Abaqus .inp mesh; its set and surface names become the edges" },
         help::KeyHint { key: "Support / Load edges", label: "Rectangle: bottom right top left; polygon: edge1..; holes: hole1..; 3D ends: start, end" },
     ];
-    let sections: [(&str, &[help::KeyHint]); 6] = [
+    let sections: [(&str, &[help::KeyHint]); 5] = [
         ("Global", global),
         ("Search Files", search),
         ("Fastener Holes", fastener_hole),
-        ("Bushing Workbench", bushing),
         ("Eccentric Bushing", eccentric),
         ("FEA Workbench", fea_workbench),
     ];

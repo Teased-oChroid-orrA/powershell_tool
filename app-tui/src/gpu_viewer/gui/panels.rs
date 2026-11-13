@@ -5,13 +5,11 @@ use super::{
 };
 use crate::gpu_viewer::{
     controller::UiAction,
-    editor::authoring::StepState,
-    editor::authoring::{Card, Relevance},
-    menu::Entry,
-    menu::{Menu, Outcome},
+    editor::authoring::{Card, Relevance, StepState},
+    menu::{Entry, Menu, Outcome},
     results::{result_card, results_tree, GuiInput},
     text::{colormap, fmt_value},
-    ui::{visible_nodes, DocSidebar, DockItem, RibbonTab, TreeNode},
+    ui::{visible_nodes, Bar, DocSidebar, DockItem, Plot, RibbonTab, TreeNode, Workbench},
 };
 use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Order, Pos2, Rect, RichText,
@@ -75,7 +73,7 @@ pub(super) fn popup_frame(p: &Palette) -> egui::Frame {
         })
 }
 
-fn bar_frame(p: &Palette, margin: Margin) -> egui::Frame {
+pub(super) fn bar_frame(p: &Palette, margin: Margin) -> egui::Frame {
     egui::Frame::new()
         .fill(p.panel)
         .stroke(Stroke::new(1.0, p.line))
@@ -740,6 +738,7 @@ impl Gui {
         input: &GuiInput,
         menus: &[Menu],
         tabs: &[RibbonTab],
+        wb: Option<&Workbench>,
         p: &Palette,
         out: &mut Vec<Outcome>,
         hint: &mut Option<String>,
@@ -764,9 +763,12 @@ impl Gui {
                     ui.add_space(6.0);
                     ui.separator();
                     ui.add_space(2.0);
+                    if let Some(wb) = wb {
+                        self.workbench_bar(ui, wb, p);
+                    }
                     let mut chosen = None;
-                    // A page bench has no tool pill: its steps would switch nothing.
-                    let steps = if input.editor.is_some_and(|e| e.has_document()) {
+                    // A page bench and a workbench have no step strip.
+                    let steps = if wb.is_some() || input.editor.is_some_and(|e| e.has_document()) {
                         &[][..]
                     } else {
                         tabs
@@ -785,13 +787,16 @@ impl Gui {
                         self.select_tab(i, tabs);
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let compact_workbench = wb.is_some() && ui.ctx().content_rect().width() < 1280.0;
                         let dark = ui.ctx().theme() == egui::Theme::Dark;
                         let r = ui.add_visible(
-                            theme::is_circadian(),
+                            compact_workbench || theme::is_circadian(),
                             egui::Button::new(if dark { "Light" } else { "Dark" }).small(),
                         );
-                        theme::theme_picker(ui);
-                        theme::circadian_control(ui, p);
+                        if !compact_workbench {
+                            theme::theme_picker(ui);
+                            theme::circadian_control(ui, p);
+                        }
                         self.targets.push(("Theme".into(), r.rect));
                         if r.on_hover_text("Switch between the light and the dark theme")
                             .clicked()
@@ -802,13 +807,17 @@ impl Gui {
                                 egui::Theme::Dark
                             });
                         }
-                        let r = ui.add(
-                            egui::Button::new("Search commands")
-                                .shortcut_text(RichText::new("Ctrl K").small().color(p.dim)),
-                        );
-                        self.targets.push(("Search commands".into(), r.rect));
-                        if r.clicked() {
-                            out.push(Outcome::Action(UiAction::OpenPalette));
+                        if let Some(wb) = wb {
+                            self.workbench_actions(ui, wb, p, out, hint);
+                        } else {
+                            let r = ui.add(
+                                egui::Button::new("Search commands")
+                                    .shortcut_text(RichText::new("Ctrl K").small().color(p.dim)),
+                            );
+                            self.targets.push(("Search commands".into(), r.rect));
+                            if r.clicked() {
+                                out.push(Outcome::Action(UiAction::OpenPalette));
+                            }
                         }
                     });
                 });
@@ -1568,7 +1577,215 @@ impl Gui {
                     });
                 });
             }
+            DockItem::Verdict { headline, detail, tone, actions } => {
+                let c = tone_color(p, *tone);
+                egui::Frame::new().fill(with_alpha(c, 26)).stroke(Stroke::new(1.0, with_alpha(c, 110))).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(12, 10)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(headline).size(18.0).strong().color(c));
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(detail).size(12.5).color(p.text));
+                    });
+                    if !actions.is_empty() {
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            for e in actions {
+                                self.link_button(ui, e, p, out);
+                            }
+                        });
+                    }
+                });
+            }
+            DockItem::Figures(figures) => {
+                ui.columns(figures.len().max(1), |columns| {
+                    for (ui, f) in columns.iter_mut().zip(figures) {
+                        egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0, p.line)).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(RichText::new(&f.label).size(11.5).color(p.dim));
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                ui.label(RichText::new(&f.value).font(FontId::monospace(21.0)).strong().color(p.text));
+                                ui.label(RichText::new(&f.unit).size(12.0).color(p.dim));
+                            });
+                            for d in &f.detail {
+                                ui.add(egui::Label::new(RichText::new(d).size(11.5).color(p.dim)).wrap());
+                            }
+                        });
+                    }
+                });
+            }
+            DockItem::Stat { label, value, note, note_tone, detail, action } => {
+                let width = ui.available_width();
+                let note_w = if note.is_empty() { 0.0 } else { ui.painter().layout_no_wrap(note.clone(), FontId::monospace(12.0), tone_color(p, *note_tone)).size().x + 8.0 };
+                let value_g = ui.painter().layout_no_wrap(value.clone(), FontId::monospace(12.5), p.text);
+                let label_w = (width - value_g.size().x - note_w - 18.0).max(40.0);
+                let label_g = ui.painter().layout(label.clone(), FontId::proportional(13.0), p.text, label_w);
+                let sense = if action.is_some() { Sense::click() } else { Sense::hover() };
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, (label_g.size().y + 6.0).max(22.0)), sense);
+                self.targets.push((label.clone(), rect));
+                let painter = ui.painter();
+                if resp.hovered() && action.is_some() {
+                    painter.rect_filled(rect, 5.0, p.raised);
+                }
+                let mid = rect.center().y;
+                painter.galley(Pos2::new(rect.left() + 4.0, mid - label_g.size().y / 2.0), label_g, p.text);
+                let vx = rect.right() - note_w - 4.0 - value_g.size().x;
+                painter.galley(Pos2::new(vx, mid - value_g.size().y / 2.0), value_g, p.text);
+                if !note.is_empty() {
+                    painter.text(Pos2::new(rect.right() - 4.0, mid), Align2::RIGHT_CENTER, note, FontId::monospace(12.0), tone_color(p, *note_tone));
+                }
+                if !detail.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(detail).size(11.5).color(p.dim)).wrap());
+                }
+                if let (Some(a), true) = (action, resp.clicked()) {
+                    out.push(Outcome::Action(*a));
+                }
+            }
+            DockItem::Bars { rows, lo, hi } => self.bars(ui, rows, *lo, *hi, p, out),
+            DockItem::Plot(plot) => plot_ui(ui, plot, p),
         }
+    }
+
+    /// A small outlined button (the verdict's "Fixes", "Why?").
+    pub(super) fn link_button(&mut self, ui: &mut egui::Ui, e: &Entry, p: &Palette, out: &mut Vec<Outcome>) {
+        let col = if e.enabled { p.text } else { p.dim };
+        let r = ui.add(egui::Button::new(RichText::new(&e.label).size(12.5).color(col)).fill(p.panel).stroke(Stroke::new(1.0, p.line)).corner_radius(CornerRadius::same(6)));
+        self.targets.push((e.label.clone(), r.rect));
+        if r.on_hover_text(e.hover_text()).clicked() {
+            out.push(match (&e.reason, e.enabled) {
+                (Some(reason), false) => Outcome::Blocked(reason.clone()),
+                _ => Outcome::Action(e.action),
+            });
+        }
+    }
+
+    /// Margins on one scale: a track per row, zero marked, the bar from zero to the value in the row's tone.
+    fn bars(&mut self, ui: &mut egui::Ui, rows: &[Bar], lo: f64, hi: f64, p: &Palette, out: &mut Vec<Outcome>) {
+        let span = (hi - lo).max(1e-9);
+        let width = ui.available_width();
+        let label_w = (width * 0.42).min(150.0);
+        let value_w = 92.0;
+        for b in rows {
+            let sense = if b.action.is_some() { Sense::click() } else { Sense::hover() };
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 22.0), sense);
+            self.targets.push((b.label.clone(), rect));
+            let painter = ui.painter();
+            if resp.hovered() && b.action.is_some() {
+                painter.rect_filled(rect, 4.0, p.raised);
+            }
+            let mid = rect.center().y;
+            let label = painter.layout(b.label.clone(), FontId::proportional(12.0), p.text, label_w - 6.0);
+            painter.galley(Pos2::new(rect.left() + 4.0, mid - label.size().y / 2.0), label, p.text);
+            let track = Rect::from_min_max(Pos2::new(rect.left() + label_w, mid - 5.0), Pos2::new(rect.right() - value_w, mid + 5.0));
+            painter.rect(track, 3.0, p.bg, Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
+            let x = |v: f64| track.left() + track.width() * ((v.clamp(lo, hi) - lo) / span) as f32;
+            let zero = x(0.0);
+            let c = tone_color(p, b.tone);
+            let (a, z) = (zero.min(x(b.value)), zero.max(x(b.value)));
+            painter.rect_filled(Rect::from_min_max(Pos2::new(a, track.top() + 1.5), Pos2::new(z.max(a + 1.5), track.bottom() - 1.5)), 2.0, c);
+            painter.line_segment([Pos2::new(zero, track.top() - 3.0), Pos2::new(zero, track.bottom() + 3.0)], Stroke::new(1.0, p.dim));
+            if b.value > hi || b.value < lo {
+                painter.text(Pos2::new(if b.value > hi { track.right() - 2.0 } else { track.left() + 2.0 }, track.top() - 4.0), if b.value > hi { Align2::RIGHT_BOTTOM } else { Align2::LEFT_BOTTOM }, if b.value > hi { ">" } else { "<" }, FontId::proportional(10.0), p.dim);
+            }
+            let tag_w = if b.tag.is_empty() { 0.0 } else { painter.layout_no_wrap(b.tag.clone(), FontId::proportional(10.0), c).size().x + 4.0 };
+            painter.text(Pos2::new(rect.right() - 4.0 - tag_w, mid), Align2::RIGHT_CENTER, &b.text, FontId::monospace(12.0), c);
+            if !b.tag.is_empty() {
+                painter.text(Pos2::new(rect.right() - 2.0, mid), Align2::RIGHT_CENTER, &b.tag, FontId::proportional(10.0), c);
+            }
+            if let (Some(a), true) = (b.action, resp.clicked()) {
+                out.push(Outcome::Action(a));
+            }
+        }
+    }
+}
+
+/// The plot colours by index (`Series::color`, `Mark::color`).
+fn plot_color(p: &Palette, k: u8) -> Color32 {
+    match k {
+        1 => p.warn,
+        2 => p.good,
+        _ => p.accent,
+    }
+}
+
+/// A small x-y plot: shaded bands (the parts) with their names, a zero line, the curves, marked values, the axis titles
+/// and a key of the curves.
+fn plot_ui(ui: &mut egui::Ui, plot: &Plot, p: &Palette) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 168.0), Sense::hover());
+    let painter = ui.painter();
+    let frame = Rect::from_min_max(Pos2::new(rect.left() + 44.0, rect.top() + 16.0), Pos2::new(rect.right() - 6.0, rect.bottom() - 22.0));
+    let mut lo = [f64::INFINITY; 2];
+    let mut hi = [f64::NEG_INFINITY; 2];
+    for pt in plot.series.iter().flat_map(|s| &s.points).chain(plot.marks.iter().map(|m| &m.at)) {
+        for k in 0..2 {
+            lo[k] = lo[k].min(pt[k]);
+            hi[k] = hi[k].max(pt[k]);
+        }
+    }
+    for b in &plot.bands {
+        lo[0] = lo[0].min(b.x0);
+        hi[0] = hi[0].max(b.x1);
+    }
+    if !(lo[0].is_finite() && lo[1].is_finite()) {
+        return;
+    }
+    lo[1] = lo[1].min(0.0);
+    hi[1] = hi[1].max(0.0);
+    let pad = 0.08 * (hi[1] - lo[1]).max(1e-9);
+    let (y0, y1) = (lo[1] - pad, hi[1] + pad);
+    let (x0, x1) = (lo[0], hi[0].max(lo[0] + 1e-9));
+    let to = |q: &[f64; 2]| Pos2::new(frame.left() + frame.width() * ((q[0] - x0) / (x1 - x0)) as f32, frame.bottom() - frame.height() * ((q[1] - y0) / (y1 - y0)) as f32);
+    painter.rect(frame, 2.0, p.bg, Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
+    for (k, b) in plot.bands.iter().enumerate() {
+        let r = Rect::from_min_max(Pos2::new(to(&[b.x0, y1]).x, frame.top()), Pos2::new(to(&[b.x1, y1]).x, frame.bottom()));
+        painter.rect_filled(r, 0.0, with_alpha(if k % 2 == 0 { p.accent } else { p.dim }, 18));
+        painter.text(Pos2::new(r.left() + 4.0, frame.top() + 3.0), Align2::LEFT_TOP, &b.label, FontId::proportional(10.0), p.dim);
+    }
+    let zero = to(&[x0, 0.0]).y;
+    painter.line_segment([Pos2::new(frame.left(), zero), Pos2::new(frame.right(), zero)], Stroke::new(1.0, p.dim));
+    for v in [y1 - pad, 0.0, y0 + pad] {
+        let y = to(&[x0, v]).y;
+        painter.text(Pos2::new(frame.left() - 4.0, y), Align2::RIGHT_CENTER, axis_value(v), FontId::monospace(10.0), p.dim);
+    }
+    for v in [x0, x1] {
+        painter.text(Pos2::new(to(&[v, 0.0]).x, frame.bottom() + 3.0), if v == x0 { Align2::LEFT_TOP } else { Align2::RIGHT_TOP }, axis_value(v), FontId::monospace(10.0), p.dim);
+    }
+    painter.text(Pos2::new(frame.center().x, frame.bottom() + 3.0), Align2::CENTER_TOP, &plot.x_label, FontId::proportional(10.5), p.dim);
+    painter.text(Pos2::new(rect.left(), rect.top()), Align2::LEFT_TOP, &plot.y_label, FontId::proportional(10.5), p.dim);
+    for s in &plot.series {
+        let pts: Vec<Pos2> = s.points.iter().map(to).collect();
+        let stroke = Stroke::new(1.8, plot_color(p, s.color));
+        if s.dashed {
+            painter.extend(egui::Shape::dashed_line(&pts, stroke, 5.0, 4.0));
+        } else {
+            painter.add(egui::Shape::line(pts, stroke));
+        }
+    }
+    for m in &plot.marks {
+        let at = to(&m.at);
+        let c = plot_color(p, m.color);
+        painter.circle_filled(at, 3.0, c);
+        let right = at.x < frame.center().x;
+        painter.text(at + Vec2::new(if right { 6.0 } else { -6.0 }, -2.0), if right { Align2::LEFT_BOTTOM } else { Align2::RIGHT_BOTTOM }, &m.text, FontId::monospace(10.0), c);
+    }
+    ui.horizontal_wrapped(|ui| {
+        for s in &plot.series {
+            let (r, _) = ui.allocate_exact_size(Vec2::new(16.0, 10.0), Sense::hover());
+            ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(2.0, plot_color(p, s.color)));
+            ui.label(RichText::new(&s.label).size(11.0).color(p.dim));
+        }
+    });
+}
+
+/// An axis value: plain, in thousands (k) when large.
+fn axis_value(v: f64) -> String {
+    if v.abs() >= 1000.0 {
+        format!("{:.0}k", v / 1000.0)
+    } else if v.abs() >= 1.0 || v == 0.0 {
+        format!("{v:.2}").trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        format!("{v:.3}")
     }
 }
 

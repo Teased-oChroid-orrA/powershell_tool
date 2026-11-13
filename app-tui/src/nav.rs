@@ -1,14 +1,13 @@
 //! Terminal toolbox registry and focus tracking. A plain enum + match, not a
 //! trait object registry: a `Toolbox` trait is worth adding only once the
-//! hardcoded match starts hurting. Material Lookup, Pressure Vessel, Preload
-//! and Lug Analysis have no terminal toolbox: they open in native windows from
-//! the dashboard (`gpu_viewer/dashboard.rs`).
+//! hardcoded match starts hurting. Bushing, Material Lookup, Pressure Vessel,
+//! Preload and Lug Analysis have no terminal toolbox: they open in native
+//! windows from the dashboard (`gpu_viewer/dashboard.rs`).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolId {
     Search,
     FastenerHole,
-    Bushing,
     EccentricBushing,
     FeaWorkbench,
     Dupes,
@@ -19,10 +18,9 @@ pub enum ToolId {
 impl ToolId {
     /// Rail order. The PINN/AMR Stress Solver is deliberately absent (a
     /// permanent exclusion, see the root `CLAUDE.md`).
-    pub const ALL: [ToolId; 8] = [
+    pub const ALL: [ToolId; 7] = [
         ToolId::Search,
         ToolId::FastenerHole,
-        ToolId::Bushing,
         ToolId::EccentricBushing,
         ToolId::FeaWorkbench,
         ToolId::Dupes,
@@ -35,7 +33,6 @@ impl ToolId {
         match self {
             ToolId::Search => "search",
             ToolId::FastenerHole => "fastener-hole",
-            ToolId::Bushing => "bushing",
             ToolId::EccentricBushing => "eccentric-bushing",
             ToolId::FeaWorkbench => "fea",
             ToolId::Dupes => "dupes",
@@ -52,7 +49,6 @@ impl ToolId {
         match self {
             ToolId::Search => "Search Files",
             ToolId::FastenerHole => "Fastener Holes",
-            ToolId::Bushing => "Bushing Workbench",
             ToolId::EccentricBushing => "Eccentric Bushing",
             ToolId::FeaWorkbench => "FEA Workbench",
             ToolId::Dupes => "Duplicate Finder",
@@ -161,7 +157,7 @@ mod tests {
         // Regression guard for the rail once genuinely missing the three
         // placeholder entries (`Dupes`/`Rename`/`Logs`) - `ALL` must list
         // every variant, `enabled()` must gate them correctly.
-        assert_eq!(ToolId::ALL.len(), 8);
+        assert_eq!(ToolId::ALL.len(), 7);
         let titles: Vec<&str> = ToolId::ALL.iter().map(|t| t.title()).collect();
         let mut distinct = titles.clone();
         distinct.sort_unstable();

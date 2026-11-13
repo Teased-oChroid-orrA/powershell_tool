@@ -1,35 +1,37 @@
 //! The Bushing workbench in the native window: the press-fit analysis of `toolboxes::bushing` (the same inputs, solver,
-//! pass / fail checks, verified fixes and edge-distance cross-check) with the housing and the bushing drawn, meshed and
-//! solved by the FEA kernel. The inputs and checks are `BushingState`'s; the picture is a `SolidSession` over a `Problem`
-//! derived from them (`fe`), shown read-only: the inputs are the model, the FE view follows them.
+//! pass / fail checks, verified fixes and edge-distance cross-check) drawn as three fixed panes (`ui::Workbench`): the
+//! inputs, the views (a 3D picture coloured by the closed-form Lame field, `drawing`, and two dimensioned sections,
+//! `sketch`) and the results, install force first. The views follow the inputs; nothing is meshed while editing.
 //!
-//! Inputs live in the inspector (a click edits a number, cycles a choice or opens a picker as a value card), the tree
-//! lists the groups and checks, the ribbon has the steps Inputs, Checks and Simulation. Nothing here computes
-//! engineering results: `bushing-solver`, `edge-check` and the FE kernel do.
+//! The finite-element model of the joint (`fe`, a `SolidSession` over a derived `Problem`) is used two ways: "Quick FE
+//! check" solves it here as a check on the closed-form pressure, and "Send joint to FEM" opens it in the FEA Workbench
+//! (`handoff`). Nothing here computes engineering results: `bushing-solver`, `edge-check` and the FE kernel do.
 mod cards;
+pub mod drawing;
 pub mod fe;
 pub mod file;
 mod picker;
+pub mod sketch;
 
 use super::{
-    authoring::{Authoring, Card, Overlay},
+    authoring::{Authoring, Card},
     camera::Camera,
     handoff,
     session::{EditorAction, Key, KeyResult, Mods},
     solid::{SolidAction, SolidSession},
 };
-use crate::app::Effect;
 use crate::gpu_viewer::{
     bench::Bench,
+    controller::StandardView,
     menu::{Item, Menu},
-    ui::{DockItem, RibbonTab, TreeNode, ValueCard},
+    ui::{DockItem, RibbonTab, TreeNode, ValueCard, Workbench, WorkbenchView},
     Scene,
 };
 use crate::toolboxes::bushing::{
     advice::{CheckKind, Severity},
     edge_check::{self, EdgeCheckRun},
     model::{self, FieldRow, NumberTarget},
-    BushingState,
+    BushingState, EdgeRequest,
 };
 use file::BushingFile;
 use std::path::{Path, PathBuf};
@@ -40,8 +42,6 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 pub enum BushingAct {
     /// An input row: edit the number, cycle the choice or open the picker behind it.
     Row(FieldRow),
-    /// Bring the tools of a step (the tree).
-    Step(&'static str),
     /// A material of the catalog (`.0` true: the bushing's, else the housing's).
     PickMaterial(bool, usize),
     /// An entry of the bore (reamer) picker, the bushing ID picker, the friction picker.
@@ -60,16 +60,25 @@ pub enum BushingAct {
     AllFixes,
     SelectFix(usize),
     ApplyFix(usize),
-    /// Open the case in the FEA workbench (saved first); it comes back through the FEA workbench's Send.
-    OpenInFea,
+    /// Show the Send dialog; close it; send (the case is saved first and opens in the FEA workbench, and comes back
+    /// through the FEA workbench's Send).
+    SendDialog,
+    CloseDialog,
+    ConfirmSend,
+    /// Solve the joint's FE model here as a check on the closed-form pressure; cancel it.
+    QuickFe,
+    CancelSolve,
+    /// Which views the centre shows, what the 3D picture is coloured by, the quarter cut, the standard view again.
+    View(WorkbenchView),
+    Field(drawing::Field),
+    QuarterCut,
+    ResetView,
+    /// Show or hide the checks behind the verdict.
+    Why,
     Undo,
     Redo,
     Save,
     Export,
-    GenerateMesh,
-    Solve,
-    CancelSolve,
-    ToggleResults,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -101,11 +110,23 @@ pub struct BushingSession {
     fe_note: Option<String>,
     /// The problem last handed to the FE session.
     fe_key: Option<fea_problem::Problem>,
-    mesh_wanted: bool,
     edge_jobs: Vec<(u64, Receiver<Option<EdgeCheckRun>>)>,
-    step: &'static str,
     /// Only the fixes of this check are listed (`None`: all of them).
     fix_kind: Option<CheckKind>,
+    /// The fixes card was asked for (a fixes link): it opens unfolded.
+    show_fixes: bool,
+    /// The checks behind the verdict are listed.
+    why: bool,
+    /// What the 3D picture is coloured by, and whether a quarter is cut away.
+    field: drawing::Field,
+    quarter_cut: bool,
+    /// Which views the centre shows.
+    show: WorkbenchView,
+    /// A standard view asked for (Reset view), taken by the window.
+    pending_view: Option<StandardView>,
+    dialog_open: bool,
+    /// The 3D picture is up to date with the inputs and the view settings.
+    drawn: bool,
     /// The case file's modification time when this window last read or wrote it: another time means another window changed it.
     stamp: Option<std::time::SystemTime>,
     saved_revision: Option<String>,
@@ -127,10 +148,7 @@ impl BushingSession {
         let skipped = file.apply(&mut st.model);
         let status = if skipped.is_empty() { String::new() } else { format!("Not applied from the file: {}.", skipped.join("; ")) };
         let blank = fea_problem::templates::templates().remove(4).1;
-        let mut fea = SolidSession::new(blank, path.with_extension("fe.json"));
-        fea.highlight_bushings = true;
-        // The refinement hints are for editing a mesh; here the mesh follows the inputs.
-        fea.do_action(SolidAction::ToggleRefineShow);
+        let fea = SolidSession::new(blank, path.with_extension("fe.json"));
         let mut s = Self {
             stackup: file.stackup.clone(),
             st,
@@ -145,10 +163,16 @@ impl BushingSession {
             status,
             fe_note: None,
             fe_key: None,
-            mesh_wanted: false,
             edge_jobs: Vec::new(),
-            step: "Inputs",
             fix_kind: None,
+            show_fixes: false,
+            why: false,
+            field: drawing::Field::Hoop,
+            quarter_cut: true,
+            show: WorkbenchView::Split,
+            pending_view: None,
+            dialog_open: false,
+            drawn: false,
             stamp: None,
             saved_revision: None,
             beat_at: std::time::Instant::now(),
@@ -188,22 +212,23 @@ impl BushingSession {
         }
         self.redo.clear();
     }
-    /// The inputs changed: the FE picture follows, and what the last fix did is no longer news.
+    /// The inputs changed: the pictures and the FE model follow, and what the last fix did is no longer news.
     fn changed(&mut self) {
         self.dirty = true;
         self.st.last_applied = None;
         self.st.input_error = None;
         self.refresh_fea();
     }
-    /// Hand the FE session the problem for the current inputs, and ask for its mesh.
+    /// Hand the FE session the problem for the current inputs (it is meshed and solved only when Quick FE check asks), and
+    /// redraw the 3D picture.
     fn refresh_fea(&mut self) {
+        self.drawn = false;
         match fe::housing_problem(&self.st.model) {
             Ok(p) => {
                 self.fe_note = None;
                 if self.fe_key.as_ref() != Some(&p) {
                     self.fea.set_derived(p.clone());
                     self.fe_key = Some(p);
-                    self.mesh_wanted = true;
                 }
             }
             Err(why) => self.fe_note = Some(why),
@@ -246,7 +271,8 @@ impl BushingSession {
         }
     }
     /// Hand the case to the FEA workbench: the file is saved first (what comes back goes into it), the derived model written.
-    fn open_in_fea(&mut self) {
+    fn send_to_fea(&mut self) {
+        self.dialog_open = false;
         if self.dirty || !self.path.exists() {
             self.save();
             if self.dirty {
@@ -327,10 +353,8 @@ impl BushingSession {
             FieldRow::Number(t) => self.begin_prompt(row, model::format_for_edit(self.st.model.number_value(t))),
             FieldRow::Tol(g) => self.begin_prompt(row, self.st.model.tolerance_edit_text(g)),
             _ => {
-                let Some(i) = self.rows().iter().position(|r| *r == row) else { return };
                 self.checkpoint();
-                self.st.selected = i;
-                self.st.activate_selected();
+                self.st.activate(row);
                 self.changed();
             }
         }
@@ -389,20 +413,18 @@ impl BushingSession {
 
     // ------------------------------------------------------------------ checks, fixes, edge check
 
-    fn run_effects(&mut self, effects: Vec<Effect>) {
-        for e in effects {
-            if let Effect::RunEdgeCheck { id, input, cfg, .. } = e {
-                let (tx, rx) = channel();
-                let spawned = std::thread::Builder::new().name("bushing-edge-check".into()).spawn(move || {
-                    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| edge_check::execute(input, &cfg))).ok();
-                    let _ = tx.send(run);
-                });
-                match spawned {
-                    Ok(_) => self.edge_jobs.push((id, rx)),
-                    Err(e) => {
-                        self.st.edge_job = None;
-                        self.status = format!("Could not start the edge check: {e}");
-                    }
+    fn run_effects(&mut self, effects: Vec<EdgeRequest>) {
+        for EdgeRequest { id, input, cfg } in effects {
+            let (tx, rx) = channel();
+            let spawned = std::thread::Builder::new().name("bushing-edge-check".into()).spawn(move || {
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| edge_check::execute(input, &cfg))).ok();
+                let _ = tx.send(run);
+            });
+            match spawned {
+                Ok(_) => self.edge_jobs.push((id, rx)),
+                Err(e) => {
+                    self.st.edge_job = None;
+                    self.status = format!("Could not start the edge check: {e}");
                 }
             }
         }
@@ -446,7 +468,6 @@ impl BushingSession {
         self.status.clear();
         match a {
             BushingAct::Row(r) => self.activate_row(r),
-            BushingAct::Step(s) => self.step = s,
             BushingAct::PickMaterial(bushing, i) => {
                 self.checkpoint();
                 if bushing {
@@ -475,12 +496,12 @@ impl BushingSession {
             }
             BushingAct::ShowFixes(k) => {
                 self.fix_kind = Some(k);
-                self.step = "Checks";
+                self.show_fixes = true;
                 self.st.rec_selected = self.st.model.recommendations.iter().position(|r| r.fixes == k).unwrap_or(0);
             }
             BushingAct::AllFixes => {
                 self.fix_kind = None;
-                self.step = "Checks";
+                self.show_fixes = true;
                 self.st.rec_selected = 0;
             }
             BushingAct::SelectFix(i) => self.st.rec_selected = i,
@@ -488,18 +509,34 @@ impl BushingSession {
             BushingAct::Undo => self.undo(),
             BushingAct::Redo => self.redo(),
             BushingAct::Save => self.save(),
-            BushingAct::OpenInFea => self.open_in_fea(),
             BushingAct::Export => self.export(),
-            BushingAct::GenerateMesh => {
-                self.status.clear();
-                self.fea.do_action(SolidAction::GenerateMesh);
-            }
-            BushingAct::Solve => {
-                self.status.clear();
-                self.fea.do_action(SolidAction::Solve);
-            }
+            BushingAct::SendDialog => match self.send_availability() {
+                Ok(()) => {
+                    self.picker = None;
+                    self.prompt = None;
+                    self.dialog_open = true;
+                }
+                Err(why) => self.status = format!("Cannot send to the FEA Workbench: {why}."),
+            },
+            BushingAct::CloseDialog => self.dialog_open = false,
+            BushingAct::ConfirmSend => self.send_to_fea(),
+            BushingAct::QuickFe => match self.quick_fe_availability() {
+                // The solve meshes what it needs: nothing is meshed while the inputs are edited.
+                Ok(()) => self.fea.do_action(SolidAction::Solve),
+                Err(why) => self.status = format!("Quick FE check not run: {why}."),
+            },
             BushingAct::CancelSolve => self.fea.do_action(SolidAction::CancelSolve),
-            BushingAct::ToggleResults => self.fea.do_action(SolidAction::ShowResults),
+            BushingAct::View(v) => self.show = v,
+            BushingAct::Field(f) => {
+                self.field = f;
+                self.drawn = false;
+            }
+            BushingAct::QuarterCut => {
+                self.quarter_cut = !self.quarter_cut;
+                self.drawn = false;
+            }
+            BushingAct::ResetView => self.pending_view = Some(StandardView::Isometric),
+            BushingAct::Why => self.why = !self.why,
         }
     }
 }
@@ -517,7 +554,7 @@ impl Authoring for BushingSession {
         Vec::new()
     }
     fn key_labels(&self) -> [&'static str; 4] {
-        ["Housing", "Support", "Load", "Bushing"]
+        drawing::KEY_LABELS
     }
     fn path(&self) -> &Path {
         &self.path
@@ -552,6 +589,14 @@ impl Authoring for BushingSession {
             }
             return KeyResult::Handled;
         }
+        if self.dialog_open {
+            match key {
+                Key::Escape => self.dialog_open = false,
+                Key::Enter => self.do_act(BushingAct::ConfirmSend),
+                _ => {}
+            }
+            return KeyResult::Handled;
+        }
         match key {
             Key::Char(c) if mods.command && c.eq_ignore_ascii_case(&'s') => self.save(),
             Key::Char(c) if mods.command && c.eq_ignore_ascii_case(&'z') => {
@@ -562,7 +607,7 @@ impl Authoring for BushingSession {
                 }
             }
             Key::Char(c) if mods.command && c.eq_ignore_ascii_case(&'y') => self.redo(),
-            Key::Enter if mods.command => self.do_act(BushingAct::Solve),
+            Key::Enter if mods.command => self.do_act(BushingAct::QuickFe),
             Key::Escape if self.st.edge_job.is_some() => self.do_act(BushingAct::CancelEdgeCheck),
             Key::Char(_) if mods.command => return KeyResult::Unhandled,
             _ => return KeyResult::Unhandled,
@@ -574,29 +619,19 @@ impl Authoring for BushingSession {
         false
     }
     fn select_at(&mut self, _px: [f32; 2], _size: [f32; 2], _cam: &Camera) {}
+    fn take_view(&mut self) -> Option<StandardView> {
+        self.pending_view.take()
+    }
     fn scene(&mut self) -> Result<Scene, String> {
-        // The fit moves things by thousandths of an inch: at the window's automatic exaggeration the bodies drift apart, so
-        // a result opens at its true size (View > Larger deformation exaggerates it again).
-        self.fea.scene().map(|mut s| {
-            if self.fea.shows_result() {
-                s.gain = 1.0;
-            }
-            s
-        })
+        self.drawn = true;
+        let field = self.field;
+        drawing::scene(&self.st.model, &self.name, field, self.quarter_cut).or_else(|why| Ok(super::drawing::empty(format!("Nothing to draw: {why}"), [0.0, 1.0])))
     }
     fn needs_scene(&self) -> bool {
-        self.fea.needs_scene()
+        !self.drawn
     }
     fn poll(&mut self) -> bool {
         let mut changed = self.fea.poll() | self.watch();
-        // The mesh follows the inputs a moment after they settle: one job at a time.
-        if self.mesh_wanted && !self.fea.meshing() {
-            self.mesh_wanted = false;
-            if self.fea.mesh_availability().is_ok() {
-                self.fea.do_action(SolidAction::GenerateMesh);
-            }
-            changed = true;
-        }
         // Finished edge checks, and the automatic re-run once the inputs have stopped changing.
         let mut done = Vec::new();
         self.edge_jobs.retain(|(id, rx)| match rx.try_recv() {
@@ -614,10 +649,11 @@ impl Authoring for BushingSession {
             changed = true;
             match run {
                 Some(run) => self.st.finish_edge_check(id, run),
-                None => {
+                None if self.st.edge_job.as_ref().is_some_and(|job| job.id == id) => {
                     self.st.edge_job = None;
                     self.status = "The edge check stopped unexpectedly.".into();
                 }
+                None => {}
             }
         }
         let effects = self.st.auto_edge_check();
@@ -625,7 +661,6 @@ impl Authoring for BushingSession {
             self.run_effects(effects);
             changed = true;
         }
-        self.st.expire_edge_notice();
         changed
     }
     fn prompting(&self) -> bool {
@@ -645,9 +680,12 @@ impl Authoring for BushingSession {
             return format!("Edge check running ({:.0} s)...", j.started.elapsed().as_secs_f32());
         }
         if let Some(why) = &self.fe_note {
-            return format!("No FE picture yet: {why}.");
+            return format!("Nothing to draw yet: {why}.");
         }
-        self.fea.status.clone()
+        if self.fea.solving() || self.fea.current_solution().is_some() {
+            return self.fea.status.clone();
+        }
+        String::new()
     }
     fn set_status(&mut self, text: String) {
         self.status = text;
@@ -670,27 +708,22 @@ impl Authoring for BushingSession {
     fn dirty(&self) -> bool {
         self.dirty
     }
-    // The bodies read by colour; the mesh lines are one key press away (M).
+    // The picture is facets, not a mesh: no mesh lines.
     fn default_mesh_lines(&self) -> bool {
         false
     }
     fn geometry_view(&self) -> bool {
-        self.fea.geometry_view()
+        self.field == drawing::Field::Parts
     }
     fn shows_result(&self) -> bool {
-        self.fea.shows_result()
+        !self.geometry_view()
     }
-    fn shows_body_only(&self) -> bool {
-        self.fea.shows_body_only()
-    }
-    fn field_unit(&self, label: &str) -> String {
-        self.fea.field_unit(label)
-    }
-    fn set_view(&mut self, cam: &Camera, size: [f32; 2]) {
-        self.fea.set_view(cam, size);
-    }
-    fn overlay(&self, cam: &Camera, size: [f32; 2]) -> Vec<Overlay> {
-        self.fea.overlay(cam, size)
+    fn field_unit(&self, _label: &str) -> String {
+        if self.geometry_view() {
+            String::new()
+        } else {
+            "psi".into()
+        }
     }
     fn value_card(&self) -> Option<ValueCard> {
         self.picker_card()
@@ -698,36 +731,30 @@ impl Authoring for BushingSession {
     fn card_field(&mut self, index: usize, text: String) {
         self.picker_field(index, text);
     }
-    fn focus_step(&self) -> Option<&'static str> {
-        Some(self.step)
-    }
+    // Three fixed panes instead of the tree, ribbon and inspector.
     fn tree(&self) -> Vec<TreeNode> {
-        self.tree_nodes()
+        Vec::new()
     }
     fn properties(&self) -> Vec<DockItem> {
-        super::authoring::flatten(self.inspector())
+        super::authoring::flatten([self.input_cards(), self.result_cards()].concat())
     }
     fn inspector(&self) -> Vec<Card> {
-        self.inspector_cards()
+        Vec::new()
     }
     fn ribbon(&self) -> Vec<RibbonTab> {
-        self.ribbon_tabs()
+        Vec::new()
     }
-    fn step_state(&self, tab: &str) -> Option<super::authoring::StepState> {
-        use super::authoring::StepState::{Done, Todo};
-        Some(match tab {
-            "Inputs" => Done,
-            "Checks" if self.failing() == 0 && self.edge_current() => Done,
-            "Simulation" if self.fea.current_solution().is_some_and(|s| s.problem == self.fea.problem) => Done,
-            "Checks" | "Simulation" => Todo,
-            _ => return None,
-        })
+    fn workbench(&self) -> Option<Workbench> {
+        Some(self.workbench_data())
+    }
+    fn has_workbench(&self) -> bool {
+        true
     }
     fn menus(&self) -> Vec<Menu> {
         self.menu_bar()
     }
     fn context_menu(&self) -> Vec<Item> {
-        self.menu_bar().into_iter().find(|m| m.title == "Tools").map(|m| m.items).unwrap_or_default()
+        self.menu_bar().into_iter().find(|m| m.title == "View").map(|m| m.items).unwrap_or_default()
     }
 }
 
