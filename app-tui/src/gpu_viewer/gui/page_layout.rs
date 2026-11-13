@@ -11,6 +11,18 @@ pub(super) const MIN_SIDE: f32 = 380.0;
 /// Least height of a card when stacked: a shorter room shows the list alone.
 pub(super) const MIN_STACKED: f32 = 190.0;
 
+/// Least height of the room under the bar. A shorter window (or a page whose header, search bar and notices fill
+/// it) makes the page scroll instead of squeezing the results and the preview to a sliver or hiding them.
+pub(super) const MIN_ROOM_H: f32 = 2.0 * MIN_STACKED + GAP + 60.0;
+
+/// `full` (what the page has left under its bar) grown downwards to at least [`MIN_ROOM_H`] plus `reserved`
+/// (the ribbon strip), so the cards always get a readable height and the page's scroll area reaches them.
+pub(super) fn room_for_cards(full: Rect, reserved: f32) -> Rect {
+    let mut room = full;
+    room.max.y = room.max.y.max(room.min.y + MIN_ROOM_H + reserved);
+    room
+}
+
 /// The rectangles of one frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Split {
@@ -79,6 +91,20 @@ mod tests {
 
     fn room(w: f32, h: f32) -> Rect {
         Rect::from_min_size(Pos2::new(100.0, 50.0), Vec2::new(w, h))
+    }
+
+    #[test]
+    fn a_short_room_grows_to_the_least_card_height_and_a_tall_one_is_left_alone() {
+        let short = room(900.0, 80.0);
+        let grown = room_for_cards(short, 0.0);
+        assert_eq!(grown.height(), MIN_ROOM_H);
+        assert_eq!((grown.min, grown.width()), (short.min, short.width()));
+        assert_eq!(room_for_cards(short, 40.0).height(), MIN_ROOM_H + 40.0);
+        let tall = room(900.0, 900.0);
+        assert_eq!(room_for_cards(tall, 40.0), tall);
+        // Both cards stacked still fit at the least height.
+        let s = split(grown, PageLayout { detail_first: false, stacked: true, split: 0.5 }, true);
+        assert!(s.detail.is_some() && s.list.height() >= MIN_STACKED);
     }
 
     #[test]

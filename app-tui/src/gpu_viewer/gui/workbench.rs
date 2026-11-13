@@ -25,7 +25,7 @@ impl Gui {
             pane_title(ui, "Inputs", p);
             egui::ScrollArea::vertical().id_salt("wb-inputs-scroll").auto_shrink([false, false]).show(ui, |ui| {
                 for c in &wb.inputs {
-                    self.pane_card(ui, c, true, p, out, hint);
+                    self.pane_card(ui, c, true, p, out);
                 }
                 if !wb.inputs_note.is_empty() {
                     ui.add_space(8.0);
@@ -40,7 +40,7 @@ impl Gui {
                     if k > 0 {
                         ui.add_space(4.0);
                     }
-                    self.pane_card(ui, c, false, p, out, hint);
+                    self.pane_card(ui, c, false, p, out);
                 }
             });
         });
@@ -157,7 +157,7 @@ impl Gui {
 
     /// One section of a pane: a header that folds it (title, a tag at the right), then its rows. Inputs draw their values
     /// as boxes.
-    fn pane_card(&mut self, ui: &mut egui::Ui, card: &Card, inputs: bool, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
+    fn pane_card(&mut self, ui: &mut egui::Ui, card: &Card, inputs: bool, p: &Palette, out: &mut Vec<Outcome>) {
         let open = *self.card_open.get(&card.id).unwrap_or(&!card.folded);
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
         self.targets.push((format!("{} card", card.title), rect));
@@ -183,7 +183,7 @@ impl Gui {
             for item in &card.items {
                 match item {
                     DockItem::Field { label, value, tone, action, focused } if inputs => self.input_row(ui, label, value, *tone, *action, *focused, p, out),
-                    _ => self.dock_item(ui, item, p, out, hint),
+                    _ => self.dock_item(ui, item, p, out),
                 }
             }
         }

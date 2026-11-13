@@ -71,6 +71,12 @@ pub struct SearchToolConfig {
     pub dry_run: bool,
     pub pdf_timeout_seconds: i32,
     pub ocr_scanned_pdfs: bool,
+    /// Opt-in trial PDF text backend (`yolowpdf`), scanner fallback.
+    pub pdf_yolow: bool,
+    /// Fold accents, ligatures and curly quotes when matching (off by default).
+    pub fold_accents: bool,
+    /// Typos allowed per word, 0 to 2 (0 = exact).
+    pub typo_tolerance: u8,
     pub file_timeout_seconds: i32,
     pub max_retries: i32,
 
@@ -108,13 +114,16 @@ impl Default for SearchToolConfig {
             export_csv: false,
             export_json: false,
 
-            parallel: false,
+            parallel: true,
             throttle_limit: search_core::models::default_throttle_limit(),
             heavy_throttle_limit: search_core::models::default_heavy_throttle_limit(),
             cache_file_path: String::new(),
             dry_run: false,
             pdf_timeout_seconds: 15,
             ocr_scanned_pdfs: false,
+            pdf_yolow: false,
+            fold_accents: false,
+            typo_tolerance: 0,
             file_timeout_seconds: 30,
             max_retries: 3,
             index: super::indexing::IndexSettings::default(),
@@ -124,7 +133,10 @@ impl Default for SearchToolConfig {
 
 /// Ported verbatim from `app/src/state.rs::parse_list` (state.rs:1168-1170).
 pub fn parse_list(text: &str) -> Vec<String> {
-    text.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    text.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// How one filter group is applied (its trailing `[tag]` in the Filters field).
@@ -163,8 +175,50 @@ pub fn parse_filter_groups(text: &str) -> Vec<ParsedGroup> {
         .collect()
 }
 
+/// Add one filter inside an existing group without changing its mode tag.
+/// Synonym suggestions use this only for Any-line groups, where filters are alternatives.
+pub fn append_filter_to_group(text: &str, group_index: usize, filter: &str) -> Option<String> {
+    if filter.trim().is_empty() {
+        return None;
+    }
+    let mut groups = text.split(';').map(str::to_string).collect::<Vec<_>>();
+    let raw_index = groups
+        .iter()
+        .enumerate()
+        .filter(|(_, group)| !parse_filter_groups(group).is_empty())
+        .nth(group_index)
+        .map(|(index, _)| index)?;
+    let group = groups.get_mut(raw_index)?;
+    let leading = group.len() - group.trim_start().len();
+    let trailing = group.len() - group.trim_end().len();
+    if leading + trailing >= group.len() {
+        return None;
+    }
+    let content = &group[leading..group.len() - trailing];
+    let (body, mode) = split_mode_tag(content);
+    let tag = if mode.is_some() {
+        &content[body.len()..]
+    } else {
+        ""
+    };
+    let body = body.trim_end();
+    let expanded = if body.is_empty() {
+        filter.trim().to_string()
+    } else {
+        format!("{body}, {}", filter.trim())
+    };
+    *group = format!(
+        "{}{expanded}{tag}{}",
+        &group[..leading],
+        &group[group.len() - trailing..]
+    );
+    Some(groups.join(";"))
+}
+
 fn split_mode_tag(part: &str) -> (&str, Option<GroupMode>) {
-    let Some(open) = part.rfind('[') else { return (part, None) };
+    let Some(open) = part.rfind('[') else {
+        return (part, None);
+    };
     if !part.ends_with(']') {
         return (part, None);
     }
@@ -200,29 +254,62 @@ pub fn mode_label(mode: GroupMode, global_proximity: i32) -> String {
     }
 }
 
+/// A group's mode as the query preview and Run view name it: the mode label,
+/// plus `NEAR/n` when a filter in it is a word-distance query (not in regex mode).
+pub fn group_label(group: &ParsedGroup, config: &SearchToolConfig) -> String {
+    let mode = mode_label(effective_mode(group, config), config.proximity_lines);
+    let mut distances: Vec<usize> = Vec::new();
+    if !config.use_regex {
+        distances.extend(group.filters.iter().filter_map(|f| search_core::near::parse(f)).map(|q| q.distance));
+    }
+    match distances.as_slice() {
+        [] => mode,
+        [n] => format!("{mode}; NEAR: within {n} words, same line"),
+        _ => format!("{mode}; NEAR: word distance, same line"),
+    }
+}
+
 /// Group's mode with the global default filled in (for the summary line).
 pub fn effective_mode(group: &ParsedGroup, config: &SearchToolConfig) -> GroupMode {
-    group.mode.unwrap_or(GroupMode::Match(config.match_mode, None))
+    group
+        .mode
+        .unwrap_or(GroupMode::Match(config.match_mode, None))
 }
 
 /// Primary filters/mode and extra groups for `config`, resolved against the
 /// global mode (Settings) - the single place the Filters field is interpreted.
 /// The primary is the first group that is not an exclusion.
-fn resolve_filters(config: &SearchToolConfig) -> (Vec<String>, MatchMode, i32, Vec<search_core::models::FilterGroup>) {
+fn resolve_filters(
+    config: &SearchToolConfig,
+) -> (
+    Vec<String>,
+    MatchMode,
+    i32,
+    Vec<search_core::models::FilterGroup>,
+) {
     let groups = parse_filter_groups(&config.filters_text);
-    let primary_idx = groups.iter().position(|g| !matches!(g.mode, Some(GroupMode::Exclude(_))));
+    let primary_idx = groups
+        .iter()
+        .position(|g| !matches!(g.mode, Some(GroupMode::Exclude(_))));
     let mut primary = (Vec::new(), config.match_mode, config.proximity_lines);
     let mut extra = Vec::new();
     for (i, g) in groups.into_iter().enumerate() {
         let (match_mode, proximity_lines, exclude) = match g.mode {
             Some(GroupMode::Match(m, n)) => (m, n.unwrap_or(config.proximity_lines), None),
-            Some(GroupMode::Exclude(scope)) => (config.match_mode, config.proximity_lines, Some(scope)),
+            Some(GroupMode::Exclude(scope)) => {
+                (config.match_mode, config.proximity_lines, Some(scope))
+            }
             None => (config.match_mode, config.proximity_lines, None),
         };
         if Some(i) == primary_idx {
             primary = (g.filters, match_mode, proximity_lines);
         } else {
-            extra.push(search_core::models::FilterGroup { filters: g.filters, match_mode, proximity_lines, exclude });
+            extra.push(search_core::models::FilterGroup {
+                filters: g.filters,
+                match_mode,
+                proximity_lines,
+                exclude,
+            });
         }
     }
     (primary.0, primary.1, primary.2, extra)
@@ -270,14 +357,23 @@ pub fn build_settings(config: &SearchToolConfig) -> SearchSettings {
         max_embed_lines: 4000,
         pdf_timeout_seconds: config.pdf_timeout_seconds,
         ocr_scanned_pdfs: config.ocr_scanned_pdfs,
+        pdf_yolow: config.pdf_yolow,
+        fold_accents: config.fold_accents,
+        typo_tolerance: config.typo_tolerance,
+        ocr_cache_dir: crate::paths::app_data_dir().map(|d| d.join("ocr-cache").to_string_lossy().into_owned()),
         export_csv: config.export_csv,
         export_json: config.export_json,
         open_report_when_done: config.open_report_when_done,
         parallel: config.parallel,
         throttle_limit: config.throttle_limit,
         heavy_throttle_limit: config.heavy_throttle_limit,
-        cache_file_path: if cache_path_raw.is_empty() { None } else { Some(cache_path_raw) },
+        cache_file_path: if cache_path_raw.is_empty() {
+            None
+        } else {
+            Some(cache_path_raw)
+        },
         failure_log_path: None,
+        semantic_index: config.index.semantic,
         dry_run: config.dry_run,
         max_retries: config.max_retries,
         retry_delay_ms: 250,
@@ -288,7 +384,15 @@ pub fn build_settings(config: &SearchToolConfig) -> SearchSettings {
 /// Mirrors `Path.GetInvalidFileNameChars()` on Windows (the shipped
 /// target) - ported verbatim from `app/src/state.rs::sanitize_file_name`.
 pub fn sanitize_file_name(name: &str) -> String {
-    name.chars().map(|c| if is_invalid_windows_filename_char(c) { '_' } else { c }).collect()
+    name.chars()
+        .map(|c| {
+            if is_invalid_windows_filename_char(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 fn is_invalid_windows_filename_char(c: char) -> bool {
@@ -313,7 +417,9 @@ pub fn regex_validation_error(config: &SearchToolConfig) -> Option<String> {
         use_regex: true,
         ..Default::default()
     };
-    search_core::matching::CompiledMatchState::build(&settings).err().map(|e| e.to_string())
+    search_core::matching::CompiledMatchState::build(&settings)
+        .err()
+        .map(|e| e.to_string())
 }
 
 /// Plain-text rendering of one file's hits (line number, matched filters,
@@ -321,7 +427,11 @@ pub fn regex_validation_error(config: &SearchToolConfig) -> Option<String> {
 /// one file's matches out on their own rather than the whole run's HTML
 /// report. Ported verbatim from `app/src/state.rs::FileResultView::hits_as_text`.
 pub fn hits_as_text(result: &FileSearchResult) -> String {
-    let mut out = format!("{}\n{}\n\n", result.full_name, "=".repeat(result.full_name.len()));
+    let mut out = format!(
+        "{}\n{}\n\n",
+        result.full_name,
+        "=".repeat(result.full_name.len())
+    );
     for hit in &result.hits {
         out.push_str(&format!(
             "Line {} (matched: {}):\n{}\n\n",
@@ -356,6 +466,7 @@ pub struct SearchRunState {
     pub elapsed: Option<std::time::Duration>,
     pub files_completed: i32,
     pub total_files: i32,
+    pub matching_lines: usize,
     /// Filled in when the run finishes; shown under the Run view.
     pub diagnostics: Option<super::diagnostics::SearchDiagnostics>,
 }
@@ -363,7 +474,9 @@ pub struct SearchRunState {
 impl SearchRunState {
     /// Seconds since the run began, or its final duration once finished.
     pub fn elapsed_secs(&self) -> Option<f64> {
-        self.elapsed.or_else(|| self.started.map(|s| s.elapsed())).map(|d| d.as_secs_f64())
+        self.elapsed
+            .or_else(|| self.started.map(|s| s.elapsed()))
+            .map(|d| d.as_secs_f64())
     }
 }
 
@@ -375,7 +488,10 @@ impl SearchRunState {
 pub fn apply_progress(run: &mut SearchRunState, report: SearchProgressReport) {
     if report.is_enumerating {
         run.status_text = if report.enumerated_file_count > 0 {
-            format!("Scanning folders... {} file(s) found so far", report.enumerated_file_count)
+            format!(
+                "Scanning folders... {} file(s) found so far",
+                report.enumerated_file_count
+            )
         } else {
             "Scanning folders...".to_string()
         };
@@ -399,9 +515,12 @@ pub fn apply_progress(run: &mut SearchRunState, report: SearchProgressReport) {
 
     if let Some(r) = &report.last_completed_result {
         if r.status == FileSearchStatus::Hit {
-            let already_present =
-                run.results.iter().any(|existing| existing.full_name.eq_ignore_ascii_case(&r.full_name));
+            let already_present = run
+                .results
+                .iter()
+                .any(|existing| existing.full_name.eq_ignore_ascii_case(&r.full_name));
             if !already_present {
+                run.matching_lines += r.hits.len();
                 run.results.push(r.clone());
                 run.has_results = true;
             }
@@ -424,7 +543,9 @@ pub fn merge_run_result(acc: &mut SearchRunResult, mut next: SearchRunResult) {
     acc.summary.enumeration_errors += next.summary.enumeration_errors;
     acc.summary.warnings.append(&mut next.summary.warnings);
     if let Some(mut cands) = next.dry_run_candidates.take() {
-        acc.dry_run_candidates.get_or_insert_with(Vec::new).append(&mut cands);
+        acc.dry_run_candidates
+            .get_or_insert_with(Vec::new)
+            .append(&mut cands);
     }
 }
 
@@ -437,7 +558,10 @@ pub fn merge_run_result(acc: &mut SearchRunResult, mut next: SearchRunResult) {
 pub fn summarize(summary: &SearchRunSummary) -> String {
     format!(
         "Skipped: {} too large, {} binary, {} unreadable, {} unexpected errors",
-        summary.skipped_too_large, summary.skipped_binary, summary.skipped_read_error, summary.skipped_unexpected_error
+        summary.skipped_too_large,
+        summary.skipped_binary,
+        summary.skipped_read_error,
+        summary.skipped_unexpected_error
     )
 }
 
@@ -462,7 +586,10 @@ mod tests {
 
     #[test]
     fn parse_list_splits_trims_and_drops_empties() {
-        assert_eq!(parse_list("apple, banana ,  , cherry"), vec!["apple", "banana", "cherry"]);
+        assert_eq!(
+            parse_list("apple, banana ,  , cherry"),
+            vec!["apple", "banana", "cherry"]
+        );
         assert_eq!(parse_list(""), Vec::<String>::new());
         assert_eq!(parse_list("   "), Vec::<String>::new());
         assert_eq!(parse_list("single"), vec!["single"]);
@@ -478,7 +605,9 @@ mod tests {
         assert_eq!(settings.output_name, Some("my report".to_string()));
         assert_eq!(settings.extensions, Some(vec![".txt".to_string()]));
         assert_eq!(settings.cache_file_path, None);
-        assert!(settings.exclude_folders.contains(&"node_modules".to_string()));
+        assert!(settings
+            .exclude_folders
+            .contains(&"node_modules".to_string()));
         assert!(settings.exclude_folders.contains(&".git".to_string()));
         assert_eq!(settings.max_embed_lines, 4000);
         assert_eq!(settings.retry_delay_ms, 250);
@@ -487,12 +616,18 @@ mod tests {
     #[test]
     fn build_settings_excludes_the_fast_reindex_folder_unconditionally() {
         let settings = build_settings(&config());
-        assert!(settings.exclude_folders.iter().any(|f| f.contains("native-search-index")));
+        assert!(settings
+            .exclude_folders
+            .iter()
+            .any(|f| f.contains("native-search-index")));
     }
 
     #[test]
     fn sanitize_file_name_replaces_every_windows_invalid_char() {
-        assert_eq!(sanitize_file_name(r#"a<b>c:d"e/f\g|h?i*j"#), "a_b_c_d_e_f_g_h_i_j");
+        assert_eq!(
+            sanitize_file_name(r#"a<b>c:d"e/f\g|h?i*j"#),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
         assert_eq!(sanitize_file_name("normal-name_123"), "normal-name_123");
     }
 
@@ -519,13 +654,22 @@ mod tests {
     }
 
     fn no_hit_result(full_name: &str) -> FileSearchResult {
-        FileSearchResult { status: FileSearchStatus::NoHit, ..hit_result(full_name) }
+        FileSearchResult {
+            status: FileSearchStatus::NoHit,
+            ..hit_result(full_name)
+        }
     }
 
     #[test]
     fn filters_without_a_semicolon_are_one_group_exactly_as_before() {
         let g = parse_filter_groups("apple, banana");
-        assert_eq!(g, vec![ParsedGroup { filters: vec!["apple".into(), "banana".into()], mode: None }]);
+        assert_eq!(
+            g,
+            vec![ParsedGroup {
+                filters: vec!["apple".into(), "banana".into()],
+                mode: None
+            }]
+        );
     }
 
     #[test]
@@ -534,22 +678,60 @@ mod tests {
         assert_eq!(g.len(), 4);
         assert_eq!(g[0].mode, None);
         assert_eq!(g[1].filters, vec!["floor", "two"]);
-        assert_eq!(g[1].mode, Some(GroupMode::Match(MatchMode::Proximity, Some(3))));
-        assert_eq!(g[2].mode, Some(GroupMode::Match(MatchMode::AllInFile, None)));
-        assert_eq!(g[3].mode, Some(GroupMode::Match(MatchMode::Proximity, None)));
+        assert_eq!(
+            g[1].mode,
+            Some(GroupMode::Match(MatchMode::Proximity, Some(3)))
+        );
+        assert_eq!(
+            g[2].mode,
+            Some(GroupMode::Match(MatchMode::AllInFile, None))
+        );
+        assert_eq!(
+            g[3].mode,
+            Some(GroupMode::Match(MatchMode::Proximity, None))
+        );
+    }
+
+    #[test]
+    fn appending_an_alternative_keeps_its_any_mode_tag_and_group() {
+        assert_eq!(
+            append_filter_to_group("shaft [any]; load", 0, "axle").as_deref(),
+            Some("shaft, axle [any]; load")
+        );
+        assert_eq!(
+            append_filter_to_group("shaft; load", 1, "force").as_deref(),
+            Some("shaft; load, force")
+        );
+        assert_eq!(
+            append_filter_to_group("shaft [all]", 0, "axle").as_deref(),
+            Some("shaft, axle [all]")
+        );
     }
 
     #[test]
     fn not_tags_make_exclusion_groups_and_never_become_the_primary() {
-        let config = SearchToolConfig { filters_text: "draft [not] ; house ; wip [not line]".to_string(), ..Default::default() };
+        let config = SearchToolConfig {
+            filters_text: "draft [not] ; house ; wip [not line]".to_string(),
+            ..Default::default()
+        };
         let s = build_settings(&config);
-        assert_eq!(s.filters, vec!["house"], "the first non-exclusion group is the primary");
+        assert_eq!(
+            s.filters,
+            vec!["house"],
+            "the first non-exclusion group is the primary"
+        );
         assert_eq!(s.filter_groups.len(), 2);
         assert_eq!(s.filter_groups[0].exclude, Some(ExcludeScope::File));
         assert_eq!(s.filter_groups[1].exclude, Some(ExcludeScope::Line));
 
-        let only_not = build_settings(&SearchToolConfig { filters_text: "draft [not]".to_string(), ..Default::default() });
-        assert!(only_not.filters.is_empty(), "an exclusion alone is not a search");
+        let only_not = build_settings(&SearchToolConfig {
+            filters_text: "draft [not]".to_string(),
+            ..Default::default()
+        });
+        assert!(
+            only_not.filters.is_empty(),
+            "an exclusion alone is not a search"
+        );
     }
 
     #[test]
@@ -558,7 +740,24 @@ mod tests {
         assert_eq!(g.len(), 3);
         assert_eq!(g[2].filters, vec!["Test 4"]);
         assert_eq!(g[2].mode, Some(GroupMode::Exclude(ExcludeScope::File)));
-        assert_eq!(parse_filter_groups("a[near 2]")[0].mode, Some(GroupMode::Match(MatchMode::Proximity, Some(2))));
+        assert_eq!(
+            parse_filter_groups("a[near 2]")[0].mode,
+            Some(GroupMode::Match(MatchMode::Proximity, Some(2)))
+        );
+    }
+
+    #[test]
+    fn group_label_names_near_queries_but_not_in_regex_mode() {
+        let mut config = SearchToolConfig { filters_text: "torque NEAR/5 bolt".to_string(), ..Default::default() };
+        let g = parse_filter_groups(&config.filters_text);
+        assert_eq!(group_label(&g[0], &config), "any line; NEAR: within 5 words, same line");
+        config.use_regex = true;
+        assert_eq!(group_label(&g[0], &config), "any line");
+        config.use_regex = false;
+        let plain = parse_filter_groups("torque, bolt [all]");
+        assert_eq!(group_label(&plain[0], &config), "all in file");
+        let g = parse_filter_groups("a NEAR/2 b, c NEAR/3 d");
+        assert_eq!(group_label(&g[0], &config), "any line; NEAR: word distance, same line");
     }
 
     #[test]
@@ -567,7 +766,11 @@ mod tests {
         assert_eq!(g[0].filters, vec!["colou[ru]"]);
         assert_eq!(g[0].mode, None);
         let g = parse_filter_groups("a [near x]");
-        assert_eq!(g[0].filters, vec!["a [near x]"], "unknown tag text stays part of the filter");
+        assert_eq!(
+            g[0].filters,
+            vec!["a [near x]"],
+            "unknown tag text stays part of the filter"
+        );
     }
 
     #[test]
@@ -580,14 +783,37 @@ mod tests {
         };
         let s = build_settings(&config);
         assert_eq!(s.filters, vec!["house"]);
-        assert_eq!(s.match_mode, MatchMode::AllInFile, "untagged primary uses the global mode");
+        assert_eq!(
+            s.match_mode,
+            MatchMode::AllInFile,
+            "untagged primary uses the global mode"
+        );
         assert_eq!(s.filter_groups.len(), 2);
-        assert_eq!((s.filter_groups[0].match_mode, s.filter_groups[0].proximity_lines), (MatchMode::Proximity, 3));
-        assert_eq!((s.filter_groups[1].match_mode, s.filter_groups[1].proximity_lines), (MatchMode::AllInFile, 7));
+        assert_eq!(
+            (
+                s.filter_groups[0].match_mode,
+                s.filter_groups[0].proximity_lines
+            ),
+            (MatchMode::Proximity, 3)
+        );
+        assert_eq!(
+            (
+                s.filter_groups[1].match_mode,
+                s.filter_groups[1].proximity_lines
+            ),
+            (MatchMode::AllInFile, 7)
+        );
 
-        let tagged = SearchToolConfig { filters_text: "a, b [near 2]".to_string(), ..Default::default() };
+        let tagged = SearchToolConfig {
+            filters_text: "a, b [near 2]".to_string(),
+            ..Default::default()
+        };
         let s = build_settings(&tagged);
-        assert_eq!((s.match_mode, s.proximity_lines), (MatchMode::Proximity, 2), "a tag on the first group sets the primary mode");
+        assert_eq!(
+            (s.match_mode, s.proximity_lines),
+            (MatchMode::Proximity, 2),
+            "a tag on the first group sets the primary mode"
+        );
     }
 
     #[test]
@@ -595,9 +821,16 @@ mod tests {
         let mut run = SearchRunState::default();
         apply_progress(
             &mut run,
-            SearchProgressReport { is_enumerating: true, enumerated_file_count: 12, ..Default::default() },
+            SearchProgressReport {
+                is_enumerating: true,
+                enumerated_file_count: 12,
+                ..Default::default()
+            },
         );
-        assert_eq!(run.status_text, "Scanning folders... 12 file(s) found so far");
+        assert_eq!(
+            run.status_text,
+            "Scanning folders... 12 file(s) found so far"
+        );
         assert_eq!(run.progress_percent, 0.0);
     }
 
@@ -676,12 +909,20 @@ mod tests {
     fn merge_run_result_sums_counters_and_concatenates_files() {
         let mut acc = SearchRunResult {
             file_results: vec![hit_result("a.txt")],
-            summary: SearchRunSummary { files_searched: 3, skipped_binary: 1, ..Default::default() },
+            summary: SearchRunSummary {
+                files_searched: 3,
+                skipped_binary: 1,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let next = SearchRunResult {
             file_results: vec![hit_result("b.txt")],
-            summary: SearchRunSummary { files_searched: 2, skipped_binary: 4, ..Default::default() },
+            summary: SearchRunSummary {
+                files_searched: 2,
+                skipped_binary: 4,
+                ..Default::default()
+            },
             ..Default::default()
         };
         merge_run_result(&mut acc, next);
@@ -708,19 +949,31 @@ mod tests {
 
     #[test]
     fn regex_validation_is_none_when_regex_is_off() {
-        let config = SearchToolConfig { use_regex: false, filters_text: "(unbalanced".to_string(), ..Default::default() };
+        let config = SearchToolConfig {
+            use_regex: false,
+            filters_text: "(unbalanced".to_string(),
+            ..Default::default()
+        };
         assert_eq!(regex_validation_error(&config), None);
     }
 
     #[test]
     fn regex_validation_catches_an_invalid_pattern() {
-        let config = SearchToolConfig { use_regex: true, filters_text: "(unbalanced".to_string(), ..Default::default() };
+        let config = SearchToolConfig {
+            use_regex: true,
+            filters_text: "(unbalanced".to_string(),
+            ..Default::default()
+        };
         assert!(regex_validation_error(&config).is_some());
     }
 
     #[test]
     fn regex_validation_passes_a_valid_pattern() {
-        let config = SearchToolConfig { use_regex: true, filters_text: r"\d+".to_string(), ..Default::default() };
+        let config = SearchToolConfig {
+            use_regex: true,
+            filters_text: r"\d+".to_string(),
+            ..Default::default()
+        };
         assert_eq!(regex_validation_error(&config), None);
     }
 
@@ -741,6 +994,9 @@ mod tests {
             skipped_unexpected_error: 0,
             ..Default::default()
         };
-        assert_eq!(summarize(&summary), "Skipped: 3 too large, 1 binary, 0 unreadable, 0 unexpected errors");
+        assert_eq!(
+            summarize(&summary),
+            "Skipped: 3 too large, 1 binary, 0 unreadable, 0 unexpected errors"
+        );
     }
 }

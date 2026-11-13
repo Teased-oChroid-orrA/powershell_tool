@@ -22,7 +22,7 @@ path = "src/main.rs"
 # since this is a real, end-user-facing binary; a caller embedding
 # search-core as a library dependency without wanting the ~12MB model/
 # dependency cost would omit it.
-search-core = { path = "../search-core", features = ["ocr"] }
+search-core = { path = "../search-core", features = ["ocr", "pdf-yolow"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tokio-util = "0.7"
 clap = { version = "4", features = ["derive"] }

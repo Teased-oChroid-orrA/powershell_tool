@@ -88,12 +88,12 @@ fn draw_run_hint(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToo
 /// than one `;`-group; a one-line syntax tip while it is focused. Shown
 /// whenever it applies (not only before the first run).
 pub(crate) fn filter_group_hint(config: &super::model::SearchToolConfig, filters_focused: bool) -> String {
-    use super::model::{effective_mode, mode_label, parse_filter_groups, GroupMode};
+    use super::model::{group_label, parse_filter_groups, GroupMode};
     let groups = parse_filter_groups(&config.filters_text);
     if groups.len() > 1 {
         let mut text = groups
             .iter()
-            .map(|g| format!("{} [{}]", g.filters.join(", "), mode_label(effective_mode(g, config), config.proximity_lines)))
+            .map(|g| format!("{} [{}]", g.filters.join(", "), group_label(g, config)))
             .collect::<Vec<_>>()
             .join(" + ");
         if groups.iter().all(|g| matches!(g.mode, Some(GroupMode::Exclude(_)))) {

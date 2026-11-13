@@ -20,7 +20,8 @@ use search_core::models::FileSearchResult;
 pub fn highlight_ranges(line: &str, matched_filters: &[String]) -> Vec<(usize, usize)> {
     let mut ranges: Vec<(usize, usize)> = Vec::new();
 
-    for f in matched_filters {
+    // A NEAR query highlights both of its words.
+    for f in &search_core::near::expand_terms(matched_filters, false) {
         if f.is_empty() {
             continue;
         }
@@ -105,6 +106,12 @@ pub fn metadata_summary(result: &FileSearchResult) -> String {
 mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier};
+
+    #[test]
+    fn a_near_query_highlights_both_of_its_words() {
+        let line = "tighten the Bolt to torque";
+        assert_eq!(highlight_ranges(line, &["torque NEAR/5 bolt".into()]), vec![(12, 16), (20, 26)]);
+    }
 
     #[test]
     fn unicode_case_expansion_keeps_original_byte_offsets() {

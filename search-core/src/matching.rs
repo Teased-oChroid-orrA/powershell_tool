@@ -56,7 +56,9 @@ use std::collections::HashMap;
 
 use fancy_regex::{Regex as FancyRegex, RegexBuilder as FancyRegexBuilder};
 
+use crate::near::CompiledNear;
 use crate::models::{ExcludeScope, FilterGroup, LineHit, MatchMode, SearchSettings};
+use crate::textfold::{self, FuzzyFilter};
 
 /// One regex filter that failed to compile, paired with why - mirrors the
 /// C# side's `(string Filter, string Error)` tuple list.
@@ -149,6 +151,28 @@ pub struct CompiledMatchState {
     filters_lower: Vec<String>,
     exclude_filters_lower: Vec<String>,
 
+    /// Speed-only reject test when every filter is ASCII (literal and
+    /// whole-word modes, no folding): a line this regex rejects cannot
+    /// contain the filter in any case, so the exact check is skipped.
+    /// Exact because the only non-ASCII chars whose lowercase holds ASCII
+    /// are U+212A (which `(?i)` also matches) and U+0130 (which it does not,
+    /// so lines containing U+0130 take the original path); proved by
+    /// `lowercase_to_ascii_sources_are_only_kelvin_and_dotted_i`.
+    ascii_prefilter: Option<FancyRegex>,
+    ascii_exclude_prefilter: Option<FancyRegex>,
+
+    /// `SearchSettings::fold_accents` in effect (never in regex mode).
+    fold: bool,
+    /// Per filter slot, typo-tolerant form (`SearchSettings::typo_tolerance`).
+    fuzzy: Vec<Option<FuzzyFilter>>,
+
+    /// Per filter slot, `Some` when the filter is a `word NEAR/n word` query
+    /// (see `crate::near`); such a slot is decided by word distance on the
+    /// line, and every pre-check/lowercase table above holds its first word
+    /// in its place (a line without that word cannot match).
+    near: Vec<Option<CompiledNear>>,
+    has_near: bool,
+
     /// One derived (settings, state) pair per extra (non-exclusion) filter group.
     groups: Vec<(SearchSettings, CompiledMatchState)>,
 
@@ -218,10 +242,32 @@ impl CompiledMatchState {
             combined_exclude_regex: None,
             filters_lower: Vec::new(),
             exclude_filters_lower: Vec::new(),
+            ascii_prefilter: None,
+            ascii_exclude_prefilter: None,
+            fold: settings.fold_accents && !settings.use_regex,
+            fuzzy: Vec::new(),
+            near: Vec::new(),
+            has_near: false,
             groups: Vec::new(),
             file_exclude: None,
             effective: None,
         };
+
+        // Filters as the pre-checks see them: a NEAR query stands for its first word.
+        let mut probe_filters = settings.filters.clone();
+        if !settings.use_regex {
+            state.near = settings
+                .filters
+                .iter()
+                .map(|f| crate::near::parse(f).map(|q| CompiledNear::new(&q, state.fold, settings.whole_word)))
+                .collect();
+            state.has_near = state.near.iter().any(Option::is_some);
+            for (f, n) in probe_filters.iter_mut().zip(&state.near) {
+                if let Some(n) = n {
+                    *f = n.probe().to_string();
+                }
+            }
+        }
 
         if settings.use_regex {
             let mut invalid = Vec::new();
@@ -259,36 +305,62 @@ impl CompiledMatchState {
             // skeleton - structurally always a valid pattern, so unlike
             // regex mode there's no user-facing invalid-filter case here
             // (matches the C# side, which doesn't try/catch this either).
+            let fold = state.fold;
+            if !fold {
+                // Lowercased filters for the ASCII whole-word fast path.
+                state.filters_lower = probe_filters.iter().map(|f| f.to_lowercase()).collect();
+                state.exclude_filters_lower = settings.exclude_filters.iter().map(|f| f.to_lowercase()).collect();
+            }
             for f in &settings.filters {
-                let rx = compile_case_insensitive(&whole_word_pattern(f))
+                let rx = compile_case_insensitive(&whole_word_pattern(&prepared(f, fold)))
                     .expect("whole-word pattern is always valid regex");
                 state.whole_word_filter_regex.insert(f.clone(), rx);
             }
             for f in &settings.exclude_filters {
-                let rx = compile_case_insensitive(&whole_word_pattern(f))
+                let rx = compile_case_insensitive(&whole_word_pattern(&prepared(f, fold)))
                     .expect("whole-word pattern is always valid regex");
                 state.whole_word_exclude_regex.insert(f.clone(), rx);
             }
         } else {
             // Literal mode - no fancy_regex involved at all, see the doc
             // comment on `filters_lower`/`exclude_filters_lower`.
-            state.filters_lower = settings.filters.iter().map(|f| f.to_lowercase()).collect();
+            let fold = state.fold;
+            state.filters_lower = probe_filters.iter().map(|f| lower_or_fold(f, fold)).collect();
             state.exclude_filters_lower =
-                settings.exclude_filters.iter().map(|f| f.to_lowercase()).collect();
+                settings.exclude_filters.iter().map(|f| lower_or_fold(f, fold)).collect();
         }
 
         if settings.use_regex || settings.whole_word {
+            let fold = state.fold;
+            let fold_all = |fs: &[String]| -> Vec<String> { fs.iter().map(|f| prepared(f, fold)).collect() };
             state.combined_filter_regex =
-                build_combined(&settings.filters, settings.use_regex, settings.whole_word);
+                build_combined(&fold_all(&probe_filters), settings.use_regex, settings.whole_word);
             state.combined_exclude_regex = if !settings.exclude_filters.is_empty() {
                 build_combined(
-                    &settings.exclude_filters,
+                    &fold_all(&settings.exclude_filters),
                     settings.use_regex,
                     settings.whole_word,
                 )
             } else {
                 None
             };
+        }
+
+        if !settings.use_regex && !state.fold {
+            state.ascii_prefilter = ascii_prefilter(&probe_filters);
+            state.ascii_exclude_prefilter = ascii_prefilter(&settings.exclude_filters);
+        }
+        if !settings.use_regex && settings.typo_tolerance > 0 {
+            let fold = state.fold;
+            state.fuzzy = settings
+                .filters
+                .iter()
+                .zip(&state.near)
+                .map(|(f, near)| match near {
+                    Some(_) => None, // word distance is exact; no typo tolerance on NEAR words
+                    None => FuzzyFilter::new(&lower_or_fold(f, fold), settings.typo_tolerance),
+                })
+                .collect();
         }
 
         let mut invalid_in_groups = Vec::new();
@@ -305,6 +377,34 @@ impl CompiledMatchState {
 
         Ok(state)
     }
+}
+
+/// A filter as the matcher compares it: unchanged for regex, lowercased and
+/// folded when `fold` (the whole-word regex is case-insensitive already).
+fn prepared(filter: &str, fold: bool) -> String {
+    if fold {
+        textfold::fold_lower(filter)
+    } else {
+        filter.to_string()
+    }
+}
+
+fn lower_or_fold(filter: &str, fold: bool) -> String {
+    if fold {
+        textfold::fold_lower(filter)
+    } else {
+        filter.to_lowercase()
+    }
+}
+
+/// See [`CompiledMatchState::ascii_prefilter`]. `None` unless there is at
+/// least one filter and all of them are ASCII.
+fn ascii_prefilter(filters: &[String]) -> Option<FancyRegex> {
+    if filters.is_empty() || !filters.iter().all(|f| f.is_ascii()) {
+        return None;
+    }
+    let parts: Vec<String> = filters.iter().map(|f| fancy_regex::escape(f).into_owned()).collect();
+    compile_case_insensitive(&format!("(?:{})", parts.join("|"))).ok()
 }
 
 fn build_combined(filters: &[String], use_regex: bool, whole_word: bool) -> Option<FancyRegex> {
@@ -419,36 +519,54 @@ fn apply_filter_group(
     // itself part of the fix: same substring semantics, far fewer
     // allocations and no backtracking-VM invocation per line.
     let is_literal = !settings.use_regex && !settings.whole_word;
+    let fold = state.fold;
+    let typo_active = state.fuzzy.iter().any(Option::is_some);
 
     for (i, line) in lines.iter().enumerate() {
         let line_number = (i + 1) as i32;
-        let line_lower = if is_literal { Some(line.to_lowercase()) } else { None };
+        // Lowercased (and folded) copy of the line, made only when a check
+        // that needs it actually runs - most lines are rejected first by the
+        // ASCII prefilter or the combined regex.
+        let mut lower: Option<String> = None;
+        let ascii_line = !fold && !line.contains('\u{130}');
+        // Regex-routed checks see the folded line when folding is on.
+        let folded_line: Option<String> = if fold && !is_literal { Some(textfold::fold_lower(line)) } else { None };
+        let regex_text: &str = folded_line.as_deref().unwrap_or(line);
+        // Whole-word on an ASCII line checks word boundaries by hand: the
+        // lookaround regex costs ~20 us a line and runs once per filter.
+        let ww_fast = settings.whole_word && !settings.use_regex && !fold && line.is_ascii();
 
         if !settings.exclude_filters.is_empty() {
             let exclude_candidate = if is_literal {
-                let ll = line_lower.as_deref().unwrap();
-                state.exclude_filters_lower.iter().any(|f| ll.contains(f.as_str()))
+                match (&state.ascii_exclude_prefilter, ascii_line) {
+                    (Some(pf), true) => pf.is_match(line).unwrap_or(true),
+                    _ => true,
+                }
             } else {
                 state
                     .combined_exclude_regex
                     .as_ref()
-                    .map(|rx| rx.is_match(line).unwrap_or(true))
+                    .map(|rx| rx.is_match(regex_text).unwrap_or(true))
                     .unwrap_or(true)
             };
 
             if exclude_candidate {
                 let is_excluded_line = if is_literal {
-                    let ll = line_lower.as_deref().unwrap();
+                    let ll = lowered(&mut lower, line, fold);
                     state.exclude_filters_lower.iter().any(|f| ll.contains(f.as_str()))
                 } else {
-                    settings.exclude_filters.iter().any(|xf| {
-                        is_hit(
-                            line,
-                            xf,
-                            settings,
-                            &state.compiled_exclude_regex,
-                            &state.whole_word_exclude_regex,
-                        )
+                    let ww_lower = if ww_fast { Some(lowered(&mut lower, line, false)) } else { None };
+                    settings.exclude_filters.iter().enumerate().any(|(xi, xf)| {
+                        match ww_lower.zip(state.exclude_filters_lower.get(xi)) {
+                            Some((hay, needle)) if usable_ascii_needle(needle) => whole_word_ascii(hay, needle),
+                            _ => is_hit(
+                                regex_text,
+                                xf,
+                                settings,
+                                &state.compiled_exclude_regex,
+                                &state.whole_word_exclude_regex,
+                            ),
+                        }
                     })
                 };
                 if is_excluded_line {
@@ -461,30 +579,59 @@ fn apply_filter_group(
         }
 
         let mut matched_filters = Vec::new();
-        let candidate_line = if is_literal {
-            let ll = line_lower.as_deref().unwrap();
-            state.filters_lower.iter().any(|f| ll.contains(f.as_str()))
+        let candidate_line = if typo_active {
+            true // a near-miss word is not a substring: only the per-filter pass can tell
+        } else if is_literal {
+            match (&state.ascii_prefilter, ascii_line) {
+                (Some(pf), true) => pf.is_match(line).unwrap_or(true),
+                _ => {
+                    let ll = lowered(&mut lower, line, fold);
+                    state.filters_lower.iter().any(|f| ll.contains(f.as_str()))
+                }
+            }
         } else {
-            state
-                .combined_filter_regex
-                .as_ref()
-                .map(|rx| rx.is_match(line).unwrap_or(true))
-                .unwrap_or(true)
+            let prefiltered_out = match (&state.ascii_prefilter, ascii_line, settings.whole_word) {
+                (Some(pf), true, true) => !pf.is_match(line).unwrap_or(true),
+                _ => false,
+            };
+            // An ASCII line that passed the prefilter goes straight to the
+            // per-filter boundary check (the combined regex is the slow part).
+            !prefiltered_out
+                && (ww_fast
+                    || state
+                        .combined_filter_regex
+                        .as_ref()
+                        .map(|rx| rx.is_match(regex_text).unwrap_or(true))
+                        .unwrap_or(true))
         };
 
         if candidate_line {
+            if is_literal || typo_active || ww_fast || state.has_near {
+                lowered(&mut lower, line, fold);
+            }
+            let low = lower.as_deref();
+            let line_words: Option<Vec<&str>> = if typo_active { low.map(textfold::words) } else { None };
             for (fi, f) in settings.filters.iter().enumerate() {
-                let hit = if is_literal {
-                    line_lower.as_deref().unwrap().contains(state.filters_lower[fi].as_str())
+                let mut hit = if let Some(Some(near)) = state.near.get(fi) {
+                    near.matches(low.unwrap_or_default())
+                } else if is_literal {
+                    low.unwrap_or_default().contains(state.filters_lower[fi].as_str())
+                } else if ww_fast && usable_ascii_needle(&state.filters_lower[fi]) {
+                    whole_word_ascii(low.unwrap_or_default(), &state.filters_lower[fi])
                 } else {
                     is_hit(
-                        line,
+                        regex_text,
                         f,
                         settings,
                         &state.compiled_filter_regex,
                         &state.whole_word_filter_regex,
                     )
                 };
+                if !hit {
+                    if let (Some(Some(ff)), Some(w)) = (state.fuzzy.get(fi), line_words.as_deref()) {
+                        hit = ff.matches(w);
+                    }
+                }
                 if hit {
                     matched_filters.push(f.clone());
                     per_filter_hit_lines[fi].push(line_number);
@@ -527,6 +674,35 @@ fn apply_filter_group(
     }
 
     outcome
+}
+
+/// A lowercased filter the ASCII whole-word fast path can decide exactly.
+fn usable_ascii_needle(needle: &str) -> bool {
+    !needle.is_empty() && needle.is_ascii()
+}
+
+/// `whole_word_pattern(needle)` evaluated by hand on an ASCII, lowercased
+/// line: an occurrence counts when the bytes just before and after it are
+/// not ASCII letters, digits or `_`. Every start position is tried, as the
+/// regex does (occurrences may overlap).
+fn whole_word_ascii(hay: &str, needle: &str) -> bool {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut from = 0;
+    while let Some(pos) = hay[from..].find(needle) {
+        let start = from + pos;
+        let end = start + n.len();
+        if (start == 0 || !word(h[start - 1])) && (end == h.len() || !word(h[end])) {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
+/// The line lowercased (and folded when `fold`), computed once per line.
+fn lowered<'a>(slot: &'a mut Option<String>, line: &str, fold: bool) -> &'a str {
+    slot.get_or_insert_with(|| if fold { textfold::fold_lower(line) } else { line.to_lowercase() })
 }
 
 fn is_hit(
@@ -851,6 +1027,130 @@ mod tests {
         assert_eq!(get_min_line_range_across_filters(&lists), 5);
     }
 
+    #[test]
+    fn lowercase_to_ascii_sources_are_only_kelvin_and_dotted_i() {
+        for cp in 0..=0x10FFFFu32 {
+            let Some(c) = char::from_u32(cp) else { continue };
+            if c.is_ascii() || !c.to_lowercase().any(|l| l.is_ascii()) {
+                continue;
+            }
+            assert!(c == '\u{212A}' || c == '\u{130}', "U+{cp:04X} lowercases to ASCII; the prefilter must know it");
+        }
+        let rx = compile_case_insensitive("k").unwrap();
+        assert!(rx.is_match("\u{212A}").unwrap(), "(?i)k must match the Kelvin sign");
+    }
+
+    #[test]
+    fn ascii_whole_word_check_equals_the_lookaround_regex() {
+        let hays = [
+            "", "a", "cat", "a cat sat", "concat", "cats", "cat_", "_cat", "cat1", "1cat", "(cat)", "cat-cat", "xcat cat", "aaa", "aa aa",
+            "c# is", "c#sharp", "x c#", "--", "---", "a--b", ". .", "a. .b", "end cat", "cat cat cat", "tcat cat",
+        ];
+        let needles = ["cat", "c#", "aa", "--", ". .", "a", "-", "t c", "x", "1"];
+        for n in needles {
+            let rx = compile_case_insensitive(&whole_word_pattern(n)).unwrap();
+            for h in hays {
+                assert_eq!(whole_word_ascii(h, n), rx.is_match(h).unwrap(), "needle {n:?} in {h:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn whole_word_mixed_ascii_and_unicode_lines_agree_with_the_regex_path() {
+        let mut s = settings_with_filters(&["cat", "caf\u{e9}"]);
+        s.whole_word = true;
+        s.exclude_filters = vec!["dog".to_string()];
+        let lines = ["a CAT", "cat\u{e9}", "\u{e9}cat", "le caf\u{e9} noir", "cat dog", "DOG cat", "cats", "x caf\u{e9}s"];
+        // Reference: the regex-only definition.
+        let rx_cat = compile_case_insensitive(&whole_word_pattern("cat")).unwrap();
+        let rx_cafe = compile_case_insensitive(&whole_word_pattern("caf\u{e9}")).unwrap();
+        let rx_dog = compile_case_insensitive(&whole_word_pattern("dog")).unwrap();
+        let want: Vec<i32> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| !rx_dog.is_match(l).unwrap() && (rx_cat.is_match(l).unwrap() || rx_cafe.is_match(l).unwrap()))
+            .map(|(i, _)| (i + 1) as i32)
+            .collect();
+        assert_eq!(hit_lines(&s, &lines), want);
+    }
+
+    fn hit_lines(settings: &SearchSettings, text: &[&str]) -> Vec<i32> {
+        run(settings, text).hits.iter().map(|h| h.line_number).collect()
+    }
+
+    #[test]
+    fn ascii_prefilter_never_changes_literal_results() {
+        // Differential test against the original definition of literal mode:
+        // lowercase(line) contains lowercase(filter). Includes non-ASCII lines
+        // (Kelvin sign and dotted I lowercase to ASCII) that must bypass the prefilter.
+        let lines = [
+            "Torque the BOLT", "nothing", "", "K\u{212a}elvin", "\u{130}stanbul", "caf\u{e9} bolt", "tor", "TORQUE\u{e9}",
+            "x\u{17f}y", "bolt-on", "Bolt", "a b c",
+        ];
+        for filters in [vec!["torque"], vec!["k"], vec!["i"], vec!["bolt", "kelvin"], vec!["Bolt"], vec!["s"], vec![""], vec!["caf\u{e9}"]] {
+            let s = settings_with_filters(&filters);
+            let expected: Vec<i32> = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| filters.iter().any(|f| l.to_lowercase().contains(&f.to_lowercase())))
+                .map(|(i, _)| (i + 1) as i32)
+                .collect();
+            assert_eq!(hit_lines(&s, &lines), expected, "filters {filters:?}");
+        }
+        let mut ex = settings_with_filters(&["bolt"]);
+        ex.exclude_filters = vec!["Kelvin".to_string()];
+        assert_eq!(hit_lines(&ex, &["bolt K\u{212a}elvin", "bolt", "kelvin only"]), vec![2], "excludes use the same prefilter safely");
+    }
+
+    #[test]
+    fn whole_word_prefilter_keeps_the_exact_whole_word_rule() {
+        let mut s = settings_with_filters(&["cat"]);
+        s.whole_word = true;
+        let lines = ["a CAT sat", "concatenate", "cat", "cat's", "cat_1", "caf\u{e9} cat", "Cat-nap", "\u{e9}cat"];
+        // "cat_1" and "\u{e9}cat" glue to a letter/underscore, so they are not whole words.
+        assert_eq!(hit_lines(&s, &lines), vec![1, 3, 4, 6, 7]);
+    }
+
+    #[test]
+    fn fold_accents_matches_across_unicode_spellings_and_is_off_by_default() {
+        let text = ["un Cafe\u{301} noir", "un caf\u{e9} noir", "un cafe noir", "pre\u{a0}load", "don\u{2019}t", "o\u{fb03}ce"];
+        let off = settings_with_filters(&["cafe"]);
+        assert_eq!(hit_lines(&off, &text), vec![1, 3], "default: exact characters only");
+        let mut on = settings_with_filters(&["cafe"]);
+        on.fold_accents = true;
+        assert_eq!(hit_lines(&on, &text), vec![1, 2, 3]);
+        on.filters = vec!["Caf\u{e9}".to_string()];
+        assert_eq!(hit_lines(&on, &text), vec![1, 2, 3], "an accented filter finds unaccented text too");
+        on.filters = vec!["pre load".to_string(), "don't".to_string(), "office".to_string()];
+        assert_eq!(hit_lines(&on, &text), vec![4, 5, 6]);
+        on.whole_word = true;
+        on.filters = vec!["cafe".to_string()];
+        assert_eq!(hit_lines(&on, &text), vec![1, 2, 3], "whole-word mode folds too");
+        on.exclude_filters = vec!["noir".to_string()];
+        assert!(hit_lines(&on, &text).is_empty(), "excludes fold too");
+    }
+
+    #[test]
+    fn typo_tolerance_is_bounded_opt_in_and_keeps_numbers_exact() {
+        let text = ["check the corosion damage", "torqe wrench", "bolt m9", "boot m8 here", "unrelated"];
+        let off = settings_with_filters(&["corrosion"]);
+        assert!(hit_lines(&off, &text).is_empty());
+        let mut s = settings_with_filters(&["corrosion"]);
+        s.typo_tolerance = 1;
+        assert_eq!(hit_lines(&s, &text), vec![1]);
+        s.filters = vec!["torque".to_string()];
+        assert_eq!(hit_lines(&s, &text), vec![2]);
+        s.filters = vec!["bolt m8".to_string()];
+        assert_eq!(hit_lines(&s, &text), vec![4], "boot ~ bolt, but m9 never matches m8");
+        s.filters = vec!["rod".to_string()];
+        assert!(hit_lines(&s, &["rid", "rd", "ro d"]).is_empty(), "words under 4 letters stay exact");
+        // Proximity/AllInFile gating still sees fuzzy hits.
+        let mut p = settings_with_filters(&["corrosion", "torque"]);
+        p.typo_tolerance = 1;
+        p.match_mode = MatchMode::AllInFile;
+        assert!(run(&p, &["corosion", "x", "torqe"]).passes_mode);
+    }
+
     /// Issue #9 epic §40: "Claude Code MUST explicitly evaluate regex
     /// denial-of-service risks." A classic ReDoS pattern
     /// (nested/ambiguous quantifiers) run in regex mode against
@@ -887,5 +1187,95 @@ mod tests {
         // documented, acceptable outcome, not an assertion this specific
         // pattern must match.
         let _ = outcome;
+    }
+
+    fn near_lines(settings: &SearchSettings, text: &[&str]) -> Vec<i32> {
+        run(settings, text).hits.iter().map(|h| h.line_number).collect()
+    }
+
+    #[test]
+    fn near_matches_only_lines_with_both_words_inside_the_distance() {
+        let s = settings_with_filters(&["torque NEAR/2 bolt"]);
+        let lines = [
+            "torque bolt",           // 1: adjacent
+            "torque the bolt",       // 2: distance 2 (boundary)
+            "torque the big bolt",   // 3: distance 3 (n + 1)
+            "bolt then torque",      // 4: other order, distance 2
+            "torque is here",        // 5: one word only
+            "torque",                // 6
+            "torque x x x\nbolt",    // 7: no newline in a line; far apart
+        ];
+        assert_eq!(near_lines(&s, &lines), vec![1, 2, 4]);
+        let out = run(&s, &lines);
+        assert!(out.passes_mode);
+        assert_eq!(out.hits[0].matched_filters, vec!["torque NEAR/2 bolt"]);
+    }
+
+    #[test]
+    fn near_does_not_join_words_across_lines() {
+        let s = settings_with_filters(&["torque NEAR/5 bolt"]);
+        assert!(near_lines(&s, &["torque", "bolt"]).is_empty());
+    }
+
+    #[test]
+    fn near_uses_any_close_pair_among_several_occurrences() {
+        let s = settings_with_filters(&["torque NEAR/1 bolt"]);
+        assert_eq!(near_lines(&s, &["torque a a bolt a torque bolt", "torque a bolt a a torque"]), vec![1]);
+    }
+
+    #[test]
+    fn near_follows_case_whole_word_and_accent_settings() {
+        let mut s = settings_with_filters(&["TORQUE near/2 Bolt"]);
+        assert_eq!(near_lines(&s, &["The torque on BOLTS"]), vec![1], "case-insensitive, substring like plain filters");
+        s.whole_word = true;
+        assert!(near_lines(&s, &["The torque on BOLTS"]).is_empty(), "whole-word mode needs the exact word");
+        assert_eq!(near_lines(&s, &["The torque on bolt"]), vec![1]);
+        let mut a = settings_with_filters(&["cafe NEAR/2 bolt"]);
+        assert!(near_lines(&a, &["CAFÉ and bolt"]).is_empty());
+        a.fold_accents = true;
+        assert_eq!(near_lines(&a, &["CAFÉ and bolt"]), vec![1]);
+    }
+
+    #[test]
+    fn near_works_next_to_plain_filters_and_in_all_in_file_mode() {
+        let mut s = settings_with_filters(&["torque NEAR/2 bolt", "nut"]);
+        let out = run(&s, &["nut here", "torque bolt"]);
+        assert_eq!(out.hits.iter().map(|h| h.line_number).collect::<Vec<_>>(), vec![1, 2]);
+        s.match_mode = MatchMode::AllInFile;
+        assert!(run(&s, &["nut here", "torque bolt"]).passes_mode);
+        assert!(!run(&s, &["nut here", "torque x x x bolt"]).passes_mode, "NEAR slot has no hit");
+    }
+
+    #[test]
+    fn near_in_a_group_and_in_exclude_lists() {
+        let mut s = settings_with_filters(&["house"]);
+        s.filter_groups = vec![crate::models::FilterGroup {
+            filters: vec!["torque NEAR/2 bolt".into()],
+            match_mode: MatchMode::AnyLine,
+            proximity_lines: 5,
+            exclude: None,
+        }];
+        assert_eq!(near_lines(&s, &["house", "torque bolt"]), vec![1, 2]);
+        assert!(run(&s, &["house", "torque x x x bolt"]).hits.iter().all(|h| h.line_number != 2));
+    }
+
+    #[test]
+    fn near_is_inert_in_regex_mode_and_plain_queries_are_unchanged() {
+        let mut s = settings_with_filters(&["torque NEAR/2 bolt"]);
+        s.use_regex = true;
+        assert!(near_lines(&s, &["torque bolt"]).is_empty(), "regex mode keeps its own meaning");
+        assert_eq!(near_lines(&s, &["torque NEAR/2 bolt"]), vec![1]);
+        let plain = settings_with_filters(&["torque bolt"]);
+        assert_eq!(near_lines(&plain, &["a torque bolt b", "torque x bolt"]), vec![1]);
+        let literal = settings_with_filters(&["torque NEAR bolt"]);
+        assert_eq!(near_lines(&literal, &["a torque near bolt b", "torque bolt"]), vec![1]);
+    }
+
+    #[test]
+    fn near_ignores_typo_tolerance_on_its_words() {
+        let mut s = settings_with_filters(&["torque NEAR/2 bolt"]);
+        s.typo_tolerance = 1;
+        assert!(near_lines(&s, &["torqe bolt"]).is_empty());
+        assert_eq!(near_lines(&s, &["torque bolt"]), vec![1]);
     }
 }

@@ -14,7 +14,8 @@ use tantivy::collector::{Collector, DocSetCollector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, TermQuery};
 use tantivy::schema::{
-    IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, FAST, INDEXED, STORED, STRING, TEXT,
+    IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, FAST, INDEXED, STORED,
+    STRING, TEXT,
 };
 use tantivy::tokenizer::{LowerCaser, NgramTokenizer, TextAnalyzer};
 use tantivy::{
@@ -33,7 +34,10 @@ fn must_all_trigrams(field: tantivy::schema::Field, trigrams: Vec<String>) -> Bo
     let must_clauses: Vec<(Occur, Box<dyn Query>)> = trigrams
         .into_iter()
         .map(|t| {
-            let term_query: Box<dyn Query> = Box::new(TermQuery::new(Term::from_field_text(field, &t), IndexRecordOption::Basic));
+            let term_query: Box<dyn Query> = Box::new(TermQuery::new(
+                Term::from_field_text(field, &t),
+                IndexRecordOption::Basic,
+            ));
             (Occur::Must, term_query)
         })
         .collect();
@@ -182,8 +186,8 @@ fn build_schema() -> (Schema, Fields) {
     // it here would double the index's on-disk footprint for no reader
     // that needs it back out of Tantivy itself.
     let body = builder.add_text_field("body", TEXT);
-    let trigram_options =
-        TextOptions::default().set_indexing_options(TextFieldIndexing::default().set_tokenizer(TRIGRAM_TOKENIZER_NAME));
+    let trigram_options = TextOptions::default()
+        .set_indexing_options(TextFieldIndexing::default().set_tokenizer(TRIGRAM_TOKENIZER_NAME));
     let trigram = builder.add_text_field("trigram", trigram_options);
     let schema = builder.build();
     (
@@ -205,6 +209,7 @@ fn build_schema() -> (Schema, Fields) {
 
 pub struct NativeSearchEngine {
     index: Index,
+    index_directory: std::path::PathBuf,
     fields: Fields,
     /// Created lazily on the first write (`with_writer_retry`): a query-only
     /// open (re-search narrowing, verify, stats) must not take Tantivy's
@@ -270,10 +275,9 @@ impl NativeSearchEngine {
         // instead of the ngram analyzer the schema declares for it.
         index.tokenizers().register(
             TRIGRAM_TOKENIZER_NAME,
-            TextAnalyzer::builder(
-                NgramTokenizer::new(3, 3, false)
-                    .map_err(|e| NsError::index_error(format!("cannot build trigram tokenizer: {e}")))?,
-            )
+            TextAnalyzer::builder(NgramTokenizer::new(3, 3, false).map_err(|e| {
+                NsError::index_error(format!("cannot build trigram tokenizer: {e}"))
+            })?)
             .filter(LowerCaser)
             .build(),
         );
@@ -286,10 +290,17 @@ impl NativeSearchEngine {
 
         Ok(Self {
             index,
+            index_directory: index_dir.to_path_buf(),
             fields,
             writer: Mutex::new(None),
             reader,
         })
+    }
+
+    /// Directory supplied to [`open_or_create`](Self::open_or_create).
+    /// Search-core uses it for adjacent, feature-specific local index data.
+    pub fn index_directory(&self) -> &std::path::Path {
+        &self.index_directory
     }
 
     /// Indexes (or re-indexes) one document. Tantivy documents are immutable
@@ -322,7 +333,9 @@ impl NativeSearchEngine {
         if id.is_empty() {
             return Err(NsError::invalid_argument("document id must not be empty"));
         }
-        self.with_writer_retry(|writer| Ok(writer.delete_term(Term::from_field_text(self.fields.id, id))))?;
+        self.with_writer_retry(|writer| {
+            Ok(writer.delete_term(Term::from_field_text(self.fields.id, id)))
+        })?;
         Ok(())
     }
 
@@ -347,7 +360,10 @@ impl NativeSearchEngine {
     /// for a related crash, see `lock_writer`'s doc comment) is the likely
     /// trigger, which is why it strikes at an arbitrary document count
     /// rather than a reproducible one.
-    fn with_writer_retry<T>(&self, mut op: impl FnMut(&mut IndexWriter) -> tantivy::Result<T>) -> NsResult<T> {
+    fn with_writer_retry<T>(
+        &self,
+        mut op: impl FnMut(&mut IndexWriter) -> tantivy::Result<T>,
+    ) -> NsResult<T> {
         {
             let mut guard = self.lock_writer();
             if guard.is_none() {
@@ -374,10 +390,11 @@ impl NativeSearchEngine {
         // Drop the dead writer first so its lock file is released before the
         // replacement tries to acquire it (matters on Windows).
         *guard = None;
-        let fresh = self
-            .index
-            .writer(WRITER_MEMORY_BUDGET)
-            .map_err(|e| NsError::index_error(format!("cannot reopen index writer after a worker thread died: {e}")))?;
+        let fresh = self.index.writer(WRITER_MEMORY_BUDGET).map_err(|e| {
+            NsError::index_error(format!(
+                "cannot reopen index writer after a worker thread died: {e}"
+            ))
+        })?;
         let writer = guard.insert(fresh);
         op(writer).map_err(|e| NsError::index_error(e.to_string()))
     }
@@ -399,7 +416,9 @@ impl NativeSearchEngine {
     /// panic, but it stops one bad write from taking every future
     /// index/search action down with it.
     fn lock_writer(&self) -> std::sync::MutexGuard<'_, Option<IndexWriter>> {
-        self.writer.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Commits pending changes and reloads the reader so `search` sees them
@@ -436,8 +455,10 @@ impl NativeSearchEngine {
     /// [`search_fuzzy`](Self::search_fuzzy) so the two query modes can't
     /// silently diverge on which fields matter or by how much.
     fn build_parser(&self) -> QueryParser {
-        let mut parser =
-            QueryParser::for_index(&self.index, vec![self.fields.filename, self.fields.title, self.fields.body]);
+        let mut parser = QueryParser::for_index(
+            &self.index,
+            vec![self.fields.filename, self.fields.title, self.fields.body],
+        );
         parser.set_field_boost(self.fields.filename, 3.0);
         parser.set_field_boost(self.fields.title, 2.0);
         parser
@@ -574,13 +595,17 @@ impl NativeSearchEngine {
             return Ok(None);
         }
 
-        let mut per_filter_queries: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(filters.len());
+        let mut per_filter_queries: Vec<(Occur, Box<dyn Query>)> =
+            Vec::with_capacity(filters.len());
         for f in filters {
             let trigrams = self.trigrams_of(f);
             if trigrams.is_empty() {
                 return Ok(None);
             }
-            per_filter_queries.push((Occur::Should, must_all_trigrams(self.fields.trigram, trigrams)));
+            per_filter_queries.push((
+                Occur::Should,
+                must_all_trigrams(self.fields.trigram, trigrams),
+            ));
         }
 
         self.run_candidate_query(BooleanQuery::new(per_filter_queries))
@@ -602,12 +627,16 @@ impl NativeSearchEngine {
     /// chunks, or any chunk is too short to produce trigrams - the same
     /// "always fall back to an unfiltered full scan rather than guess"
     /// contract as the plain-filter version.
-    pub fn trigram_candidate_paths_for_chunk_sets(&self, chunk_sets: &[Vec<String>]) -> NsResult<Option<Vec<String>>> {
+    pub fn trigram_candidate_paths_for_chunk_sets(
+        &self,
+        chunk_sets: &[Vec<String>],
+    ) -> NsResult<Option<Vec<String>>> {
         if chunk_sets.is_empty() {
             return Ok(None);
         }
 
-        let mut per_filter_queries: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(chunk_sets.len());
+        let mut per_filter_queries: Vec<(Occur, Box<dyn Query>)> =
+            Vec::with_capacity(chunk_sets.len());
         for chunks in chunk_sets {
             if chunks.is_empty() {
                 return Ok(None);
@@ -620,7 +649,10 @@ impl NativeSearchEngine {
                 }
                 all_trigrams.extend(trigrams);
             }
-            per_filter_queries.push((Occur::Should, must_all_trigrams(self.fields.trigram, all_trigrams)));
+            per_filter_queries.push((
+                Occur::Should,
+                must_all_trigrams(self.fields.trigram, all_trigrams),
+            ));
         }
 
         self.run_candidate_query(BooleanQuery::new(per_filter_queries))
@@ -634,7 +666,9 @@ impl NativeSearchEngine {
 
         let mut paths = Vec::with_capacity(doc_addrs.len());
         for addr in doc_addrs {
-            let retrieved: TantivyDocument = searcher.doc(addr).map_err(|e| NsError::index_error(e.to_string()))?;
+            let retrieved: TantivyDocument = searcher
+                .doc(addr)
+                .map_err(|e| NsError::index_error(e.to_string()))?;
             paths.push(text_value(&retrieved, self.fields.path));
         }
         Ok(Some(paths))
@@ -665,7 +699,9 @@ impl NativeSearchEngine {
             .map_err(|e| NsError::index_error(e.to_string()))?;
         let mut ids = Vec::with_capacity(doc_addrs.len());
         for addr in doc_addrs {
-            let retrieved: TantivyDocument = searcher.doc(addr).map_err(|e| NsError::index_error(e.to_string()))?;
+            let retrieved: TantivyDocument = searcher
+                .doc(addr)
+                .map_err(|e| NsError::index_error(e.to_string()))?;
             ids.push(text_value(&retrieved, self.fields.id));
         }
         Ok(ids)
@@ -685,10 +721,15 @@ impl NativeSearchEngine {
             .map_err(|e| NsError::index_error(e.to_string()))?;
         let mut map = std::collections::HashMap::with_capacity(doc_addrs.len());
         for addr in doc_addrs {
-            let d: TantivyDocument = searcher.doc(addr).map_err(|e| NsError::index_error(e.to_string()))?;
+            let d: TantivyDocument = searcher
+                .doc(addr)
+                .map_err(|e| NsError::index_error(e.to_string()))?;
             map.insert(
                 text_value(&d, self.fields.id),
-                (int_value(&d, self.fields.modified), int_value(&d, self.fields.size)),
+                (
+                    int_value(&d, self.fields.modified),
+                    int_value(&d, self.fields.size),
+                ),
             );
         }
         Ok(map)
@@ -779,8 +820,12 @@ mod tests {
     fn search_supports_prefix_wildcard_on_multi_word_phrases_only() {
         let dir = tempdir().unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        engine.index_document(sample("1", "engineering report on the engine mount")).unwrap();
-        engine.index_document(sample("2", "unrelated corrosion notes")).unwrap();
+        engine
+            .index_document(sample("1", "engineering report on the engine mount"))
+            .unwrap();
+        engine
+            .index_document(sample("2", "unrelated corrosion notes"))
+            .unwrap();
         engine.commit().unwrap();
 
         let hits = engine.search("\"the engin\"*", 10, None).unwrap();
@@ -791,15 +836,23 @@ mod tests {
         // above - asserted here (not just described) so a future Tantivy
         // upgrade that changes this behavior gets caught by a failing test,
         // not stale documentation.
-        assert!(engine.search("engin*", 10, None).unwrap().is_empty(), "bare single-word prefix silently matches nothing");
-        assert!(engine.search("\"engin\"*", 10, None).is_err(), "quoted single-word phrase-prefix is a hard query error");
+        assert!(
+            engine.search("engin*", 10, None).unwrap().is_empty(),
+            "bare single-word prefix silently matches nothing"
+        );
+        assert!(
+            engine.search("\"engin\"*", 10, None).is_err(),
+            "quoted single-word phrase-prefix is a hard query error"
+        );
     }
 
     #[test]
     fn search_fuzzy_tolerates_a_typo_plain_search_would_miss() {
         let dir = tempdir().unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        engine.index_document(sample("1", "torque spec deviation on engine mount")).unwrap();
+        engine
+            .index_document(sample("1", "torque spec deviation on engine mount"))
+            .unwrap();
         engine.commit().unwrap();
 
         // "torqe" (missing a character) - a plain search must not match it,
@@ -807,7 +860,11 @@ mod tests {
         assert!(engine.search("torqe", 10, None).unwrap().is_empty());
 
         let hits = engine.search_fuzzy("torqe", 1, 10, None).unwrap();
-        assert_eq!(hits.len(), 1, "distance-1 fuzzy search must tolerate a single missing character");
+        assert_eq!(
+            hits.len(),
+            1,
+            "distance-1 fuzzy search must tolerate a single missing character"
+        );
         assert_eq!(hits[0].id, "1");
     }
 
@@ -845,7 +902,10 @@ mod tests {
 
         let hits = engine.search("torque", 10, None).unwrap();
         assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].id, "filename-match", "a filename match should outrank a body-only match");
+        assert_eq!(
+            hits[0].id, "filename-match",
+            "a filename match should outrank a body-only match"
+        );
     }
 
     #[test]
@@ -873,13 +933,21 @@ mod tests {
         // but the trigram path must still find the document.
         let dir = tempdir().unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        engine.index_document(sample("1", "torque spec deviation on engine mount")).unwrap();
+        engine
+            .index_document(sample("1", "torque spec deviation on engine mount"))
+            .unwrap();
         engine.commit().unwrap();
 
-        assert!(engine.search("eng", 10, None).unwrap().is_empty(), "sanity check: default tokenizer should NOT match");
+        assert!(
+            engine.search("eng", 10, None).unwrap().is_empty(),
+            "sanity check: default tokenizer should NOT match"
+        );
 
-        let candidates = engine.trigram_candidate_paths(&["eng".to_string()]).unwrap();
-        let paths = candidates.expect("3+ char filter must produce a narrowed candidate list, not None");
+        let candidates = engine
+            .trigram_candidate_paths(&["eng".to_string()])
+            .unwrap();
+        let paths =
+            candidates.expect("3+ char filter must produce a narrowed candidate list, not None");
         assert_eq!(paths.len(), 1);
     }
 
@@ -887,10 +955,15 @@ mod tests {
     fn trigram_candidates_are_case_insensitive() {
         let dir = tempdir().unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        engine.index_document(sample("1", "TORQUE spec deviation")).unwrap();
+        engine
+            .index_document(sample("1", "TORQUE spec deviation"))
+            .unwrap();
         engine.commit().unwrap();
 
-        let paths = engine.trigram_candidate_paths(&["torque".to_string()]).unwrap().unwrap();
+        let paths = engine
+            .trigram_candidate_paths(&["torque".to_string()])
+            .unwrap()
+            .unwrap();
         assert_eq!(paths.len(), 1);
     }
 
@@ -899,26 +972,42 @@ mod tests {
         let dir = tempdir().unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
         engine.index_document(sample("1", "torque spec")).unwrap();
-        engine.index_document(sample("2", "corrosion inspection")).unwrap();
-        engine.index_document(sample("3", "completely unrelated content")).unwrap();
+        engine
+            .index_document(sample("2", "corrosion inspection"))
+            .unwrap();
+        engine
+            .index_document(sample("3", "completely unrelated content"))
+            .unwrap();
         engine.commit().unwrap();
 
         let paths = engine
             .trigram_candidate_paths(&["torque".to_string(), "corrosion".to_string()])
             .unwrap()
             .unwrap();
-        assert_eq!(paths.len(), 2, "doc 3 (neither filter) must not be a candidate");
+        assert_eq!(
+            paths.len(),
+            2,
+            "doc 3 (neither filter) must not be a candidate"
+        );
     }
 
     #[test]
     fn trigram_candidates_excludes_a_document_missing_all_trigrams() {
         let dir = tempdir().unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        engine.index_document(sample("1", "torque spec deviation")).unwrap();
+        engine
+            .index_document(sample("1", "torque spec deviation"))
+            .unwrap();
         engine.commit().unwrap();
 
-        let paths = engine.trigram_candidate_paths(&["zzzzz".to_string()]).unwrap().unwrap();
-        assert!(paths.is_empty(), "a filter with no matching trigrams anywhere must exclude the document");
+        let paths = engine
+            .trigram_candidate_paths(&["zzzzz".to_string()])
+            .unwrap()
+            .unwrap();
+        assert!(
+            paths.is_empty(),
+            "a filter with no matching trigrams anywhere must exclude the document"
+        );
     }
 
     #[test]
@@ -928,10 +1017,20 @@ mod tests {
         engine.index_document(sample("1", "torque spec")).unwrap();
         engine.commit().unwrap();
 
-        assert_eq!(engine.trigram_candidate_paths(&["ab".to_string()]).unwrap(), None, "2-char filter has no trigrams");
-        assert_eq!(engine.trigram_candidate_paths(&[]).unwrap(), None, "empty filter list");
         assert_eq!(
-            engine.trigram_candidate_paths(&["torque".to_string(), "ab".to_string()]).unwrap(),
+            engine.trigram_candidate_paths(&["ab".to_string()]).unwrap(),
+            None,
+            "2-char filter has no trigrams"
+        );
+        assert_eq!(
+            engine.trigram_candidate_paths(&[]).unwrap(),
+            None,
+            "empty filter list"
+        );
+        assert_eq!(
+            engine
+                .trigram_candidate_paths(&["torque".to_string(), "ab".to_string()])
+                .unwrap(),
             None,
             "one short filter must fall back the whole query, not silently ignore that filter"
         );
@@ -944,32 +1043,55 @@ mod tests {
         // somewhere, not necessarily adjacent.
         let dir = tempdir().unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        engine.index_document(sample("1", "foo appears here, and bar too")).unwrap();
-        engine.index_document(sample("2", "only foo here, no b-word")).unwrap();
-        engine.index_document(sample("3", "unrelated content entirely")).unwrap();
+        engine
+            .index_document(sample("1", "foo appears here, and bar too"))
+            .unwrap();
+        engine
+            .index_document(sample("2", "only foo here, no b-word"))
+            .unwrap();
+        engine
+            .index_document(sample("3", "unrelated content entirely"))
+            .unwrap();
         engine.commit().unwrap();
 
         let paths = engine
             .trigram_candidate_paths_for_chunk_sets(&[vec!["foo".to_string(), "bar".to_string()]])
             .unwrap()
             .unwrap();
-        assert_eq!(paths.len(), 1, "only the doc containing BOTH chunks is a candidate");
+        assert_eq!(
+            paths.len(),
+            1,
+            "only the doc containing BOTH chunks is a candidate"
+        );
     }
 
     #[test]
     fn chunk_set_candidates_or_across_regex_filters() {
         let dir = tempdir().unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        engine.index_document(sample("1", "torque spec here")).unwrap();
-        engine.index_document(sample("2", "corrosion inspection notes")).unwrap();
-        engine.index_document(sample("3", "completely unrelated")).unwrap();
+        engine
+            .index_document(sample("1", "torque spec here"))
+            .unwrap();
+        engine
+            .index_document(sample("2", "corrosion inspection notes"))
+            .unwrap();
+        engine
+            .index_document(sample("3", "completely unrelated"))
+            .unwrap();
         engine.commit().unwrap();
 
         let paths = engine
-            .trigram_candidate_paths_for_chunk_sets(&[vec!["torque".to_string()], vec!["corrosion".to_string()]])
+            .trigram_candidate_paths_for_chunk_sets(&[
+                vec!["torque".to_string()],
+                vec!["corrosion".to_string()],
+            ])
             .unwrap()
             .unwrap();
-        assert_eq!(paths.len(), 2, "doc 3 (neither regex filter's chunks) must not be a candidate");
+        assert_eq!(
+            paths.len(),
+            2,
+            "doc 3 (neither regex filter's chunks) must not be a candidate"
+        );
     }
 
     #[test]
@@ -979,14 +1101,22 @@ mod tests {
         engine.index_document(sample("1", "torque spec")).unwrap();
         engine.commit().unwrap();
 
-        assert_eq!(engine.trigram_candidate_paths_for_chunk_sets(&[]).unwrap(), None, "empty chunk-set list");
         assert_eq!(
-            engine.trigram_candidate_paths_for_chunk_sets(&[vec![]]).unwrap(),
+            engine.trigram_candidate_paths_for_chunk_sets(&[]).unwrap(),
+            None,
+            "empty chunk-set list"
+        );
+        assert_eq!(
+            engine
+                .trigram_candidate_paths_for_chunk_sets(&[vec![]])
+                .unwrap(),
             None,
             "a filter with zero chunks must fall back the whole query"
         );
         assert_eq!(
-            engine.trigram_candidate_paths_for_chunk_sets(&[vec!["ab".to_string()]]).unwrap(),
+            engine
+                .trigram_candidate_paths_for_chunk_sets(&[vec!["ab".to_string()]])
+                .unwrap(),
             None,
             "a chunk shorter than 3 chars has no trigrams"
         );
@@ -997,7 +1127,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
         engine.index_document(sample("1", "torque spec")).unwrap();
-        engine.index_document(sample("2", "corrosion notes")).unwrap();
+        engine
+            .index_document(sample("2", "corrosion notes"))
+            .unwrap();
         engine.commit().unwrap();
 
         let mut ids = engine.all_document_ids().unwrap();
@@ -1329,7 +1461,9 @@ mod tests {
     fn query_only_open_does_not_contend_for_the_writer_lock() {
         let dir = tempdir().unwrap();
         let writer_engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        writer_engine.index_document(sample("1", "alpha beta")).unwrap();
+        writer_engine
+            .index_document(sample("1", "alpha beta"))
+            .unwrap();
         writer_engine.commit().unwrap();
 
         let reader_engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();

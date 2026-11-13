@@ -221,6 +221,11 @@ The app writes `toolbench-debug.log` into the folder it was launched from (`app-
   real `tmux` session has been used for this before; don't assume
   `TestBackend` coverage alone proves a rendering fix without checking.
 
+- Measure any search-retrieval or ranking change (embeddings, keyword scoring, fusion, chunking, query expansion) with
+  `search-core/examples/retrieval_eval.rs` on BEIR, MS MARCO, Cranfield and TREC data before adopting it (owner rule,
+  2026-11-08; datasets, commands and results in `docs/search-benchmarks.md`). The small hand corpus cannot show a
+  benefit.
+
 ### Ask First
 - Deleting anything under `docs/` — it's an append-only historical record
   (see `docs/AGENTS.md`).

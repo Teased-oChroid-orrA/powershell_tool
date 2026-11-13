@@ -25,6 +25,7 @@ impl Gui {
     }
 
     fn dashboard(&mut self, ui: &mut egui::Ui, dash: &mut Dashboard, events: &mut Vec<DashEvent>) {
+        theme::tick(ui.ctx());
         let p = theme::current(ui.ctx());
         let now = unix_now();
         egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg)).show(ui, |ui| {
@@ -34,6 +35,9 @@ impl Gui {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("GS Engineering Toolbench").size(22.0).strong());
                         ui.label(RichText::new("pick a workbench").color(p.dim));
+                        ui.add_space(16.0);
+                        theme::theme_picker(ui);
+                        theme::circadian_control(ui, &p);
                     });
                     ui.add_space(10.0);
                     let search = egui::Frame::new().fill(p.panel).stroke(Stroke::new(1.0, p.line)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {

@@ -88,12 +88,24 @@ pub struct PersistedSearchSettings {
     pub pdf_timeout_seconds: Option<i32>,
     #[serde(default)]
     pub ocr_scanned_pdfs: bool,
+    #[serde(default)]
+    pub pdf_yolow: bool,
     pub file_timeout_seconds: Option<i32>,
     pub max_retries: Option<i32>,
 
     #[serde(default)]
     pub index_enabled: bool,
     pub index_location: Option<super::indexing::IndexLocation>,
+    #[serde(default)]
+    pub semantic_index: bool,
+    #[serde(default)]
+    pub watch_index: bool,
+    #[serde(default)]
+    pub lazy_embed_index: bool,
+    #[serde(default)]
+    pub fold_accents: bool,
+    #[serde(default)]
+    pub typo_tolerance: u8,
 }
 
 fn default_true() -> bool {
@@ -131,10 +143,16 @@ impl From<&SearchToolConfig> for PersistedSearchSettings {
             dry_run: config.dry_run,
             pdf_timeout_seconds: Some(config.pdf_timeout_seconds),
             ocr_scanned_pdfs: config.ocr_scanned_pdfs,
+            pdf_yolow: config.pdf_yolow,
             file_timeout_seconds: Some(config.file_timeout_seconds),
             max_retries: Some(config.max_retries),
             index_enabled: config.index.enabled,
             index_location: Some(config.index.location),
+            semantic_index: config.index.semantic,
+            watch_index: config.index.watch,
+            lazy_embed_index: config.index.lazy_embed,
+            fold_accents: config.fold_accents,
+            typo_tolerance: config.typo_tolerance,
         }
     }
 }
@@ -190,6 +208,7 @@ impl PersistedSearchSettings {
             config.pdf_timeout_seconds = v;
         }
         config.ocr_scanned_pdfs = self.ocr_scanned_pdfs;
+        config.pdf_yolow = self.pdf_yolow;
         if let Some(v) = self.file_timeout_seconds {
             config.file_timeout_seconds = v;
         }
@@ -200,6 +219,11 @@ impl PersistedSearchSettings {
         if let Some(v) = self.index_location {
             config.index.location = v;
         }
+        config.index.semantic = self.semantic_index;
+        config.index.watch = self.watch_index;
+        config.index.lazy_embed = self.lazy_embed_index;
+        config.fold_accents = self.fold_accents;
+        config.typo_tolerance = self.typo_tolerance.min(2);
     }
 }
 
@@ -276,7 +300,9 @@ fn save_to(path: &Path, file: &PersistedFile) {
     if std::fs::create_dir_all(parent).is_err() {
         return;
     }
-    let Ok(json) = serde_json::to_string_pretty(file) else { return };
+    let Ok(json) = serde_json::to_string_pretty(file) else {
+        return;
+    };
     let tmp_path = path.with_extension("json.tmp");
     if std::fs::write(&tmp_path, json).is_ok() {
         let _ = std::fs::rename(&tmp_path, path);
@@ -287,8 +313,15 @@ fn save_to(path: &Path, file: &PersistedFile) {
 /// at 8. Ported from `app/src/state.rs::remember_recent_search`
 /// (state.rs:361-373) as a plain function over `Vec<RecentSearch>` instead
 /// of a `Signal`-mutating method.
-pub fn remember_recent_search(recents: &mut Vec<RecentSearch>, search_path: String, filters_text: String) {
-    let entry = RecentSearch { search_path: search_path.trim().to_string(), filters_text: filters_text.trim().to_string() };
+pub fn remember_recent_search(
+    recents: &mut Vec<RecentSearch>,
+    search_path: String,
+    filters_text: String,
+) {
+    let entry = RecentSearch {
+        search_path: search_path.trim().to_string(),
+        filters_text: filters_text.trim().to_string(),
+    };
     if entry.search_path.is_empty() || entry.filters_text.is_empty() {
         return;
     }
@@ -344,8 +377,36 @@ mod tests {
     }
 
     #[test]
+    fn matching_settings_round_trip_clamp_and_default_on_old_files() {
+        let mut config = SearchToolConfig::default();
+        config.fold_accents = true;
+        config.typo_tolerance = 2;
+        let json = serde_json::to_string(&PersistedSearchSettings::from(&config)).unwrap();
+        let mut restored = SearchToolConfig::default();
+        serde_json::from_str::<PersistedSearchSettings>(&json)
+            .unwrap()
+            .apply_to(&mut restored);
+        assert!(restored.fold_accents);
+        assert_eq!(restored.typo_tolerance, 2);
+
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("fold_accents");
+        object.insert("typo_tolerance".into(), 9.into());
+        let mut clamped = SearchToolConfig::default();
+        serde_json::from_value::<PersistedSearchSettings>(value)
+            .unwrap()
+            .apply_to(&mut clamped);
+        assert!(!clamped.fold_accents, "missing key defaults off");
+        assert_eq!(clamped.typo_tolerance, 2, "stored value is clamped");
+    }
+
+    #[test]
     fn recent_extensions_field_round_trips_and_defaults_on_old_files() {
-        let file = PersistedFile { recent_extensions: vec![".pdf".to_string()], ..Default::default() };
+        let file = PersistedFile {
+            recent_extensions: vec![".pdf".to_string()],
+            ..Default::default()
+        };
         let json = serde_json::to_string(&file).unwrap();
         let restored: PersistedFile = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.recent_extensions, vec![".pdf".to_string()]);
@@ -360,7 +421,15 @@ mod tests {
 
     #[test]
     fn persisted_settings_round_trip_through_config() {
-        let mut config = SearchToolConfig { search_path: "/a/b".to_string(), use_regex: true, ..SearchToolConfig::default() };
+        let mut config = SearchToolConfig {
+            search_path: "/a/b".to_string(),
+            use_regex: true,
+            index: super::super::indexing::IndexSettings {
+                semantic: true,
+                ..Default::default()
+            },
+            ..SearchToolConfig::default()
+        };
         let persisted = PersistedSearchSettings::from(&config);
         let json = serde_json::to_string(&persisted).unwrap();
         let restored: PersistedSearchSettings = serde_json::from_str(&json).unwrap();
@@ -369,6 +438,7 @@ mod tests {
         restored.apply_to(&mut config);
         assert_eq!(config.search_path, "/a/b");
         assert!(config.use_regex);
+        assert!(config.index.semantic);
     }
 
     #[test]
@@ -390,13 +460,19 @@ mod tests {
 
         let file = PersistedFile {
             settings: Some(PersistedSearchSettings::from(&SearchToolConfig::default())),
-            recent_searches: vec![RecentSearch { search_path: "/a".into(), filters_text: "x".into() }],
+            recent_searches: vec![RecentSearch {
+                search_path: "/a".into(),
+                filters_text: "x".into(),
+            }],
             saved_presets: Vec::new(),
             recent_extensions: Vec::new(),
         };
         save_to(&path, &file);
         assert!(path.exists());
-        assert!(!path.with_extension("json.tmp").exists(), "temp file must be renamed away, not left behind");
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "temp file must be renamed away, not left behind"
+        );
 
         let loaded = load_from(&path).expect("save_to output must be loadable");
         assert_eq!(loaded.recent_searches.len(), 1);
@@ -435,7 +511,10 @@ mod tests {
 
     #[test]
     fn recent_search_label_uses_folder_name_not_full_path() {
-        let recent = RecentSearch { search_path: "/x/y/project".to_string(), filters_text: "apple, banana".to_string() };
+        let recent = RecentSearch {
+            search_path: "/x/y/project".to_string(),
+            filters_text: "apple, banana".to_string(),
+        };
         assert_eq!(recent.label(), "project - apple, banana");
     }
 }

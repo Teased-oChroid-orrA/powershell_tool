@@ -13,7 +13,11 @@
 //! discipline - this module only ever sees already-decoded RGB8 pixel
 //! buffers (`extraction::OcrCandidateImage`), never a PDF filter name.
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
+use sha2::{Digest, Sha256};
 
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams};
 use rten::Model;
@@ -48,9 +52,24 @@ fn engine() -> Option<&'static OcrEngine> {
         .as_ref()
 }
 
+/// Longest image side handed to the recognizer (an A4 page at 300 dpi is 3508 px, so this is about 210 dpi).
+/// Larger scans are shrunk first: on generated 600 dpi and noisy pages word recall rose from 0.974 to 0.997 and
+/// from 0.966 to 0.981, and 150-300 dpi pages were unchanged (`search-core/AGENTS.md`).
+const MAX_OCR_SIDE: u32 = 2480;
+
+/// Dimensions after shrinking so the longest side is at most [`MAX_OCR_SIDE`] (unchanged when already smaller).
+fn fit_dimensions(width: u32, height: u32) -> (u32, u32) {
+    let big = width.max(height);
+    if big <= MAX_OCR_SIDE {
+        return (width, height);
+    }
+    let scale = MAX_OCR_SIDE as f64 / big as f64;
+    (((width as f64 * scale).round() as u32).max(1), ((height as f64 * scale).round() as u32).max(1))
+}
+
 /// Runs OCR on one already-decoded RGB8 image (typically one page image
-/// `extraction::find_jpeg_image_streams`/`find_raw_flate_image_streams`
-/// found in a scanned PDF) and returns its non-empty recognized lines.
+/// `extraction::jpeg_image_from_stream`/`raw_flate_image_from_stream`
+/// decoded from a scanned PDF) and returns its non-empty recognized lines.
 /// `None` if the OCR engine itself couldn't be built at all (should not
 /// happen against the bundled models - see `engine`'s doc comment) or if
 /// this specific image failed to process; an image that processes fine
@@ -66,8 +85,141 @@ fn engine() -> Option<&'static OcrEngine> {
 /// not after committing to OCR-ing every page in the file.
 pub(crate) fn ocr_image(image: &OcrCandidateImage) -> Option<Vec<String>> {
     let engine = engine()?;
-    let img_source = ImageSource::from_bytes(&image.rgb, (image.width, image.height)).ok()?;
+    let resized;
+    let (nw, nh) = fit_dimensions(image.width, image.height);
+    let (rgb, w, h): (&[u8], u32, u32) = if (nw, nh) != (image.width, image.height) {
+        let src = image::ImageBuffer::<image::Rgb<u8>, &[u8]>::from_raw(image.width, image.height, &image.rgb[..])?;
+        resized = image::imageops::resize(&src, nw, nh, image::imageops::FilterType::Triangle).into_raw();
+        (&resized, nw, nh)
+    } else {
+        (&image.rgb, image.width, image.height)
+    };
+    let img_source = ImageSource::from_bytes(rgb, (w, h)).ok()?;
     let ocr_input = engine.prepare_input(img_source).ok()?;
     let text = engine.get_text(&ocr_input).ok()?;
     Some(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+}
+
+// --------------------------------------------------------------------
+// Recognised-text cache
+// --------------------------------------------------------------------
+//
+// Recognition costs roughly a second per page, so the text of a page image is
+// kept, keyed by a SHA-256 of the image's PDF stream (dictionary text plus
+// encoded bytes, taken before any decoding so a hit also skips the JPEG or
+// inflate work) and of the bundled models. It lives in memory for the process
+// and, when a folder is configured, on disk as `<key>.txt` (one recognised line
+// per line; an empty file is a page that had no text). Raw recognised lines are
+// stored, not the line-quality-cleaned ones, so later changes to that filter
+// still apply.
+
+/// Bump when preprocessing or the way lines are produced changes.
+const OCR_CACHE_VERSION: &str = "2";
+/// Pages kept in memory; the map is cleared when it fills (cheap, bounded).
+const MEMORY_MAX_PAGES: usize = 4096;
+
+static CACHE_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+static MEMORY: Mutex<Option<HashMap<String, Vec<String>>>> = Mutex::new(None);
+
+/// Sets (or clears) the persistent cache folder. The folder is created on first write.
+pub(crate) fn set_cache_dir(dir: Option<&str>) {
+    let dir = dir.map(str::trim).filter(|d| !d.is_empty()).map(PathBuf::from);
+    if let Ok(mut guard) = CACHE_DIR.lock() {
+        *guard = dir;
+    }
+}
+
+/// Cache key for one PDF image stream: hex SHA-256 over version, model sizes, header and body.
+pub(crate) fn cache_key(header: &str, body: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(OCR_CACHE_VERSION.as_bytes());
+    hasher.update((DETECTION_MODEL_BYTES.len() as u64).to_le_bytes());
+    hasher.update((RECOGNITION_MODEL_BYTES.len() as u64).to_le_bytes());
+    hasher.update((header.len() as u64).to_le_bytes());
+    hasher.update(header.as_bytes());
+    hasher.update(body.as_bytes());
+    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub(crate) fn cached_lines(key: &str) -> Option<Vec<String>> {
+    let dir = CACHE_DIR.lock().ok().and_then(|d| d.clone());
+    read_page(dir.as_deref(), key)
+}
+
+pub(crate) fn store_lines(key: &str, lines: &[String]) {
+    let dir = CACHE_DIR.lock().ok().and_then(|d| d.clone());
+    write_page(dir.as_deref(), key, lines);
+}
+
+/// Memory first, then `dir` (when there is one). Takes the folder as a parameter so tests need not touch the
+/// process-wide setting that every search run reconfigures.
+fn read_page(dir: Option<&std::path::Path>, key: &str) -> Option<Vec<String>> {
+    if let Some(lines) = MEMORY.lock().ok()?.as_ref().and_then(|m| m.get(key)) {
+        return Some(lines.clone());
+    }
+    let text = std::fs::read_to_string(dir?.join(format!("{key}.txt"))).ok()?;
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    remember(key, &lines);
+    Some(lines)
+}
+
+fn write_page(dir: Option<&std::path::Path>, key: &str, lines: &[String]) {
+    remember(key, lines);
+    let Some(dir) = dir else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    // Temp file then rename, so a crash never leaves a truncated page behind.
+    let tmp = dir.join(format!("{key}.tmp"));
+    if std::fs::write(&tmp, lines.join("\n")).is_ok() {
+        let _ = std::fs::rename(&tmp, dir.join(format!("{key}.txt")));
+    }
+}
+
+fn remember(key: &str, lines: &[String]) {
+    if let Ok(mut guard) = MEMORY.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        if map.len() >= MEMORY_MAX_PAGES {
+            map.clear();
+        }
+        map.insert(key.to_string(), lines.to_vec());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn large_scans_are_shrunk_to_the_working_size_and_small_ones_left_alone() {
+        assert_eq!(fit_dimensions(2479, 3509), (1752, 2480));
+        assert_eq!(fit_dimensions(4961, 7016), (1754, 2480));
+        assert_eq!(fit_dimensions(1240, 1754), (1240, 1754));
+        assert_eq!(fit_dimensions(2480, 100), (2480, 100));
+        assert_eq!(fit_dimensions(1, 100_000), (1, 2480));
+    }
+
+    #[test]
+    fn page_text_round_trips_through_memory_and_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = Some(dir.path());
+        let key = cache_key("<< /Subtype /Image >>", "pixels one");
+        assert_ne!(key, cache_key("<< /Subtype /Image >>", "pixels two"));
+        assert!(read_page(folder, &key).is_none());
+        write_page(folder, &key, &["first line".into(), "second line".into()]);
+        assert_eq!(read_page(folder, &key).unwrap(), ["first line", "second line"]);
+        // Disk alone is enough: drop the in-memory copy.
+        MEMORY.lock().unwrap().as_mut().map(|m| m.remove(&key));
+        assert_eq!(read_page(folder, &key).unwrap(), ["first line", "second line"]);
+        // A page with no text is a real, cached answer.
+        let blank = cache_key("h", "blank page");
+        write_page(folder, &blank, &[]);
+        MEMORY.lock().unwrap().as_mut().map(|m| m.remove(&blank));
+        assert_eq!(read_page(folder, &blank), Some(Vec::new()));
+        // Without a folder nothing survives the memory copy.
+        MEMORY.lock().unwrap().as_mut().map(|m| m.remove(&key));
+        std::fs::remove_file(dir.path().join(format!("{key}.txt"))).unwrap();
+        MEMORY.lock().unwrap().as_mut().map(|m| m.remove(&key));
+        assert!(read_page(folder, &key).is_none());
+    }
 }

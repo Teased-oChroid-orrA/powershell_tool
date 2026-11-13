@@ -1,0 +1,81 @@
+# P<TAB>id<TAB>passage ; Q<TAB>question<TAB>gold ids joined by ;
+P	pre_m6	Bolt preload is 4500 N for M6x1 fasteners, installed at 9 N m torque.
+P	pre_m8	Bolt preload is 8200 N for M8x1.25 fasteners, installed at 22 N m torque.
+P	pre_m10	Bolt preload is 13000 N for M10x1.5 fasteners, installed at 44 N m torque.
+P	pre_10_32	The #10-32 UNF screw is preloaded to 1900 lbf with 36 in-lb of torque.
+P	bear_7075	Maximum allowable bearing stress for 7075-T6 plate is 98 ksi at room temperature.
+P	bear_2024	Maximum allowable bearing stress for 2024-T3 sheet is 87 ksi at room temperature.
+P	bear_ti	Maximum allowable bearing stress for Ti-6Al-4V annealed plate is 190 ksi.
+P	yield_4340	4340 steel heat treated to 180 ksi has a yield strength of 217 ksi.
+P	yield_a36	ASTM A36 structural steel has a minimum yield strength of 36 ksi (250 MPa).
+P	edge_full	A lug develops full bearing strength only when edge distance e/D is at least 2.0.
+P	edge_tear	Shear tear-out governs the lug failure when e/D is less than 1.5.
+P	edge_csk	A flush countersunk fastener needs an edge distance of at least 2.5 diameters.
+P	rivet_pitch	Rivet pitch in the splice shall not exceed 4 times the rivet diameter.
+P	rivet_min	Rivet pitch shall not be less than 3 times the rivet diameter to avoid sheet cracking.
+P	pv_corr	The pressure vessel shell includes a 0.125 in corrosion allowance on each surface.
+P	pv_hydro	Hydrostatic test pressure is 1.5 times the design pressure; at 150 psi design this is 225 psi.
+P	pv_mawp	Maximum allowable working pressure is 150 psi at a design temperature of 650 F.
+P	pv_joint	A spot-radiographed longitudinal seam uses a joint efficiency of 0.85.
+P	pv_full	A fully radiographed longitudinal seam uses a joint efficiency of 1.0.
+P	fit_ti	The Ti-6Al-4V bushing has an interference fit of 0.0015 in on a 0.250 in bore.
+P	fit_bronze	The aluminum bronze bushing has an interference fit of 0.0010 in on a 0.375 in bore.
+P	fit_mag	Press-fit bushings are not permitted in magnesium housings; use a staked flange instead.
+P	fit_heat	Thermal expansion of an aluminum housing reduces the press fit at 200 F.
+P	insp_gear	The main landing gear pin is inspected every 600 flight hours.
+P	insp_wing	The wing lug is inspected by eddy current every 1200 flight hours.
+P	insp_torque	The torque wrench must be calibrated every 12 months by the metrology lab.
+P	fin_ii	Anodize aluminum parts per MIL-A-8625 Type II before assembly.
+P	fin_i	Chromic acid anodize per MIL-A-8625 Type I is required for fatigue-critical parts.
+P	fin_cd	Cadmium plating is prohibited on new designs; use zinc-nickel instead.
+P	fin_shot	Shot peen the bore at Almen intensity 0.008A to 0.012A after reaming.
+P	ream	The hole is reamed to 0.2505 in diameter and deburred on both sides.
+P	embed	Preload loss from embedding is estimated at 5 percent of initial tension.
+P	fatigue_csk	Fatigue cracks initiated at the countersink knife edge on the lower skin.
+P	temp_shaft	The shaft temperature limit is 120 C during continuous operation.
+P	torsion	Applied torque causes torsional stress in the shaft.
+P	lunch	Lunch is served in the cafeteria between 11:30 and noon on weekdays.
+P	park	Visitor parking is in lot B; badges are required after 6 pm.
+P	revhist	The spreadsheet lists revision history and engineer sign-off dates.
+P	holiday	The office is closed on the last Friday of each quarter.
+P	wifi	The guest wireless network password changes every Monday.
+Q	What preload is specified for M8 bolts?	pre_m8
+Q	torque to install the M10 fastener	pre_m10
+Q	how much tension in the number 10 UNF screw	pre_10_32
+Q	bearing allowable of 2024-T3	bear_2024
+Q	what is the bearing limit for titanium plate	bear_ti
+Q	yield of 4340 at 180 ksi heat treat	yield_4340
+Q	minimum yield for A36	yield_a36
+Q	edge distance needed for full lug bearing strength	edge_full
+Q	when does tear-out control the lug	edge_tear
+Q	edge distance for flush countersunk fasteners	edge_csk
+Q	maximum rivet spacing	rivet_pitch
+Q	minimum rivet spacing to avoid cracking	rivet_min
+Q	corrosion allowance on the vessel shell	pv_corr
+Q	what is the hydro test pressure	pv_hydro
+Q	design temperature for the MAWP	pv_mawp
+Q	joint efficiency for a spot radiograph seam	pv_joint
+Q	joint efficiency when the seam is fully radiographed	pv_full
+Q	interference on the titanium bushing	fit_ti
+Q	interference for the 0.375 bore bronze bushing	fit_bronze
+Q	which housing material cannot take a press fit	fit_mag
+Q	effect of heat on the press fit	fit_heat
+Q	landing gear pin inspection interval	insp_gear
+Q	how often is the wing lug checked with eddy current	insp_wing
+Q	torque wrench calibration period	insp_torque
+Q	which anodize spec for ordinary aluminum parts	fin_ii
+Q	finish required on fatigue critical parts	fin_i
+Q	is cadmium plating allowed	fin_cd
+Q	peening intensity for the bore	fin_shot
+Q	final reamed hole diameter	ream
+Q	how much preload is lost to embedding	embed
+Q	where did the fatigue cracks start	fatigue_csk
+Q	what limits the shaft temperature	temp_shaft
+Q	what causes torsional stress	torsion
+Q	225 psi	pv_hydro
+Q	MIL-A-8625 Type I	fin_i
+Q	0.0010 in interference	fit_bronze
+Q	4500 N	pre_m6
+Q	e/D 1.5	edge_tear
+Q	12 months	insp_torque
+Q	98 ksi	bear_7075

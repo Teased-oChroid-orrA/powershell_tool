@@ -10,11 +10,11 @@
 //! `EXTENSIONS_FIELD` below.
 
 use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, ListItem, Paragraph};
+use ratatui::Frame;
 
 use search_core::models::{ExcludeScope, GroupByMode, MatchMode};
 
@@ -49,37 +49,154 @@ struct FieldDef {
 }
 
 const FIELDS: &[FieldDef] = &[
-    FieldDef { label: "Search path", kind: FieldKind::Text },
-    FieldDef { label: "Extra roots (comma-separated)", kind: FieldKind::Text },
-    FieldDef { label: "Filters", kind: FieldKind::Text },
-    FieldDef { label: "Exclude filters", kind: FieldKind::Text },
-    FieldDef { label: "Match mode", kind: FieldKind::MatchMode },
-    FieldDef { label: "Proximity lines", kind: FieldKind::Number },
-    FieldDef { label: "Use regex", kind: FieldKind::Bool },
-    FieldDef { label: "Whole word", kind: FieldKind::Bool },
-    FieldDef { label: "Exclude scope", kind: FieldKind::ExcludeScope },
-    FieldDef { label: "Extensions (comma list, blank = default)", kind: FieldKind::Text },
-    FieldDef { label: "Exclude folders", kind: FieldKind::Text },
-    FieldDef { label: "Include hidden", kind: FieldKind::Bool },
-    FieldDef { label: "Max file size (MB)", kind: FieldKind::Number },
-    FieldDef { label: "Group by", kind: FieldKind::GroupBy },
-    FieldDef { label: "Output folder", kind: FieldKind::Text },
-    FieldDef { label: "Output name", kind: FieldKind::Text },
-    FieldDef { label: "Export HTML", kind: FieldKind::Bool },
-    FieldDef { label: "Export CSV", kind: FieldKind::Bool },
-    FieldDef { label: "Export JSON", kind: FieldKind::Bool },
-    FieldDef { label: "Open report when done (legacy)", kind: FieldKind::Bool },
-    FieldDef { label: "Parallel", kind: FieldKind::Bool },
-    FieldDef { label: "Throttle limit", kind: FieldKind::Number },
-    FieldDef { label: "Heavy throttle limit", kind: FieldKind::Number },
-    FieldDef { label: "Cache file path", kind: FieldKind::Text },
-    FieldDef { label: "Dry run", kind: FieldKind::Bool },
-    FieldDef { label: "PDF timeout (seconds)", kind: FieldKind::Number },
-    FieldDef { label: "OCR scanned PDFs", kind: FieldKind::Bool },
-    FieldDef { label: "File timeout (seconds)", kind: FieldKind::Number },
-    FieldDef { label: "Max retries", kind: FieldKind::Number },
-    FieldDef { label: "Fast re-search index", kind: FieldKind::Bool },
-    FieldDef { label: "Index location", kind: FieldKind::FastIndexLocation },
+    FieldDef {
+        label: "Search path",
+        kind: FieldKind::Text,
+    },
+    FieldDef {
+        label: "Extra roots (comma-separated)",
+        kind: FieldKind::Text,
+    },
+    FieldDef {
+        label: "Filters",
+        kind: FieldKind::Text,
+    },
+    FieldDef {
+        label: "Exclude filters",
+        kind: FieldKind::Text,
+    },
+    FieldDef {
+        label: "Match mode",
+        kind: FieldKind::MatchMode,
+    },
+    FieldDef {
+        label: "Proximity lines",
+        kind: FieldKind::Number,
+    },
+    FieldDef {
+        label: "Use regex",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Whole word",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Exclude scope",
+        kind: FieldKind::ExcludeScope,
+    },
+    FieldDef {
+        label: "Extensions (comma list, blank = default)",
+        kind: FieldKind::Text,
+    },
+    FieldDef {
+        label: "Exclude folders",
+        kind: FieldKind::Text,
+    },
+    FieldDef {
+        label: "Include hidden",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Max file size (MB)",
+        kind: FieldKind::Number,
+    },
+    FieldDef {
+        label: "Group by",
+        kind: FieldKind::GroupBy,
+    },
+    FieldDef {
+        label: "Output folder",
+        kind: FieldKind::Text,
+    },
+    FieldDef {
+        label: "Output name",
+        kind: FieldKind::Text,
+    },
+    FieldDef {
+        label: "Export HTML",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Export CSV",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Export JSON",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Open report when done (legacy)",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Parallel",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Throttle limit",
+        kind: FieldKind::Number,
+    },
+    FieldDef {
+        label: "Heavy throttle limit",
+        kind: FieldKind::Number,
+    },
+    FieldDef {
+        label: "Cache file path",
+        kind: FieldKind::Text,
+    },
+    FieldDef {
+        label: "Dry run",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "PDF timeout (seconds)",
+        kind: FieldKind::Number,
+    },
+    FieldDef {
+        label: "OCR scanned PDFs",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "File timeout (seconds)",
+        kind: FieldKind::Number,
+    },
+    FieldDef {
+        label: "Max retries",
+        kind: FieldKind::Number,
+    },
+    FieldDef {
+        label: "Fast re-search index",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Index location",
+        kind: FieldKind::FastIndexLocation,
+    },
+    FieldDef {
+        label: "Semantic index",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Fold accents",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Typo tolerance (0-2)",
+        kind: FieldKind::Number,
+    },
+    FieldDef {
+        label: "Keep index current",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Embed in the background",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Better PDF text (trial)",
+        kind: FieldKind::Bool,
+    },
 ];
 
 /// A row in the rendered/navigable Fields list - either a non-selectable
@@ -109,12 +226,16 @@ const SETTINGS_HEADERS: &[(usize, &str)] = &[
     (14, "Output"),
     (20, "Concurrency & Diagnostics"),
     (29, "Fast Re-search Index"),
+    (32, "Matching"),
+    (36, "PDF"),
 ];
 
 fn settings_field_rows() -> Vec<SettingsFieldRow> {
     let mut rows = Vec::with_capacity(FIELDS.len() + SETTINGS_HEADERS.len());
     for i in 0..FIELDS.len() {
-        if i == 19 { continue; }
+        if i == 19 {
+            continue;
+        }
         if let Some((_, label)) = SETTINGS_HEADERS.iter().find(|(idx, _)| *idx == i) {
             rows.push(SettingsFieldRow::Header(label));
         }
@@ -141,7 +262,10 @@ fn resolve_field_index(rows: &[SettingsFieldRow], row_selected: usize) -> usize 
 /// header-breakpoint math themselves.
 #[cfg(test)]
 fn row_index_for_field(field_index: usize) -> usize {
-    settings_field_rows().iter().position(|r| matches!(r, SettingsFieldRow::Field(i) if *i == field_index)).unwrap_or(0)
+    settings_field_rows()
+        .iter()
+        .position(|r| matches!(r, SettingsFieldRow::Field(i) if *i == field_index))
+        .unwrap_or(0)
 }
 
 /// Which list within the Settings screen `Up`/`Down`/`Enter` currently act
@@ -204,8 +328,16 @@ impl Default for SettingsView {
     /// the same way `FastenerHoleState`'s own `Default` impl does for its
     /// row-0-is-a-Header case.
     fn default() -> Self {
-        let mut view =
-            Self { section: Section::default(), selected: 0, recent_selected: 0, preset_selected: 0, editing: false, naming_preset: false, renaming_preset: false, edit_buffer: Default::default() };
+        let mut view = Self {
+            section: Section::default(),
+            selected: 0,
+            recent_selected: 0,
+            preset_selected: 0,
+            editing: false,
+            naming_preset: false,
+            renaming_preset: false,
+            edit_buffer: Default::default(),
+        };
         view.clamp_selection();
         view
     }
@@ -264,7 +396,8 @@ impl SettingsView {
 
     fn start_edit(&mut self, config: &SearchToolConfig) {
         self.editing = true;
-        self.edit_buffer.set(field_value_string(config, self.field_index()));
+        self.edit_buffer
+            .set(field_value_string(config, self.field_index()));
     }
 
     fn cancel_edit(&mut self) {
@@ -303,7 +436,10 @@ pub fn handle_key(
                 if name.is_empty() {
                     (true, Vec::new())
                 } else {
-                    presets.push(SavedPreset { name, settings: PersistedSearchSettings::from(&*config) });
+                    presets.push(SavedPreset {
+                        name,
+                        settings: PersistedSearchSettings::from(&*config),
+                    });
                     (true, vec![Effect::PersistSearchSettings])
                 }
             }
@@ -407,11 +543,13 @@ pub fn handle_key(
         }
         Section::Recents => match key.code {
             KeyCode::Up => {
-                view.recent_selected = SettingsView::move_list_selection(view.recent_selected, -1, recents.len());
+                view.recent_selected =
+                    SettingsView::move_list_selection(view.recent_selected, -1, recents.len());
                 (true, Vec::new())
             }
             KeyCode::Down => {
-                view.recent_selected = SettingsView::move_list_selection(view.recent_selected, 1, recents.len());
+                view.recent_selected =
+                    SettingsView::move_list_selection(view.recent_selected, 1, recents.len());
                 (true, Vec::new())
             }
             KeyCode::Enter => {
@@ -425,11 +563,13 @@ pub fn handle_key(
         },
         Section::Presets => match key.code {
             KeyCode::Up => {
-                view.preset_selected = SettingsView::move_list_selection(view.preset_selected, -1, presets.len());
+                view.preset_selected =
+                    SettingsView::move_list_selection(view.preset_selected, -1, presets.len());
                 (true, Vec::new())
             }
             KeyCode::Down => {
-                view.preset_selected = SettingsView::move_list_selection(view.preset_selected, 1, presets.len());
+                view.preset_selected =
+                    SettingsView::move_list_selection(view.preset_selected, 1, presets.len());
                 (true, Vec::new())
             }
             KeyCode::Enter => {
@@ -451,7 +591,8 @@ pub fn handle_key(
             // pushing a new one.
             KeyCode::Char('r' | 'R') if super::is_plain_char(key) && !presets.is_empty() => {
                 view.renaming_preset = true;
-                view.edit_buffer.set(presets[view.preset_selected].name.clone());
+                view.edit_buffer
+                    .set(presets[view.preset_selected].name.clone());
                 (true, Vec::new())
             }
             // Delete the selected preset - ported behavior from `app/`'s
@@ -500,25 +641,42 @@ pub fn draw(
     let (fields_area, history_area) = if show_history_sections {
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(6), Constraint::Length(5), Constraint::Length(5)])
+            .constraints([
+                Constraint::Min(6),
+                Constraint::Length(5),
+                Constraint::Length(5),
+            ])
             .split(inner);
         (rows[0], Some((rows[1], rows[2])))
     } else {
         (inner, None)
     };
 
-    regions.settings_section_panes.push((fields_area, Section::Fields));
+    regions
+        .settings_section_panes
+        .push((fields_area, Section::Fields));
     draw_fields(frame, fields_area, theme, config, view, regions);
 
     if let Some((recents_area, presets_area)) = history_area {
-        regions.settings_section_panes.push((recents_area, Section::Recents));
-        regions.settings_section_panes.push((presets_area, Section::Presets));
+        regions
+            .settings_section_panes
+            .push((recents_area, Section::Recents));
+        regions
+            .settings_section_panes
+            .push((presets_area, Section::Presets));
         draw_recents(frame, recents_area, theme, recents, view, regions);
         draw_presets(frame, presets_area, theme, presets, view, regions);
     }
 }
 
-fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchToolConfig, view: &SettingsView, regions: &mut crate::mouse::MouseRegions) {
+fn draw_fields(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    config: &SearchToolConfig,
+    view: &SettingsView,
+    regions: &mut crate::mouse::MouseRegions,
+) {
     // Live regex validation takes priority over the static per-field Hint
     // below when present (it's actionable/urgent); both share the same
     // reserved bottom area, computed on the same path a real run takes -
@@ -530,11 +688,19 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchTool
         Some(error) => format!("Regex error: {error}"),
         None => field_hint(view.field_index()).to_string(),
     };
-    let bottom_style = if validation_error.is_some() { theme.status_style(StatusTone::Danger) } else { theme.disabled_style() };
+    let bottom_style = if validation_error.is_some() {
+        theme.status_style(StatusTone::Danger)
+    } else {
+        theme.disabled_style()
+    };
     let max_hint_lines = area.height.saturating_sub(4).max(1);
-    let bottom_height = crate::widgets::hint_panel::hint_panel_height(&bottom_text, area.width, max_hint_lines);
+    let bottom_height =
+        crate::widgets::hint_panel::hint_panel_height(&bottom_text, area.width, max_hint_lines);
     let (list_area, bottom_area) = if area.height > bottom_height + 1 {
-        let split = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(bottom_height)]).split(area);
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(bottom_height)])
+            .split(area);
         (split[0], Some(split[1]))
     } else {
         (area, None)
@@ -548,9 +714,14 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchTool
         .enumerate()
         .map(|(pos, row)| {
             if let SettingsFieldRow::Header(text) = row {
-                return ListItem::new(Line::from(Span::styled(format!("-- {text} --"), theme.title_style(false).add_modifier(Modifier::BOLD))));
+                return ListItem::new(Line::from(Span::styled(
+                    format!("-- {text} --"),
+                    theme.title_style(false).add_modifier(Modifier::BOLD),
+                )));
             }
-            let SettingsFieldRow::Field(i) = row else { unreachable!() };
+            let SettingsFieldRow::Field(i) = row else {
+                unreachable!()
+            };
             let field = &FIELDS[*i];
             let selected = focused && pos == view.selected;
             let value = if selected && view.editing {
@@ -559,19 +730,42 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchTool
                 display_value(config, *i, field.kind)
             };
             let marker = if selected { "> " } else { "  " };
-            let style = if selected { theme.selected_row_style() } else { Style::default() };
+            let style = if selected {
+                theme.selected_row_style()
+            } else {
+                Style::default()
+            };
             ListItem::new(Line::from(Span::styled(
-                format!("{marker}{:<width$}{value}", field.label, width = label_width),
+                format!(
+                    "{marker}{:<width$}{value}",
+                    field.label,
+                    width = label_width
+                ),
                 style,
             )))
         })
         .collect();
 
-    let offset = crate::widgets::scroll_list::render(frame, list_area, items, focused.then_some(view.selected));
-    regions.settings_field_rows.extend(crate::mouse::list_row_regions(list_area, offset, rows.len()));
+    let offset = crate::widgets::scroll_list::render(
+        frame,
+        list_area,
+        items,
+        focused.then_some(view.selected),
+    );
+    regions
+        .settings_field_rows
+        .extend(crate::mouse::list_row_regions(
+            list_area,
+            offset,
+            rows.len(),
+        ));
 
     if let Some(bottom_area) = bottom_area {
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(bottom_text, bottom_style))).wrap(ratatui::widgets::Wrap { trim: true }), bottom_area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(bottom_text, bottom_style)))
+                .wrap(ratatui::widgets::Wrap { trim: true }),
+            bottom_area,
+        );
     }
 }
 
@@ -596,7 +790,7 @@ fn field_hint(index: usize) -> &'static str {
         5 => "For Proximity match mode: how many lines apart matched filters may be and still count as one match.",
         6 => "Treat each filter as a regular expression instead of a literal/whole-word match.",
         7 => "Require filters to match whole words only, not substrings within a larger word.",
-        8 => "Which folders Exclude filters apply to - just filenames, or the full path.",
+        8 => "What an Exclude filter removes - the whole file, or only the matching lines.",
         9 => "Which file extensions to search - blank searches the built-in default catalog; Enter opens a scanned per-extension checkbox picker.",
         10 => "Folder names to skip entirely during the recursive walk, comma-separated.",
         11 => "Include hidden files/folders (dotfiles on Unix, the Hidden attribute on Windows) in the search.",
@@ -618,12 +812,25 @@ fn field_hint(index: usize) -> &'static str {
         27 => "Give up on any single file after this many seconds, PDFs included (in addition to the PDF-specific timeout above).",
         28 => "How many times to retry a file after a transient read/extraction failure before giving up on it.",
         29 => "Build/use the fast Tantivy-backed re-search index for near-instant repeat searches of the same folder.",
-        30 => "Where the fast re-search index itself is stored on disk.",
+        30 => "Where the fast re-search index itself is stored. It holds extracted text and vectors of your files: Search folder and Output folder keep it inside those folders (and with them in any sync, backup or commit); App data (private) keeps it in the app's own data folder.",
+        31 => "Build a local neural embedding index for separate semantic search results.",
+        32 => "Match accented letters, ligatures and curly quotes as their plain forms (e.g. cafe finds café). Applies to literal and whole-word searches; searches every file instead of using the fast index.",
+        33 => "Allow this many typos per word (0 = exact, 1 or 2). Words under 4 letters or with digits stay exact; excluded terms are never fuzzy. Searches every file instead of using the fast index.",
+        34 => "Watch the folder while the app is open and update the fast index for the files that change, instead of re-checking every file. Runs inside this app only: no administrator rights, nothing installed and no system setting or file changed; it stops when the app closes. Network shares and some synced folders report no changes, so Build / update remains the way to be sure.",
+        35 => "With the semantic index on, embed files a few hundred at a time in the background (documents first, then code, then data) instead of in one long build. Exact search is complete after the first pass; semantic results grow as files are embedded, and the index status shows how many are done. Stop build pauses it; Build / update continues.",
+        36 => "Trial: read PDF text with the yolowpdf reader (recall 0.97 against 0.87 on a 79-file corpus, more memory, about twice the time). Falls back to the built-in reader for scans, errors and files it cannot read; scanned documents still use OCR. Page numbers in semantic results use the built-in reader. Turning this on re-reads PDFs.",
         _ => "",
     }
 }
 
-fn draw_recents(frame: &mut Frame, area: Rect, theme: &Theme, recents: &[RecentSearch], view: &SettingsView, regions: &mut crate::mouse::MouseRegions) {
+fn draw_recents(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    recents: &[RecentSearch],
+    view: &SettingsView,
+    regions: &mut crate::mouse::MouseRegions,
+) {
     let focused = view.section == Section::Recents;
     let block = Block::default()
         .borders(Borders::ALL)
@@ -647,21 +854,45 @@ fn draw_recents(frame: &mut Frame, area: Rect, theme: &Theme, recents: &[RecentS
         .map(|(i, recent)| {
             let selected = focused && i == view.recent_selected;
             let marker = if selected { "> " } else { "  " };
-            let style = if selected { theme.selected_row_style() } else { Style::default() };
-            ListItem::new(Line::from(Span::styled(format!("{marker}{}", recent.label()), style)))
+            let style = if selected {
+                theme.selected_row_style()
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!("{marker}{}", recent.label()),
+                style,
+            )))
         })
         .collect();
-    let offset = crate::widgets::scroll_list::render(frame, inner, items, focused.then_some(view.recent_selected));
-    regions.recents_rows.extend(crate::mouse::list_row_regions(inner, offset, recents.len()));
+    let offset = crate::widgets::scroll_list::render(
+        frame,
+        inner,
+        items,
+        focused.then_some(view.recent_selected),
+    );
+    regions
+        .recents_rows
+        .extend(crate::mouse::list_row_regions(inner, offset, recents.len()));
 }
 
-fn draw_presets(frame: &mut Frame, area: Rect, theme: &Theme, presets: &[SavedPreset], view: &SettingsView, regions: &mut crate::mouse::MouseRegions) {
+fn draw_presets(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    presets: &[SavedPreset],
+    view: &SettingsView,
+    regions: &mut crate::mouse::MouseRegions,
+) {
     let focused = view.section == Section::Presets;
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(format!(" Saved presets ({}) - a: save current, r: rename, d: delete ", presets.len()));
+        .title(format!(
+            " Saved presets ({}) - a: save current, r: rename, d: delete ",
+            presets.len()
+        ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -669,18 +900,25 @@ fn draw_presets(frame: &mut Frame, area: Rect, theme: &Theme, presets: &[SavedPr
         return;
     }
 
-    let (list_area, naming_area) = if (view.naming_preset || view.renaming_preset) && inner.height > 1 {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(inner);
-        (rows[0], Some(rows[1]))
-    } else {
-        (inner, None)
-    };
+    let (list_area, naming_area) =
+        if (view.naming_preset || view.renaming_preset) && inner.height > 1 {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(inner);
+            (rows[0], Some(rows[1]))
+        } else {
+            (inner, None)
+        };
 
     if presets.is_empty() {
-        crate::widgets::empty_state::render(frame, list_area, theme, "No saved presets yet", Some("a to save current settings"));
+        crate::widgets::empty_state::render(
+            frame,
+            list_area,
+            theme,
+            "No saved presets yet",
+            Some("a to save current settings"),
+        );
     } else {
         let items: Vec<ListItem> = presets
             .iter()
@@ -688,16 +926,36 @@ fn draw_presets(frame: &mut Frame, area: Rect, theme: &Theme, presets: &[SavedPr
             .map(|(i, preset)| {
                 let selected = focused && i == view.preset_selected;
                 let marker = if selected { "> " } else { "  " };
-                let style = if selected { theme.selected_row_style() } else { Style::default() };
-                ListItem::new(Line::from(Span::styled(format!("{marker}{}", preset.name), style)))
+                let style = if selected {
+                    theme.selected_row_style()
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(Span::styled(
+                    format!("{marker}{}", preset.name),
+                    style,
+                )))
             })
             .collect();
-        let offset = crate::widgets::scroll_list::render(frame, list_area, items, focused.then_some(view.preset_selected));
-        regions.presets_rows.extend(crate::mouse::list_row_regions(list_area, offset, presets.len()));
+        let offset = crate::widgets::scroll_list::render(
+            frame,
+            list_area,
+            items,
+            focused.then_some(view.preset_selected),
+        );
+        regions.presets_rows.extend(crate::mouse::list_row_regions(
+            list_area,
+            offset,
+            presets.len(),
+        ));
     }
 
     if let Some(area) = naming_area {
-        let label = if view.renaming_preset { "Rename preset: " } else { "New preset name: " };
+        let label = if view.renaming_preset {
+            "Rename preset: "
+        } else {
+            "New preset name: "
+        };
         let line = Line::from(vec![
             Span::styled(label, theme.title_style(true)),
             Span::raw(view.edit_buffer.with_cursor()),
@@ -713,7 +971,11 @@ fn field_value_string(config: &SearchToolConfig, idx: usize) -> String {
         2 => config.filters_text.clone(),
         3 => config.exclude_filters_text.clone(),
         5 => config.proximity_lines.to_string(),
-        9 => config.selected_extensions.as_ref().map(|v| v.join(", ")).unwrap_or_default(),
+        9 => config
+            .selected_extensions
+            .as_ref()
+            .map(|v| v.join(", "))
+            .unwrap_or_default(),
         10 => config.exclude_folders_text.clone(),
         12 => format!("{:.1}", config.max_file_size_mb),
         14 => config.output_folder.clone(),
@@ -724,6 +986,7 @@ fn field_value_string(config: &SearchToolConfig, idx: usize) -> String {
         25 => config.pdf_timeout_seconds.to_string(),
         27 => config.file_timeout_seconds.to_string(),
         28 => config.max_retries.to_string(),
+        33 => config.typo_tolerance.to_string(),
         _ => String::new(),
     }
 }
@@ -776,6 +1039,11 @@ fn apply_text_edit(config: &mut SearchToolConfig, idx: usize, text: &str) {
         28 => {
             if let Ok(v) = trimmed.parse() {
                 config.max_retries = v;
+            }
+        }
+        33 => {
+            if let Ok(v) = trimmed.parse::<u8>() {
+                config.typo_tolerance = v.min(2);
             }
         }
         _ => {}
@@ -833,6 +1101,11 @@ fn bool_field_mut(config: &mut SearchToolConfig, idx: usize) -> Option<&mut bool
         24 => Some(&mut config.dry_run),
         26 => Some(&mut config.ocr_scanned_pdfs),
         29 => Some(&mut config.index.enabled),
+        31 => Some(&mut config.index.semantic),
+        32 => Some(&mut config.fold_accents),
+        34 => Some(&mut config.index.watch),
+        35 => Some(&mut config.index.lazy_embed),
+        36 => Some(&mut config.pdf_yolow),
         _ => None,
     }
 }
@@ -850,6 +1123,11 @@ fn bool_field(config: &SearchToolConfig, idx: usize) -> bool {
         24 => config.dry_run,
         26 => config.ocr_scanned_pdfs,
         29 => config.index.enabled,
+        31 => config.index.semantic,
+        32 => config.fold_accents,
+        34 => config.index.watch,
+        35 => config.index.lazy_embed,
+        36 => config.pdf_yolow,
         _ => false,
     }
 }
@@ -870,7 +1148,9 @@ fn display_value(config: &SearchToolConfig, idx: usize, kind: FieldKind) -> Stri
         },
         FieldKind::ExcludeScope => format!("{:?}", config.exclude_scope),
         FieldKind::GroupBy => format!("{:?}", config.group_by),
-        FieldKind::FastIndexLocation => super::index_view::display_location(config.index.location).to_string(),
+        FieldKind::FastIndexLocation => {
+            super::index_view::display_location(config.index.location).to_string()
+        }
         FieldKind::Text | FieldKind::Number => field_value_string(config, idx),
     }
 }
@@ -888,16 +1168,31 @@ pub(crate) enum SettingKind {
 
 /// One setting of the form: its index, group heading, label, hint and kind. The same table drives this form and
 /// the native window, so labels, parsing and grouping have one source.
-pub(crate) fn settings() -> impl Iterator<Item = (usize, &'static str, &'static str, &'static str, SettingKind)> {
-    FIELDS.iter().enumerate().filter(|(i, _)| *i != 19).map(|(i, f)| {
-        let group = SETTINGS_HEADERS.iter().rev().find(|(at, _)| *at <= i).map_or("", |(_, g)| *g);
-        let kind = match f.kind {
-            FieldKind::Text | FieldKind::Number => SettingKind::Typed,
-            FieldKind::Bool => SettingKind::Switch,
-            _ => SettingKind::Choice,
-        };
-        (i, group, f.label, field_hint(i), kind)
-    })
+pub(crate) fn settings(
+) -> impl Iterator<Item = (usize, &'static str, &'static str, &'static str, SettingKind)> {
+    FIELDS
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != 19)
+        .map(|(i, f)| {
+            let group = SETTINGS_HEADERS
+                .iter()
+                .rev()
+                .find(|(at, _)| *at <= i)
+                .map_or("", |(_, g)| *g);
+            let kind = match f.kind {
+                FieldKind::Text | FieldKind::Number => SettingKind::Typed,
+                FieldKind::Bool => SettingKind::Switch,
+                _ => SettingKind::Choice,
+            };
+            (i, group, f.label, field_hint(i), kind)
+        })
+}
+
+pub(crate) fn setting(
+    idx: usize,
+) -> Option<(usize, &'static str, &'static str, &'static str, SettingKind)> {
+    settings().find(|setting| setting.0 == idx)
 }
 
 /// The text a typed setting is edited from.
@@ -933,17 +1228,27 @@ pub(crate) fn step_setting(config: &mut SearchToolConfig, idx: usize) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::persistence::PersistedSearchSettings;
     use super::*;
     use crossterm::event::KeyModifiers;
-    use super::super::persistence::PersistedSearchSettings;
     use crossterm::event::{KeyEventKind, KeyEventState};
 
     fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent { code, modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
     }
 
     fn shift_key(code: KeyCode) -> KeyEvent {
-        KeyEvent { code, modifiers: KeyModifiers::SHIFT, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
     }
 
     // Regression: crossterm reports Shift+a (or Caps Lock) as `Char('A')`
@@ -951,11 +1256,36 @@ mod tests {
     // of bug as Shift+S failing to open Settings (see search/mod.rs).
     #[test]
     fn shift_or_caps_a_starts_naming_a_new_preset_same_as_plain_a() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
         let mut presets = Vec::new();
-        handle_key(&mut view, &mut config, &[], &mut presets, shift_key(KeyCode::Char('A')));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            shift_key(KeyCode::Char('A')),
+        );
         assert!(view.naming_preset);
+    }
+
+    #[test]
+    fn matching_fields_edit_toggle_and_clamp() {
+        let mut config = SearchToolConfig::default();
+        assert!(!bool_field(&config, 32));
+        apply_toggle(&mut config, 32, FieldKind::Bool);
+        assert!(config.fold_accents && bool_field(&config, 32));
+        apply_text_edit(&mut config, 33, "1");
+        assert_eq!(config.typo_tolerance, 1);
+        assert_eq!(field_value_string(&config, 33), "1");
+        apply_text_edit(&mut config, 33, "9");
+        assert_eq!(config.typo_tolerance, 2, "tolerance clamps to 2");
+        apply_text_edit(&mut config, 33, "abc");
+        assert_eq!(config.typo_tolerance, 2, "non-numeric input is ignored");
+        assert!(!field_hint(32).is_empty() && !field_hint(33).is_empty());
     }
 
     #[test]
@@ -964,11 +1294,19 @@ mod tests {
         let mut view = SettingsView::default();
         for _ in 0..rows.len() * 2 {
             view.move_selection(1);
-            assert!(matches!(rows[view.selected], SettingsFieldRow::Field(_)), "landed on row {} which is a Header", view.selected);
+            assert!(
+                matches!(rows[view.selected], SettingsFieldRow::Field(_)),
+                "landed on row {} which is a Header",
+                view.selected
+            );
         }
         for _ in 0..rows.len() * 2 {
             view.move_selection(-1);
-            assert!(matches!(rows[view.selected], SettingsFieldRow::Field(_)), "landed on row {} which is a Header", view.selected);
+            assert!(
+                matches!(rows[view.selected], SettingsFieldRow::Field(_)),
+                "landed on row {} which is a Header",
+                view.selected
+            );
         }
     }
 
@@ -978,8 +1316,14 @@ mod tests {
         // (`app.rs::handle_settings_click` sets `selected` directly from
         // the clicked row before calling this).
         let rows = settings_field_rows();
-        let header_pos = rows.iter().position(|r| matches!(r, SettingsFieldRow::Header(_))).expect("at least one header exists");
-        let mut view = SettingsView { selected: header_pos, ..Default::default() };
+        let header_pos = rows
+            .iter()
+            .position(|r| matches!(r, SettingsFieldRow::Header(_)))
+            .expect("at least one header exists");
+        let mut view = SettingsView {
+            selected: header_pos,
+            ..Default::default()
+        };
         view.clamp_selection();
         assert!(matches!(rows[view.selected], SettingsFieldRow::Field(_)));
     }
@@ -987,16 +1331,36 @@ mod tests {
     #[test]
     fn draw_fields_renders_every_header_divider() {
         let mut regions = crate::mouse::MouseRegions::default();
-        let backend = ratatui::backend::TestBackend::new(60, 40);
+        let backend = ratatui::backend::TestBackend::new(60, 46);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let view = SettingsView::default();
         let config = SearchToolConfig::default();
-        terminal.draw(|f| draw_fields(f, f.area(), &Theme::default_palette(), &config, &view, &mut regions)).unwrap();
+        terminal
+            .draw(|f| {
+                draw_fields(
+                    f,
+                    f.area(),
+                    &Theme::default_palette(),
+                    &config,
+                    &view,
+                    &mut regions,
+                )
+            })
+            .unwrap();
         let buffer = terminal.backend().buffer().clone();
-        let rendered: Vec<String> = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect();
+        let rendered: Vec<String> = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
         let joined = rendered.join("\n");
         for (_, label) in SETTINGS_HEADERS {
-            assert!(joined.contains(&format!("-- {label} --")), "missing header `{label}`:\n{joined}");
+            assert!(
+                joined.contains(&format!("-- {label} --")),
+                "missing header `{label}`:\n{joined}"
+            );
         }
     }
 
@@ -1005,59 +1369,143 @@ mod tests {
         let mut view = SettingsView::default();
         let mut config = SearchToolConfig::default();
         assert_eq!(view.section, Section::Fields);
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Tab));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Tab),
+        );
         assert_eq!(view.section, Section::Recents);
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Tab));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Tab),
+        );
         assert_eq!(view.section, Section::Presets);
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Tab));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Tab),
+        );
         assert_eq!(view.section, Section::Fields);
     }
 
     #[test]
     fn a_in_presets_section_starts_naming_a_new_preset() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
         let mut presets = Vec::new();
-        handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('a')));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('a')),
+        );
         assert!(view.naming_preset);
     }
 
     #[test]
     fn committing_a_preset_name_saves_the_current_config_and_persists() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
-        let mut config = SearchToolConfig { search_path: "/tmp/save-me".to_string(), ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
+        let mut config = SearchToolConfig {
+            search_path: "/tmp/save-me".to_string(),
+            ..Default::default()
+        };
         let mut presets = Vec::new();
-        handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('a')));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('a')),
+        );
         for c in "My preset".chars() {
-            handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char(c)));
+            handle_key(
+                &mut view,
+                &mut config,
+                &[],
+                &mut presets,
+                key(KeyCode::Char(c)),
+            );
         }
-        let (consumed, effects) = handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Enter));
+        let (consumed, effects) = handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Enter),
+        );
         assert!(consumed);
         assert!(!view.naming_preset);
         assert_eq!(presets.len(), 1);
         assert_eq!(presets[0].name, "My preset");
         assert_eq!(presets[0].settings.search_path, "/tmp/save-me");
-        assert!(matches!(effects.as_slice(), [Effect::PersistSearchSettings]));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::PersistSearchSettings]
+        ));
     }
 
     #[test]
     fn committing_an_empty_preset_name_saves_nothing() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
         let mut presets = Vec::new();
-        handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('a')));
-        let (_, effects) = handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Enter));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('a')),
+        );
+        let (_, effects) = handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Enter),
+        );
         assert!(presets.is_empty());
         assert!(effects.is_empty());
     }
 
     #[test]
     fn esc_while_naming_a_preset_discards_without_saving() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
         let mut presets = Vec::new();
-        handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('a')));
-        handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('x')));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('a')),
+        );
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('x')),
+        );
         handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Esc));
         assert!(!view.naming_preset);
         assert!(presets.is_empty());
@@ -1065,57 +1513,135 @@ mod tests {
 
     #[test]
     fn r_in_presets_section_starts_renaming_prefilled_with_current_name() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
-        let mut presets = vec![SavedPreset { name: "original".to_string(), settings: PersistedSearchSettings::from(&config) }];
-        handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('r')));
+        let mut presets = vec![SavedPreset {
+            name: "original".to_string(),
+            settings: PersistedSearchSettings::from(&config),
+        }];
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('r')),
+        );
         assert!(view.renaming_preset);
         assert_eq!(view.edit_buffer, "original");
     }
 
     #[test]
     fn committing_a_rename_updates_the_preset_name_in_place_and_persists() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
         let mut presets = vec![
-            SavedPreset { name: "one".to_string(), settings: PersistedSearchSettings::from(&config) },
-            SavedPreset { name: "two".to_string(), settings: PersistedSearchSettings::from(&config) },
+            SavedPreset {
+                name: "one".to_string(),
+                settings: PersistedSearchSettings::from(&config),
+            },
+            SavedPreset {
+                name: "two".to_string(),
+                settings: PersistedSearchSettings::from(&config),
+            },
         ];
         view.preset_selected = 1;
-        handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('r')));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('r')),
+        );
         view.edit_buffer.clear();
         for c in "renamed".chars() {
-            handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char(c)));
+            handle_key(
+                &mut view,
+                &mut config,
+                &[],
+                &mut presets,
+                key(KeyCode::Char(c)),
+            );
         }
-        let (consumed, effects) = handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Enter));
+        let (consumed, effects) = handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Enter),
+        );
         assert!(consumed);
         assert!(!view.renaming_preset);
         assert_eq!(presets.len(), 2, "rename must not add or remove presets");
         assert_eq!(presets[0].name, "one", "unrelated preset must be untouched");
         assert_eq!(presets[1].name, "renamed");
-        assert!(matches!(effects.as_slice(), [Effect::PersistSearchSettings]));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::PersistSearchSettings]
+        ));
     }
 
     #[test]
     fn committing_an_empty_rename_leaves_the_preset_name_unchanged() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
-        let mut presets = vec![SavedPreset { name: "original".to_string(), settings: PersistedSearchSettings::from(&config) }];
-        handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('r')));
+        let mut presets = vec![SavedPreset {
+            name: "original".to_string(),
+            settings: PersistedSearchSettings::from(&config),
+        }];
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('r')),
+        );
         view.edit_buffer.clear();
-        let (_, effects) = handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Enter));
+        let (_, effects) = handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Enter),
+        );
         assert_eq!(presets[0].name, "original");
         assert!(effects.is_empty());
     }
 
     #[test]
     fn esc_while_renaming_a_preset_discards_without_changing_the_name() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
-        let mut presets = vec![SavedPreset { name: "original".to_string(), settings: PersistedSearchSettings::from(&config) }];
-        handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('r')));
+        let mut presets = vec![SavedPreset {
+            name: "original".to_string(),
+            settings: PersistedSearchSettings::from(&config),
+        }];
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('r')),
+        );
         for c in "xxx".chars() {
-            handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char(c)));
+            handle_key(
+                &mut view,
+                &mut config,
+                &[],
+                &mut presets,
+                key(KeyCode::Char(c)),
+            );
         }
         handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Esc));
         assert!(!view.renaming_preset);
@@ -1124,51 +1650,102 @@ mod tests {
 
     #[test]
     fn r_on_an_empty_preset_list_does_not_panic() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
         let mut presets = Vec::new();
-        let (consumed, _) = handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('r')));
+        let (consumed, _) = handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('r')),
+        );
         assert!(!consumed);
         assert!(!view.renaming_preset);
     }
 
     #[test]
     fn d_deletes_the_selected_preset_and_persists() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
         let mut presets = vec![
-            SavedPreset { name: "one".to_string(), settings: PersistedSearchSettings::from(&config) },
-            SavedPreset { name: "two".to_string(), settings: PersistedSearchSettings::from(&config) },
+            SavedPreset {
+                name: "one".to_string(),
+                settings: PersistedSearchSettings::from(&config),
+            },
+            SavedPreset {
+                name: "two".to_string(),
+                settings: PersistedSearchSettings::from(&config),
+            },
         ];
-        let (consumed, effects) = handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('d')));
+        let (consumed, effects) = handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('d')),
+        );
         assert!(consumed);
         assert_eq!(presets.len(), 1);
         assert_eq!(presets[0].name, "two");
-        assert!(matches!(effects.as_slice(), [Effect::PersistSearchSettings]));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::PersistSearchSettings]
+        ));
     }
 
     #[test]
     fn d_on_an_empty_preset_list_does_not_panic() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
         let mut presets = Vec::new();
-        let (consumed, _) = handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Char('d')));
+        let (consumed, _) = handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Char('d')),
+        );
         assert!(!consumed);
     }
 
     #[test]
     fn enter_on_a_recent_search_applies_it_to_config() {
-        let mut view = SettingsView { section: Section::Recents, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Recents,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
-        let recents = vec![RecentSearch { search_path: "/tmp/project".to_string(), filters_text: "needle".to_string() }];
-        handle_key(&mut view, &mut config, &recents, &mut Vec::new(), key(KeyCode::Enter));
+        let recents = vec![RecentSearch {
+            search_path: "/tmp/project".to_string(),
+            filters_text: "needle".to_string(),
+        }];
+        handle_key(
+            &mut view,
+            &mut config,
+            &recents,
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
         assert_eq!(config.search_path, "/tmp/project");
         assert_eq!(config.filters_text, "needle");
     }
 
     #[test]
     fn enter_on_a_saved_preset_applies_every_field() {
-        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Presets,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
         let mut preset_settings = PersistedSearchSettings::from(&SearchToolConfig {
             search_path: "/tmp/preset-path".to_string(),
@@ -1176,8 +1753,17 @@ mod tests {
             ..Default::default()
         });
         preset_settings.filters_text = "from-preset".to_string();
-        let mut presets = vec![SavedPreset { name: "My preset".to_string(), settings: preset_settings }];
-        handle_key(&mut view, &mut config, &[], &mut presets, key(KeyCode::Enter));
+        let mut presets = vec![SavedPreset {
+            name: "My preset".to_string(),
+            settings: preset_settings,
+        }];
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut presets,
+            key(KeyCode::Enter),
+        );
         assert_eq!(config.search_path, "/tmp/preset-path");
         assert_eq!(config.filters_text, "from-preset");
         assert!(config.use_regex);
@@ -1185,10 +1771,25 @@ mod tests {
 
     #[test]
     fn navigation_within_an_empty_recents_list_does_not_panic() {
-        let mut view = SettingsView { section: Section::Recents, ..Default::default() };
+        let mut view = SettingsView {
+            section: Section::Recents,
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Down));
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Up));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Down),
+        );
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Up),
+        );
         assert_eq!(view.recent_selected, 0);
     }
 
@@ -1199,74 +1800,208 @@ mod tests {
         // the highest literal index used anywhere in this file without a
         // compile error (the match arms would silently become dead code
         // rather than fail to build).
-        assert!(FIELDS.len() > 28, "a field index literal above assumes at least 29 fields");
+        assert!(
+            FIELDS.len() > 31,
+            "a field index literal above assumes at least 32 fields"
+        );
+    }
+
+    #[test]
+    fn keep_index_current_is_a_switch_that_defaults_off_and_has_a_hint() {
+        let mut config = SearchToolConfig::default();
+        assert!(!setting_on(&config, 34));
+        step_setting(&mut config, 34);
+        assert!(setting_on(&config, 34) && config.index.watch);
+        assert_eq!(FIELDS[34].label, "Keep index current");
+        assert!(field_hint(34).contains("no administrator rights"));
+    }
+
+    #[test]
+    fn semantic_index_switch_is_in_the_fast_index_group_and_toggles() {
+        let (_, group, _, hint, kind) = setting(31).unwrap();
+        assert_eq!(group, "Fast Re-search Index");
+        assert!(hint.contains("neural embedding"));
+        assert_eq!(kind, SettingKind::Switch);
+
+        let mut config = SearchToolConfig::default();
+        assert!(!setting_on(&config, 31));
+        step_setting(&mut config, 31);
+        assert!(setting_on(&config, 31));
     }
 
     #[test]
     fn space_toggles_a_boolean_field() {
-        let mut view = SettingsView { selected: row_index_for_field(6), ..Default::default() }; // Use regex
+        let mut view = SettingsView {
+            selected: row_index_for_field(6),
+            ..Default::default()
+        }; // Use regex
         let mut config = SearchToolConfig::default();
         assert!(!config.use_regex);
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Char(' ')));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Char(' ')),
+        );
         assert!(config.use_regex);
     }
 
     #[test]
     fn enter_cycles_match_mode() {
-        let mut view = SettingsView { selected: row_index_for_field(4), ..Default::default() }; // Match mode
+        let mut view = SettingsView {
+            selected: row_index_for_field(4),
+            ..Default::default()
+        }; // Match mode
         let mut config = SearchToolConfig::default();
         assert_eq!(config.match_mode, MatchMode::AnyLine);
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
         assert_eq!(config.match_mode, MatchMode::AllInFile);
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
         assert_eq!(config.match_mode, MatchMode::Proximity);
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
         assert_eq!(config.match_mode, MatchMode::AnyLine);
     }
 
     #[test]
     fn enter_on_a_text_field_starts_editing_prefilled_with_the_current_value() {
-        let mut view = SettingsView { selected: row_index_for_field(0), ..Default::default() }; // Search path
-        let mut config = SearchToolConfig { search_path: "/tmp/x".to_string(), ..Default::default() };
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
+        let mut view = SettingsView {
+            selected: row_index_for_field(0),
+            ..Default::default()
+        }; // Search path
+        let mut config = SearchToolConfig {
+            search_path: "/tmp/x".to_string(),
+            ..Default::default()
+        };
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
         assert!(view.editing);
         assert_eq!(view.edit_buffer, "/tmp/x");
     }
 
     #[test]
     fn editing_and_committing_a_text_field_updates_config() {
-        let mut view = SettingsView { selected: row_index_for_field(0), ..Default::default() };
+        let mut view = SettingsView {
+            selected: row_index_for_field(0),
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
         for c in "/tmp/new".chars() {
-            handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Char(c)));
+            handle_key(
+                &mut view,
+                &mut config,
+                &[],
+                &mut Vec::new(),
+                key(KeyCode::Char(c)),
+            );
         }
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
         assert!(!view.editing);
         assert_eq!(config.search_path, "/tmp/new");
     }
 
     #[test]
     fn esc_cancels_an_edit_without_committing() {
-        let mut view = SettingsView { selected: row_index_for_field(0), ..Default::default() };
-        let mut config = SearchToolConfig { search_path: "/original".to_string(), ..Default::default() };
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Char('x')));
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Esc));
+        let mut view = SettingsView {
+            selected: row_index_for_field(0),
+            ..Default::default()
+        };
+        let mut config = SearchToolConfig {
+            search_path: "/original".to_string(),
+            ..Default::default()
+        };
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Char('x')),
+        );
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Esc),
+        );
         assert!(!view.editing);
         assert_eq!(config.search_path, "/original");
     }
 
     #[test]
     fn invalid_numeric_input_is_ignored_not_panicking() {
-        let mut view = SettingsView { selected: 5, ..Default::default() }; // Proximity lines
+        let mut view = SettingsView {
+            selected: 5,
+            ..Default::default()
+        }; // Proximity lines
         let mut config = SearchToolConfig::default();
         let original = config.proximity_lines;
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
         for c in "not-a-number".chars() {
-            handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Char(c)));
+            handle_key(
+                &mut view,
+                &mut config,
+                &[],
+                &mut Vec::new(),
+                key(KeyCode::Char(c)),
+            );
         }
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
         assert_eq!(config.proximity_lines, original);
     }
 
@@ -1276,31 +2011,72 @@ mod tests {
         // a prior version of this file used `format!("{:?}", ...)`, which
         // renders "AnyLine"/"AllInFile" (no space, Rust Debug format)
         // instead of "Any line"/"All in file".
-        let any_line = SearchToolConfig { match_mode: MatchMode::AnyLine, ..Default::default() };
-        assert_eq!(display_value(&any_line, 4, FieldKind::MatchMode), "Any line");
-        let all_in_file = SearchToolConfig { match_mode: MatchMode::AllInFile, ..Default::default() };
-        assert_eq!(display_value(&all_in_file, 4, FieldKind::MatchMode), "All in file");
-        let proximity = SearchToolConfig { match_mode: MatchMode::Proximity, ..Default::default() };
-        assert_eq!(display_value(&proximity, 4, FieldKind::MatchMode), "Proximity");
+        let any_line = SearchToolConfig {
+            match_mode: MatchMode::AnyLine,
+            ..Default::default()
+        };
+        assert_eq!(
+            display_value(&any_line, 4, FieldKind::MatchMode),
+            "Any line"
+        );
+        let all_in_file = SearchToolConfig {
+            match_mode: MatchMode::AllInFile,
+            ..Default::default()
+        };
+        assert_eq!(
+            display_value(&all_in_file, 4, FieldKind::MatchMode),
+            "All in file"
+        );
+        let proximity = SearchToolConfig {
+            match_mode: MatchMode::Proximity,
+            ..Default::default()
+        };
+        assert_eq!(
+            display_value(&proximity, 4, FieldKind::MatchMode),
+            "Proximity"
+        );
     }
 
     #[test]
     fn up_down_navigation_wraps() {
         let mut view = SettingsView::default();
         let start = view.selected;
-        assert_eq!(start, row_index_for_field(0), "default selection must land on the first real field, not a Header row");
+        assert_eq!(
+            start,
+            row_index_for_field(0),
+            "default selection must land on the first real field, not a Header row"
+        );
         view.move_selection(-1);
-        assert_eq!(view.selected, row_index_for_field(FIELDS.len() - 1), "must wrap to the last real field, skipping any trailing Header");
+        assert_eq!(
+            view.selected,
+            row_index_for_field(FIELDS.len() - 1),
+            "must wrap to the last real field, skipping any trailing Header"
+        );
         view.move_selection(1);
         assert_eq!(view.selected, start);
     }
 
     #[test]
     fn navigation_is_ignored_while_editing() {
-        let mut view = SettingsView { selected: row_index_for_field(0), ..Default::default() };
+        let mut view = SettingsView {
+            selected: row_index_for_field(0),
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
-        handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Down));
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
+        handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Down),
+        );
         assert_eq!(view.selected, row_index_for_field(0));
     }
 
@@ -1312,9 +2088,18 @@ mod tests {
         // is exercised in `mod.rs`'s own integration test, since committing
         // the picker's selection into `config.selected_extensions` happens
         // one layer up (`toolboxes::search::handle_key`), not here.
-        let mut view = SettingsView { selected: row_index_for_field(EXTENSIONS_FIELD), ..Default::default() };
+        let mut view = SettingsView {
+            selected: row_index_for_field(EXTENSIONS_FIELD),
+            ..Default::default()
+        };
         let mut config = SearchToolConfig::default();
-        let (consumed, effects) = handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
+        let (consumed, effects) = handle_key(
+            &mut view,
+            &mut config,
+            &[],
+            &mut Vec::new(),
+            key(KeyCode::Enter),
+        );
         assert!(consumed);
         assert!(!view.editing, "must not fall back to plain text editing");
         assert_eq!(effects.len(), 1);
@@ -1327,7 +2112,11 @@ mod tests {
     #[test]
     fn every_field_has_a_nonempty_hint() {
         for i in 0..FIELDS.len() {
-            assert!(!field_hint(i).is_empty(), "field {i} (`{}`) has no hint text", FIELDS[i].label);
+            assert!(
+                !field_hint(i).is_empty(),
+                "field {i} (`{}`) has no hint text",
+                FIELDS[i].label
+            );
         }
     }
 
@@ -1340,22 +2129,51 @@ mod tests {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let (longest_index, longest_hint) = settings().map(|(i, _, _, hint, _)| (i, hint)).max_by_key(|(_, hint)| hint.len()).expect("at least one field");
+        let (longest_index, longest_hint) = settings()
+            .map(|(i, _, _, hint, _)| (i, hint))
+            .max_by_key(|(_, hint)| hint.len())
+            .expect("at least one field");
         assert!(!longest_hint.is_empty());
 
         for width in [40u16, 50, 60, 84, 98, 140] {
-            let view = SettingsView { selected: row_index_for_field(longest_index), ..Default::default() };
+            let view = SettingsView {
+                selected: row_index_for_field(longest_index),
+                ..Default::default()
+            };
             let config = SearchToolConfig::default();
             let backend = TestBackend::new(width, 40);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut regions = crate::mouse::MouseRegions::default();
-            terminal.draw(|f| draw(f, f.area(), &Theme::default_palette(), &config, &[], &[], &view, &mut regions)).unwrap();
+            terminal
+                .draw(|f| {
+                    draw(
+                        f,
+                        f.area(),
+                        &Theme::default_palette(),
+                        &config,
+                        &[],
+                        &[],
+                        &view,
+                        &mut regions,
+                    )
+                })
+                .unwrap();
 
             let buffer = terminal.backend().buffer().clone();
-            let rendered: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
+            let rendered: String = (0..buffer.area.height)
+                .map(|y| {
+                    (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                        + "\n"
+                })
+                .collect();
 
             for word in longest_hint.split_whitespace() {
-                assert!(rendered.contains(word), "word `{word}` from the longest hint missing at width {width}:\n{rendered}");
+                assert!(
+                    rendered.contains(word),
+                    "word `{word}` from the longest hint missing at width {width}:\n{rendered}"
+                );
             }
         }
     }
@@ -1371,7 +2189,25 @@ mod tests {
             let backend = TestBackend::new(w.max(1), h.max(1));
             let mut terminal = Terminal::new(backend).unwrap();
             let mut regions = crate::mouse::MouseRegions::default();
-            terminal.draw(|f| draw(f, ratatui::layout::Rect { x: 0, y: 0, width: w, height: h }, &Theme::default_palette(), &config, &[], &[], &view, &mut regions)).unwrap();
+            terminal
+                .draw(|f| {
+                    draw(
+                        f,
+                        ratatui::layout::Rect {
+                            x: 0,
+                            y: 0,
+                            width: w,
+                            height: h,
+                        },
+                        &Theme::default_palette(),
+                        &config,
+                        &[],
+                        &[],
+                        &view,
+                        &mut regions,
+                    )
+                })
+                .unwrap();
         }
     }
 }

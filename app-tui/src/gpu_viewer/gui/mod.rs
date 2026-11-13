@@ -11,6 +11,7 @@ mod page_layout;
 mod panels;
 pub mod theme;
 mod workbench;
+pub mod theme_library;
 pub use dashboard::DashEvent;
 
 use super::{
@@ -36,7 +37,10 @@ pub struct PxRect {
 }
 impl PxRect {
     pub fn contains(&self, x: f64, y: f64) -> bool {
-        x >= self.x as f64 && y >= self.y as f64 && x < (self.x + self.w) as f64 && y < (self.y + self.h) as f64
+        x >= self.x as f64
+            && y >= self.y as f64
+            && x < (self.x + self.w) as f64
+            && y < (self.y + self.h) as f64
     }
 }
 
@@ -82,9 +86,13 @@ pub struct Gui {
     /// Interactive controls of the last frame by label, in points (tests click them).
     targets: Vec<(String, Rect)>,
     /// The row under the pointer that previews its effect this frame, and the one that did last frame.
-    hover_now: Option<(crate::gpu_viewer::controller::UiAction, crate::gpu_viewer::controller::UiAction,
+    hover_now: Option<(
+        crate::gpu_viewer::controller::UiAction,
+        crate::gpu_viewer::controller::UiAction,
     )>,
-    hover_prev: Option<(crate::gpu_viewer::controller::UiAction, crate::gpu_viewer::controller::UiAction,
+    hover_prev: Option<(
+        crate::gpu_viewer::controller::UiAction,
+        crate::gpu_viewer::controller::UiAction,
     )>,
     /// What the layout has learned from use (ADR-018); decides orders, collapsed cards and the tree's default.
     adapt: Adapt,
@@ -107,6 +115,12 @@ pub struct Gui {
     pill_rect: Option<Rect>,
     /// The step the selection last belonged to (a change brings that step's tools).
     last_focus_step: Option<&'static str>,
+    /// Search navigation width in points; mirrors egui's panel state so frame layout cannot reset a drag.
+    search_sidebar_width: f32,
+    /// Search sidebar can be hidden without losing its width or recent-search state.
+    search_sidebar_visible: bool,
+    /// The Search command menu currently shown in its focused modal.
+    search_menu_open: Option<String>,
     /// Scroll and selection memory of a bench's page (`Authoring::document`).
     doc: document::DocState,
 }
@@ -120,7 +134,10 @@ impl Default for Gui {
 impl Gui {
     pub fn new() -> Self {
         let ctx = egui::Context::default();
+        theme::load_saved_choice();
         theme::install(&ctx);
+        // Dark until the first frame's circadian tick sets light or dark from the hour (`theme::tick`).
+        ctx.set_theme(egui::Theme::Dark);
         Self {
             ctx,
             visible: Visible::default(),
@@ -153,6 +170,9 @@ impl Gui {
             now: 0.0,
             pill_rect: None,
             last_focus_step: None,
+            search_sidebar_width: 224.0,
+            search_sidebar_visible: true,
+            search_menu_open: None,
             doc: document::DocState::default(),
         }
     }
@@ -186,11 +206,14 @@ impl Gui {
     }
     /// Open the tree when it is a rail, fold it when it is open.
     pub fn toggle_tree_open(&mut self) {
-        let open = self.tree_user.unwrap_or_else(|| self.adapt.tree_open_by_default());
+        let open = self
+            .tree_user
+            .unwrap_or_else(|| self.adapt.tree_open_by_default());
         self.tree_user = Some(!open);
     }
     pub(crate) fn tree_is_open(&self) -> bool {
-        self.tree_user.unwrap_or_else(|| self.adapt.tree_open_by_default())
+        self.tree_user
+            .unwrap_or_else(|| self.adapt.tree_open_by_default())
     }
 
     pub fn ctx(&self) -> &egui::Context {
@@ -211,7 +234,10 @@ impl Gui {
         self.bg_picker
     }
     pub fn open_palette(&mut self) {
-        self.palette = Some(PaletteState { fresh: true, ..Default::default() });
+        self.palette = Some(PaletteState {
+            fresh: true,
+            ..Default::default()
+        });
         self.floating = None;
     }
     /// Show `items` at a window pixel (right click, or the list a click on the model asked for).
@@ -224,7 +250,9 @@ impl Gui {
     }
     /// Close whatever floats (palette, context list); true when something was open.
     pub fn close_floating(&mut self) -> bool {
-        self.palette.take().is_some() | self.floating.take().is_some() | self.doc.open.take().is_some()
+        self.palette.take().is_some()
+            | self.floating.take().is_some()
+            | self.doc.open.take().is_some()
     }
     pub fn floating_open(&self) -> bool {
         self.palette.is_some() || self.floating.is_some()
@@ -246,12 +274,26 @@ impl Gui {
         let ppp = self.ctx.pixels_per_point();
         match self.viewport {
             Some(r) => {
-                let (x, y) = ((r.min.x * ppp).round().max(0.0) as u32, (r.min.y * ppp).round().max(0.0) as u32);
-                let w = ((r.max.x * ppp).round() as u32).saturating_sub(x).min(window.0.saturating_sub(x)).max(1);
-                let h = ((r.max.y * ppp).round() as u32).saturating_sub(y).min(window.1.saturating_sub(y)).max(1);
+                let (x, y) = (
+                    (r.min.x * ppp).round().max(0.0) as u32,
+                    (r.min.y * ppp).round().max(0.0) as u32,
+                );
+                let w = ((r.max.x * ppp).round() as u32)
+                    .saturating_sub(x)
+                    .min(window.0.saturating_sub(x))
+                    .max(1);
+                let h = ((r.max.y * ppp).round() as u32)
+                    .saturating_sub(y)
+                    .min(window.1.saturating_sub(y))
+                    .max(1);
                 PxRect { x, y, w, h }
             }
-            None => PxRect { x: 0, y: 0, w: window.0, h: window.1 },
+            None => PxRect {
+                x: 0,
+                y: 0,
+                w: window.0,
+                h: window.1,
+            },
         }
     }
     /// Centre (window pixels) of the first control of the last frame whose label starts with `prefix`.
@@ -265,7 +307,11 @@ impl Gui {
     #[cfg(test)]
     pub(crate) fn find_target_after(&self, after: &str, label: &str) -> Option<(f64, f64)> {
         let ppp = self.ctx.pixels_per_point();
-        let (_, r) = self.targets.iter().skip_while(|(l, _)| l != after).find(|(l, _)| l == label)?;
+        let (_, r) = self
+            .targets
+            .iter()
+            .skip_while(|(l, _)| l != after)
+            .find(|(l, _)| l == label)?;
         Some(((r.center().x * ppp) as f64, (r.center().y * ppp) as f64))
     }
     #[cfg(test)]
@@ -300,8 +346,16 @@ impl Gui {
     /// Count and widest width (points) of the controls drawn inside `area`.
     #[cfg(test)]
     pub(crate) fn target_rects_inside(&self, area: Rect) -> (usize, f32) {
-        let inside: Vec<&Rect> = self.targets.iter().map(|(_, r)| r).filter(|r| area.contains_rect(**r)).collect();
-        (inside.len(), inside.iter().map(|r| r.width()).fold(0.0, f32::max))
+        let inside: Vec<&Rect> = self
+            .targets
+            .iter()
+            .map(|(_, r)| r)
+            .filter(|r| area.contains_rect(**r))
+            .collect();
+        (
+            inside.len(),
+            inside.iter().map(|r| r.width()).fold(0.0, f32::max),
+        )
     }
     #[cfg(test)]
     pub(crate) fn chip_rect(&self) -> Option<Rect> {
@@ -325,7 +379,11 @@ impl Gui {
     }
 
     /// Run one frame: build the chrome from `input`, return what egui must paint and the clicks.
-    pub fn run(&mut self, raw: egui::RawInput, input: &GuiInput) -> (egui::FullOutput, Vec<Outcome>) {
+    pub fn run(
+        &mut self,
+        raw: egui::RawInput,
+        input: &GuiInput,
+    ) -> (egui::FullOutput, Vec<Outcome>) {
         let ctx = self.ctx.clone();
         let mut out = Vec::new();
         self.targets.clear();
@@ -349,13 +407,29 @@ impl Gui {
         (full, out)
     }
 
-    fn build(&mut self, ui: &mut egui::Ui, input: &GuiInput, out: &mut Vec<Outcome>, hint: &mut Option<String>,
+    fn build(
+        &mut self,
+        ui: &mut egui::Ui,
+        input: &GuiInput,
+        out: &mut Vec<Outcome>,
+        hint: &mut Option<String>,
     ) {
+        theme::tick(ui.ctx());
         let p = theme::current(ui.ctx());
         self.now = ui.ctx().input(|i| i.time);
         self.pill_rect = None;
         self.chip_rect = None;
-        let mctx = MenuContext { view: input.view, scene: input.scene(), results: if input.editor.is_some() { 1 } else { input.scenes.len() }, editor: input.editor, visible: self.visible, adaptive: self.adapt.enabled,
+        let mctx = MenuContext {
+            view: input.view,
+            scene: input.scene(),
+            results: if input.editor.is_some() {
+                1
+            } else {
+                input.scenes.len()
+            },
+            editor: input.editor,
+            visible: self.visible,
+            adaptive: self.adapt.enabled,
         };
         let menus = menus::bar(&mctx);
         let tabs = menus::ribbon(&mctx);
@@ -389,11 +463,26 @@ impl Gui {
         }
 
         let wb = input.editor.and_then(|e| e.workbench());
-        self.top_bar(ui, input, &menus, &tabs, wb.as_ref(), &p, out, hint);
-        if self.visible.status {
-            self.status_bar(ui, input, &p, out, hint);
+        let document = input.editor.and_then(|e| e.document());
+        let is_search_page = document.as_ref().is_some_and(|d| d.sidebar.is_some());
+        let sidebar = document.as_ref().and_then(|d| d.sidebar.as_ref());
+        if is_search_page {
+            ui.painter().rect_filled(ui.max_rect(), 0.0, p.bg);
+            if self.search_sidebar_visible {
+                if let Some(sidebar) = sidebar {
+                    self.search_sidebar(ui, sidebar, &p, out, hint);
+                }
+            }
+            if let Some(sidebar) = sidebar {
+                self.search_top_bar(ui, &menus, sidebar, &p, out, hint);
+            }
+            self.search_status_bar(ui, input, &p);
+        } else {
+            self.top_bar(ui, input, &menus, &tabs, wb.as_ref(), &p, out, hint);
+            if self.visible.status {
+                self.status_bar(ui, input, &p, out, hint);
+            }
         }
-        // A workbench of three fixed panes has no tree, tool pill or inspector: its own panes and toolbar.
         if let Some(wb) = &wb {
             self.workbench(ui, wb, &p, out, hint);
             self.floating_list(ui.ctx(), &p, out, hint);
@@ -410,10 +499,9 @@ impl Gui {
             self.adapt.frame_end();
             return;
         }
-        let document=input.editor.and_then(|e|e.document());
-        let precision=document.as_ref().is_some_and(|d|d.precision.is_some());
+        let precision = document.as_ref().is_some_and(|d| d.precision.is_some());
         let tree_open = self.tree_is_open();
-        if self.visible.tree && tree_open && !precision {
+        if !is_search_page && self.visible.tree && tree_open && !precision {
             self.tree_panel(ui, input, &p, out);
         }
         // What the panels leave is the model's viewport, less the room the inspector's cards take when they are shown
@@ -421,27 +509,52 @@ impl Gui {
         // egui would then count the pointer over the model as being over the interface.
         // A page bench (Search) has no docks: its options open as popovers from its own bar.
         let page = input.editor.is_some_and(|e| e.has_document());
-        let plan = if self.visible.properties && !page { self.inspector_plan(input, &tabs) } else { None };
+        let plan = if self.visible.properties && !page {
+            self.inspector_plan(input, &tabs)
+        } else {
+            None
+        };
         let mut free = ui.available_rect_before_wrap();
+        if is_search_page {
+            ui.painter().rect_filled(free, 0.0, p.bg);
+        }
         self.room = Some(free);
         if plan.is_some() {
             free.max.x = (free.max.x - panels::INSPECTOR_WIDTH - 36.0).max(free.min.x + 240.0);
         }
         self.viewport = Some(free);
-        if self.visible.tree && !tree_open && !precision {
+        if !is_search_page && self.visible.tree && !tree_open && !precision {
             self.tree_chip(ui.ctx(), &p);
         }
         if self.visible.ribbon && !page {
             self.tool_pill(ui.ctx(), &tabs, &p, out, hint);
         }
         if let Some(plan) = &plan {
-            self.inspector(ui.ctx(), plan, &p, out, hint);
+            self.inspector(ui.ctx(), plan, &p, out);
         }
         // A bench without a model draws its page in the model's place, below the tool pill.
         if let Some(doc) = document {
-            let top = self.pill_rect.map_or(free.top() + 8.0, |r| r.bottom() + 8.0).clamp(free.top(), free.bottom());
-            self.doc.layout = input.view.page_layout.unwrap_or_default();
-            self.document(ui, Rect::from_min_max(Pos2::new(free.left(), top), free.max), &doc, &p, out, hint);
+            let top = if is_search_page {
+                free.top()
+            } else {
+                self.pill_rect
+                    .map_or(free.top() + 8.0, |r| r.bottom() + 8.0)
+                    .clamp(free.top(), free.bottom())
+            };
+            self.doc.layout = if is_search_page {
+                super::display::PageLayout::default()
+            } else {
+                input.view.page_layout.unwrap_or_default()
+            };
+            let area = if is_search_page {
+                Rect::from_min_max(
+                    Pos2::new(free.left() + 34.0, top),
+                    Pos2::new(free.right() - 34.0, free.bottom() - 18.0),
+                )
+            } else {
+                Rect::from_min_max(Pos2::new(free.left(), top), free.max)
+            };
+            self.document(ui, area, &doc, &p, out, hint);
         }
         self.model_labels(ui.ctx(), input, &p);
         self.start_card(ui.ctx(), input, &p, out, hint);
@@ -484,15 +597,24 @@ impl Gui {
         let Some(ed) = input.editor else { return };
         let active = tabs.get(self.tab).map(|t| t.title.clone());
         for (i, t) in tabs.iter().enumerate() {
-            let Some(now) = ed.step_state(&t.title) else { continue };
+            let Some(now) = ed.step_state(&t.title) else {
+                continue;
+            };
             let before = self.prev_steps.insert(t.title.clone(), now);
             if before == Some(StepState::Todo) && now == StepState::Done {
                 self.done_at.insert(t.title.clone(), self.now);
                 if active.as_deref() == Some(t.title.as_str()) {
-                    let following = tabs.iter().skip(i + 1).find(|n| ed.step_state(&n.title) == Some(StepState::Todo)).map(|n| n.title.clone());
+                    let following = tabs
+                        .iter()
+                        .skip(i + 1)
+                        .find(|n| ed.step_state(&n.title) == Some(StepState::Todo))
+                        .map(|n| n.title.clone());
                     match self.adapt.predicted_next(&t.title) {
                         Some((next, _)) if tabs.iter().any(|n| n.title == next) => {
-                            self.tab = tabs.iter().position(|n| n.title == next).unwrap_or(self.tab);
+                            self.tab = tabs
+                                .iter()
+                                .position(|n| n.title == next)
+                                .unwrap_or(self.tab);
                             self.nudge = None;
                         }
                         _ => self.nudge = following,
@@ -504,8 +626,15 @@ impl Gui {
 
     /// The person chose step `to` (index into `tabs`).
     pub(super) fn select_tab(&mut self, to: usize, tabs: &[RibbonTab]) {
-        let (Some(from), Some(next)) = (tabs.get(self.tab), tabs.get(to)) else { return };
-        if from.title != next.title && self.done_at.get(&from.title).is_some_and(|t| self.now - t < 90.0) {
+        let (Some(from), Some(next)) = (tabs.get(self.tab), tabs.get(to)) else {
+            return;
+        };
+        if from.title != next.title
+            && self
+                .done_at
+                .get(&from.title)
+                .is_some_and(|t| self.now - t < 90.0)
+        {
             self.adapt.step_taken(&from.title, &next.title);
         }
         if self.nudge.as_deref() == Some(next.title.as_str()) {
@@ -522,12 +651,19 @@ impl Gui {
             return;
         }
         let ppp = ctx.pixels_per_point();
-        let painter = ctx.layer_painter(egui::LayerId::new(Order::Middle, Id::new("model-labels"))).with_clip_rect(vp);
+        let painter = ctx
+            .layer_painter(egui::LayerId::new(Order::Middle, Id::new("model-labels")))
+            .with_clip_rect(vp);
         // Supports and loads sit under the docks, the tool pill and every card: a glyph is part of the model, not of the chrome.
-        let back = ctx.layer_painter(egui::LayerId::new(Order::Background, Id::new("bc-glyphs"))).with_clip_rect(vp);
+        let back = ctx
+            .layer_painter(egui::LayerId::new(Order::Background, Id::new("bc-glyphs")))
+            .with_clip_rect(vp);
         let inner = vp.shrink(6.0);
         let clamp_in = |r: Rect| -> Rect {
-            let d = Vec2::new((inner.left() - r.left()).max(0.0) - (r.right() - inner.right()).max(0.0), (inner.top() - r.top()).max(0.0) - (r.bottom() - inner.bottom()).max(0.0));
+            let d = Vec2::new(
+                (inner.left() - r.left()).max(0.0) - (r.right() - inner.right()).max(0.0),
+                (inner.top() - r.top()).max(0.0) - (r.bottom() - inner.bottom()).max(0.0),
+            );
             r.translate(d)
         };
         // The window's viewport pixels are physical; egui draws in points.
@@ -536,9 +672,19 @@ impl Gui {
             let at = Pos2::new(origin.x + o.px[0] / ppp, origin.y + o.px[1] / ppp);
             match o.kind {
                 OverlayKind::Dimension => {
-                    let galley = painter.layout_no_wrap(o.text.clone(), egui::FontId::monospace(12.0), p.text);
+                    let galley = painter.layout_no_wrap(
+                        o.text.clone(),
+                        egui::FontId::monospace(12.0),
+                        p.text,
+                    );
                     let rect = Rect::from_center_size(at, galley.size() + Vec2::new(10.0, 4.0));
-                    painter.rect(rect, 4.0, with_alpha(p.panel, 235), egui::Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
+                    painter.rect(
+                        rect,
+                        4.0,
+                        with_alpha(p.panel, 235),
+                        egui::Stroke::new(1.0, p.accent),
+                        egui::StrokeKind::Inside,
+                    );
                     painter.galley(rect.center() - galley.size() / 2.0, galley, p.text);
                 }
                 OverlayKind::Load => {
@@ -549,35 +695,85 @@ impl Gui {
                     let dir = (tip - at).normalized();
                     let side = Vec2::new(-dir.y, dir.x);
                     back.line_segment([at, tip], egui::Stroke::new(2.5, col));
-                    back.add(egui::Shape::convex_polygon(vec![tip, tip - dir * 11.0 + side * 5.0, tip - dir * 11.0 - side * 5.0], col, egui::Stroke::NONE));
-                    let galley = back.layout_no_wrap(o.text.clone(), egui::FontId::monospace(11.0), p.text);
-                    let rect = clamp_in(Rect::from_center_size(at - dir * 10.0, galley.size() + Vec2::new(8.0, 3.0)));
-                    back.rect(rect, 3.0, with_alpha(p.panel, 225), egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
+                    back.add(egui::Shape::convex_polygon(
+                        vec![
+                            tip,
+                            tip - dir * 11.0 + side * 5.0,
+                            tip - dir * 11.0 - side * 5.0,
+                        ],
+                        col,
+                        egui::Stroke::NONE,
+                    ));
+                    let galley =
+                        back.layout_no_wrap(o.text.clone(), egui::FontId::monospace(11.0), p.text);
+                    let rect = clamp_in(Rect::from_center_size(
+                        at - dir * 10.0,
+                        galley.size() + Vec2::new(8.0, 3.0),
+                    ));
+                    back.rect(
+                        rect,
+                        3.0,
+                        with_alpha(p.panel, 225),
+                        egui::Stroke::new(1.0, col),
+                        egui::StrokeKind::Inside,
+                    );
                     back.galley(rect.center() - galley.size() / 2.0, galley, p.text);
                 }
                 OverlayKind::Support => {
-                    let out = o.tip.map_or(Vec2::new(0.0, -1.0), |t| Vec2::new(t[0], t[1]));
+                    let out = o
+                        .tip
+                        .map_or(Vec2::new(0.0, -1.0), |t| Vec2::new(t[0], t[1]));
                     let side = Vec2::new(-out.y, out.x);
                     let [kr, kg, kb] = input.view.key_colours[1];
                     let col = Color32::from_rgb(kr, kg, kb);
                     // A triangle standing on the face with hatching under it, and the held directions beside.
                     let base = at + out * 22.0;
-                    back.add(egui::Shape::convex_polygon(vec![at, base + side * 12.0, base - side * 12.0], with_alpha(col, 200), egui::Stroke::new(1.5, col)));
+                    back.add(egui::Shape::convex_polygon(
+                        vec![at, base + side * 12.0, base - side * 12.0],
+                        with_alpha(col, 200),
+                        egui::Stroke::new(1.5, col),
+                    ));
                     for k in [-1.0f32, 0.0, 1.0] {
                         let a = base + side * (12.0 * k);
-                        back.line_segment([a, a + out * 7.0 - side * 4.0], egui::Stroke::new(1.5, col));
+                        back.line_segment(
+                            [a, a + out * 7.0 - side * 4.0],
+                            egui::Stroke::new(1.5, col),
+                        );
                     }
                     if !o.text.is_empty() {
-                        let galley = back.layout_no_wrap(o.text.clone(), egui::FontId::monospace(11.0), p.text);
-                        let rect = clamp_in(Rect::from_center_size(base + out * 24.0, galley.size() + Vec2::new(6.0, 2.0)));
-                        back.rect(rect, 3.0, with_alpha(p.panel, 225), egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
+                        let galley = back.layout_no_wrap(
+                            o.text.clone(),
+                            egui::FontId::monospace(11.0),
+                            p.text,
+                        );
+                        let rect = clamp_in(Rect::from_center_size(
+                            base + out * 24.0,
+                            galley.size() + Vec2::new(6.0, 2.0),
+                        ));
+                        back.rect(
+                            rect,
+                            3.0,
+                            with_alpha(p.panel, 225),
+                            egui::Stroke::new(1.0, col),
+                            egui::StrokeKind::Inside,
+                        );
                         back.galley(rect.center() - galley.size() / 2.0, galley, p.text);
                     }
                 }
                 OverlayKind::Constraint => {
-                    let galley = painter.layout_no_wrap(o.text.clone(), egui::FontId::monospace(10.0), p.dim);
+                    let galley = painter.layout_no_wrap(
+                        o.text.clone(),
+                        egui::FontId::monospace(10.0),
+                        p.dim,
+                    );
                     let rect = Rect::from_center_size(at, galley.size() + Vec2::new(6.0, 2.0));
-                    painter.rect(rect, 3.0, with_alpha(p.panel, 215), egui::Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
+                    painter.rect(
+                        rect,
+                        3.0,
+                        with_alpha(p.panel, 215),
+                        egui::Stroke::new(1.0, p.line),
+                        egui::StrokeKind::Inside,
+                    );
                     painter.galley(rect.center() - galley.size() / 2.0, galley, p.dim);
                 }
             }
@@ -589,13 +785,28 @@ impl Gui {
         let ppp = ctx.pixels_per_point();
         let pt = |q: (f64, f64)| Pos2::new(q.0 as f32 / ppp, q.1 as f32 / ppp);
         let r = Rect::from_two_pos(pt(a), pt(b));
-        let painter = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("selection-box")));
-        painter.rect(r, 2.0, p.accent.gamma_multiply(0.16), egui::Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            Order::Foreground,
+            Id::new("selection-box"),
+        ));
+        painter.rect(
+            r,
+            2.0,
+            p.accent.gamma_multiply(0.16),
+            egui::Stroke::new(1.0, p.accent),
+            egui::StrokeKind::Inside,
+        );
     }
 
     /// What the colours mean, in the corner of the model the model covers least: the field's name and unit over a colour bar with its values for a
     /// result (click the name for the next field), or the colour key of the model's own state (body, support, load, selected).
-    fn contour_legend(&mut self, ctx: &egui::Context, input: &GuiInput, p: &Palette, out: &mut Vec<Outcome>) {
+    fn contour_legend(
+        &mut self,
+        ctx: &egui::Context,
+        input: &GuiInput,
+        p: &Palette,
+        out: &mut Vec<Outcome>,
+    ) {
         use crate::gpu_viewer::text::colormap;
         // Four significant figures: a tick label is read at a glance.
         let legend_value = |v: f32| -> String {
@@ -627,114 +838,234 @@ impl Gui {
         // at the right edge, the result legend at the bottom right, unless the model fills that corner.
         let slot = usize::from(!geometry);
         let room = self.room.unwrap_or(vp).union(vp);
-        let area = Id::new(if geometry { "colour-key" } else { "contour-legend" });
+        let area = Id::new(if geometry {
+            "colour-key"
+        } else {
+            "contour-legend"
+        });
         // egui sizes a new area at this before it is measured, and keeps the pivot it then constrains: never wider than the viewport.
-        let size = corner_slot_size(if geometry { Vec2::new(150.0, 170.0) } else { Vec2::new(260.0, 250.0) }, vp);
+        let size = corner_slot_size(
+            if geometry {
+                Vec2::new(150.0, 170.0)
+            } else {
+                Vec2::new(260.0, 250.0)
+            },
+            vp,
+        );
         // egui keeps an area's position after its first frame: while it does, the pivot only has to stay the same.
-        let cached = if ctx.memory(|m| m.area_rect(area).is_some()) { self.legend_corner[slot] } else { None };
+        let cached = if ctx.memory(|m| m.area_rect(area).is_some()) {
+            self.legend_corner[slot]
+        } else {
+            None
+        };
         let (pivot, start) = match (cached, input.view.panel_pos[slot]) {
             (Some((c, at)), _) => (c.align(), at),
             // A stored position is a fraction of that room, so a resized window cannot strand the panel (`constrain_to`
             // keeps it inside).
             (None, Some(f)) => {
                 self.legend_corner[slot] = None;
-                (Align2::LEFT_TOP, Pos2::new(room.left() + f[0] * room.width(), room.top() + f[1] * room.height()))
+                (
+                    Align2::LEFT_TOP,
+                    Pos2::new(
+                        room.left() + f[0] * room.width(),
+                        room.top() + f[1] * room.height(),
+                    ),
+                )
             }
             (None, None) => {
-                let preferred = if geometry { Corner::TopRight } else { Corner::BottomRight };
+                let preferred = if geometry {
+                    Corner::TopRight
+                } else {
+                    Corner::BottomRight
+                };
                 let v = input.view;
-                let cam = crate::gpu_viewer::editor::camera::Camera { yaw: v.yaw, pitch: v.pitch, zoom: v.zoom, aspect: vp.width().max(1.0) / vp.height().max(1.0), pan: v.pan };
-                let screen: Vec<Pos2> = scene.positions.iter().map(|&q| {
-                    let (ndc, _) = cam.project(q);
-                    Pos2::new(vp.left() + (ndc[0] + 1.0) * 0.5 * vp.width(), vp.top() + (1.0 - ndc[1]) * 0.5 * vp.height())
-                }).collect();
+                let cam = crate::gpu_viewer::editor::camera::Camera {
+                    yaw: v.yaw,
+                    pitch: v.pitch,
+                    zoom: v.zoom,
+                    aspect: vp.width().max(1.0) / vp.height().max(1.0),
+                    pan: v.pan,
+                };
+                let screen: Vec<Pos2> = scene
+                    .positions
+                    .iter()
+                    .map(|&q| {
+                        let (ndc, _) = cam.project(q);
+                        Pos2::new(
+                            vp.left() + (ndc[0] + 1.0) * 0.5 * vp.width(),
+                            vp.top() + (1.0 - ndc[1]) * 0.5 * vp.height(),
+                        )
+                    })
+                    .collect();
                 let at = |i: &u32| screen.get(*i as usize).copied().unwrap_or(Pos2::ZERO);
-                let triangles = scene.triangles.chunks_exact(3).map(|t| [at(&t[0]), at(&t[1]), at(&t[2])]);
+                let triangles = scene
+                    .triangles
+                    .chunks_exact(3)
+                    .map(|t| [at(&t[0]), at(&t[1]), at(&t[2])]);
                 let (c, slot_rect) = emptiest_corner(vp, size, triangles, preferred);
                 let at = c.align().pos_in_rect(&slot_rect);
                 self.legend_corner[slot] = Some((c, at));
                 (c.align(), at)
             }
         };
-        let shown = egui::Area::new(area).fade_in(false).movable(true).constrain_to(room).pivot(pivot).default_pos(start).default_size(size).order(Order::Middle).show(ctx, |ui| {
-            panels::popup_frame(p).fill(p.panel).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
-                // Text that can be selected would take the drag that moves the panel.
-                ui.style_mut().interaction.selectable_labels = false;
-                if geometry {
-                    ui.label(egui::RichText::new("COLOUR KEY  (drag to move)").small().strong().color(p.dim));
-                    let labels = input.editor.map_or(["Body", "Support", "Load", "Selected"], |e| e.key_labels());
-                    for (k, name) in labels.into_iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            // Clicking the swatch opens a colour picker; every change is applied at once and kept.
-                            let mut rgb = input.view.key_colours[k];
-                            let r = egui::color_picker::color_edit_button_srgb(ui, &mut rgb);
-                            self.targets.push((format!("{name} colour"), r.rect));
-                            if r.changed() {
-                                out.push(Outcome::Action(UiAction::Command(Command::SetKeyColour(k, rgb))));
+        let shown = egui::Area::new(area)
+            .fade_in(false)
+            .movable(true)
+            .constrain_to(room)
+            .pivot(pivot)
+            .default_pos(start)
+            .default_size(size)
+            .order(Order::Middle)
+            .show(ctx, |ui| {
+                panels::popup_frame(p)
+                    .fill(p.panel)
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        // Text that can be selected would take the drag that moves the panel.
+                        ui.style_mut().interaction.selectable_labels = false;
+                        if geometry {
+                            ui.label(
+                                egui::RichText::new("COLOUR KEY  (drag to move)")
+                                    .small()
+                                    .strong()
+                                    .color(p.dim),
+                            );
+                            let labels = input
+                                .editor
+                                .map_or(["Body", "Support", "Load", "Selected"], |e| {
+                                    e.key_labels()
+                                });
+                            for (k, name) in labels.into_iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    // Clicking the swatch opens a colour picker; every change is applied at once and kept.
+                                    let mut rgb = input.view.key_colours[k];
+                                    let r =
+                                        egui::color_picker::color_edit_button_srgb(ui, &mut rgb);
+                                    self.targets.push((format!("{name} colour"), r.rect));
+                                    if r.changed() {
+                                        out.push(Outcome::Action(UiAction::Command(
+                                            Command::SetKeyColour(k, rgb),
+                                        )));
+                                    }
+                                    ui.label(name);
+                                });
                             }
-                            ui.label(name);
-                        });
-                    }
-                    if input.view.key_colours != crate::gpu_viewer::display::default_key_colours() {
-                        let r = ui.small_button("Reset colours");
-                        self.targets.push(("Reset colours".into(), r.rect));
-                        if r.clicked() {
-                            out.push(Outcome::Action(UiAction::Command(Command::ResetKeyColours)));
+                            if input.view.key_colours
+                                != crate::gpu_viewer::display::default_key_colours()
+                            {
+                                let r = ui.small_button("Reset colours");
+                                self.targets.push(("Reset colours".into(), r.rect));
+                                if r.clicked() {
+                                    out.push(Outcome::Action(UiAction::Command(
+                                        Command::ResetKeyColours,
+                                    )));
+                                }
+                            }
+                            return;
                         }
-                    }
-                    return;
-                }
-                let view = input.view;
-                let name = view.field_name(scene);
-                let unit = input.editor.map(|e| e.field_unit(&name)).unwrap_or_default();
-                let [lo, hi] = view.range(scene);
-                let title = if unit.is_empty() { name.clone() } else { format!("{name} [{unit}]") };
-                ui.set_max_width(250.0);
-                let cycles = !scene.fields.is_empty();
-                let r = ui.add(egui::Button::new(egui::RichText::new(&title).strong()).frame(false).wrap());
-                self.targets.push((format!("{name} legend"), r.rect));
-                if cycles {
-                    let r = r.on_hover_text("Click, or press F, for the next result field");
-                    if r.clicked() {
-                        out.push(Outcome::Action(UiAction::Command(Command::CycleField { forward: true })));
-                    }
-                }
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    let (bar, _) = ui.allocate_exact_size(Vec2::new(16.0, 170.0), egui::Sense::hover());
-                    let n = 48;
-                    for k in 0..n {
-                        let t0 = k as f32 / n as f32;
-                        let y0 = bar.bottom() - bar.height() * (t0 + 1.0 / n as f32);
-                        ui.painter().rect_filled(Rect::from_min_size(Pos2::new(bar.left(), y0), Vec2::new(bar.width(), bar.height() / n as f32 + 0.5)), 0.0, swatch(t0 + 0.5 / n as f32));
-                    }
-                    ui.painter().rect_stroke(bar, 0.0, egui::Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        // Five ticks from the largest value at the top to the smallest at the bottom.
-                        for (k, frac) in [1.0f32, 0.75, 0.5, 0.25, 0.0].into_iter().enumerate() {
-                            ui.label(egui::RichText::new(legend_value(lo + (hi - lo) * frac)).monospace().size(11.0).color(p.text));
-                            if k < 4 {
-                                ui.add_space(170.0 / 4.0 - 14.0);
+                        let view = input.view;
+                        let name = view.field_name(scene);
+                        let unit = input
+                            .editor
+                            .map(|e| e.field_unit(&name))
+                            .unwrap_or_default();
+                        let [lo, hi] = view.range(scene);
+                        let title = if unit.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{name} [{unit}]")
+                        };
+                        ui.set_max_width(250.0);
+                        let cycles = !scene.fields.is_empty();
+                        let r = ui.add(
+                            egui::Button::new(egui::RichText::new(&title).strong())
+                                .frame(false)
+                                .wrap(),
+                        );
+                        self.targets.push((format!("{name} legend"), r.rect));
+                        if cycles {
+                            let r = r.on_hover_text("Click, or press F, for the next result field");
+                            if r.clicked() {
+                                out.push(Outcome::Action(UiAction::Command(Command::CycleField {
+                                    forward: true,
+                                })));
                             }
+                        }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            let (bar, _) = ui
+                                .allocate_exact_size(Vec2::new(16.0, 170.0), egui::Sense::hover());
+                            let n = 48;
+                            for k in 0..n {
+                                let t0 = k as f32 / n as f32;
+                                let y0 = bar.bottom() - bar.height() * (t0 + 1.0 / n as f32);
+                                ui.painter().rect_filled(
+                                    Rect::from_min_size(
+                                        Pos2::new(bar.left(), y0),
+                                        Vec2::new(bar.width(), bar.height() / n as f32 + 0.5),
+                                    ),
+                                    0.0,
+                                    swatch(t0 + 0.5 / n as f32),
+                                );
+                            }
+                            ui.painter().rect_stroke(
+                                bar,
+                                0.0,
+                                egui::Stroke::new(1.0, p.line),
+                                egui::StrokeKind::Inside,
+                            );
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                // Five ticks from the largest value at the top to the smallest at the bottom.
+                                for (k, frac) in
+                                    [1.0f32, 0.75, 0.5, 0.25, 0.0].into_iter().enumerate()
+                                {
+                                    ui.label(
+                                        egui::RichText::new(legend_value(lo + (hi - lo) * frac))
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(p.text),
+                                    );
+                                    if k < 4 {
+                                        ui.add_space(170.0 / 4.0 - 14.0);
+                                    }
+                                }
+                            });
+                        });
+                        if cycles {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "field {} of {}",
+                                    view.field.min(scene.fields.len()) + 1,
+                                    scene.fields.len() + 1
+                                ))
+                                .small()
+                                .color(p.dim),
+                            );
                         }
                     });
-                });
-                if cycles {
-                    ui.label(egui::RichText::new(format!("field {} of {}", view.field.min(scene.fields.len()) + 1, scene.fields.len() + 1)).small().color(p.dim));
-                }
             });
-        });
         // Where the panel was left is kept, relative to the room it moves in.
         if shown.response.drag_stopped() {
             let min = shown.response.rect.min;
-            let frac = [(min.x - room.left()) / room.width().max(1.0), (min.y - room.top()) / room.height().max(1.0)];
-            out.push(Outcome::Action(UiAction::Command(Command::SetPanelPos(slot, frac))));
+            let frac = [
+                (min.x - room.left()) / room.width().max(1.0),
+                (min.y - room.top()) / room.height().max(1.0),
+            ];
+            out.push(Outcome::Action(UiAction::Command(Command::SetPanelPos(
+                slot, frac,
+            ))));
         }
     }
 
     /// The value card an editor has open (a constraint's directions, a load's numbers, a load case), beside the face's menu.
-    fn value_card(&mut self, ctx: &egui::Context, input: &GuiInput, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>,
+    fn value_card(
+        &mut self,
+        ctx: &egui::Context,
+        input: &GuiInput,
+        p: &Palette,
+        out: &mut Vec<Outcome>,
+        hint: &mut Option<String>,
     ) {
         use crate::gpu_viewer::ui::CardRow;
         let Some(card) = input.editor.and_then(|e| e.value_card()) else {
@@ -745,74 +1076,109 @@ impl Gui {
         };
         let fresh = self.card_key.as_deref() != Some(card.title.as_str());
         self.card_key = Some(card.title.clone());
-        let vp = self.viewport.unwrap_or(Rect::from_min_size(Pos2::new(240.0, 60.0), Vec2::new(600.0, 500.0),
+        let vp = self.viewport.unwrap_or(Rect::from_min_size(
+            Pos2::new(240.0, 60.0),
+            Vec2::new(600.0, 500.0),
         ));
-        let at = self.menu_at.map_or(vp.left_top() + Vec2::new(24.0, 90.0), |m| {
+        let at = self
+            .menu_at
+            .map_or(vp.left_top() + Vec2::new(24.0, 90.0), |m| {
                 m + Vec2::new(10.0, 0.0)
             });
         let mut first = true;
         let mut applied = false;
-        egui::Area::new(Id::new("value-card")).fade_in(false).order(Order::Foreground).fixed_pos(at).constrain(true).show(ctx, |ui| {
-            panels::popup_frame(p).show(ui, |ui| {
-                ui.set_width(card.width);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&card.title).strong());
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(egui::RichText::new(&card.tag).small().monospace().color(p.dim),
+        egui::Area::new(Id::new("value-card"))
+            .fade_in(false)
+            .order(Order::Foreground)
+            .fixed_pos(at)
+            .constrain(true)
+            .show(ctx, |ui| {
+                panels::popup_frame(p).show(ui, |ui| {
+                    ui.set_width(card.width);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&card.title).strong());
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(&card.tag)
+                                    .small()
+                                    .monospace()
+                                    .color(p.dim),
                             );
+                        });
                     });
-                });
-                ui.add_space(4.0);
-                for row in &card.rows {
-                    match row {
-                        CardRow::Toggle { label, on, action } => {
-                            let r = ui.add(egui::Button::new(label).selected(*on).min_size(Vec2::new(ui.available_width(), 0.0)),
+                    ui.add_space(4.0);
+                    for row in &card.rows {
+                        match row {
+                            CardRow::Toggle { label, on, action } => {
+                                let r = ui.add(
+                                    egui::Button::new(label)
+                                        .selected(*on)
+                                        .min_size(Vec2::new(ui.available_width(), 0.0)),
                                 );
-                            self.targets.push((label.clone(), r.rect));
-                            if r.clicked() {
-                                out.push(Outcome::Action(*action));
+                                self.targets.push((label.clone(), r.rect));
+                                if r.clicked() {
+                                    out.push(Outcome::Action(*action));
+                                }
                             }
-                        }
-                        CardRow::Field { label, text, index, unit,
+                            CardRow::Field {
+                                label,
+                                text,
+                                index,
+                                unit,
                             } => {
-                            ui.horizontal(|ui| {
-                                ui.label(label);
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if !unit.is_empty() {
-                                        ui.label(egui::RichText::new(unit).small().color(p.dim),
+                                ui.horizontal(|ui| {
+                                    ui.label(label);
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if !unit.is_empty() {
+                                            ui.label(
+                                                egui::RichText::new(unit).small().color(p.dim),
                                             );
-                                    }
-                                    let mut edited = text.clone();
-                                    let r = ui.add(egui::TextEdit::singleline(&mut edited).id(Id::new(("card-field", *index))).desired_width(110.0).horizontal_align(Align::RIGHT),
+                                        }
+                                        let mut edited = text.clone();
+                                        let r = ui.add(
+                                            egui::TextEdit::singleline(&mut edited)
+                                                .id(Id::new(("card-field", *index)))
+                                                .desired_width(110.0)
+                                                .horizontal_align(Align::RIGHT),
                                         );
-                                    self.targets.push((format!("{label} field"), r.rect));
-                                    if fresh && first {
-                                        // The first field takes the keyboard with its text selected: typing replaces the suggestion.
-                                        r.request_focus();
-                                        let id = Id::new(("card-field", *index));
-                                        if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
-                                            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count(),
+                                        self.targets.push((format!("{label} field"), r.rect));
+                                        if fresh && first {
+                                            // The first field takes the keyboard with its text selected: typing replaces the suggestion.
+                                            r.request_focus();
+                                            let id = Id::new(("card-field", *index));
+                                            if let Some(mut st) =
+                                                egui::TextEdit::load_state(ctx, id)
+                                            {
+                                                st.cursor.set_char_range(Some(
+                                                    egui::text::CCursorRange::two(
+                                                        egui::text::CCursor::new(0),
+                                                        egui::text::CCursor::new(
+                                                            text.chars().count(),
                                                         ),
                                                     ),
                                                 ));
-                                            st.store(ctx, id);
+                                                st.store(ctx, id);
+                                            }
                                         }
-                                    }
-                                    first = false;
-                                    if edited != *text {
-                                        out.push(Outcome::CardField { index: *index, text: edited,
+                                        first = false;
+                                        if edited != *text {
+                                            out.push(Outcome::CardField {
+                                                index: *index,
+                                                text: edited,
                                             });
-                                    }
-                                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                        applied = true;
-                                    }
+                                        }
+                                        if r.lost_focus()
+                                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                        {
+                                            applied = true;
+                                        }
+                                    });
                                 });
-                            });
-                        }
-                        CardRow::Text(t) => {
-                            ui.label(egui::RichText::new(t).small().color(p.dim));
-                        }
-                        CardRow::Select {
+                            }
+                            CardRow::Text(t) => {
+                                ui.label(egui::RichText::new(t).small().color(p.dim));
+                            }
+                            CardRow::Select {
                                 label,
                                 selected,
                                 options,
@@ -832,38 +1198,51 @@ impl Gui {
                                             }
                                         }
                                     });
-                                self.targets.push((format!("{label} dropdown"), response.response.rect));
+                                self.targets
+                                    .push((format!("{label} dropdown"), response.response.rect));
                             }
-                            CardRow::Choice { label, detail, action, current,
+                            CardRow::Choice {
+                                label,
+                                detail,
+                                action,
+                                current,
                             } => {
-                            let text = egui::RichText::new(label);
-                            let r = ui.add(egui::Button::new(text).selected(*current).min_size(Vec2::new(ui.available_width(), 0.0)).shortcut_text(egui::RichText::new(detail).small().color(p.dim),
+                                let text = egui::RichText::new(label);
+                                let r = ui.add(
+                                    egui::Button::new(text)
+                                        .selected(*current)
+                                        .min_size(Vec2::new(ui.available_width(), 0.0))
+                                        .shortcut_text(
+                                            egui::RichText::new(detail).small().color(p.dim),
                                         ),
                                 );
-                            self.targets.push((label.clone(), r.rect));
-                            if r.clicked() {
-                                out.push(Outcome::Action(*action));
+                                self.targets.push((label.clone(), r.rect));
+                                if r.clicked() {
+                                    out.push(Outcome::Action(*action));
+                                }
                             }
                         }
                     }
-                }
-                ui.add_space(6.0);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let go = ui.add(egui::Button::new(egui::RichText::new(&card.apply_label).color(p.on_accent),
-                            ).fill(p.accent),
+                    ui.add_space(6.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let go = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(&card.apply_label).color(p.on_accent),
+                            )
+                            .fill(p.accent),
                         );
-                    self.targets.push((card.apply_label.clone(), go.rect));
-                    if go.clicked() {
-                        applied = true;
-                    }
-                    let no = ui.button("Cancel");
-                    self.targets.push(("Cancel".into(), no.rect));
-                    if no.clicked() {
-                        out.push(Outcome::Action(card.cancel));
-                    }
+                        self.targets.push((card.apply_label.clone(), go.rect));
+                        if go.clicked() {
+                            applied = true;
+                        }
+                        let no = ui.button("Cancel");
+                        self.targets.push(("Cancel".into(), no.rect));
+                        if no.clicked() {
+                            out.push(Outcome::Action(card.cancel));
+                        }
+                    });
                 });
             });
-        });
         if applied {
             out.push(Outcome::Action(card.apply));
         }
@@ -871,50 +1250,103 @@ impl Gui {
     }
 
     /// The panel for custom viewport colours: one colour or a top-to-bottom gradient. Every change is applied at once.
-    fn background_picker(&mut self, ctx: &egui::Context, current: Background, p: &Palette, out: &mut Vec<Outcome>) {
+    fn background_picker(
+        &mut self,
+        ctx: &egui::Context,
+        current: Background,
+        p: &Palette,
+        out: &mut Vec<Outcome>,
+    ) {
         if !self.bg_picker {
             return;
         }
         let theme = self.background_rgb();
         let (top, bottom) = current.colors(theme);
-        let (mut top, mut bottom, mut gradient) = (top, bottom, matches!(current, Background::Gradient { .. } | Background::GreyToWhite | Background::BlackToGrey));
+        let (mut top, mut bottom, mut gradient) = (
+            top,
+            bottom,
+            matches!(
+                current,
+                Background::Gradient { .. } | Background::GreyToWhite | Background::BlackToGrey
+            ),
+        );
         let mut open = true;
         let mut changed = false;
         // Bottom left of the model: the tool pill owns the top, the inspector the right.
-        let at = self.viewport.map_or(Pos2::new(240.0, 400.0), |r| r.left_bottom() + Vec2::new(16.0, -16.0));
-        egui::Window::new("Background").id(Id::new("background-picker")).order(Order::Foreground).open(&mut open).collapsible(false).resizable(false).pivot(Align2::LEFT_BOTTOM).fixed_pos(at).frame(panels::popup_frame(p).inner_margin(egui::Margin::same(12))).show(ctx, |ui| {
-            changed |= ui.checkbox(&mut gradient, "Gradient (top to bottom)").changed();
-            ui.horizontal(|ui| {
-                changed |= egui::color_picker::color_edit_button_srgb(ui, &mut top).changed();
-                ui.label(if gradient { "Top" } else { "Colour" });
-            });
-            if gradient {
-                ui.horizontal(|ui| {
-                    changed |= egui::color_picker::color_edit_button_srgb(ui, &mut bottom).changed();
-                    ui.label("Bottom");
-                });
-            }
+        let at = self.viewport.map_or(Pos2::new(240.0, 400.0), |r| {
+            r.left_bottom() + Vec2::new(16.0, -16.0)
         });
+        egui::Window::new("Background")
+            .id(Id::new("background-picker"))
+            .order(Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .pivot(Align2::LEFT_BOTTOM)
+            .fixed_pos(at)
+            .frame(panels::popup_frame(p).inner_margin(egui::Margin::same(12)))
+            .show(ctx, |ui| {
+                changed |= ui
+                    .checkbox(&mut gradient, "Gradient (top to bottom)")
+                    .changed();
+                ui.horizontal(|ui| {
+                    changed |= egui::color_picker::color_edit_button_srgb(ui, &mut top).changed();
+                    ui.label(if gradient { "Top" } else { "Colour" });
+                });
+                if gradient {
+                    ui.horizontal(|ui| {
+                        changed |=
+                            egui::color_picker::color_edit_button_srgb(ui, &mut bottom).changed();
+                        ui.label("Bottom");
+                    });
+                }
+            });
         // A preset stays itself until a colour or the gradient switch is touched.
         if changed {
-            let next = if gradient { Background::Gradient { top, bottom } } else { Background::Solid(top) };
-            out.push(Outcome::Action(UiAction::Command(Command::SetBackground(next))));
+            let next = if gradient {
+                Background::Gradient { top, bottom }
+            } else {
+                Background::Solid(top)
+            };
+            out.push(Outcome::Action(UiAction::Command(Command::SetBackground(
+                next,
+            ))));
         }
         self.bg_picker = open;
     }
 
     /// Right-click menu and the lists a click on the model asks for.
-    fn floating_list(&mut self, ctx: &egui::Context, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
-        let Some(f) = self.floating.take() else { return };
+    fn floating_list(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Palette,
+        out: &mut Vec<Outcome>,
+        hint: &mut Option<String>,
+    ) {
+        let Some(f) = self.floating.take() else {
+            return;
+        };
         let mut chosen = false;
-        let resp = egui::Area::new(Id::new("floating-list")).fade_in(false).order(Order::Foreground).fixed_pos(f.at).constrain(true).show(ctx, |ui| {
-            panels::popup_frame(p).show(ui, |ui| {
-                ui.set_width(Self::list_width(ui, &f.items));
-                chosen = ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| self.items_ui(ui, &f.items, p, out, hint)).inner;
+        let resp = egui::Area::new(Id::new("floating-list"))
+            .fade_in(false)
+            .order(Order::Foreground)
+            .fixed_pos(f.at)
+            .constrain(true)
+            .show(ctx, |ui| {
+                panels::popup_frame(p).show(ui, |ui| {
+                    ui.set_width(Self::list_width(ui, &f.items));
+                    chosen = ui
+                        .with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
+                            self.items_ui(ui, &f.items, p, out, hint)
+                        })
+                        .inner;
+                });
             });
-        });
         self.floating_rect = Some(resp.response.rect);
-        let pressed_outside = ctx.input(|i| i.pointer.any_pressed()) && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|q| !resp.response.rect.contains(q));
+        let pressed_outside = ctx.input(|i| i.pointer.any_pressed())
+            && ctx
+                .input(|i| i.pointer.interact_pos())
+                .is_some_and(|q| !resp.response.rect.contains(q));
         let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         if !(chosen || pressed_outside || escape) {
             self.floating = Some(f);
@@ -923,13 +1355,30 @@ impl Gui {
 
     /// Width a list of entries needs: the widest label plus its shortcut and the button padding.
     fn list_width(ui: &egui::Ui, items: &[Item]) -> f32 {
-        let text = |t: egui::RichText| egui::WidgetText::from(t).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button).size().x;
+        let text = |t: egui::RichText| {
+            egui::WidgetText::from(t)
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Button,
+                )
+                .size()
+                .x
+        };
         let pad = 2.0 * ui.spacing().button_padding.x + ui.spacing().icon_spacing;
         let widest = items
             .iter()
             .map(|i| match i {
-                Item::Entry(e) if e.shortcut.is_empty() => text(egui::RichText::new(&e.label)) + pad,
-                Item::Entry(e) => text(egui::RichText::new(&e.label)) + text(egui::RichText::new(&e.shortcut).small()) + pad + 24.0,
+                Item::Entry(e) if e.shortcut.is_empty() => {
+                    text(egui::RichText::new(&e.label)) + pad
+                }
+                Item::Entry(e) => {
+                    text(egui::RichText::new(&e.label))
+                        + text(egui::RichText::new(&e.shortcut).small())
+                        + pad
+                        + 24.0
+                }
                 Item::Heading(h) => text(egui::RichText::new(h).small()),
                 Item::Separator => 0.0,
             })
@@ -938,7 +1387,14 @@ impl Gui {
     }
 
     /// One list of entries: entries, separators and headings. True when an entry was chosen.
-    fn items_ui(&mut self, ui: &mut egui::Ui, items: &[Item], p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) -> bool {
+    fn items_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        items: &[Item],
+        p: &Palette,
+        out: &mut Vec<Outcome>,
+        hint: &mut Option<String>,
+    ) -> bool {
         let mut chosen = false;
         for item in items {
             match item {
@@ -956,7 +1412,15 @@ impl Gui {
 
     /// A button for `e`: checked entries are highlighted, unavailable ones dim but still explain themselves when
     /// clicked. True when clicked.
-    fn entry_button(&mut self, ui: &mut egui::Ui, e: &Entry, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>, wide: bool) -> bool {
+    fn entry_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        e: &Entry,
+        p: &Palette,
+        out: &mut Vec<Outcome>,
+        hint: &mut Option<String>,
+        wide: bool,
+    ) -> bool {
         let mut label = egui::RichText::new(&e.label);
         if !e.enabled {
             label = label.color(p.dim.gamma_multiply(0.75));
@@ -982,8 +1446,16 @@ impl Gui {
         false
     }
 
-    fn palette_window(&mut self, ctx: &egui::Context, menus: &[crate::gpu_viewer::menu::Menu], p: &Palette, out: &mut Vec<Outcome>) {
-        let Some(mut st) = self.palette.take() else { return };
+    fn palette_window(
+        &mut self,
+        ctx: &egui::Context,
+        menus: &[crate::gpu_viewer::menu::Menu],
+        p: &Palette,
+        out: &mut Vec<Outcome>,
+    ) {
+        let Some(mut st) = self.palette.take() else {
+            return;
+        };
         let rows = palette_entries(menus, &st.query);
         st.item = st.item.min(rows.len().saturating_sub(1));
         let mut keep = true;
@@ -1008,43 +1480,59 @@ impl Gui {
         if enter && !rows.is_empty() {
             run = Some(st.item);
         }
-        let resp = egui::Area::new(Id::new("palette")).fade_in(false).order(Order::Foreground).anchor(Align2::CENTER_TOP, Vec2::new(0.0, 64.0)).show(ctx, |ui| {
-            panels::popup_frame(p).show(ui, |ui| {
-                ui.set_width(520.0);
-                let edit = egui::TextEdit::singleline(&mut st.query).hint_text("Search commands").desired_width(f32::INFINITY).margin(Vec2::new(8.0, 6.0));
-                let r = ui.add(edit);
-                if st.fresh {
-                    r.request_focus();
-                    st.fresh = false;
-                }
-                ui.add_space(2.0);
-                if rows.is_empty() {
-                    ui.label(egui::RichText::new("No command matches").color(p.dim));
-                }
-                for (k, e) in rows.iter().enumerate() {
-                    let mut label = egui::RichText::new(&e.label);
-                    if !e.enabled {
-                        label = label.color(p.dim);
+        let resp = egui::Area::new(Id::new("palette"))
+            .fade_in(false)
+            .order(Order::Foreground)
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 64.0))
+            .show(ctx, |ui| {
+                panels::popup_frame(p).show(ui, |ui| {
+                    ui.set_width(520.0);
+                    let edit = egui::TextEdit::singleline(&mut st.query)
+                        .hint_text("Search commands")
+                        .desired_width(f32::INFINITY)
+                        .margin(Vec2::new(8.0, 6.0));
+                    let r = ui.add(edit);
+                    if st.fresh {
+                        r.request_focus();
+                        st.fresh = false;
                     }
-                    let mut b = egui::Button::new(label).selected(k == st.item).min_size(Vec2::new(ui.available_width(), 0.0));
-                    if !e.shortcut.is_empty() {
-                        b = b.shortcut_text(egui::RichText::new(&e.shortcut).small().color(p.dim));
+                    ui.add_space(2.0);
+                    if rows.is_empty() {
+                        ui.label(egui::RichText::new("No command matches").color(p.dim));
                     }
-                    let r = ui.add(b);
-                    self.targets.push((format!("palette {}", e.label), r.rect));
-                    if r.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
-                        st.item = k;
+                    for (k, e) in rows.iter().enumerate() {
+                        let mut label = egui::RichText::new(&e.label);
+                        if !e.enabled {
+                            label = label.color(p.dim);
+                        }
+                        let mut b = egui::Button::new(label)
+                            .selected(k == st.item)
+                            .min_size(Vec2::new(ui.available_width(), 0.0));
+                        if !e.shortcut.is_empty() {
+                            b = b.shortcut_text(
+                                egui::RichText::new(&e.shortcut).small().color(p.dim),
+                            );
+                        }
+                        let r = ui.add(b);
+                        self.targets.push((format!("palette {}", e.label), r.rect));
+                        if r.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
+                            st.item = k;
+                        }
+                        if r.clicked() {
+                            run = Some(k);
+                        }
+                        if let Some(reason) =
+                            e.reason.as_ref().filter(|_| k == st.item && !e.enabled)
+                        {
+                            ui.label(egui::RichText::new(reason).small().color(p.warn));
+                        }
                     }
-                    if r.clicked() {
-                        run = Some(k);
-                    }
-                    if let Some(reason) = e.reason.as_ref().filter(|_| k == st.item && !e.enabled) {
-                        ui.label(egui::RichText::new(reason).small().color(p.warn));
-                    }
-                }
+                });
             });
-        });
-        let pressed_outside = ctx.input(|i| i.pointer.any_pressed()) && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|q| !resp.response.rect.contains(q));
+        let pressed_outside = ctx.input(|i| i.pointer.any_pressed())
+            && ctx
+                .input(|i| i.pointer.interact_pos())
+                .is_some_and(|q| !resp.response.rect.contains(q));
         if pressed_outside {
             keep = false;
         }
@@ -1090,7 +1578,8 @@ impl Corner {
 
 /// A panel slot of about `size` that fits `vp` with its margins (a narrow viewport keeps the panel's pivot corner inside).
 fn corner_slot_size(size: Vec2, vp: Rect) -> Vec2 {
-    size.min(vp.size() - Vec2::splat(2.0 * CORNER_SIDE)).max(Vec2::ZERO)
+    size.min(vp.size() - Vec2::splat(2.0 * CORNER_SIDE))
+        .max(Vec2::ZERO)
 }
 
 /// Gap between a corner panel and the viewport's sides.
@@ -1099,13 +1588,26 @@ const CORNER_SIDE: f32 = 12.0;
 /// Where a panel of about `size` starts when nobody has moved it: the corner slot of `vp` the projected model `triangles`
 /// cover least, measured on a grid of samples in each slot (ties keep `preferred`, then the order below). The top slots sit
 /// under the tool pill.
-fn emptiest_corner(vp: Rect, size: Vec2, triangles: impl Iterator<Item = [Pos2; 3]>, preferred: Corner) -> (Corner, Rect) {
+fn emptiest_corner(
+    vp: Rect,
+    size: Vec2,
+    triangles: impl Iterator<Item = [Pos2; 3]>,
+    preferred: Corner,
+) -> (Corner, Rect) {
     const GRID: usize = 12;
     const SIDE: f32 = CORNER_SIDE;
     const UNDER_PILL: f32 = 150.0;
     let size = corner_slot_size(size, vp);
-    let (left, right) = (vp.left() + SIDE, (vp.right() - size.x - SIDE).max(vp.left() + SIDE));
-    let (top, bottom) = ((vp.top() + UNDER_PILL).min(vp.bottom() - size.y).max(vp.top()), (vp.bottom() - size.y - SIDE).max(vp.top()));
+    let (left, right) = (
+        vp.left() + SIDE,
+        (vp.right() - size.x - SIDE).max(vp.left() + SIDE),
+    );
+    let (top, bottom) = (
+        (vp.top() + UNDER_PILL)
+            .min(vp.bottom() - size.y)
+            .max(vp.top()),
+        (vp.bottom() - size.y - SIDE).max(vp.top()),
+    );
     let at = |c: Corner| match c {
         Corner::TopLeft => Pos2::new(left, top),
         Corner::TopRight => Pos2::new(right, top),
@@ -1113,11 +1615,31 @@ fn emptiest_corner(vp: Rect, size: Vec2, triangles: impl Iterator<Item = [Pos2; 
         Corner::BottomRight => Pos2::new(right, bottom),
     };
     let mut order = vec![preferred];
-    order.extend([Corner::BottomRight, Corner::TopRight, Corner::BottomLeft, Corner::TopLeft].into_iter().filter(|&c| c != preferred));
-    let slots: Vec<Rect> = order.iter().map(|&c| Rect::from_min_size(at(c), size)).collect();
+    order.extend(
+        [
+            Corner::BottomRight,
+            Corner::TopRight,
+            Corner::BottomLeft,
+            Corner::TopLeft,
+        ]
+        .into_iter()
+        .filter(|&c| c != preferred),
+    );
+    let slots: Vec<Rect> = order
+        .iter()
+        .map(|&c| Rect::from_min_size(at(c), size))
+        .collect();
     let samples: Vec<Vec<Pos2>> = slots
         .iter()
-        .map(|r| (0..GRID * GRID).map(|k| r.min + Vec2::new((k % GRID) as f32 + 0.5, (k / GRID) as f32 + 0.5) * (r.size() / GRID as f32)).collect())
+        .map(|r| {
+            (0..GRID * GRID)
+                .map(|k| {
+                    r.min
+                        + Vec2::new((k % GRID) as f32 + 0.5, (k / GRID) as f32 + 0.5)
+                            * (r.size() / GRID as f32)
+                })
+                .collect()
+        })
         .collect();
     let mut hit = vec![vec![false; GRID * GRID]; slots.len()];
     let inside = |q: Pos2, [a, b, c]: [Pos2; 3]| {
@@ -1138,7 +1660,10 @@ fn emptiest_corner(vp: Rect, size: Vec2, triangles: impl Iterator<Item = [Pos2; 
             }
         }
     }
-    let covered: Vec<usize> = hit.iter().map(|h| h.iter().filter(|&&x| x).count()).collect();
+    let covered: Vec<usize> = hit
+        .iter()
+        .map(|h| h.iter().filter(|&&x| x).count())
+        .collect();
     // The first slot with the fewest points (`min_by_key` keeps the first of equals).
     let best = (0..slots.len()).min_by_key(|&k| covered[k]).unwrap_or(0);
     (order[best], slots[best])
@@ -1158,7 +1683,18 @@ impl Gui {
 
     /// Select the ribbon tab called `title` (tests and snapshots).
     pub(crate) fn select_tab_named(&mut self, input: &GuiInput, title: &str) {
-        let mctx = MenuContext { view: input.view, scene: input.scene(), results: if input.editor.is_some() { 1 } else { input.scenes.len() }, editor: input.editor, visible: self.visible, adaptive: self.adapt.enabled };
+        let mctx = MenuContext {
+            view: input.view,
+            scene: input.scene(),
+            results: if input.editor.is_some() {
+                1
+            } else {
+                input.scenes.len()
+            },
+            editor: input.editor,
+            visible: self.visible,
+            adaptive: self.adapt.enabled,
+        };
         if let Some(i) = menus::ribbon(&mctx).iter().position(|t| t.title == title) {
             self.tab = i;
         }
@@ -1194,11 +1730,24 @@ mod corner_tests {
     fn an_empty_model_or_a_clear_preferred_corner_keeps_the_preferred_corner() {
         let size = Vec2::new(260.0, 250.0);
         let (c, at) = emptiest_corner(vp(), size, std::iter::empty(), Corner::BottomRight);
-        assert_eq!((c, at.max), (Corner::BottomRight, Pos2::new(1100.0 - 12.0, 750.0 - 12.0)));
-        assert_eq!(c.align().pos_in_rect(&at), at.max, "the panel hugs the corner by its pivot");
+        assert_eq!(
+            (c, at.max),
+            (Corner::BottomRight, Pos2::new(1100.0 - 12.0, 750.0 - 12.0))
+        );
+        assert_eq!(
+            c.align().pos_in_rect(&at),
+            at.max,
+            "the panel hugs the corner by its pivot"
+        );
         // A model in the middle leaves every corner clear: still the preferred one.
         let middle = quad(Pos2::new(550.0, 350.0), Pos2::new(650.0, 450.0)).into_iter();
-        assert_eq!(emptiest_corner(vp(), size, middle, Corner::TopRight), (Corner::TopRight, Rect::from_min_size(Pos2::new(828.0, 200.0), size)));
+        assert_eq!(
+            emptiest_corner(vp(), size, middle, Corner::TopRight),
+            (
+                Corner::TopRight,
+                Rect::from_min_size(Pos2::new(828.0, 200.0), size)
+            )
+        );
     }
 
     #[test]
@@ -1209,13 +1758,22 @@ mod corner_tests {
         let mut model = quad(Pos2::new(105.0, 600.0), Pos2::new(1095.0, 700.0));
         model.extend(quad(Pos2::new(950.0, 250.0), Pos2::new(1050.0, 700.0)));
         let (c, at) = emptiest_corner(vp(), size, model.into_iter(), Corner::BottomRight);
-        assert_eq!((c, at.min), (Corner::TopLeft, Pos2::new(112.0, 200.0)), "the top-left slot under the tool pill");
+        assert_eq!(
+            (c, at.min),
+            (Corner::TopLeft, Pos2::new(112.0, 200.0)),
+            "the top-left slot under the tool pill"
+        );
     }
 
     #[test]
     fn a_viewport_smaller_than_the_panel_keeps_the_slot_inside_its_top_left() {
         let small = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(200.0, 180.0));
-        let (_, at) = emptiest_corner(small, Vec2::new(260.0, 250.0), std::iter::empty(), Corner::BottomRight);
+        let (_, at) = emptiest_corner(
+            small,
+            Vec2::new(260.0, 250.0),
+            std::iter::empty(),
+            Corner::BottomRight,
+        );
         assert!(small.contains_rect(at), "{at:?}");
         assert_eq!(at.max, Pos2::new(188.0, 168.0));
     }

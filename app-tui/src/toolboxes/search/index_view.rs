@@ -111,5 +111,6 @@ mod tests {
         assert_eq!(display_enabled(false), "[ ]");
         assert_eq!(display_location(IndexLocation::SearchFolder), "Search folder");
         assert_eq!(display_location(IndexLocation::OutputFolder), "Output folder");
+        assert_eq!(display_location(IndexLocation::AppData), "App data (private)");
     }
 }

@@ -100,6 +100,7 @@ pub async fn run_search(
         diagnostics.total_ms = run_started.elapsed().as_millis() as u64;
         diagnostics.verified = accumulated.summary.files_searched;
         diagnostics.cache_reused = accumulated.summary.cache_reused;
+        diagnostics.skipped_by_mode = accumulated.summary.skipped_by_mode;
         diagnostics.matched_files =
             accumulated.file_results.iter().filter(|r| r.status == search_core::models::FileSearchStatus::Hit).count();
         log("SEARCH", format!("diagnostics: {}", diagnostics.lines(None).join(" | ")));
@@ -148,7 +149,7 @@ async fn narrow_via_index(
     let mut engine = if indexing::index_is_built(&index_dir) { open_engine(&index_dir).await.ok() } else { None };
     if engine.is_none() {
         log("SEARCH", "index missing or unreadable - building it before searching");
-        let built = indexing::build_or_rebuild_index(tx.clone(), settings.clone(), index_dir.clone(), cancellation.clone()).await;
+        let built = indexing::build_or_rebuild_index_with(tx.clone(), settings.clone(), index_dir.clone(), cancellation.clone(), index.embed_policy()).await;
         if cancellation.is_cancelled() {
             return None;
         }
@@ -304,6 +305,40 @@ mod tests {
         });
         let Some(Ok(run_result)) = finished else { panic!("expected a successful SearchFinished event") };
         assert_eq!(run_result.file_results.iter().filter(|f| f.status == search_core::models::FileSearchStatus::Hit).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn mode_rejections_are_carried_into_search_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("far.txt"), "alpha\nx\nx\nx\nbeta\n").unwrap();
+        let mut config = SearchToolConfig {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            match_mode: search_core::models::MatchMode::Proximity,
+            proximity_lines: 1,
+            ..Default::default()
+        };
+        config.filters_text = "alpha,beta".to_string();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run_search(
+            tx,
+            CancellationToken::new(),
+            vec![config.search_path.clone()],
+            build_settings(&config),
+            config.index,
+        )
+        .await;
+        let events = drain_progress(&mut rx);
+        let diagnostics = diagnostics_of(&events);
+        assert_eq!(diagnostics.skipped_by_mode, 1);
+        let result = events.iter().find_map(|event| match event {
+            AppEvent::SearchFinished(Ok(result)) => Some(result),
+            _ => None,
+        });
+        assert!(!result
+            .unwrap()
+            .file_results
+            .iter()
+            .any(|file| file.status == search_core::models::FileSearchStatus::Hit));
     }
 
     /// End to end through the real app path: build the index, then add a new

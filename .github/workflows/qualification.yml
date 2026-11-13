@@ -32,6 +32,8 @@ jobs:
             cad_flags: ''
     steps:
       - uses: actions/checkout@v7
+        with:
+          lfs: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v6
         with:

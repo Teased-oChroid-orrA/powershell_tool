@@ -91,6 +91,18 @@ pub struct SearchSettings {
     /// all regardless of this flag - see `extraction.rs`'s
     /// `extract_pdf_lines` and `ocr.rs`.
     pub ocr_scanned_pdfs: bool,
+    /// Opt-in trial: read PDF text layers with the `yolowpdf` backend (better recall on CID-font and
+    /// complex files), falling back to the built-in scanner. No effect without the `pdf-yolow` feature.
+    #[serde(default)]
+    pub pdf_yolow: bool,
+    /// Folder for the persistent OCR text cache (one small file per scanned
+    /// page image, keyed by a hash of the image bytes), so a re-run with
+    /// other filters, an OCR off/on toggle or a new session does not
+    /// recognise the same pages again. `None` (default) keeps recognised
+    /// text in memory for this process only. No effect without the `ocr`
+    /// Cargo feature.
+    #[serde(default)]
+    pub ocr_cache_dir: Option<String>,
 
     pub export_csv: bool,
     pub export_json: bool,
@@ -120,7 +132,26 @@ pub struct SearchSettings {
     /// `cache_file_path` (a different concern: result caching vs.
     /// failure tracking, and either can be enabled without the other).
     pub failure_log_path: Option<String>,
+    /// Build local neural embeddings beside the exact Tantivy index. This
+    /// does not participate in matching or the result-cache fingerprint.
+    #[serde(default, skip_serializing)]
+    pub semantic_index: bool,
     pub dry_run: bool,
+
+    /// Compare ignoring accents and typographic variants (`Cafe\u{301}`,
+    /// `Caf\u{e9}` and `cafe` match each other; `\u{fb01}` matches `fi`;
+    /// no-break spaces match spaces; curly quotes and en/em dashes match
+    /// `'`, `"` and `-`). Literal and whole-word modes only; ignored in regex
+    /// mode. Off by default. Turns off the index candidate narrowing (the
+    /// index stores unfolded text), so a warm re-search scans every file.
+    #[serde(default)]
+    pub fold_accents: bool,
+    /// Typo tolerance for literal and whole-word modes: 0 = off (default),
+    /// 1 = one edit on words of 4+ letters, 2 = up to two edits on words of
+    /// 8+ letters. Words with digits or under 4 letters stay exact. Applies
+    /// to search filters, not exclusions. Also turns off index narrowing.
+    #[serde(default)]
+    pub typo_tolerance: u8,
 
     pub max_retries: i32,
     pub retry_delay_ms: i32,
@@ -141,7 +172,9 @@ pub struct SearchSettings {
 /// sandboxed/unusual environments) - falls back to the old fixed default
 /// in that case rather than panicking.
 pub fn default_throttle_limit() -> i32 {
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(5);
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(5);
     ((cores * 2) as i32).clamp(4, 32)
 }
 
@@ -153,7 +186,9 @@ pub fn default_throttle_limit() -> i32 {
 /// while multiplying peak memory. Clamped to [2, 16] - a smaller ceiling
 /// than the light default's [4, 32], deliberately, for the same reason.
 pub fn default_heavy_throttle_limit() -> i32 {
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     (cores as i32).clamp(2, 16)
 }
 
@@ -161,7 +196,12 @@ impl SearchSettings {
     /// Every *searched-for* filter text: the primary filters, then each
     /// non-exclusion group's.
     pub fn all_filters(&self) -> impl Iterator<Item = &String> {
-        self.filters.iter().chain(self.filter_groups.iter().filter(|g| g.exclude.is_none()).flat_map(|g| g.filters.iter()))
+        self.filters.iter().chain(
+            self.filter_groups
+                .iter()
+                .filter(|g| g.exclude.is_none())
+                .flat_map(|g| g.filters.iter()),
+        )
     }
 }
 
@@ -187,15 +227,20 @@ impl Default for SearchSettings {
             max_embed_lines: 4000,
             pdf_timeout_seconds: 15,
             ocr_scanned_pdfs: false,
+            pdf_yolow: false,
+            ocr_cache_dir: None,
             export_csv: false,
             export_json: false,
             open_report_when_done: false,
-            parallel: false,
+            parallel: true,
             throttle_limit: default_throttle_limit(),
             heavy_throttle_limit: default_heavy_throttle_limit(),
             cache_file_path: None,
             failure_log_path: None,
+            semantic_index: false,
             dry_run: false,
+            fold_accents: false,
+            typo_tolerance: 0,
             max_retries: 3,
             retry_delay_ms: 250,
             file_timeout_seconds: 30,
@@ -371,8 +416,7 @@ pub mod extension_catalog {
         ExtensionCategoryDefinition {
             category: "Logs & structured data",
             extensions: &[
-                ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".toml",
-                ".env",
+                ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".toml", ".env",
             ],
         },
         ExtensionCategoryDefinition {
@@ -419,7 +463,11 @@ mod tests {
         assert_eq!(s.max_file_size_mb, 50.0);
         assert_eq!(s.max_embed_lines, 4000);
         assert_eq!(s.pdf_timeout_seconds, 15);
-        assert!((4..=32).contains(&s.throttle_limit), "throttle_limit out of expected range: {}", s.throttle_limit);
+        assert!(
+            (4..=32).contains(&s.throttle_limit),
+            "throttle_limit out of expected range: {}",
+            s.throttle_limit
+        );
         assert_eq!(s.max_retries, 3);
         assert_eq!(s.retry_delay_ms, 250);
         assert_eq!(s.file_timeout_seconds, 30);
@@ -437,8 +485,7 @@ mod tests {
         let mut sorted = all.clone();
         sorted.sort_by_key(|e| e.to_lowercase());
         assert_eq!(all, sorted, "all_extensions() must already be sorted");
-        let unique: std::collections::HashSet<_> =
-            all.iter().map(|e| e.to_lowercase()).collect();
+        let unique: std::collections::HashSet<_> = all.iter().map(|e| e.to_lowercase()).collect();
         assert_eq!(unique.len(), all.len(), "must be deduplicated");
     }
 
