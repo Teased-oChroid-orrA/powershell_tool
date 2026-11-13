@@ -557,7 +557,7 @@ impl Gui {
             }
             DockItem::Stat { label, value, note, note_tone, detail, action } => {
                 let width = ui.available_width();
-                let note_w = if note.is_empty() { 0.0 } else { 56.0 };
+                let note_w = if note.is_empty() { 0.0 } else { ui.painter().layout_no_wrap(note.clone(), FontId::monospace(12.0), tone_color(p, *note_tone)).size().x + 8.0 };
                 let value_g = ui.painter().layout_no_wrap(value.clone(), FontId::monospace(12.5), p.text);
                 let label_w = (width - value_g.size().x - note_w - 18.0).max(40.0);
                 let label_g = ui.painter().layout(label.clone(), FontId::proportional(13.0), p.text, label_w);
