@@ -721,6 +721,7 @@ impl SearchSession {
         s
     }
     /// Look for gaps from `source` and wait for the answer, as the gaps button does.
+    #[cfg(test)]
     pub(crate) fn gaps_for_snapshot(&mut self, source: fn() -> Result<Vec<Gap>, String>) {
         self.gaps_source = source;
         self.act_search(SearchAct::FindGaps);

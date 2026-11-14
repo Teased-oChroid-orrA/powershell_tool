@@ -24,10 +24,25 @@ fn enabled() -> bool {
 }
 
 pub(crate) fn extract_lines(bytes: &[u8]) -> Option<Vec<String>> {
+    if enabled() {
+        run(bytes).map(|paged| paged.into_iter().map(|(_, line)| line).collect())
+    } else {
+        None
+    }
+}
+
+/// Like [`extract_lines`] but with the 1-based page of each line (the backend's own page split).
+pub(crate) fn extract_paged_if_enabled(bytes: &[u8]) -> Option<Vec<(usize, String)>> {
     if enabled() { run(bytes) } else { None }
 }
 
-fn run(bytes: &[u8]) -> Option<Vec<String>> {
+/// Cleaned lines with the 1-based page each came from; ignores the on/off switch (evaluation).
+#[doc(hidden)]
+pub fn extract_paged(bytes: &[u8]) -> Option<Vec<(usize, String)>> {
+    run(bytes)
+}
+
+fn run(bytes: &[u8]) -> Option<Vec<(usize, String)>> {
     let opts = yolowpdf::Options {
         timeout: Some(OVERALL_TIMEOUT),
         ..Default::default()
@@ -38,11 +53,15 @@ fn run(bytes: &[u8]) -> Option<Vec<String>> {
     if doc.scanned {
         return None;
     }
-    let lines: Vec<String> = doc
+    let lines: Vec<(usize, String)> = doc
         .pages
         .iter()
-        .flat_map(|page| page.markdown.lines())
-        .filter_map(clean_line)
+        .flat_map(|page| {
+            page.markdown
+                .lines()
+                .filter_map(clean_line)
+                .map(move |line| (page.number, line))
+        })
         .collect();
     (!lines.is_empty()).then_some(lines)
 }
@@ -83,6 +102,13 @@ mod tests {
     fn real_pdf_gives_text_lines() {
         let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/test-data/test.pdf")).unwrap();
         let lines = run(&bytes).expect("text layer");
-        assert!(lines.iter().any(|l| l.contains("apple")), "{lines:?}");
+        assert!(lines.iter().any(|(_, l)| l.contains("apple")), "{lines:?}");
+    }
+
+    #[test]
+    fn paged_lines_carry_one_based_pages() {
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/test-data/test.pdf")).unwrap();
+        let paged = extract_paged(&bytes).expect("text layer");
+        assert!(!paged.is_empty() && paged.iter().all(|(p, _)| *p >= 1));
     }
 }

@@ -645,4 +645,15 @@ Built as the `pdf-yolow` cargo feature of `search-core` (off by default there; `
 | flag off (scanner) | 0.866 | 0.000 | 0.51 | 1 | 4.7 s | 31 MB |
 | flag on (`yolowpdf`, scanner fallback) | 0.972 | 0.855 | 0.91 | 0 | 9.6 s | 86 MB |
 
-The flag removes the CID-font failures (worst file 0.855 against 0), at roughly twice the time and 2.8x the memory. Off by default in the app: 0.1.2 is days old with self-reported benchmarks; no Windows run; scanned and mixed documents (some pages scanned) still go to the scanner only when the whole document is called scanned, so scanned pages inside a mostly-text document get no OCR on the flagged path; no page numbers on the flagged path. Next measurement before any default switch: Windows hosted run, and the mixed-document case.
+The flag removes the CID-font failures (worst file 0.855 against 0), at roughly twice the time and 2.8x the memory. Off by default in the app: 0.1.2 is days old with self-reported benchmarks; no Windows run; scanned and mixed documents (some pages scanned) still go to the scanner only when the whole document is called scanned, so scanned pages inside a mostly-text document get no OCR on the flagged path. Page numbers on the flagged path: see 2026-11-14 below. Next measurement before any default switch: Windows hosted run, and the mixed-document case.
+
+## 2026-11-14: page citations, scanner vs `yolowpdf` (KG-RAG, 80 text-layer PDFs)
+
+Harness: `search-core/examples/pdf_citation_bench.rs` (`--features semantic-search,pdf-yolow`; needs `pdftotext`). Oracle: poppler per-page text. A line is checkable when its first five words occur on some oracle page; it is correct when the page the extractor cites holds them. Per-file means (the corpus total is dominated by a few huge files):
+
+| Backend | Files with checkable lines | Lines carrying a page | Correct / checkable | Files with no page at all |
+|---|---|---|---|---|
+| scanner (`extract_for_semantic_index`) | 70 | 0.281 | 0.543 | 32 |
+| `yolowpdf` (its own page split) | 79 | 0.725 | 0.989 | 0 |
+
+The scanner cites nothing for 32 files (page map not established) and 38 of 70 files score above 0.9. `yolowpdf` scores above 0.9 on 78 of 79 files; the weakest is `EPA2022.pdf` (0.89). Lines without a page under `yolowpdf` are mostly lines under 5 words (not checked) and note rows. Decision: semantic indexing now takes `yolowpdf` lines with their page numbers when "Better PDF text (trial)" is on (scans, errors and empty files still fall to the scanner path); off by default, unchanged. Not measured: Windows, mixed text/scanned files under `yolowpdf`, real scans, retrieval quality of the changed chunk text (gate with `retrieval_eval.rs` before any default switch). Encrypted files go through the same decrypt step first.

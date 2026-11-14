@@ -60,6 +60,17 @@ pub(crate) fn extract_for_semantic_index(
     if extension.eq_ignore_ascii_case(".pdf") {
         // Stream offsets (origins) and the page map must refer to the same bytes.
         let bytes = &*crate::pdf_decrypt::open_with_empty_password(bytes);
+        // yolowpdf splits pages itself (page citation 0.989 vs the scanner's 0.54 per file,
+        // docs/search-benchmarks.md); scans, errors and no-text files fall through below.
+        #[cfg(feature = "pdf-yolow")]
+        if let Some(paged) = crate::pdf_yolow::extract_paged_if_enabled(bytes) {
+            let pages = paged
+                .iter()
+                .map(|(page, _)| u32::try_from(*page).ok().and_then(std::num::NonZeroU32::new))
+                .collect();
+            let lines = paged.into_iter().map(|(_, line)| line).collect();
+            return Ok(SemanticExtraction { lines, pages: Some(pages) });
+        }
         let extracted =
             extract_pdf_lines_with_origins(bytes, pdf_timeout_seconds, None, ocr_scanned_pdfs);
         let lines = extracted.lines.ok_or(ExtractLinesError::Failed)?;
@@ -85,6 +96,31 @@ pub(crate) fn extract_for_semantic_index(
             pages: None,
         })
     }
+}
+
+/// Evaluation hook (`pdf_citation_bench`): `(line, 1-based page)` per extracted line for each
+/// backend, `None` page where the page could not be established. Not a stable API.
+#[doc(hidden)]
+#[cfg(all(feature = "semantic-search", feature = "pdf-yolow"))]
+pub fn eval_pdf_cited_lines(bytes: &[u8], yolow: bool) -> Option<Vec<(String, Option<u32>)>> {
+    if yolow {
+        let bytes = &*crate::pdf_decrypt::open_with_empty_password(bytes);
+        return crate::pdf_yolow::extract_paged(bytes).map(|v| {
+            v.into_iter().map(|(p, l)| (l, u32::try_from(p).ok())).collect()
+        });
+    }
+    let e = extract_for_semantic_index(".pdf", bytes, 300, false).ok()?;
+    let pages = e.pages;
+    Some(
+        e.lines
+            .into_iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let page = pages.as_ref().and_then(|p| p.get(i).copied().flatten());
+                (l, page.map(|n| n.get()))
+            })
+            .collect(),
+    )
 }
 
 /// Points the persistent OCR text cache at `dir` (`None` = memory only). A
