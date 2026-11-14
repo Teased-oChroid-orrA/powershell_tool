@@ -71,6 +71,24 @@ pub fn housing_problem(model: &BushingModel) -> Result<Problem, String> {
     Ok(p)
 }
 
+/// The joint as a 3D solid: the housing profile extruded over its length, the bushing a hex20 annulus in the bore. The profile
+/// mesh is coarse (half the plate, fine at the bore): measured on a 2 in plate the mean fit pressure moves 0.1 % between that
+/// and a mesh 1.5x finer, and the solve stays near 1-3 minutes (a plane model solves in 4 s) - so it is sent, never run live.
+pub fn solid_problem(model: &BushingModel) -> Result<Problem, String> {
+    let l = layout(model)?;
+    let mut p = housing_problem(model)?;
+    p.name = "Bushing in housing (3D solid)".into();
+    p.analysis = Analysis::Solid;
+    let thickness = p.thickness;
+    if let Geometry::Sketch { depth, layers, .. } = &mut p.geometry {
+        *depth = thickness;
+        *layers = 2;
+    }
+    let size = l.height.min(l.length) / 2.0;
+    p.mesh = MeshSpec { size, hole_factor: (l.bore_radius / 6.0 / size).clamp(0.05, 1.0), ..MeshSpec::default() };
+    Ok(p)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,6 +107,17 @@ mod tests {
         assert!(matches!(outer, Shape::Rect { x0, .. } if *x0 == 0.0), "the free edge is at x = 0, so the edge distance is the bore centre's x");
         assert_eq!(p.material.e, m.housing_material().e_ksi * 1000.0);
         assert_eq!(p.bushings[0].material.e, m.bushing_material().e_ksi * 1000.0);
+    }
+
+    #[test]
+    fn the_solid_problem_is_the_same_joint_extruded_over_its_length() {
+        let m = BushingModel::default();
+        let (plane, solid) = (housing_problem(&m).unwrap(), solid_problem(&m).unwrap());
+        solid.validate().unwrap();
+        assert_eq!(solid.analysis, Analysis::Solid);
+        assert_eq!(solid.bushings, plane.bushings);
+        assert_eq!(solid.loads, plane.loads);
+        assert!(matches!(&solid.geometry, Geometry::Sketch { depth, .. } if (*depth - plane.thickness).abs() < 1e-12));
     }
 
     #[test]

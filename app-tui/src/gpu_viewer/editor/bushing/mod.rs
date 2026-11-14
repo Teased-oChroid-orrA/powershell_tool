@@ -69,6 +69,8 @@ pub enum BushingAct {
     SendDialog,
     CloseDialog,
     ConfirmSend,
+    /// Choose the plane or the 3D solid model in the Send dialog.
+    SendSolid(bool),
     /// Solve the joint's FE model here as a check on the closed-form pressure; cancel it.
     QuickFe,
     CancelSolve,
@@ -133,6 +135,8 @@ pub struct BushingSession {
     /// A standard view asked for (Reset view), taken by the window.
     pending_view: Option<StandardView>,
     dialog_open: bool,
+    /// The Send dialog sends the 3D solid model instead of the plane one.
+    send_solid: bool,
     /// The 3D picture is up to date with the inputs and the view settings.
     drawn: bool,
     /// The case file's modification time when this window last read or wrote it: another time means another window changed it.
@@ -182,6 +186,7 @@ impl BushingSession {
             show: WorkbenchView::Split,
             pending_view: None,
             dialog_open: false,
+            send_solid: false,
             drawn: false,
             stamp: None,
             saved_revision: None,
@@ -289,7 +294,8 @@ impl BushingSession {
                 return;
             }
         }
-        self.status = match fe::housing_problem(&self.st.model).and_then(|p| handoff::open_in_fea(&self.path, crate::gpu_viewer::EditorKind::Bushing, &p)) {
+        let built = if self.send_solid { fe::solid_problem(&self.st.model) } else { fe::housing_problem(&self.st.model) };
+        self.status = match built.and_then(|p| handoff::open_in_fea(&self.path, crate::gpu_viewer::EditorKind::Bushing, &p)) {
             Ok(msg) => msg,
             Err(e) => format!("Could not open the FEA workbench: {e}"),
         };
@@ -531,6 +537,7 @@ impl BushingSession {
                 Err(why) => self.status = format!("Cannot send to the FEA Workbench: {why}."),
             },
             BushingAct::CloseDialog => self.dialog_open = false,
+            BushingAct::SendSolid(on) => self.send_solid = on,
             BushingAct::ConfirmSend => self.send_to_fea(),
             BushingAct::QuickFe => match self.quick_fe_availability() {
                 // The solve meshes what it needs: nothing is meshed while the inputs are edited.

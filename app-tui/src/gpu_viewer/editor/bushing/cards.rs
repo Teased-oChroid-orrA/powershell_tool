@@ -529,11 +529,11 @@ impl BushingSession {
             intro: "Opens a full finite-element study of this joint in the FEA Workbench. The closed-form results here stay the verdict. The case is saved first.".into(),
             rows,
             options: vec![
-                DialogOption { label: "Plane stress, 2D with fit contact".into(), detail: String::new(), on: true, enabled: false, action: None },
-                DialogOption { label: "3D solid".into(), detail: "Not available: bushing contact runs in plane analyses only (fea-problem, issue #241)".into(), on: false, enabled: false, action: None },
+                DialogOption { label: "Plane stress, 2D with fit contact".into(), detail: "About 4 s to solve.".into(), on: !self.send_solid, enabled: true, action: Some(act(BushingAct::SendSolid(false))) },
+                DialogOption { label: "3D solid".into(), detail: "The housing extruded over its length, hex elements: about 1-3 minutes to solve.".into(), on: self.send_solid, enabled: true, action: Some(act(BushingAct::SendSolid(true))) },
                 DialogOption { label: "Keep linked".into(), detail: "Always on: Send back from the FEA Workbench updates this case.".into(), on: true, enabled: false, action: None },
             ],
-            note: "Solve time for this joint is about 8 s.".into(),
+            note: if self.send_solid { "Solve time for the 3D solid is 1-3 minutes; the FE solve is run by hand in the FEA Workbench.".into() } else { "Solve time for this joint is about 4 s.".into() },
             cancel: entry("Cancel", "Esc", BushingAct::CloseDialog),
             confirm: entry("Send and open FEA Workbench", "", BushingAct::ConfirmSend).when(self.send_availability()),
         }

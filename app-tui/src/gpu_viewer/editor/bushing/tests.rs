@@ -272,7 +272,13 @@ fn the_send_dialog_shows_what_goes_and_closes_on_escape() {
     assert!(d.rows.iter().any(|(l, _)| l == "Housing") && d.rows.iter().any(|(l, _)| l == "Load"));
     let opt = |label: &str| d.options.iter().find(|o| o.label == label).unwrap_or_else(|| panic!("no option {label}"));
     let solid = opt("3D solid");
-    assert!(!solid.enabled && !solid.on && solid.detail.contains("#241"), "{}", solid.detail);
+    assert!(solid.enabled && !solid.on, "plane stress is the default");
+    act(&mut s, BushingAct::SendSolid(true));
+    let d = s.workbench().unwrap().dialog.expect("still open");
+    assert!(d.options.iter().find(|o| o.label == "3D solid").unwrap().on);
+    assert!(!d.options.iter().find(|o| o.label.starts_with("Plane stress")).unwrap().on);
+    act(&mut s, BushingAct::SendSolid(false));
+    let d = s.workbench().unwrap().dialog.expect("still open");
     let linked = opt("Keep linked");
     assert!(linked.on && !linked.enabled, "the link is how the FEA Send finds the case");
     assert!(d.confirm.enabled);

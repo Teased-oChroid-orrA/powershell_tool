@@ -66,6 +66,24 @@ fn a_bushing_case_that_goes_to_the_fea_workbench_and_straight_back_changes_nothi
 }
 
 #[test]
+fn a_3d_solid_bushing_case_goes_to_the_fea_workbench_and_straight_back_changes_nothing() {
+    let mut m = BushingModel::default();
+    m.commit_number(NumberTarget::EdgeDist, 1.1);
+    let before = BushingFile::capture(&m, "c");
+    let p = bushing_fe::solid_problem(&m).unwrap();
+    assert!(bushing_from_problem(&mut m, &p).unwrap().is_empty(), "the solid's depth is the housing length");
+    assert_eq!(BushingFile::capture(&m, "c"), before);
+    // A depth edited in the FEA workbench is the housing length again.
+    let longer = edited(p, |p| {
+        if let Geometry::Sketch { depth, .. } = &mut p.geometry {
+            *depth = 0.9;
+        }
+    });
+    bushing_from_problem(&mut m, &longer).unwrap();
+    assert_eq!(m.housing_len, 0.9);
+}
+
+#[test]
 fn what_is_edited_in_the_fea_workbench_reaches_the_case_and_what_the_fea_model_cannot_carry_stays() {
     let mut m = BushingModel::default();
     m.commit_number(NumberTarget::BoreTolPlus, 0.0005);
