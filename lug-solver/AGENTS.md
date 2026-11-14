@@ -19,6 +19,7 @@ Does not own: any UI (`app-tui/src/toolboxes/lug_analysis/`), material data (`me
 | Finite-strain collapse (total-Lagrangian Q9, Hencky J2, true stress-strain, sparse Cholesky + L-BFGS), `Hardening::true_curve` (the law itself lives in `mechanics-core/src/hardening.rs`, re-exported here as `lug_solver::Hardening`) | `src/finite.rs`, `src/sparse.rs`, `tests/finite_strain.rs`, `docs/finite-strain-collapse.md` |
 | Elastic pin disc: surface compliance added to `G` (`G + A`) | `src/pin.rs` |
 | Pin bending through the thickness (double shear), slices on the lug's own load-travel curve | `src/thickness.rs` |
+| **Analytical cross-check**: Air Force / Melcon-Hoblit lug allowable (bearing `Kbr`, net tension `Kn`, transverse `Ktru`, oblique 1.6-power interaction, ductility factor) from digitized AFFDL-TR-69-42 Section 9 charts; no solver, no mesh | `src/affdl.rs`, generated `src/affdl_data.rs` (`tools/gen_affdl_lug.py`) |
 | Patch recovery (SPR), ZZ error estimate, strain / geometric energy | `src/stress.rs` |
 | Upgrade pass: self-checks, SPR/ZZ, elastic pin, hardening, thermal, thickness, P-delta | `tests/verification.rs`, `tests/elastic_pin.rs`, `tests/thermal.rs`, `tests/thickness.rs`, `tests/second_order.rs`, `tests/angle_sweep.rs` |
 | Exact-solution and consistency tests | `tests/lug_fem.rs`, unit tests per module |
@@ -43,6 +44,11 @@ Does not own: any UI (`app-tui/src/toolboxes/lug_analysis/`), material data (`me
 - NACA TN 1503 on the kernel (`tests/kernel_naca.rs`): `(Ftu + Fty)/2` 6-25 % low, `Ftu` from 13 % low to 2 % **high**, `Ftu (1 + elong)` -2..+14 %; the legacy numbers (9-28 % low, 1-17 % low never high, -5..+10 %) stay in `validation_naca_tn1503.rs`. Both are quoted by the toolbox for the solver in use.
 - `through_thickness` (beam on the lug springs) is the legacy mean-field estimate; the 3D face bearing (1.12-1.17 x mean) is a singularity that grows with refinement (`double_shear_through_thickness_load_matches_the_beam_model`, ignored). Single shear stays unoffered.
 - Dependencies are optimised in dev (`[profile.dev.package."*"]` in the root `Cargo.toml`): unoptimised faer made an analysis take minutes. `target/` grows by it (watch disk).
+
+## Handbook cross-check (`affdl.rs`)
+- Pure chart lookups (linear, clamped to the chart edge; the note list says when an edge was used). Data: the digitized arrays of <https://kaspercalc.com/LugPinAnalysis.html> (`js/lug-math.js`), charts from AFFDL-TR-69-42 Section 9 (US Government) / Bruhn D1; the site states no licence for its arrays. Regenerate with `python3 tools/gen_affdl_lug.py lug-math.js > src/affdl_data.rs`; never hand-edit the data.
+- Accuracy is a percent or two of each read-off. Pinned by tests: Kn worked example 0.74, Fig. 9-2 continuity at e/D 1.5, the by-hand bearing formula, the interaction closing at 0/90 deg. It knows nothing of a bushing's fit, friction or pin stiffness, and applies no grain cutoff unless `Grain` says (the toolbox passes `None`; `None` is unconservative for hand forgings).
+- Not ported: pin bending (Bruhn gamma), multi-lug joints, press-fit bushing limits, fatigue (Fig. 9-23..9-25), Fig. 9-12 oblique chart.
 
 ## Contracts
 - Units: inches, psi, lbf. Per-unit-thickness inside (forces are `P / t`); stresses are plane stress.
