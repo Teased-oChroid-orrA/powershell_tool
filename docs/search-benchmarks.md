@@ -428,7 +428,7 @@ Score = BM25 over hit lines per filter (tf = lines matching the filter, idf over
 
 ### Rejected / not done, and why
 - Word-distance proximity (`a NEAR/5 b`): the existing syntax is `[near N]` in LINES (`N = 0` means the same line) and phrases are plain substrings with spaces. Same-line adjacency is already `[near 0]`; a word-distance operator needs parser changes in app-tui (Filters field), which I was told not to touch, and would not change which files match in practice. Not built then; built later as `search-core/src/near.rs` (see `knowledge-engine-audit.md` section 8, 2026-11-11 NEAR/n).
-- Phrase across a wrapped line break: not built; PDF line joining belongs to the extraction agent, and joining line pairs would change hit line numbers. Worth a look once extraction output is stable.
+- Phrase across a wrapped line break: not built at the time of this entry; built 2026-11-14 as the opt-in `match_across_lines` setting (reported on the phrase's first line, so hit line numbers stay real lines; see `search-core/AGENTS.md`).
 - Dropping the Greek final-sigma / Turkish-i edge cases: noted only, no engineering corpus impact.
 - Folding in regex mode: a folded pattern would break regex syntax; ignored there by design.
 - Proximity bonus in the order score: not evaluated (the corpora have no filter proximity signal beyond co-occurrence), left out rather than guessed.

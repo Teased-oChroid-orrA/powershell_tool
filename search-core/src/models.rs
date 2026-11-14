@@ -146,6 +146,12 @@ pub struct SearchSettings {
     /// index stores unfolded text), so a warm re-search scans every file.
     #[serde(default)]
     pub fold_accents: bool,
+    /// Literal and whole-word modes: a multi-word filter also matches when a line break falls
+    /// between two of its words (PDF and wrapped text). The hit is reported on the line the
+    /// phrase starts on, so line numbers and page provenance stay those of real lines. Two
+    /// adjacent lines only; off by default; turns off the index candidate narrowing.
+    #[serde(default)]
+    pub match_across_lines: bool,
     /// Typo tolerance for literal and whole-word modes: 0 = off (default),
     /// 1 = one edit on words of 4+ letters, 2 = up to two edits on words of
     /// 8+ letters. Words with digits or under 4 letters stay exact. Applies
@@ -240,6 +246,7 @@ impl Default for SearchSettings {
             semantic_index: false,
             dry_run: false,
             fold_accents: false,
+            match_across_lines: false,
             typo_tolerance: 0,
             max_retries: 3,
             retry_delay_ms: 250,

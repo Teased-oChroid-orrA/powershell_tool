@@ -1309,8 +1309,9 @@ pub async fn narrow_candidates(
     out.freshness_ms = phase.elapsed().as_millis() as u64;
     let phase = std::time::Instant::now();
     // The index stores unfolded text and exact words: neither folding nor typo
-    // tolerance can be answered from its trigrams, so those searches scan.
-    if !settings.use_regex && (settings.fold_accents || settings.typo_tolerance > 0) {
+    // tolerance can be answered from its trigrams, so those searches scan; so does a phrase that
+    // may span a line break (the break is not the phrase's space).
+    if !settings.use_regex && (settings.fold_accents || settings.typo_tolerance > 0 || settings.match_across_lines) {
         return Ok(out);
     }
     let indexed_paths = if settings.use_regex {
