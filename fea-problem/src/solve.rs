@@ -729,6 +729,14 @@ struct FitSetup {
     eps_n: f64,
 }
 
+/// Chord Newton on bushing fits: one factorisation serves up to this many iterations once the residual has fallen 4x. Measured on
+/// the Bushing window's default case: the same answer to 1e-9 and 12-14 % less time (chord 2: -12 %, 5: -14 %).
+const FIT_CHORD_ITERS: usize = 5;
+/// Multiplier-pass tolerance of the loaded bushing solve (the no-load fit keeps `Tuning::friction`'s 2e-3). Default Bushing case:
+/// 3.4 s against 7.8 s at 2e-3, mean fit pressure -0.03 %, max von Mises +0.07 %, torque capacity -0.03 %; the peak pressure was
+/// already Gauss-point noise (18-25 ksi across tolerances). `Tuning::collapse` reads loads at the same 1e-2.
+const LOADED_FIT_OUTER_TOL: f64 = 1e-2;
+
 fn fit_setup(p: &Problem, mesh: &Mesh) -> Result<FitSetup, String> {
     let d = mesh.dim();
     let hole_faces: Vec<HoleFaces> = p
@@ -757,7 +765,7 @@ fn fit_setup(p: &Problem, mesh: &Mesh) -> Result<FitSetup, String> {
         _ => 1.0,
     }).fold(f64::INFINITY, f64::min);
     let e_min = p.bushings.iter().map(|b| b.material.e).fold(p.material.e, f64::min);
-    let tune = Tuning { newton_tol: 1e-6, ..Tuning::friction() };
+    let tune = Tuning { newton_tol: 1e-6, chord_iters: FIT_CHORD_ITERS, ..Tuning::friction() };
     let eps_n = tune.eps_n(e_min, r_hole);
     Ok(FitSetup { hole_faces, ground, tune, eps_n })
 }
@@ -944,7 +952,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         }
         if has_loads {
             let full = Loads { ground: ground.clone(), ..loads.clone() };
-            let mut opts = Tuning::friction().options(4);
+            let mut opts = Tuning { chord_iters: FIT_CHORD_ITERS, outer_tol: LOADED_FIT_OUTER_TOL, ..Tuning::friction() }.options(4);
             opts.first_step = 0.5;
             sol = model.solve_nonlinear_contact_from(&full, &bc, specs(), &opts, Some(&start_from(&sol, 0.0))).map_err(|e| format!("the loaded bushing could not be solved: {e}"))?;
             if !sol.complete() {
