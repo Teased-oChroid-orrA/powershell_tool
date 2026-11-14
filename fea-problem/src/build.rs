@@ -116,10 +116,8 @@ pub fn hole_problems(p: &Problem) -> Vec<(usize, String)> {
 /// reaches.
 pub fn size_function(p: &Problem) -> Box<dyn Fn([f64; 2]) -> f64> {
     let (h, f) = (p.mesh.size, p.mesh.hole_factor);
-    let holes: Vec<([f64; 2], f64)> = match &p.geometry {
-        Geometry::Sketch { holes, .. } => holes.iter().map(|s| (s.centre(), s.reach())).collect(),
-        Geometry::Imported { .. } | Geometry::Solid { .. } => Vec::new(),
-    };
+    // The holes of every region of the sketch (the other regions are meshed with this same size function).
+    let holes: Vec<([f64; 2], f64)> = crate::advice::sketch_regions(p).into_iter().flat_map(|(_, _, holes)| holes.iter().map(|s| (s.centre(), s.reach())).collect::<Vec<_>>()).collect();
     let zones = p.mesh.refine.clone();
     let predictor = predictor_of(p);
     Box::new(move |x| {

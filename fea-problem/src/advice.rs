@@ -45,6 +45,8 @@ pub enum SurfaceKind {
 }
 
 pub fn surface_kind(name: &str) -> SurfaceKind {
+    // Another region's surfaces are `r2/hole1`, `r3/top`, ...
+    let name = strip_region_prefix(name);
     match name {
         "start" | "end" => SurfaceKind::EndFace,
         n if n.starts_with("hole") || n.starts_with("plate_hole") => SurfaceKind::Hole,
@@ -52,6 +54,21 @@ pub fn surface_kind(name: &str) -> SurfaceKind {
         n if n.starts_with("edge") => SurfaceKind::OuterEdge,
         _ => SurfaceKind::Other,
     }
+}
+
+/// `r2/hole1` -> `hole1`; a name without a region prefix is returned unchanged.
+fn strip_region_prefix(name: &str) -> &str {
+    match name.split_once('/') {
+        Some((p, rest)) if p.len() > 1 && p.starts_with('r') && p[1..].bytes().all(|b| b.is_ascii_digit()) => rest,
+        _ => name,
+    }
+}
+
+/// Every region of a sketch problem as (surface-name prefix, outline, holes): the first region has no prefix, the
+/// others `r2/`, `r3/`, ... as in `Problem::edge_names`. Empty for any other geometry.
+pub(crate) fn sketch_regions(p: &Problem) -> Vec<(String, &Shape, &[Shape])> {
+    let Geometry::Sketch { outer, holes, regions, .. } = &p.geometry else { return Vec::new() };
+    std::iter::once((String::new(), outer, holes.as_slice())).chain(regions.iter().enumerate().map(|(k, r)| (format!("r{}/", k + 2), &r.outer, r.holes.as_slice()))).collect()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -134,42 +151,48 @@ pub fn add_boundary(p: &mut Problem, surface: &str, kind: BcKind) -> Result<(), 
 
 /// Centroid of every named surface of a sketch problem (hole and outline edges), in the sketch plane.
 pub fn surface_centroids(p: &Problem) -> Vec<(String, [f64; 2])> {
-    let Geometry::Sketch { outer, holes, .. } = &p.geometry else { return Vec::new() };
     let mut out = Vec::new();
-    match outer {
-        Shape::Rect { x0, y0, x1, y1 } => {
-            let (mx, my) = (0.5 * (x0 + x1), 0.5 * (y0 + y1));
-            out.extend([("bottom".to_string(), [mx, *y0]), ("right".into(), [*x1, my]), ("top".into(), [mx, *y1]), ("left".into(), [*x0, my])]);
-        }
-        Shape::Polygon { pts } => {
-            for i in 0..pts.len() {
-                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-                out.push((format!("edge{}", i + 1), [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]));
+    for (prefix, outer, holes) in sketch_regions(p) {
+        let name = |n: String| format!("{prefix}{n}");
+        match outer {
+            Shape::Rect { x0, y0, x1, y1 } => {
+                let (mx, my) = (0.5 * (x0 + x1), 0.5 * (y0 + y1));
+                out.extend([(name("bottom".into()), [mx, *y0]), (name("right".into()), [*x1, my]), (name("top".into()), [mx, *y1]), (name("left".into()), [*x0, my])]);
             }
+            Shape::Polygon { pts } => {
+                for i in 0..pts.len() {
+                    let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                    out.push((name(format!("edge{}", i + 1)), [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]));
+                }
+            }
+            Shape::Outline { segs } => out.extend(segs.iter().enumerate().map(|(i, sg)| (name(format!("edge{}", i + 1)), sg.point(0.5)))),
+            Shape::Circle { .. } | Shape::Slot { .. } => out.push((name("outer".into()), outer.centre())),
         }
-        Shape::Outline { segs } => out.extend(segs.iter().enumerate().map(|(i, sg)| (format!("edge{}", i + 1), sg.point(0.5)))),
-        Shape::Circle { .. } | Shape::Slot { .. } => out.push(("outer".into(), outer.centre())),
-    }
-    for (i, h) in holes.iter().enumerate() {
-        out.push((format!("hole{}", i + 1), h.centre()));
+        for (i, h) in holes.iter().enumerate() {
+            out.push((name(format!("hole{}", i + 1)), h.centre()));
+        }
     }
     out
 }
 
 /// End points of every straight outline edge of a sketch problem, by surface name (rectangle and polygon outlines).
 pub fn surface_edges(p: &Problem) -> Vec<(String, [[f64; 2]; 2])> {
-    let Geometry::Sketch { outer, .. } = &p.geometry else { return Vec::new() };
-    match outer {
-        Shape::Rect { x0, y0, x1, y1 } => vec![
-            ("bottom".to_string(), [[*x0, *y0], [*x1, *y0]]),
-            ("right".into(), [[*x1, *y0], [*x1, *y1]]),
-            ("top".into(), [[*x1, *y1], [*x0, *y1]]),
-            ("left".into(), [[*x0, *y1], [*x0, *y0]]),
-        ],
-        Shape::Polygon { pts } => (0..pts.len()).map(|i| (format!("edge{}", i + 1), [pts[i], pts[(i + 1) % pts.len()]])).collect(),
-        Shape::Outline { segs } => segs.iter().enumerate().filter_map(|(i, sg)| matches!(sg, Seg::Line { .. }).then(|| (format!("edge{}", i + 1), [sg.start(), sg.end()]))).collect(),
-        Shape::Circle { .. } | Shape::Slot { .. } => Vec::new(),
+    let mut out = Vec::new();
+    for (prefix, outer, _) in sketch_regions(p) {
+        let name = |n: String| format!("{prefix}{n}");
+        match outer {
+            Shape::Rect { x0, y0, x1, y1 } => out.extend([
+                (name("bottom".into()), [[*x0, *y0], [*x1, *y0]]),
+                (name("right".into()), [[*x1, *y0], [*x1, *y1]]),
+                (name("top".into()), [[*x1, *y1], [*x0, *y1]]),
+                (name("left".into()), [[*x0, *y1], [*x0, *y0]]),
+            ]),
+            Shape::Polygon { pts } => out.extend((0..pts.len()).map(|i| (name(format!("edge{}", i + 1)), [pts[i], pts[(i + 1) % pts.len()]]))),
+            Shape::Outline { segs } => out.extend(segs.iter().enumerate().filter_map(|(i, sg)| matches!(sg, Seg::Line { .. }).then(|| (name(format!("edge{}", i + 1)), [sg.start(), sg.end()])))),
+            Shape::Circle { .. } | Shape::Slot { .. } => {}
+        }
     }
+    out
 }
 
 pub(crate) fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -206,14 +229,17 @@ pub fn recommend(p: &Problem) -> Vec<Advice> {
     let plane = matches!(p.analysis, Analysis::PlaneStress | Analysis::PlaneStrain);
 
     // Mesh (geometry-driven, independent of the problem type).
-    if let Geometry::Sketch { outer, holes, .. } = &p.geometry {
-        let (lo, hi) = outer.bounds();
-        let thin = (hi[0] - lo[0]).min(hi[1] - lo[1]);
+    if let Geometry::Sketch { .. } = &p.geometry {
+        // Every region counts: the thinnest section and the smallest hole may be in a later one.
+        let regions = sketch_regions(p);
+        let boxes: Vec<([f64; 2], [f64; 2])> = regions.iter().map(|(_, o, _)| o.bounds()).collect();
+        let thin = boxes.iter().map(|(lo, hi)| (hi[0] - lo[0]).min(hi[1] - lo[1])).fold(f64::INFINITY, f64::min);
+        let area: f64 = boxes.iter().map(|(lo, hi)| (hi[0] - lo[0]) * (hi[1] - lo[1])).sum();
         let by_section = thin / 6.0;
-        let min_hole_r = holes.iter().map(|h| h.reach()).fold(f64::INFINITY, f64::min);
+        let min_hole_r = regions.iter().flat_map(|(_, _, holes)| holes.iter()).map(|h| h.reach()).fold(f64::INFINITY, f64::min);
         if by_section.is_finite() && by_section > 0.0 && p.mesh.size > by_section * 1.5 {
             let size = nice(by_section);
-            let est = (hi[0] - lo[0]) * (hi[1] - lo[1]) / (size * size) * crate::build::elements_per_area(p.mesh.element.is_quad());
+            let est = area / (size * size) * crate::build::elements_per_area(p.mesh.element.is_quad());
             if est < crate::build::MAX_ELEMENTS * 0.5 {
                 out.push(Advice::MeshSize { size, reason: format!("the element size {} puts fewer than 6 elements across the thinnest section ({}); {} gives about 6", short(p.mesh.size), short(thin), short(size)) });
             }
@@ -389,12 +415,14 @@ fn outline_corners(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
 /// Where a finer mesh is worth having, with the level the rules recommend. Deterministic and explained; sketch geometry
 /// only (an imported mesh brings its own density, and the zones live in the sketch plane).
 pub fn refinement_regions(p: &Problem) -> Vec<Region> {
-    let Geometry::Sketch { outer, holes, .. } = &p.geometry else { return Vec::new() };
+    let regions = sketch_regions(p);
+    let Some((_, outer, _)) = regions.first() else { return Vec::new() };
     // An empty or unbuilt feature history leaves a placeholder outline: nothing real to refine.
     if p.history.as_ref().is_some_and(|h| h.features.is_empty() || h.rebuild().is_err()) {
         return Vec::new();
     }
-    let (lo, hi) = outer.bounds();
+    // The part's size: the diagonal of the box around every region (one region: its own diagonal).
+    let (lo, hi) = regions.iter().map(|(_, o, _)| o.bounds()).fold((outer.bounds().0, outer.bounds().1), |(lo, hi), (l, h)| ([lo[0].min(l[0]), lo[1].min(l[1])], [hi[0].max(h[0]), hi[1].max(h[1])]));
     let diag = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
     if !(diag.is_finite() && diag > 0.0 && p.mesh.size > 0.0) {
         return Vec::new();
@@ -412,16 +440,22 @@ pub fn refinement_regions(p: &Problem) -> Vec<Region> {
         let level = level_order(kind, loaded)[0];
         out.push(Region { centre, to, radius, blend, level, kind, loaded, resolution: resolution(feature), applied: applied(centre, level), reason });
     };
-    for (i, h) in holes.iter().enumerate() {
-        let r = h.reach();
-        let n = i + 1;
-        let loaded = p.loads.iter().any(|l| matches!(l, Load::Bearing { hole, .. } if *hole == n)) || p.bushings.iter().any(|b| b.hole == n);
-        let why = if loaded { format!("hole {n} carries a pin or bushing load: the peak stress is at its edge and falls off within about two radii") } else { format!("hole {n} concentrates stress (about 3x the nominal at its edge) over about two radii") };
-        push(h.centre(), None, 1.25 * r, 0.75 * r, RegionKind::Hole, loaded, r, why);
-    }
-    if let Shape::Polygon { pts } = outer {
-        for (k, c) in outline_corners(pts).into_iter().enumerate() {
-            push(c, None, 0.03 * diag, 0.03 * diag, RegionKind::ReentrantCorner, false, 0.04 * diag, format!("re-entrant corner {}: the stress rises steeply towards a concave corner", k + 1));
+    for (prefix, outer, holes) in &regions {
+        // Pin loads and bushings belong to the first region's holes (a bushed sketch has one region).
+        let first = prefix.is_empty();
+        for (i, h) in holes.iter().enumerate() {
+            let r = h.reach();
+            let n = i + 1;
+            let loaded = first && (p.loads.iter().any(|l| matches!(l, Load::Bearing { hole, .. } if *hole == n)) || p.bushings.iter().any(|b| b.hole == n));
+            let label = format!("hole {n}{}", if first { String::new() } else { format!(" of region {}", prefix.trim_end_matches('/').trim_start_matches('r')) });
+            let why = if loaded { format!("{label} carries a pin or bushing load: the peak stress is at its edge and falls off within about two radii") } else { format!("{label} concentrates stress (about 3x the nominal at its edge) over about two radii") };
+            push(h.centre(), None, 1.25 * r, 0.75 * r, RegionKind::Hole, loaded, r, why);
+        }
+        if let Shape::Polygon { pts } = outer {
+            for (k, c) in outline_corners(pts).into_iter().enumerate() {
+                let label = if first { format!("re-entrant corner {}", k + 1) } else { format!("re-entrant corner {} of region {}", k + 1, prefix.trim_end_matches('/').trim_start_matches('r')) };
+                push(c, None, 0.03 * diag, 0.03 * diag, RegionKind::ReentrantCorner, false, 0.04 * diag, format!("{label}: the stress rises steeply towards a concave corner"));
+            }
         }
     }
     let cents = surface_centroids(p);
