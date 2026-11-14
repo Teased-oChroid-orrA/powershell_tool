@@ -18,7 +18,7 @@ pub struct PersistedBushingId {
     pub id_in: f64,
 }
 
-fn default_file_path() -> PathBuf {
+pub fn default_file_path() -> PathBuf {
     app_data_dir().unwrap_or_default().join("bushing-id-library.json")
 }
 

@@ -1,7 +1,8 @@
 //! The pickers behind a bore, a bushing ID, a friction coefficient and the two materials, as value cards: a search field
 //! over a short list of the catalog's best matches. The lists, the filters and what choosing an entry sets are the
 //! terminal toolbox's own (`reamer_picker`, `bushing_id_picker`, `friction_picker`, `material_picker`).
-use super::{BushingAct, BushingSession};
+use super::{library, BushingAct, BushingSession};
+use std::path::Path;
 use crate::gpu_viewer::{
     controller::UiAction,
     editor::session::EditorAction,
@@ -10,6 +11,7 @@ use crate::gpu_viewer::{
 use crate::toolboxes::bushing::{
     bushing_id_picker::BushingIdPickerState,
     model::NumberTarget,
+    reamer_persistence, bushing_id_persistence,
     reamer_picker::ReamerPickerState,
 };
 use bushing_solver::friction::FRICTION_TYPICALS;
@@ -41,7 +43,40 @@ fn act(a: BushingAct) -> UiAction {
 impl BushingSession {
     pub(super) fn open_picker(&mut self, kind: Kind) {
         self.prompt = None;
-        self.picker = Some(Picker { kind, query: String::new(), reamer: ReamerPickerState::open_near(&self.st.model), ids: BushingIdPickerState::open_near(&self.st.model) });
+        self.manager = None;
+        // The libraries are read once per opening, from the same place the library card writes them.
+        let load = |lib| library::library_file(lib, self.library_dir.as_deref());
+        let m = &self.st.model;
+        let reamer = ReamerPickerState::with_library(m, reamer_persistence::load_from(&load(library::Lib::Reamer)).unwrap_or_default());
+        let ids = BushingIdPickerState::with_library(m, bushing_id_persistence::load_from(&load(library::Lib::Id)).unwrap_or_default());
+        self.picker = Some(Picker { kind, query: String::new(), reamer, ids });
+    }
+
+    /// The library card for the open picker's library.
+    pub(super) fn open_manager(&mut self) {
+        let Some(kind) = self.picker.as_ref().map(|p| p.kind) else { return };
+        let lib = match kind {
+            Kind::Bore => library::Lib::Reamer,
+            Kind::Id => library::Lib::Id,
+            Kind::Housing | Kind::Bushing => library::Lib::Material,
+            Kind::Friction => return,
+        };
+        let export_dir = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        self.manager = Some((kind, library::open(lib, self.library_dir.as_deref(), &export_dir)));
+        self.picker = None;
+    }
+
+    /// Run a library card action. Whatever it changed reaches the model; closing returns to the picker.
+    pub(super) fn manage(&mut self, a: library::ManageAct) {
+        let Some((kind, m)) = &mut self.manager else { return };
+        let kind = *kind;
+        if m.act(a, &mut self.st.model) {
+            self.st.model.recompute();
+            self.refresh_fea();
+        } else {
+            self.manager = None;
+            self.open_picker(kind);
+        }
     }
 
     pub(super) fn picker_card(&self) -> Option<ValueCard> {
@@ -108,6 +143,9 @@ impl BushingSession {
         }
         if more > 0 {
             rows.push(CardRow::Text(format!("{more} more: type to narrow the list.")));
+        }
+        if p.kind != Kind::Friction {
+            rows.push(CardRow::Choice { label: "Manage library".into(), detail: "add, edit, import and export saved entries".into(), action: act(BushingAct::ManageLibrary), current: false });
         }
         Some(ValueCard { title: title.into(), width: 400.0, tag: tag.into(), rows, apply_label: "Close".into(), apply: act(BushingAct::ClosePicker), cancel: act(BushingAct::ClosePicker) })
     }

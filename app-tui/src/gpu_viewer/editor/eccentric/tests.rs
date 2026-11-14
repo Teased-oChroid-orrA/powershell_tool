@@ -165,3 +165,67 @@ fn a_saved_case_reopens_with_its_inputs_and_the_report_and_fields_are_written_be
     act(&mut s, EccentricAct::ExportCsv);
     assert!(std::fs::read_to_string(s.path().with_extension("csv")).unwrap().contains("angle_deg,fit_pressure_psi"));
 }
+
+// ------------------------------------------------------------------ the Bushing case picker (#242)
+
+fn bushing_case(d: &Path, file: &str, load: f64) {
+    let mut m = BushingModel::default();
+    m.commit_number(crate::toolboxes::bushing::model::NumberTarget::Load, load);
+    std::fs::write(d.join(file), BushingFile::capture(&m, file).to_json()).unwrap();
+}
+fn picker_text(s: &EccentricSession) -> String {
+    s.value_card().unwrap().rows.iter().map(|r| match r {
+        crate::gpu_viewer::ui::CardRow::Choice { label, detail, current, .. } => format!("{label} {detail}{}", if *current { " [current]" } else { "" }),
+        crate::gpu_viewer::ui::CardRow::Text(t) => t.clone(),
+        _ => String::new(),
+    }).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn the_picker_lists_bushing_cases_beside_the_file_and_choosing_one_reloads_and_saves_the_link() {
+    let d = dir("pick-case");
+    bushing_case(&d, "bushing-case.json", 1000.0);
+    bushing_case(&d, "wing-lug.json", 3333.0);
+    std::fs::write(d.join("notes.json"), r#"{"hello": 1}"#).unwrap();
+    let mut s = EccentricSession::open(&d.join("ecc.json")).unwrap();
+    s.save();
+    assert!(!s.bushing_default);
+    act(&mut s, EccentricAct::PickCase);
+    let list = picker_text(&s);
+    assert!(list.contains("bushing-case.json") && list.contains("wing-lug.json"), "{list}");
+    assert!(!list.contains("notes.json") && !list.contains("ecc.json"), "only Bushing cases are offered: {list}");
+    assert!(list.contains("bushing-case.json") && list.contains("[current]"), "the case in use is marked: {list}");
+    let i = s.case_picker.as_ref().unwrap().files.iter().position(|f| f.ends_with("wing-lug.json")).unwrap();
+    act(&mut s, EccentricAct::UseCase(i));
+    assert!(s.case_picker.is_none());
+    assert_eq!(s.bushing_case, "wing-lug.json", "stored relative to the Eccentric file");
+    assert!(s.dirty, "the link is part of the saved case");
+    assert!(texts(&s).contains("Pin load  3333 lbf") && texts(&s).contains("wing-lug.json (saved "), "{}", texts(&s));
+    s.save();
+    let saved = EccentricFile::from_json(&std::fs::read_to_string(d.join("ecc.json")).unwrap()).unwrap();
+    assert_eq!(saved.bushing_case, "wing-lug.json");
+}
+
+#[test]
+fn a_typed_path_must_be_a_bushing_case_and_a_missing_case_shows_the_default_warning() {
+    let d = dir("pick-typed");
+    let mut s = EccentricSession::open(&d.join("ecc.json")).unwrap();
+    assert!(s.bushing_default, "no case beside the file: the defaults stand");
+    assert!(texts(&s).contains("no Bushing case at"));
+    std::fs::write(d.join("junk.json"), "{}").unwrap();
+    act(&mut s, EccentricAct::PickCase);
+    s.card_field(0, "junk.json".into());
+    act(&mut s, EccentricAct::UseTypedCase);
+    assert!(s.status.contains("not a Bushing case file") && s.bushing_case == "bushing-case.json" && !s.dirty, "{}", s.status);
+    s.card_field(0, "absent.json".into());
+    act(&mut s, EccentricAct::UseTypedCase);
+    assert!(s.status.contains("Could not read"), "{}", s.status);
+    bushing_case(&d, "elsewhere.json", 4444.0);
+    s.card_field(0, d.join("elsewhere.json").display().to_string());
+    act(&mut s, EccentricAct::UseTypedCase);
+    assert!(!s.bushing_default && s.bushing_case == "elsewhere.json");
+    assert!(texts(&s).contains("Pin load  4444 lbf"));
+    act(&mut s, EccentricAct::PickCase);
+    s.key(Key::Escape, Mods::default());
+    assert!(s.case_picker.is_none());
+}

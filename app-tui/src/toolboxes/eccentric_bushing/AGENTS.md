@@ -1,6 +1,6 @@
 # toolboxes/eccentric_bushing/ - Eccentric Bushing toolbox
 
-> TL;DR: Thin bridge over the `eccentric-bushing` solver. The terminal toolbox reads bore, ID, interference, friction, length, load and materials from a default `BushingModel` held by `AppState`. It adds offset, load angle, housing and pin inputs. Manual runs (`r` analyse, `m` max offset, `l` max load) use a worker (`Effect::RunEccentric` -> `AppEvent::EccentricFinished`). #242 tracks a case handoff after the terminal Bushing Workbench's retirement.
+> TL;DR: Thin bridge over the `eccentric-bushing` solver. The terminal toolbox reads bore, ID, interference, friction, length, load and materials from a default `BushingModel` held by `AppState`. It adds offset, load angle, housing and pin inputs. Manual runs (`r` analyse, `m` max offset, `l` max load) use a worker (`Effect::RunEccentric` -> `AppEvent::EccentricFinished`). The native Eccentric window (`gpu_viewer/editor/eccentric/case_picker.rs`) lets the user choose the Bushing case file (#242); this terminal toolbox still uses the default case.
 
 > The native window has a second front end over this toolbox: `gpu_viewer/editor/eccentric/` (node there). It reuses `EccentricState`, `model.rs` and `view::display_value` unchanged (`display_value` is `pub(crate)` for it). Keep this toolbox free of window types.
 

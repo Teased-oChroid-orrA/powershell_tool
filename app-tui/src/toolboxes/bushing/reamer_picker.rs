@@ -12,10 +12,14 @@ pub struct ReamerPickerState {
 
 impl ReamerPickerState {
     pub fn open_near(model: &BushingModel) -> Self {
+        Self::with_library(model, reamer_persistence::load())
+    }
+
+    pub fn with_library(model: &BushingModel, library: Vec<LibraryItem<PersistedReamer>>) -> Self {
         let mut state = Self {
             cursor: 0,
             filter_text: String::new(),
-            library: reamer_persistence::load(),
+            library,
         };
         let target = model.bore_dia;
         state.cursor = state

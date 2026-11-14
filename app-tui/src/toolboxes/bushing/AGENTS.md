@@ -4,7 +4,7 @@
 
 ## Purpose
 
-`BushingState` owns the model, checks, recommendations, and edge-check state. `gpu_viewer/editor/bushing/` owns the UI. The model also supplies a default case to the terminal Eccentric Bushing toolbox until #242 restores case handoff.
+`BushingState` owns the model, checks, recommendations, and edge-check state. `gpu_viewer/editor/bushing/` owns the UI. The model also supplies a default case to the terminal Eccentric Bushing toolbox; the native Eccentric window picks its own Bushing case file (#242).
 
 ## Code Map
 
@@ -29,7 +29,7 @@
 ## Pitfalls
 
 - The default case fails the edge-distance sequencing check. This is the solver's result for the fixture.
-- The native window reads saved reamer, material, and Bushing ID libraries, but cannot edit or import/export them since terminal retirement. #242 tracks native management and Eccentric case handoff.
+- The native window manages the saved reamer, material, and Bushing ID libraries (`gpu_viewer/editor/bushing/library.rs`). The model loads `custom_materials` / `user_reamers` once in `Default`; library edits must go through `set_custom_materials` / `set_user_reamers`.
 - Pickers load the user's library when opened. Construct each picker once per opening, never on each frame.
 
 ## Navigation

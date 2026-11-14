@@ -68,10 +68,14 @@ pub struct BushingIdPickerState {
 
 impl BushingIdPickerState {
     pub fn open_near(model: &BushingModel) -> Self {
+        Self::with_library(model, bushing_id_persistence::load())
+    }
+
+    pub fn with_library(model: &BushingModel, library: Vec<LibraryItem<PersistedBushingId>>) -> Self {
         let mut state = Self {
             cursor: 0,
             filter_text: String::new(),
-            library: bushing_id_persistence::load(),
+            library,
         };
         let target = model.id_bushing;
         state.cursor = state

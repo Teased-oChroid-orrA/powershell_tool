@@ -172,7 +172,7 @@ fn the_material_picker_lists_matches_and_choosing_changes_the_solver() {
     act(&mut s, BushingAct::Row(FieldRow::OpenHousingMaterialPicker));
     s.card_field(0, "7075".into());
     let c = s.value_card().unwrap();
-    let rows: Vec<_> = c.rows.iter().filter_map(|r| if let CardRow::Choice { label, action, current, .. } = r { Some((label.clone(), *action, *current)) } else { None }).collect();
+    let rows: Vec<_> = c.rows.iter().filter_map(|r| if let CardRow::Choice { label, action, current, .. } = r { Some((label.clone(), *action, *current)) } else { None }).filter(|(l, _, _)| l != "Manage library").collect();
     assert!(!rows.is_empty() && rows.len() <= 12 && rows.iter().all(|(l, _, _)| l.contains("7075")), "{rows:?}");
     let (_, action, _) = rows.iter().find(|(_, _, cur)| !cur).cloned().unwrap_or_else(|| rows[0].clone());
     let UiAction::Editor(a) = action else { panic!() };
@@ -420,4 +420,202 @@ fn uncertainty_rows_edit_both_cvs_without_changing_the_case_inputs() {
     assert!(s.st.edge_job.is_none(), "debounce waits");
     wait(&mut s, "updated uncertainty", |s| s.st.edge_check.as_ref().is_some_and(|r| r.report.strength_cv == 0.125));
     assert!(s.st.report_text().contains("Strength CV 12.5 %"));
+}
+
+// ------------------------------------------------------------------ library management (#242)
+
+use super::library::ManageAct;
+fn lib_session(dir: &std::path::Path) -> BushingSession {
+    let mut s = session();
+    s.library_dir = Some(dir.to_path_buf());
+    s.path = dir.join("case.json");
+    s
+}
+fn manage(s: &mut BushingSession, a: ManageAct) {
+    act(s, BushingAct::Manage(a));
+}
+fn open_lib(s: &mut BushingSession, row: FieldRow) {
+    act(s, BushingAct::Row(row));
+    act(s, BushingAct::ManageLibrary);
+    assert!(s.manager.is_some(), "the library card is open");
+}
+fn card_text(s: &BushingSession) -> String {
+    s.value_card().unwrap().rows.iter().map(|r| match r {
+        CardRow::Text(t) => t.clone(),
+        CardRow::Choice { label, detail, .. } => format!("{label} {detail}"),
+        CardRow::Field { label, text, .. } => format!("{label}={text}"),
+        CardRow::Toggle { label, on, .. } => format!("{label}:{on}"),
+        CardRow::Select { label, .. } => label.clone(),
+    }).collect::<Vec<_>>().join("\n")
+}
+fn fill(s: &mut BushingSession, values: &[&str]) {
+    for (i, v) in values.iter().enumerate() {
+        s.card_field(i + 1, (*v).into());
+    }
+}
+
+#[test]
+fn a_saved_reamer_persists_reaches_the_model_and_survives_a_new_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = lib_session(dir.path());
+    open_lib(&mut s, FieldRow::Number(NumberTarget::BoreDia));
+    manage(&mut s, ManageAct::New);
+    fill(&mut s, &["ZZ-custom", "0.4321", "0.0004", "0", "shop reamer"]);
+    manage(&mut s, ManageAct::Save);
+    assert!(card_text(&s).contains("Saved ZZ-custom"), "{}", card_text(&s));
+    let saved = crate::toolboxes::bushing::reamer_persistence::load_from(&dir.path().join("reamer-library.json")).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].item.nominal_in, 0.4321);
+    assert!(s.st.model.catalog_sizes().iter().any(|c| c.label == "ZZ-custom"), "fixes may now snap to it");
+    manage(&mut s, ManageAct::Back); // close: back to the bore picker, which lists it
+    assert!(s.manager.is_none() && s.picker.is_some());
+    s.picker_field(0, "ZZ".into());
+    assert!(s.picker_card().unwrap().rows.iter().any(|r| matches!(r, CardRow::Choice { label, .. } if label.starts_with("ZZ-custom"))));
+}
+
+#[test]
+fn a_bad_field_or_a_taken_name_is_refused_and_nothing_is_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = lib_session(dir.path());
+    open_lib(&mut s, FieldRow::Number(NumberTarget::BoreDia));
+    manage(&mut s, ManageAct::New);
+    fill(&mut s, &["Q9", "abc", "0", "0", ""]);
+    manage(&mut s, ManageAct::Save);
+    assert!(card_text(&s).contains("not a number"));
+    fill(&mut s, &["Q9", "-1", "0", "0", ""]);
+    manage(&mut s, ManageAct::Save);
+    assert!(card_text(&s).contains("positive"));
+    let taken = bushing_solver::reamers::all_reamers()[0].size_label.clone();
+    fill(&mut s, &[&taken, "0.3", "0", "0", ""]);
+    manage(&mut s, ManageAct::Save);
+    assert!(card_text(&s).contains("already in the library"));
+    assert!(!dir.path().join("reamer-library.json").exists());
+}
+
+#[test]
+fn preferred_on_a_shipped_reamer_is_a_tag_that_persists_and_clears() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = lib_session(dir.path());
+    open_lib(&mut s, FieldRow::Number(NumberTarget::BoreDia));
+    let first = bushing_solver::reamers::all_reamers()[0].size_label.clone();
+    s.card_field(0, first.clone());
+    manage(&mut s, ManageAct::Edit(0));
+    manage(&mut s, ManageAct::Preferred);
+    let file = dir.path().join("reamer-library.json");
+    let items = crate::toolboxes::bushing::reamer_persistence::load_from(&file).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].labels, vec!["Preferred".to_string()]);
+    manage(&mut s, ManageAct::Edit(0));
+    assert!(card_text(&s).contains("Preferred:true"));
+    manage(&mut s, ManageAct::Preferred);
+    assert!(crate::toolboxes::bushing::reamer_persistence::load_from(&file).unwrap().is_empty(), "the tag-only copy is dropped");
+}
+
+#[test]
+fn an_edit_in_place_and_a_delete_keep_the_other_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = lib_session(dir.path());
+    open_lib(&mut s, FieldRow::Number(NumberTarget::IdBushing));
+    for (label, id) in [("A-1", "0.31"), ("B-2", "0.42")] {
+        manage(&mut s, ManageAct::New);
+        fill(&mut s, &[label, id]);
+        manage(&mut s, ManageAct::Save);
+    }
+    s.card_field(0, "A-1".into());
+    manage(&mut s, ManageAct::Edit(0));
+    fill(&mut s, &["A-1", "0.33"]);
+    manage(&mut s, ManageAct::Preferred);
+    manage(&mut s, ManageAct::Save);
+    let file = dir.path().join("bushing-id-library.json");
+    let items = crate::toolboxes::bushing::bushing_id_persistence::load_from(&file).unwrap();
+    assert_eq!((items[0].item.id_in, items[0].labels.clone()), (0.33, vec!["Preferred".to_string()]));
+    manage(&mut s, ManageAct::Edit(0));
+    manage(&mut s, ManageAct::Delete);
+    let items = crate::toolboxes::bushing::bushing_id_persistence::load_from(&file).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].item.label, "B-2");
+}
+
+#[test]
+fn import_adds_new_entries_prunes_duplicates_and_asks_on_a_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = lib_session(dir.path());
+    open_lib(&mut s, FieldRow::Number(NumberTarget::IdBushing));
+    manage(&mut s, ManageAct::New);
+    fill(&mut s, &["A-1", "0.31"]);
+    manage(&mut s, ManageAct::Save);
+    manage(&mut s, ManageAct::New);
+    fill(&mut s, &["B-2", "0.42"]);
+    manage(&mut s, ManageAct::Save);
+    let incoming = dir.path().join("incoming.json");
+    std::fs::write(&incoming, r#"{"items":[{"label":"A-1","id_in":0.31},{"label":"B-2","id_in":0.99},{"label":"C-3","id_in":0.5,"labels":["Preferred"]}]}"#).unwrap();
+    s.card_field(99, incoming.display().to_string());
+    manage(&mut s, ManageAct::Import);
+    assert!(card_text(&s).contains("B-2 is already saved with different data"), "{}", card_text(&s));
+    manage(&mut s, ManageAct::Resolve { overwrite: true, all: false });
+    let file = dir.path().join("bushing-id-library.json");
+    let items = crate::toolboxes::bushing::bushing_id_persistence::load_from(&file).unwrap();
+    let by = |l: &str| items.iter().find(|i| i.item.label == l).cloned().unwrap();
+    assert_eq!(items.len(), 3, "the duplicate A-1 was pruned");
+    assert_eq!(by("B-2").item.id_in, 0.99, "overwrite replaced it");
+    assert_eq!(by("C-3").labels, vec!["Preferred".to_string()]);
+    // Keep saved: the same file again changes nothing.
+    std::fs::write(&incoming, r#"{"items":[{"label":"B-2","id_in":0.11}]}"#).unwrap();
+    manage(&mut s, ManageAct::Import);
+    manage(&mut s, ManageAct::Resolve { overwrite: false, all: false });
+    assert_eq!(crate::toolboxes::bushing::bushing_id_persistence::load_from(&file).unwrap().iter().find(|i| i.item.label == "B-2").unwrap().item.id_in, 0.99);
+    s.card_field(99, dir.path().join("missing.json").display().to_string());
+    manage(&mut s, ManageAct::Import);
+    assert!(card_text(&s).contains("Could not read"));
+}
+
+#[test]
+fn export_writes_the_shipped_reamers_plus_the_users() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = lib_session(dir.path());
+    open_lib(&mut s, FieldRow::Number(NumberTarget::BoreDia));
+    manage(&mut s, ManageAct::New);
+    fill(&mut s, &["ZZ-custom", "0.4321", "0", "0", ""]);
+    manage(&mut s, ManageAct::Save);
+    manage(&mut s, ManageAct::Export);
+    let out = crate::toolboxes::bushing::reamer_persistence::load_from(&dir.path().join("reamer-library-export.json")).unwrap();
+    assert_eq!(out.len(), bushing_solver::reamers::all_reamers().len() + 1);
+    assert!(out.iter().any(|i| i.item.size_label == "ZZ-custom"));
+}
+
+#[test]
+fn a_material_in_use_cannot_be_deleted_and_a_delete_shifts_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = lib_session(dir.path());
+    open_lib(&mut s, FieldRow::OpenHousingMaterialPicker);
+    for n in ["M-one", "M-two"] {
+        manage(&mut s, ManageAct::New);
+        fill(&mut s, &[n, "10000", "40", "90", "0", "35", "60", "0.33", "12"]);
+        manage(&mut s, ManageAct::Save);
+    }
+    let base = mechanics_core::materials::builtin_len();
+    assert_eq!(s.st.model.material_catalog().len(), base + 2);
+    s.st.model.housing_material_index = base; // M-one
+    s.st.model.bushing_material_index = base + 1; // M-two
+    s.card_field(0, "M-one".into());
+    manage(&mut s, ManageAct::Edit(0));
+    manage(&mut s, ManageAct::Delete);
+    assert!(card_text(&s).contains("in use"), "{}", card_text(&s));
+    assert_eq!(s.st.model.material_catalog().len(), base + 2);
+    s.st.model.housing_material_index = 0;
+    manage(&mut s, ManageAct::Delete);
+    assert_eq!(s.st.model.material_catalog().len(), base + 1);
+    assert_eq!(s.st.model.bushing_material().name, "M-two", "the bushing still points at its material");
+}
+
+#[test]
+fn escape_steps_back_from_the_form_then_closes_to_the_picker() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = lib_session(dir.path());
+    open_lib(&mut s, FieldRow::Number(NumberTarget::IdBushing));
+    manage(&mut s, ManageAct::New);
+    s.key(Key::Escape, Mods::default());
+    assert!(s.manager.is_some() && card_text(&s).contains("Add an entry"));
+    s.key(Key::Escape, Mods::default());
+    assert!(s.manager.is_none() && s.picker.is_some());
 }
