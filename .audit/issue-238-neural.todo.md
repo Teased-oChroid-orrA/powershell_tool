@@ -9,7 +9,7 @@ Goal: Complete all 12 Search ML roadmap items with local, reviewable behavior. K
 - [ ] Audit findings, update project memory, and report remaining constraints honestly.
 
 Exit predicate: all twelve roadmap items have bounded local behavior, tests, and modular ownership; exact query parsing, matching, and result membership remain unchanged.
-Scope: twelve independent feature slices plus integration and verification. Model runtime and API are grounded; feedback is implemented. Generated answers now run locally with cited input lines; page-level citations, calibrated OCR confidence, and alert materiality remain open.
+Scope: twelve independent feature slices plus integration and verification. Model runtime and API are grounded; feedback is implemented. Ask the Index now presents unchanged cited lines per explicit question part. The bundled generator remains available for probes but is not used for answers after it fabricated text on an unsupported question. Bounded page citations cover supported PDFs; real-world corpus validation remains open. Calibrated OCR recognition confidence and alert materiality remain open.
 Rigor: high for persisted judgments, generated answers, document access, and saved-search alerts; focused checks per reversible slice.
 
 Roadmap items:
@@ -20,12 +20,18 @@ Roadmap items:
 - [x] Explainable relevance ranking.
 - [x] Optional local relevance feedback with reset/export.
 - [x] Source-cited extractive summaries. MiniLM selects up to five unchanged, cited source lines from bounded, evenly sampled document text; asynchronous Search UI cancels stale requests and caps inference to one active worker.
-- [~] Question answering. The Index popup uses MiniLM to rank unchanged source lines and bundled Flan-T5-small to generate a bounded answer from lines accepted by its token budget. It shows unchanged source citations for the accepted lines. Core and model tests pass; PDF extraction still has no page provenance.
+- [~] Question answering. The Index popup uses MiniLM to rank unchanged, cited source lines independently for up to three explicit questions. It shows only source text, with verified PDF page numbers when available. Unsupported PDF forms and OCR lines keep line-only citations. Ranked lines are possible evidence, not verified answers. Verified synthesis or reliable abstention remains open.
 - [~] Engineering entity extraction. Bounded candidate extraction, MiniLM token-vector ranking, and asynchronous cited preview suggestions are integrated. On 59 independently worded held-out spans, unrestricted top-one is 41/59; exact-pattern coverage is 59/59; MiniLM restricted to pattern-supported categories is 56/59 versus 54/59 for the first pattern hint. The benchmark covers known candidate spans, not corpus-level false positives or recall.
 - [~] Selected-document lookup returns cited related files and exact extracted-line diffs; raw MiniLM cosine is now displayed with an uncalibrated-score warning. Calibrated duplicate/revision classification remains open.
-- [~] Local OCR/drawing text discovery with confidence/highlights. Existing bundled OCR finds text; exact search highlights it. OCR provenance now triggers a source-review warning. The bundled OCR API exposes text-detection probability, not calibrated recognition confidence.
+- [~] Local OCR/drawing text discovery with confidence/highlights. Existing bundled OCR finds text; exact search highlights it. OCR provenance now triggers a source-review warning. `cargo test -p search-core --features ocr ocr_extracts_real_text_from_the_real_scanned_pdf_fixture -- --ignored --nocapture` passes. `ocrs` 0.12 and latest 0.13.1 expose text-detection probability, not recognized-character confidence; the detector map requires a separate inference pass.
 - [x] Zero-result typo/synonym/proximity suggestions. Typos and synonyms remain explicit user choices; mode-rejection diagnostics now enable an explicit +3-line exact proximity rerun.
 - [~] Saved-search alerts report new and updated exact-hit files, with MiniLM distances shown as uncalibrated review signals. Materiality calibration remains open.
+
+Ask the Index reliability checkpoint (2026-11-07):
+- A bundled-model probe answered a combined torque/temperature question with only `Applied torque`; separate questions returned `Applied torque` and `120 C`. An unsupported fatigue-life question returned `torsional stress`. See `search-ml/examples/qa_complex_probe.rs`.
+- Ask the Index now retrieves each of up to three explicit questions separately and displays only unchanged, cited source lines. It does not publish generated prose or claim the ranked lines prove an answer. A fourth question returns a visible limit error.
+- `cargo test -p search-ml --lib bundled_generator` passed 2 tests; `cargo test -p search-core` passed 180 tests; `cargo test -p search-core --features semantic-search` passed 217 tests; focused Search UI suite passed 42 tests. The Search UI also checks source identity and text for two question parts.
+- A verified synthesized answer or automatic abstention cannot be claimed from this generator and uncalibrated similarity. Broader held-out question/answer evidence is required before adding either.
 
 Saved-search alert architecture slice:
 - [x] Ground Search persistence, result delivery, and neural embedding boundaries.
@@ -38,6 +44,7 @@ Saved-search alert architecture slice:
 Saved-alert implementation checkpoint:
 - Core snapshots retain at most 2,000 files and 2 KiB sampled evidence per file; sidecars cap at 2 MiB.
 - Exact hit membership remains the source of new/updated file alerts. MiniLM distance is surfaced as a review signal, not a calibrated materiality verdict.
+- A Flan-T5-small binary prompt probe predicted `IMMATERIAL` for all 16 hand-labeled changes (8/16, majority baseline); no bundled model supports a materiality verdict.
 - Sample fingerprint combines up to three exact-hit contexts and six evenly spaced document lines; source text is not persisted.
 - `cargo test -p search-core --features neural-search,semantic-search alerts::tests -- --nocapture`: 4 passed.
 
@@ -120,3 +127,12 @@ Engineering entity review checkpoint:
 - Proof: focused entity presentation test passed; all 40 Search Workbench tests passed with `neural-search,semantic-search`; `git diff --check` passed.
 - Runtime screenshot remains unverified: `cargo run -p app-tui -- --gpu-dashboard` started (`FEA_GPU_READY`), but the computer-use surface did not expose the new window.
 - Entity accuracy remains open pending independent held-out data; current small probe is not validation.
+
+PDF citation design phases:
+- [x] Ground extraction, exact matching, semantic indexing, and answer citation flow; code trace confirms semantic corpus indexing bypasses the exact-result cache.
+- [x] Compare a bounded classic-xref scanner with `lopdf`; reject eager parsing because aggregate memory is not capped.
+- [x] Keep page provenance as optional semantic-side metadata; exact extracted strings and cache remain unchanged.
+- [x] Implement capped extraction origins, page-homogeneous chunks, SQLite migration, and optional page labels.
+- [x] Verify synthetic multi-page provenance, old SQLite migration, exact extraction behavior, and feature-off/core builds.
+- [x] Record test evidence and the supported-subset/OCR limits in `.audit/pdf-page-citations-grounding.md`.
+- [ ] Test additional real-world PDF generators and the large corpus; unsupported mappings remain safe and line-only.
