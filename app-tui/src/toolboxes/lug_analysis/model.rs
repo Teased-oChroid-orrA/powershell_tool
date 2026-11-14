@@ -4,6 +4,7 @@
 //! when only the pin or load changed) and compares the result with the
 //! material allowables.
 
+use lug_solver::affdl::{self, AxialMode, Grain, LugDims, LugMaterial};
 use lug_solver::fea::FeaLug;
 use lug_solver::{auto_refinement_for, BushingSpec, LugField, FiniteLug, FsMaterial, FsOptions, FsResult, Hardening, LimitLoad, LimitOptions, LoadCase, LugGeometry, LugModel, LugSolution, Material as FeMaterial, MeshSpec, PinBending, PinBody, PinSpec, PlaneMode, Shear, Thermal, ThicknessResult};
 use mechanics_core::fracture::Basis;
@@ -87,6 +88,10 @@ pub struct MaterialLimits {
     pub fsu_psi: f64,
     pub fbru_psi: f64,
     pub fbru_e15_psi: f64,
+    /// Tabulated bearing yield at e/D = 2.0 (0 = none): with `fbru_psi` it caps the handbook bearing allowable.
+    pub fbry_psi: f64,
+    /// An aluminium alloy (the handbook lug method has aluminium-only rules).
+    pub aluminium: bool,
     /// Linear thermal expansion coefficient (per deg F).
     pub alpha: f64,
     /// Handbook elongation as a fraction (0 = not tabulated).
@@ -116,7 +121,7 @@ impl MaterialLimits {
     }
 
     pub fn from_material(m: &Material) -> Self {
-        Self { name: m.name.to_string(), e_psi: m.e_ksi * 1000.0, nu: m.nu, ftu_psi: m.ftu_ksi * 1000.0, fty_psi: m.sy_ksi * 1000.0, fsu_psi: m.fsu_ksi * 1000.0, fbru_psi: m.fbru_ksi * 1000.0, fbru_e15_psi: m.fbru_e15_ksi * 1000.0, alpha: m.alpha_u_f * 1e-6, elong: m.extra.map_or(0.0, |x| x.elong.l.max(x.elong.lt)) / 100.0, failure: ::mechanics_core::fracture::failure_strain(m.id).filter(|f| f.basis != Basis::NotApplicable).map(|f| (f.value, basis_label(f.basis))) }
+        Self { name: m.name.to_string(), e_psi: m.e_ksi * 1000.0, nu: m.nu, ftu_psi: m.ftu_ksi * 1000.0, fty_psi: m.sy_ksi * 1000.0, fsu_psi: m.fsu_ksi * 1000.0, fbru_psi: m.fbru_ksi * 1000.0, fbru_e15_psi: m.fbru_e15_ksi * 1000.0, fbry_psi: m.extra.map_or(0.0, |x| x.fbry_e20_ksi * 1000.0), aluminium: m.extra.map_or_else(|| m.id.starts_with("al"), |x| x.group.starts_with("Aluminum")), alpha: m.alpha_u_f * 1e-6, elong: m.extra.map_or(0.0, |x| x.elong.l.max(x.elong.lt)) / 100.0, failure: ::mechanics_core::fracture::failure_strain(m.id).filter(|f| f.basis != Basis::NotApplicable).map(|f| (f.value, basis_label(f.basis))) }
     }
 }
 
@@ -1244,6 +1249,14 @@ pub fn run(input: &LugInput, cache: Option<CachedModel>) -> (Result<LugRun, Stri
 }
 
 /// Margins against the material allowables and the cautions a reader needs.
+/// The Air Force method's allowable for the lug at the load angle; `None` when the method has no answer (no strengths,
+/// a hole as wide as the lug). A bushing does not change it: the charts are for the lug's own hole.
+pub fn handbook_allowable(input: &LugInput) -> Option<affdl::AffdlResult> {
+    let (g, m) = (&input.geometry, &input.material);
+    let mat = LugMaterial { ftu: m.ftu_psi, fty: m.fty_psi, e: m.e_psi, elongation: m.elong, aluminium: m.aluminium, fbru20: m.fbru_psi, fbry20: m.fbry_psi };
+    affdl::lug_allowable(&mat, &LugDims { hole: g.hole_dia, thickness: g.thickness, width: g.width, edge: g.edge }, input.case.angle_deg, Grain::None)
+}
+
 pub fn evaluate(input: &LugInput, s: &LugSolution, limit: Option<&LimitLoad>) -> (Vec<Check>, Vec<String>) {
     evaluate_with(input, s, limit, None, None, input.solver)
 }
@@ -1284,6 +1297,22 @@ pub fn evaluate_with(input: &LugInput, s: &LugSolution, limit: Option<&LimitLoad
     } else {
         Check { name: "Net section", detail: "no axial load".into(), margin: None, status: Status::Info }
     });
+
+    // Handbook cross-check: the Air Force (Melcon-Hoblit) allowable at the load angle, from the digitized charts.
+    if let Some(h) = handbook_allowable(input) {
+        let mode = if h.mode == AxialMode::Bearing { "bearing" } else { "net section" };
+        let ms = (p > 0.0).then(|| h.p_oblique / p - 1.0);
+        let mut detail = format!(
+            "{:.0} lbf at {:.0} deg: axial {:.0} ({mode}; Kbr {:.2} Fig {}, Kn {:.2}), transverse {:.0} (Ktru {:.2} at h_av/D {:.2})",
+            h.p_oblique, input.case.angle_deg, h.p_axial, h.kbr, h.bearing_figure, h.kn, h.p_transverse, h.ktru, h.hav_over_d
+        );
+        if let Some(l) = limit.filter(|l| h.p_oblique > 0.0 && l.limit_load_lbf > 0.0) {
+            detail.push_str(&format!("; FE collapse is {:.0} % of it", 100.0 * l.limit_load_lbf / h.p_oblique));
+        }
+        checks.push(Check { name: "Handbook cross-check", detail, margin: ms, status: match ms { Some(v) if v < 0.0 => Status::Warn, Some(_) => Status::Pass, None => Status::Info } });
+        notes.extend(h.notes.iter().map(|n| format!("Handbook cross-check: {n}.")));
+        notes.push("Handbook cross-check (AFFDL-TR-69-42 Section 9 / Bruhn D1, digitized charts, about 1-2 % read-off): an empirical allowable that ignores the bushing fit, friction and pin stiffness and applies no grain-direction cutoff. A disagreement with the FE is a prompt to check inputs, not a failure.".into());
+    }
 
     // Elastic stress indicators from the FE.
     checks.push(if m.fty_psi > 0.0 && s.peak_von_mises > 0.0 {
@@ -1568,7 +1597,7 @@ mod tests {
         let r = res.unwrap();
         assert!(cache.is_some() && !r.reused_model);
         let names: Vec<_> = r.checks.iter().map(|c| c.name).collect();
-        assert_eq!(names, ["Bearing", "Net section", "First yield", "Peak hoop vs Ftu", "Ultimate (plastic)", "Solution check"]);
+        assert_eq!(names, ["Bearing", "Net section", "Handbook cross-check", "First yield", "Peak hoop vs Ftu", "Ultimate (plastic)", "Solution check"]);
         assert!(r.solution.peak_hoop > 0.0 && r.solution.kt_net > 1.0, "Kt {}", r.solution.kt_net);
         let text = report_text(&r);
         assert!(text.contains("Lug Analysis") && text.contains("Checks") && text.contains("Bearing"), "{text}");
@@ -1763,7 +1792,7 @@ mod tests {
 
     #[test]
     fn the_flow_rules_order_the_collapse_load_and_follow_their_rows() {
-        let m = MaterialLimits { name: "t".into(), e_psi: 1e7, nu: 0.33, ftu_psi: 77_000.0, fty_psi: 70_000.0, fsu_psi: 48_000.0, fbru_psi: 0.0, fbru_e15_psi: 0.0, alpha: 12.8e-6, elong: 0.0, failure: None };
+        let m = MaterialLimits { name: "t".into(), e_psi: 1e7, nu: 0.33, ftu_psi: 77_000.0, fty_psi: 70_000.0, fsu_psi: 48_000.0, fbru_psi: 0.0, fbru_e15_psi: 0.0, fbry_psi: 0.0, aluminium: true, alpha: 12.8e-6, elong: 0.0, failure: None };
         assert_eq!(m.flow_for(FlowRule::Mean, 0.1), m.flow_stress());
         assert_eq!(m.flow_for(FlowRule::Ultimate, 0.1), 77_000.0);
         assert!((m.flow_for(FlowRule::TrueUltimate, 0.10) - 84_700.0).abs() < 1e-6);
@@ -1840,7 +1869,7 @@ mod tests {
 
     #[test]
     fn the_flow_stress_is_the_validated_edge_check_rule() {
-        let m = MaterialLimits { name: "t".into(), e_psi: 1e7, nu: 0.33, ftu_psi: 77_000.0, fty_psi: 70_000.0, fsu_psi: 48_000.0, fbru_psi: 0.0, fbru_e15_psi: 0.0, alpha: 12.8e-6, elong: 0.0, failure: None };
+        let m = MaterialLimits { name: "t".into(), e_psi: 1e7, nu: 0.33, ftu_psi: 77_000.0, fty_psi: 70_000.0, fsu_psi: 48_000.0, fbru_psi: 0.0, fbru_e15_psi: 0.0, fbry_psi: 0.0, aluminium: true, alpha: 12.8e-6, elong: 0.0, failure: None };
         assert!((m.flow_stress() - 73_500.0).abs() < 1e-6, "(Ftu + Fty)/2");
         let capped = MaterialLimits { fsu_psi: 30_000.0, ..m.clone() };
         assert!((capped.flow_stress() - 3f64.sqrt() * 30_000.0).abs() < 1e-6 || capped.flow_stress() >= 70_000.0, "capped by sqrt(3) Fsu but never below yield");
@@ -1923,6 +1952,32 @@ mod tests {
         let c = r.checks.iter().find(|c| c.name == "Net section").unwrap();
         assert_eq!(c.status, Status::Info);
         assert!(r.notes.iter().any(|n| n.contains("clamped")), "{:?}", r.notes);
+    }
+
+    #[test]
+    fn the_handbook_cross_check_matches_the_solver_module_and_follows_the_load() {
+        let i = input();
+        let h = handbook_allowable(&i).expect("the default lug has a handbook allowable");
+        let r = run(&i, None).0.unwrap();
+        let c = r.checks.iter().find(|c| c.name == "Handbook cross-check").unwrap();
+        let ms = h.p_oblique / i.case.load_lbf - 1.0;
+        assert!((c.margin.unwrap() - ms).abs() < 1e-12, "{:?} vs {ms}", c.margin);
+        assert_eq!(c.status, if ms >= 0.0 { Status::Pass } else { Status::Warn });
+        assert!(c.detail.contains("FE collapse is"), "the FE ultimate is compared: {}", c.detail);
+        // A transverse load reads the transverse allowable, a heavier load lowers the margin, no load has no margin.
+        let mut t = i.clone();
+        t.case.angle_deg = 90.0;
+        let ht = handbook_allowable(&t).unwrap();
+        assert!((ht.p_oblique - ht.p_transverse).abs() < 1e-6 * ht.p_transverse);
+        let mut none = i.clone();
+        none.case.load_lbf = 0.0;
+        let (checks, _) = evaluate(&none, &r.solution, None);
+        let c0 = checks.iter().find(|c| c.name == "Handbook cross-check").unwrap();
+        assert!(c0.margin.is_none() && c0.status == Status::Info);
+        // A lug with no usable width has no handbook answer, and no row.
+        let mut bad = i.clone();
+        bad.geometry.width = bad.geometry.hole_dia;
+        assert!(handbook_allowable(&bad).is_none());
     }
 
     #[test]
