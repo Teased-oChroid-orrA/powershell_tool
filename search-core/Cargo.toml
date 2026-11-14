@@ -139,6 +139,10 @@ semantic-search = ["neural-search"]
 nl-find = ["semantic-search"]
 
 [[example]]
+name = "pdf_citation_bench"
+required-features = ["semantic-search", "pdf-yolow"]
+
+[[example]]
 name = "retrieval_eval"
 required-features = ["semantic-search"]
 
