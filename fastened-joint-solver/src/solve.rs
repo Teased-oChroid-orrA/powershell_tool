@@ -16,6 +16,7 @@ use crate::bearing::{average_bearing_pressure, bearing_torque, BearingPressureMo
 use crate::compliance::{build_fastener_segments, fastener_axial_compliance, fastener_torsional_compliance, member_stack_compliance, FastenerSegment, MemberStack};
 use crate::quadrature::composite_simpson;
 use crate::root::{brent, RootError};
+use crate::fatigue::{FatigueInputs, FatigueResult};
 use crate::service::{apply_external_load, joint_load_fraction, slip_capacity, slip_margin, ServiceLoadState};
 use crate::stress::{axial_stress, principal_stresses, torsional_shear_stress, von_mises_stress, PrincipalStresses, StressState};
 use crate::thread::{thread_torque, ThreadGeometry};
@@ -215,6 +216,9 @@ pub struct JointInputs {
     /// (the length to derive an area, the strength to derive a margin).
     pub thread_engagement_length: Option<f64>,
     pub thread_shear_strength: Option<f64>,
+    /// Optional bolt fatigue screen (VDI 2230, `fatigue.rs`): the external load range, the load-introduction factor and the thread
+    /// rolling. `JointSolution.fatigue` is `None` without it (and for rolled-after-heat-treatment threads without `yield_strength`).
+    pub fatigue: Option<FatigueInputs>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -352,6 +356,8 @@ pub struct JointSolution {
     /// `None` unless both `JointInputs.thread_engagement_length` and
     /// `JointInputs.thread_shear_strength` are supplied (spec section 35).
     pub thread_shear_margin: Option<f64>,
+    /// `None` unless `JointInputs.fatigue` is supplied (and complete).
+    pub fatigue: Option<FatigueResult>,
 }
 
 /// The bearing (inner, outer) radii of whichever component is actually
@@ -395,6 +401,9 @@ pub fn validate(inputs: &JointInputs) -> Result<(), ValidationError> {
     validation::validate_contact_annulus(inputs.geometry.bearing_inner_radius, inputs.geometry.bearing_outer_radius)?;
     validation::validate_fastener_segments(&inputs.fastener_segments)?;
     validation::validate_member_stack(&inputs.member_stack)?;
+    if let Some(f) = &inputs.fatigue {
+        crate::fatigue::check(f).map_err(validation::ValidationError::InvalidFatigueInput)?;
+    }
     Ok(())
 }
 
@@ -673,6 +682,10 @@ pub fn compute(inputs: &JointInputs) -> Result<JointSolution, ValidationError> {
         _ => None,
     };
 
+    let fatigue_result = inputs.fatigue.as_ref().and_then(|f| {
+        crate::fatigue::evaluate(f, preload, compliance.load_fraction, inputs.geometry.thread.tensile_stress_area(), inputs.geometry.thread.d, inputs.yield_strength)
+    });
+
     Ok(JointSolution {
         status,
         preload,
@@ -692,6 +705,7 @@ pub fn compute(inputs: &JointInputs) -> Result<JointSolution, ValidationError> {
         monte_carlo: monte_carlo_result,
         thread_load_distribution: thread_load_distribution_result,
         thread_shear_margin: thread_shear_margin_result,
+        fatigue: fatigue_result,
     })
 }
 
@@ -726,6 +740,7 @@ mod tests {
             embedment_settlement: None,
             thread_engagement_length: None,
             thread_shear_strength: None,
+            fatigue: None,
         }
     }
 
@@ -893,6 +908,27 @@ mod tests {
         inputs.thread_engagement_length = None;
         inputs.thread_shear_strength = Some(200.0);
         assert!(compute(&inputs).unwrap().thread_shear_margin.is_none(), "strength alone must not be enough");
+    }
+
+    #[test]
+    fn fatigue_is_none_by_default_and_follows_the_solved_preload_and_load_fraction_when_asked() {
+        use crate::fatigue::{FatigueInputs, ThreadRolling};
+        let mut inputs = base_inputs(AnalysisMode::TorqueControlled { applied_torque: 40_000.0 });
+        assert!(compute(&inputs).unwrap().fatigue.is_none());
+        inputs.fatigue = Some(FatigueInputs { force_min: 0.0, force_max: 100.0, load_introduction_factor: 0.5, thread_rolling: ThreadRolling::BeforeHeatTreatment });
+        let s = compute(&inputs).unwrap();
+        let f = s.fatigue.expect("fatigue result");
+        let area = inputs.geometry.thread.tensile_stress_area();
+        let expected = 0.5 * s.compliance.load_fraction * 100.0 / (2.0 * area);
+        assert!((f.alternating_stress - expected).abs() < 1e-9 * expected.max(1.0), "{} vs {expected}", f.alternating_stress);
+        assert!((f.mean_stress - (s.preload + 0.5 * s.compliance.load_fraction * 50.0) / area).abs() < 1e-6);
+        // Rolled after heat treatment needs a yield strength, and the input is validated.
+        inputs.fatigue = Some(FatigueInputs { thread_rolling: ThreadRolling::AfterHeatTreatment, ..inputs.fatigue.unwrap() });
+        assert!(compute(&inputs).unwrap().fatigue.is_none());
+        inputs.yield_strength = Some(1.0e5);
+        assert!(compute(&inputs).unwrap().fatigue.is_some());
+        inputs.fatigue = Some(FatigueInputs { load_introduction_factor: 2.0, ..inputs.fatigue.unwrap() });
+        assert!(matches!(compute(&inputs), Err(ValidationError::InvalidFatigueInput(_))));
     }
 
     #[test]
