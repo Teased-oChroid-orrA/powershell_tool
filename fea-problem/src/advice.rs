@@ -137,8 +137,8 @@ pub fn add_boundary(p: &mut Problem, surface: &str, kind: BcKind) -> Result<(), 
         BcKind::Pressure => p.loads.push(Load::Pressure { edge: surface.to_string(), p: 1000.0 }),
         BcKind::Bearing => {
             let n: usize = surface.strip_prefix("hole").and_then(|d| d.parse().ok()).ok_or("a bearing load acts on a hole")?;
-            if !matches!(p.analysis, Analysis::PlaneStress | Analysis::PlaneStrain) {
-                return Err("a bearing load is for plane problems".into());
+            if p.analysis == Analysis::Axisymmetric {
+                return Err("a bearing load is for plane problems and extruded sketches".into());
             }
             p.loads.push(Load::Bearing { hole: n, fx: 1000.0, fy: 0.0 });
         }

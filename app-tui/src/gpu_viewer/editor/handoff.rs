@@ -157,7 +157,11 @@ fn shared(p: &Problem) -> Result<Shared, String> {
         friction: b.friction,
         housing_material: p.material.name.clone(),
         bushing_material: b.material.name.clone(),
-        thickness: p.thickness,
+        // A 3D solid is as long as the sketch is deep.
+        thickness: match (&p.geometry, p.analysis) {
+            (Geometry::Sketch { depth, .. }, fea_problem::Analysis::Solid) => *depth,
+            _ => p.thickness,
+        },
         load: fx.hypot(fy),
         load_dir: fy.atan2(fx).to_degrees(),
         offset: b.offset,

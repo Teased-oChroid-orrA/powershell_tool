@@ -862,8 +862,10 @@ impl Problem {
             return Ok(());
         }
         let Geometry::Sketch { holes, .. } = &self.geometry else { return Err("a bushing needs a sketch hole (not an imported mesh)".into()) };
-        if !matches!(self.analysis, Analysis::PlaneStress | Analysis::PlaneStrain) {
-            return Err("bushings are for plane stress and plane strain analyses".into());
+        // A 3D solid is the plane profile extruded, bushing annuli included: a swept or revolved body has no straight bore.
+        let straight = self.history.as_ref().map_or(true, |h| h.rebuild().is_ok_and(|b| !matches!(b.body, crate::history::Body::Revolve { .. } | crate::history::Body::Sweep { .. })));
+        if !(matches!(self.analysis, Analysis::PlaneStress | Analysis::PlaneStrain) || (self.analysis == Analysis::Solid && straight)) {
+            return Err("bushings are for plane stress, plane strain and (extruded) 3D solid analyses".into());
         }
         for (i, b) in self.bushings.iter().enumerate() {
             let n = i + 1;

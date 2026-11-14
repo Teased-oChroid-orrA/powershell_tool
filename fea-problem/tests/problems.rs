@@ -287,8 +287,11 @@ fn a_bushing_must_sit_in_a_circular_hole_with_a_wall_and_an_interference() {
     p.bushings[0].hole = 3;
     assert!(p.validate().is_err());
     let mut p = template("Lug with an eccentric bushing");
-    p.analysis = Analysis::Solid;
+    // An extruded 3D solid takes a bushing (tests/bushing_solid.rs); an axisymmetric model has no bushing.
+    p.analysis = Analysis::Axisymmetric;
     assert!(p.validate().is_err());
+    p.analysis = Analysis::Solid;
+    p.validate().unwrap();
 }
 
 #[test]

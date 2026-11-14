@@ -287,7 +287,7 @@ pub fn add_bushings(p: &Problem, mesh: &mut Mesh, field: Option<&dyn Fn([f64; 2]
         let cap = wall.max(r / 25.0);
         let h = (p.mesh.size * p.mesh.hole_factor).min(cap);
         let size = |x: [f64; 2]| field.map_or(h, |sf| sf(x).min(cap));
-        let bm = mesh_region(&region, physics_of(p), p.mesh.element.kind(), &size, mesh_options())?;
+        let bm = mesh_region(&region, mesh.physics, p.mesh.element.kind(), &size, mesh_options())?;
         let plate = mesh.surfaces.get(&format!("hole{}", b.hole)).cloned().ok_or_else(|| format!("bushing {n}: the plate has no surface hole{}", b.hole))?;
         mesh.surfaces.insert(format!("plate_hole{}", b.hole), plate);
         mesh.append(&bm, &format!("b{n}/"))?;

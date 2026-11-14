@@ -444,8 +444,9 @@ pub fn build_loads(mesh: &mut Mesh, p: &Problem) -> Result<Loads, String> {
                 }
             }
             Load::Bearing { hole, fx, fy } => {
-                if d != 2 || p.analysis == Analysis::Axisymmetric {
-                    return Err("a bearing load is for plane problems".into());
+                // A plane problem, or a 3D solid that is the sketch extruded (the pressure does not vary along the bore).
+                if p.analysis == Analysis::Axisymmetric {
+                    return Err("a bearing load is for plane problems and extruded sketches".into());
                 }
                 let Geometry::Sketch { holes, .. } = &p.geometry else { return Err("a bearing load needs a sketch hole".into()) };
                 let shape = holes.get(hole.wrapping_sub(1)).ok_or_else(|| format!("bearing load: there is no hole {hole}"))?;
@@ -774,7 +775,7 @@ fn fit_setup(p: &Problem, mesh: &Mesh) -> Result<FitSetup, String> {
 fn fit_specs(p: &Problem, mesh: &Mesh, setup: &FitSetup) -> Vec<fea_core::contact::ContactSpec> {
     let mut v = Vec::new();
     for (b, (_, plate, od)) in p.bushings.iter().zip(&setup.hole_faces) {
-        let face = plate.iter().map(|f| f.iter().map(|&n| mesh.nodes[n]).fold(0.0f64, |m, x| m.max((x[0] - mesh.nodes[f[0]][0]).hypot(x[1] - mesh.nodes[f[0]][1])))).fold(0.0f64, f64::max);
+        let face = plate.iter().map(|f| f.iter().map(|&n| mesh.nodes[n]).fold(0.0f64, |m, x| m.max(((x[0] - mesh.nodes[f[0]][0]).powi(2) + (x[1] - mesh.nodes[f[0]][1]).powi(2) + (x[2] - mesh.nodes[f[0]][2]).powi(2)).sqrt()))).fold(0.0f64, f64::max);
         v.extend(interference_contacts(&format!("fit{}", b.hole), plate.clone(), od.clone(), setup.eps_n, b.friction, 0.5 * b.interference, 6.0 * face));
     }
     v
