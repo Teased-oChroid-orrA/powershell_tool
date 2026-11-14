@@ -20,9 +20,9 @@ fn main() {
         let (lines, truncated) = search_core::extraction::extract_pdf_lines(&bytes, timeout, Some(&mut progress), ocr);
         let dt = t.elapsed().as_secs_f64();
         let n = lines.as_ref().map_or(0, |l| l.len());
-        let chars: usize = lines.as_ref().map_or(0, |l| l.iter().map(|s| s.len()).sum());
+        let text_bytes: usize = lines.as_ref().map_or(0, |l| l.iter().map(|s| s.len()).sum());
         println!(
-            "{path}: {:.1} MB, {dt:.3}s, {n} lines, {chars} chars, truncated={truncated}, progress calls={calls}, first at {:.2}s, longest gap {:.2}s",
+            "{path}: {:.1} MB, {dt:.3}s, {n} lines, {text_bytes} UTF-8 bytes, truncated={truncated}, progress calls={calls}, first at {:.2}s, longest gap {:.2}s",
             bytes.len() as f64 / 1e6,
             first.map_or(0.0, |d| d.as_secs_f64()),
             longest_gap.as_secs_f64()

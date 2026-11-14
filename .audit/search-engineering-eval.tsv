@@ -1,0 +1,10 @@
+ts	phase	decision	why	evidence	result
+2026-11-14T04:23:23Z	data	kept public benchmark files outside git	avoid shipping source documents or generated indexes	docs/search-engineering-evaluation.md	AeroEngQA and ViDoRe staged under ../benchmarks
+2026-11-14T04:23:23Z	adapter	reused retrieval_eval BEIR input and SemanticIndex	one existing search path gives comparable measurements	scripts/prepare_aeroengqa.py; scripts/prepare_vidore_industrial.py	adapters deterministic; references valid
+2026-11-14T04:23:23Z	labels	preserved ViDoRe qrel grades 1 and 2	binary conversion would distort nDCG	scripts/prepare_vidore_industrial.py	4350 grade-1 and 1254 grade-2 judgments in six-language shard
+2026-11-14T04:23:23Z	language	made English the default ViDoRe set	bundled MiniLM is English-trained; translated copies hid the English result	docs/search-engineering-evaluation.md	149 English queries; hybrid nDCG@10 0.4023
+2026-11-14T04:23:23Z	triage	inspected three human-written text-only misses	check whether evidence is present before blaming extraction	docs/search-engineering-evaluation.md	judged Markdown contains answer-bearing text; none top ten
+2026-11-14T04:26:36Z	review	made adapter text I/O explicitly UTF-8	Windows locale encoding can reject source JSON	scripts/prepare_aeroengqa.py; scripts/prepare_vidore_industrial.py	actual source conversion passes
+2026-11-14T04:26:36Z	review	added focused adapter check and reproduction commands	prove grade, language and missing-page filtering; make cited slices repeatable	scripts/test_prepare_vidore_industrial.py; docs/search-engineering-evaluation.md	unittest passes
+2026-11-14T04:28:36Z	review	corrected PDF benchmark output unit	String::len counts UTF-8 bytes, not characters	search-core/examples/pdf_extract_bench.rs:23	search-core tests running
+2026-11-14T04:33:50Z	verify	ran search-core tests and PDF example in isolated target	ensure corrected benchmark label and crate behavior survive	cargo test -p search-core; cargo run -p search-core --example pdf_extract_bench	272 passed, 8 ignored; 14838 UTF-8 bytes printed
