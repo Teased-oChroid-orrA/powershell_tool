@@ -771,12 +771,20 @@ fn fit_setup(p: &Problem, mesh: &Mesh) -> Result<FitSetup, String> {
     Ok(FitSetup { hole_faces, ground, tune, eps_n })
 }
 
+/// Contact margin of a fit, in faces of the bore's in-plane size: the 2D value, and the smaller 3D one (a solid's matrix pattern grows
+/// with the faces within the margin; measured on the 3D bushing, 6 faces -> 2 cut the factorisation 15 -> 10 s of a 40 -> 29 s solve).
+/// A point that slides past it fails the step, which the kernel reruns with doubled margins (`MarginWidened`).
+const FIT_MARGIN_FACES_2D: f64 = 6.0;
+const FIT_MARGIN_FACES_3D: f64 = 2.0;
 /// The contact interfaces of the fits on `mesh`.
+/// The contact margin is 6 faces of the bore's in-plane size (x, y only): a 3D bore is an extruded profile, its faces are as tall as a
+/// layer, and a margin counted from that height couples every face of the interface to every other (measured on the 3D bushing:
+/// ~110 candidate faces per slave point, a factor several times larger, 3x the solve time).
 fn fit_specs(p: &Problem, mesh: &Mesh, setup: &FitSetup) -> Vec<fea_core::contact::ContactSpec> {
     let mut v = Vec::new();
     for (b, (_, plate, od)) in p.bushings.iter().zip(&setup.hole_faces) {
-        let face = plate.iter().map(|f| f.iter().map(|&n| mesh.nodes[n]).fold(0.0f64, |m, x| m.max(((x[0] - mesh.nodes[f[0]][0]).powi(2) + (x[1] - mesh.nodes[f[0]][1]).powi(2) + (x[2] - mesh.nodes[f[0]][2]).powi(2)).sqrt()))).fold(0.0f64, f64::max);
-        v.extend(interference_contacts(&format!("fit{}", b.hole), plate.clone(), od.clone(), setup.eps_n, b.friction, 0.5 * b.interference, 6.0 * face));
+        let face = plate.iter().map(|f| f.iter().map(|&n| mesh.nodes[n]).fold(0.0f64, |m, x| m.max((x[0] - mesh.nodes[f[0]][0]).hypot(x[1] - mesh.nodes[f[0]][1])))).fold(0.0f64, f64::max);
+        v.extend(interference_contacts(&format!("fit{}", b.hole), plate.clone(), od.clone(), setup.eps_n, b.friction, 0.5 * b.interference, (if mesh.dim() == 3 { FIT_MARGIN_FACES_3D } else { FIT_MARGIN_FACES_2D }) * face));
     }
     v
 }

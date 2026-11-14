@@ -530,10 +530,10 @@ impl BushingSession {
             rows,
             options: vec![
                 DialogOption { label: "Plane stress, 2D with fit contact".into(), detail: "About 4 s to solve.".into(), on: !self.send_solid, enabled: true, action: Some(act(BushingAct::SendSolid(false))) },
-                DialogOption { label: "3D solid".into(), detail: "The housing extruded over its length, hex elements: about 1-3 minutes to solve.".into(), on: self.send_solid, enabled: true, action: Some(act(BushingAct::SendSolid(true))) },
+                DialogOption { label: "3D solid".into(), detail: "The housing extruded over its length, hex elements: about 30-60 seconds to solve.".into(), on: self.send_solid, enabled: true, action: Some(act(BushingAct::SendSolid(true))) },
                 DialogOption { label: "Keep linked".into(), detail: "Always on: Send back from the FEA Workbench updates this case.".into(), on: true, enabled: false, action: None },
             ],
-            note: if self.send_solid { "Solve time for the 3D solid is 1-3 minutes; the FE solve is run by hand in the FEA Workbench.".into() } else { "Solve time for this joint is about 4 s.".into() },
+            note: if self.send_solid { "Solve time for the 3D solid is about a minute; the FE solve is run by hand in the FEA Workbench.".into() } else { "Solve time for this joint is about 4 s.".into() },
             cancel: entry("Cancel", "Esc", BushingAct::CloseDialog),
             confirm: entry("Send and open FEA Workbench", "", BushingAct::ConfirmSend).when(self.send_availability()),
         }

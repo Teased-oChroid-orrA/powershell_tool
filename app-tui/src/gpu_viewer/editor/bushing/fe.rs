@@ -73,7 +73,7 @@ pub fn housing_problem(model: &BushingModel) -> Result<Problem, String> {
 
 /// The joint as a 3D solid: the housing profile extruded over its length, the bushing a hex20 annulus in the bore. The profile
 /// mesh is coarse (half the plate, fine at the bore): measured on a 2 in plate the mean fit pressure moves 0.1 % between that
-/// and a mesh 1.5x finer, and the solve stays near 1-3 minutes (a plane model solves in 4 s) - so it is sent, never run live.
+/// and a mesh 1.5x finer, and the solve stays near 30-60 s (a plane model solves in 4 s) - so it is sent, never run live.
 pub fn solid_problem(model: &BushingModel) -> Result<Problem, String> {
     let l = layout(model)?;
     let mut p = housing_problem(model)?;
