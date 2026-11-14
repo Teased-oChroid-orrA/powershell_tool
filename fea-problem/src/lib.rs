@@ -9,6 +9,7 @@ pub mod facts;
 pub mod dynamics;
 pub mod history;
 pub mod joint;
+pub mod member_checks;
 pub mod members;
 pub mod native_solid;
 pub mod mesh_store;
