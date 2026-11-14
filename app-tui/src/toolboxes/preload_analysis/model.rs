@@ -780,6 +780,8 @@ impl PreloadModel {
             embedment_settlement: (self.embedment_settlement > 0.0).then_some(self.embedment_settlement),
             thread_engagement_length: (self.thread_engagement_length > 0.0).then_some(self.thread_engagement_length),
             thread_shear_strength: (self.thread_shear_strength > 0.0).then_some(self.thread_shear_strength),
+            // The fatigue screen has no window inputs yet (its layout awaits approval).
+            fatigue: None,
         }
     }
 

@@ -3,7 +3,7 @@
 > TL;DR: Zero-UI solver crate for threaded-fastener installation/preload mechanics. Consumed only by `app-tui`'s Preload Analysis toolbox (`toolboxes/preload_analysis/model.rs` bridges it into UI state). Entry point is `solve::compute(&JointInputs) -> Result<JointSolution, ValidationError>`.
 
 ## Purpose
-Owns: V-thread torque equation, uniform-pressure/uniform-wear bearing friction, Brent-root-solved torque-preload equilibrium, fastener/member compliance (VDI 2230 segments + numerically integrated Rotscher pressure-cone), nut rotation, stress state, service-load/separation/slip checks, uncertainty engines, thread load distribution, thread shear, and the fastener thread catalog.
+Owns: V-thread torque equation, uniform-pressure/uniform-wear bearing friction, Brent-root-solved torque-preload equilibrium, fastener/member compliance (VDI 2230 segments + numerically integrated Rotscher pressure-cone), nut rotation, stress state, service-load/separation/slip checks, uncertainty engines, thread load distribution, thread shear, the VDI 2230 bolt fatigue screen (`src/fatigue.rs`, `Option`-gated `JointInputs.fatigue`) and the fastener thread catalog.
 Does not own: any UI, unit selection, or material database (`mechanics-core`).
 
 ## Code Map
@@ -15,6 +15,7 @@ Does not own: any UI, unit selection, or material database (`mechanics-core`).
 | Gauss-Legendre quadrature (cross-check of friction integrals) | `src/quadrature.rs` |
 | Compliance (fastener + Rotscher members) | `src/compliance.rs` |
 | Stress state / service load / thread shear | `src/stress.rs`, `src/service.rs`, `src/thread_shear.rs` |
+| Bolt fatigue (VDI 2230 alternating stress vs endurance amplitude) | `src/fatigue.rs` |
 | Worst-case corner search + seeded Monte Carlo | `src/uncertainty.rs` |
 | Per-thread spring-coupled load distribution | `src/thread_load_distribution.rs` |
 | AN/NAS/MS21250/Hi-Lok thread catalogs | `src/thread_catalog.rs` |
@@ -38,6 +39,8 @@ Does not own: any UI, unit selection, or material database (`mechanics-core`).
 - Only deliberate model cut: locking-feature prevailing torque as a function of rotation (`FrictionInputs::prevailing_torque` is a constant baseline). Full record in `src/lib.rs` doc comment.
 - Thread shear uses the FED-STD-H28 same-material simplified area; no thread-class tolerance data exists here for the external/internal-distinct form.
 - Friction integrals are cross-checked against quadrature; thread load distribution against the continuum sinh solution (differential tests). Keep those tests when touching either.
+
+- Fatigue (`fatigue.rs`): formulas `sigma_ASV = 0.85 (150/d + 45)` MPa (rolled before heat treatment) and `sigma_ASG = (2 - F_Sm/F_0.2min) sigma_ASV` come from the FVA knowledge base page and a TU Magdeburg paper (cited in the module), **not the standard itself**: check the VDI 2230 edition before relying on it. Elastic single bolt: no thermal load, settlement or eccentric clamping. `n` (load introduction) is an input, 0.5 only a mid-range assumption. The app window has no inputs for it yet (`model.rs` passes `fatigue: None`; layout awaits approval, `docs/workbench-redesign/preload.html`).
 
 ## Boundaries
 ### Always

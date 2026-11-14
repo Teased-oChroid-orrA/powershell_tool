@@ -79,6 +79,7 @@
 
 pub mod bearing;
 pub mod compliance;
+pub mod fatigue;
 pub mod quadrature;
 pub mod root;
 pub mod service;

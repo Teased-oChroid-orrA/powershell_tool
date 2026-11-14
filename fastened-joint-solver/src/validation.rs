@@ -17,6 +17,7 @@ pub enum ValidationError {
     ZeroContactArea,
     NegativeFastenerSegmentLength,
     EmptyMemberStack,
+    InvalidFatigueInput(&'static str),
 }
 
 pub fn validate_thread(thread: &ThreadGeometry) -> Result<(), ValidationError> {
