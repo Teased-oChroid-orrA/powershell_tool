@@ -10,6 +10,7 @@ mod cards;
 pub mod drawing;
 pub mod fe;
 pub mod file;
+mod library;
 mod picker;
 pub mod sketch;
 
@@ -51,6 +52,9 @@ pub enum BushingAct {
     /// Leave the picker for typing the number.
     TypeValue(NumberTarget),
     ClosePicker,
+    /// Open the library card behind the open picker; an action of the library card.
+    ManageLibrary,
+    Manage(library::ManageAct),
     /// Run the edge-distance cross-check (`.0`: with the contact FE).
     EdgeCheck(bool),
     EdgeCv(Option<&'static str>),
@@ -105,6 +109,10 @@ pub struct BushingSession {
     redo: Vec<BushingFile>,
     prompt: Option<Prompt>,
     picker: Option<picker::Picker>,
+    /// The library card (and the picker it came from, reopened when it closes).
+    manager: Option<(picker::Kind, Box<dyn library::Manage>)>,
+    /// Where the libraries are read and written; `None` is the app's data folder (tests use a temporary one).
+    library_dir: Option<PathBuf>,
     status: String,
     /// Why there is no FE picture (the inputs describe no bushing in a housing yet).
     fe_note: Option<String>,
@@ -160,6 +168,8 @@ impl BushingSession {
             redo: Vec::new(),
             prompt: None,
             picker: None,
+            manager: None,
+            library_dir: None,
             status,
             fe_note: None,
             fe_key: None,
@@ -483,6 +493,8 @@ impl BushingSession {
             BushingAct::PickFriction(i) => self.pick_friction(i),
             BushingAct::TypeValue(t) => self.begin_prompt(FieldRow::Number(t), model::format_for_edit(self.st.model.number_value(t))),
             BushingAct::ClosePicker => self.picker = None,
+            BushingAct::ManageLibrary => self.open_manager(),
+            BushingAct::Manage(a) => self.manage(a),
             BushingAct::EdgeCheck(deep) => self.start_edge_check(deep),
             BushingAct::EdgeCv(id) => {
                 if let Some((_, _, cv)) = self.st.edge_settings.rows(&self.st.model).into_iter().find(|(row, _, _)| *row == id) {
@@ -580,6 +592,12 @@ impl Authoring for BushingSession {
                 }
                 Key::Char(c) => self.prompt_char(c),
                 _ => {}
+            }
+            return KeyResult::Handled;
+        }
+        if self.manager.is_some() {
+            if key == Key::Escape {
+                self.manage(library::ManageAct::Back);
             }
             return KeyResult::Handled;
         }
@@ -726,10 +744,16 @@ impl Authoring for BushingSession {
         }
     }
     fn value_card(&self) -> Option<ValueCard> {
-        self.picker_card()
+        match &self.manager {
+            Some((_, m)) => Some(m.card()),
+            None => self.picker_card(),
+        }
     }
     fn card_field(&mut self, index: usize, text: String) {
-        self.picker_field(index, text);
+        match &mut self.manager {
+            Some((_, m)) => m.field(index, text),
+            None => self.picker_field(index, text),
+        }
     }
     // Three fixed panes instead of the tree, ribbon and inspector.
     fn tree(&self) -> Vec<TreeNode> {

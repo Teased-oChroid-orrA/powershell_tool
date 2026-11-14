@@ -6,6 +6,7 @@
 //! as an FEA problem (`fe`); after it, the solved model of the analysis itself (`vtu`): the housing, bushing and pin with
 //! their stresses.
 mod cards;
+mod case_picker;
 pub mod fe;
 pub mod file;
 pub mod vtu;
@@ -22,7 +23,7 @@ use crate::app::Effect;
 use crate::gpu_viewer::{
     bench::Bench,
     menu::{Item, Menu},
-    ui::{DockItem, RibbonTab, TreeNode},
+    ui::{DockItem, RibbonTab, TreeNode, ValueCard},
     Scene,
 };
 use crate::toolboxes::bushing::model::BushingModel;
@@ -46,6 +47,11 @@ pub enum EccentricAct {
     AcceptBracket,
     ReloadBushing,
     OpenBushing,
+    /// The Bushing case picker: open it, use its `i`th listed file or the typed path, close it.
+    PickCase,
+    UseCase(usize),
+    UseTypedCase,
+    ClosePicker,
     /// Open the case in the FEA workbench (saved first); it comes back through the FEA workbench's Send.
     OpenInFea,
     ToggleProfile,
@@ -66,12 +72,23 @@ struct Prompt {
 
 type Answer = Result<Output, String>;
 
+/// When a case file was last saved, as a short note for the picker and the provenance line.
+fn case_age(path: &Path) -> String {
+    match handoff::stamp(path) {
+        Some(t) => format!("saved {}", chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M")),
+        None => "not found".into(),
+    }
+}
+
 pub struct EccentricSession {
     st: EccentricState,
     bushing: BushingModel,
     /// Where the bushing inputs came from, or why the defaults are in use.
     bushing_note: String,
     bushing_case: String,
+    /// The Bushing defaults stand: no case could be read.
+    bushing_default: bool,
+    case_picker: Option<case_picker::CasePicker>,
     fea: SolidSession,
     path: PathBuf,
     name: String,
@@ -131,6 +148,8 @@ impl EccentricSession {
             bushing: BushingModel::default(),
             bushing_note: String::new(),
             bushing_case: file.bushing_case.clone(),
+            bushing_default: true,
+            case_picker: None,
             fea,
             name: if file.name.is_empty() { path.file_stem().and_then(|n| n.to_str()).unwrap_or("Eccentric bushing").to_string() } else { file.name.clone() },
             path,
@@ -197,9 +216,11 @@ impl EccentricSession {
     fn reload_bushing(&mut self) {
         let path = self.case_path();
         let mut model = BushingModel::default();
+        self.bushing_default = true;
         self.bushing_note = match std::fs::read_to_string(&path) {
             Ok(text) => match BushingFile::from_json(&text) {
                 Ok(f) => {
+                    self.bushing_default = false;
                     let skipped = f.apply(&mut model);
                     if skipped.is_empty() { format!("from {}", path.display()) } else { format!("from {} (not applied: {})", path.display(), skipped.join("; ")) }
                 }
@@ -468,6 +489,10 @@ impl EccentricSession {
             EccentricAct::AcceptBracket => self.st.accept_bracket(),
             EccentricAct::ReloadBushing => self.reload_bushing(),
             EccentricAct::OpenBushing => self.open_bushing(),
+            EccentricAct::PickCase => self.open_case_picker(),
+            EccentricAct::UseCase(i) => self.use_listed_case(i),
+            EccentricAct::UseTypedCase => self.use_typed_case(),
+            EccentricAct::ClosePicker => self.case_picker = None,
             EccentricAct::OpenInFea => self.open_in_fea(),
             EccentricAct::ToggleProfile => self.st.show_profile = !self.st.show_profile,
             EccentricAct::ToggleResult => {
@@ -521,6 +546,12 @@ impl Authoring for EccentricSession {
         }
     }
     fn key(&mut self, key: Key, mods: Mods) -> KeyResult {
+        if self.case_picker.is_some() {
+            if key == Key::Escape {
+                self.case_picker = None;
+            }
+            return KeyResult::Handled;
+        }
         if self.prompt.is_some() {
             match key {
                 Key::Escape => self.prompt = None,
@@ -617,6 +648,12 @@ impl Authoring for EccentricSession {
     }
     fn prompting(&self) -> bool {
         self.prompt.is_some()
+    }
+    fn value_card(&self) -> Option<ValueCard> {
+        self.case_picker_card()
+    }
+    fn card_field(&mut self, index: usize, text: String) {
+        self.case_picker_field(index, text);
     }
     fn solving(&self) -> bool {
         self.st.job.is_some()

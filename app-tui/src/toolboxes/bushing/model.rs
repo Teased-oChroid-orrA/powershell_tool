@@ -735,12 +735,22 @@ impl Default for BushingModel {
     }
 }
 
-#[cfg(not(test))]
 fn catalog_size_from(r: &super::reamer_persistence::PersistedReamer) -> CatalogSize {
     CatalogSize { label: r.size_label.clone(), nominal: r.nominal_in, tol_plus: r.tool_tolerance_plus_in, tol_minus: r.tool_tolerance_minus_in, source: "saved", common: false }
 }
 
 impl BushingModel {
+    /// Replace the user's materials after a library edit. Positions are kept (an edit is in place, an add appends);
+    /// the caller shifts the material indices when it deletes one.
+    pub fn set_custom_materials(&mut self, items: &[crate::library::LibraryItem<super::material_persistence::PersistedMaterial>]) {
+        self.custom_materials = items.iter().map(|li| leak_custom_material(li.item.clone())).collect();
+    }
+
+    /// Replace the user's reamer sizes after a library edit.
+    pub fn set_user_reamers(&mut self, items: &[crate::library::LibraryItem<super::reamer_persistence::PersistedReamer>]) {
+        self.user_reamers = items.iter().map(|li| catalog_size_from(&li.item)).collect();
+    }
+
     /// Every real tool size a fix may snap to: the aircraft reamer catalog,
     /// the standard drill bit catalog and the user's own library, ascending,
     /// one entry per distinct nominal. On a tie a reamer wins, then a drill

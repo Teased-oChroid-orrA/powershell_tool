@@ -14,6 +14,7 @@ Does not own: any mechanics (`eccentric-bushing/AGENTS.md`), the Bushing inputs 
 | Inputs -> picture before an analysis (boss or plate, offset bore, bushing, pin load arrow) | `fe.rs` |
 | The solver's `.vtu` text -> mesh + von Mises, displacement magnitude, stress components | `vtu.rs` |
 | The case (`EccentricFile`: own inputs + path of the Bushing case) | `file.rs` |
+| Choosing the Bushing case (sibling files or a typed path; refuses non-Bushing JSON) | `case_picker.rs` |
 
 ## Contracts
 - **Analyse is the toolbox's `Task::Fields`**: one solve returns the `Analysis` and the fields (`analyze_fields` runs the same `analyze_core` as `analyze_with`), so the verdict and the picture are one run. The field file is written only when the export was asked for (`export_fields`).

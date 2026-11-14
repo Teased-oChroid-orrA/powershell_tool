@@ -142,6 +142,11 @@ impl<T: Clone> ConflictQueue<T> {
         self.cursor >= self.pending.len()
     }
 
+    /// Conflicts still awaiting a decision.
+    pub fn remaining(&self) -> usize {
+        self.pending.len().saturating_sub(self.cursor)
+    }
+
     /// The conflict currently awaiting a decision: `(existing_index,
     /// &incoming)`.
     pub fn current(&self) -> Option<(usize, &LibraryItem<T>)> {

@@ -89,7 +89,8 @@ impl EccentricSession {
         let b = &self.bushing;
         let o = &b.output;
         let items = vec![
-            line(plain(&self.bushing_note), Tone::Dim),
+            line(plain(&self.bushing_note), if self.bushing_default { Tone::Warn } else { Tone::Dim }),
+            field("Case file", format!("{} ({})", self.case_path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), super::case_age(&self.case_path())), if self.bushing_default { Tone::Warn } else { Tone::Normal }),
             field("Bore", format!("{:.4} in", o.bore_tol.nominal), Tone::Normal),
             field("Bushing ID", format!("{:.4} in", b.id_bushing), Tone::Normal),
             field("Interference (dia)", format!("{:.4} in", o.delta_total), Tone::Normal),
@@ -100,6 +101,7 @@ impl EccentricSession {
             field("Bushing", b.bushing_material().name, Tone::Normal),
             field("Edge distance", format!("{:.3} in", b.edge_dist), Tone::Normal),
             field("Minimum wall", format!("{:.4} in", b.min_wall_straight), Tone::Normal),
+            button("Choose the Bushing case", EccentricAct::PickCase),
             button("Reload the Bushing case", EccentricAct::ReloadBushing),
             button("Edit it in the Bushing workbench", EccentricAct::OpenBushing),
         ];
@@ -299,7 +301,7 @@ impl EccentricSession {
             RibbonTab::new("Inputs")
                 .group("Eccentricity", vec![row("Offset", FieldRow::Number(NumberTarget::Offset)), row("Load angle", FieldRow::Number(NumberTarget::LoadAngle))])
                 .group("Housing and pin", vec![row("Boss OD / bore", FieldRow::Number(NumberTarget::BossFactor)), row("Housing", FieldRow::ToggleHousing), row("Pin clearance", FieldRow::Number(NumberTarget::PinClearance)), row("Pin friction", FieldRow::Number(NumberTarget::PinFriction))])
-                .group("Bushing case", vec![entry("Reload", "", EccentricAct::ReloadBushing), entry("Edit in the Bushing workbench", "", EccentricAct::OpenBushing)])
+                .group("Bushing case", vec![entry("Choose case", "", EccentricAct::PickCase), entry("Reload", "", EccentricAct::ReloadBushing), entry("Edit in the Bushing workbench", "", EccentricAct::OpenBushing)])
                 .group("FEA workbench", vec![entry("Edit in the FEA workbench", "", EccentricAct::OpenInFea).when(model::build_input(&self.bushing, &self.st.ui).map(|_| ()))])
                 .group("Edit", vec![entry("Undo", "Ctrl/Cmd+Z", EccentricAct::Undo).when(if self.undo.is_empty() { Err("nothing to undo".to_string()) } else { Ok(()) }), entry("Redo", "Ctrl/Cmd+Shift+Z", EccentricAct::Redo).when(if self.redo.is_empty() { Err("nothing to redo".to_string()) } else { Ok(()) }), entry("Save", "Ctrl/Cmd+S", EccentricAct::Save)]),
             RibbonTab::new("Analysis")
