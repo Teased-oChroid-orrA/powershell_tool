@@ -2438,7 +2438,7 @@ mod snapshot_tests {
         };
         session.act(EditorAction::Bushing(BushingAct::EdgeCheck(false)));
         wait(&mut session, &|s| s.model().recommendations.is_empty() || !s.status().starts_with("Edge check running"));
-        let shoot = |session: &mut BushingSession, name: &str, dark: bool, (w, h): (u32, u32)| {
+        let shoot = |session: &mut BushingSession, name: &str, dark: bool, (w, h): (u32, u32), drawer: Option<bool>| {
             pollster::block_on(async {
                 let adapter = test_adapter().await.expect("adapter required");
                 let scene = session.scene().unwrap();
@@ -2450,6 +2450,9 @@ mod snapshot_tests {
                 } else {
                     egui::Theme::Light
                 });
+                if let Some(results) = drawer {
+                    gui.open_drawer(results);
+                }
                 let view = ViewState::new(&scene);
                 let scenes = [scene];
                 let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&*session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
@@ -2458,18 +2461,21 @@ mod snapshot_tests {
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
             });
         };
-        shoot(&mut session, "bushing-workbench", true, (1360, 860));
+        shoot(&mut session, "bushing-workbench", true, (1360, 860), None);
         session.act(EditorAction::Bushing(BushingAct::Why));
         session.act(EditorAction::Bushing(BushingAct::AllFixes));
-        shoot(&mut session, "bushing-checks", true, (1360, 860));
-        shoot(&mut session, "bushing-checks-light", false, (1360, 860));
-        shoot(&mut session, "bushing-narrow", true, (980, 720));
+        shoot(&mut session, "bushing-checks", true, (1360, 860), None);
+        shoot(&mut session, "bushing-checks-light", false, (1360, 860), None);
+        shoot(&mut session, "bushing-narrow", true, (980, 720), None);
+        shoot(&mut session, "bushing-drawer-results", true, (980, 720), Some(true));
+        shoot(&mut session, "bushing-drawer-small", true, (600, 720), None);
+        shoot(&mut session, "bushing-drawer-inputs", true, (600, 720), Some(false));
         session.act(EditorAction::Bushing(BushingAct::SendDialog));
-        shoot(&mut session, "bushing-send", true, (1360, 860));
+        shoot(&mut session, "bushing-send", true, (1360, 860), None);
         session.act(EditorAction::Bushing(BushingAct::CloseDialog));
         session.act(EditorAction::Bushing(BushingAct::QuickFe));
         wait(&mut session, &|s| s.fea().current_solution().is_some() && !s.solving());
-        shoot(&mut session, "bushing-quick-fe", true, (1360, 860));
+        shoot(&mut session, "bushing-quick-fe", true, (1360, 860), None);
     }
 
     /// The Fastener Hole workbench (regular fit, countersink dark and light, the Report step), as raw RGBA dumps:

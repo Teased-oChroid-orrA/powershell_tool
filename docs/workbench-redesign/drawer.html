@@ -1,0 +1,86 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Narrow-window inspector drawer</title><style>
+:root{--bg:#211E19;--panel:#302A21;--raised:#393126;--side:#191712;--line:#494032;--text:#F0DFC2;--dim:#C4B397;--muted:#A18D70;--accent:#D6A85F;--link:#D6B477;--select:#493A28;--good:#B5B88A;--warn:#D5A45F}
+*{box-sizing:border-box}body{margin:0;background:#141210;color:var(--text);font:13px/1.4 "Inter","Segoe UI",system-ui,sans-serif}
+.wrap{max-width:1400px;margin:0 auto;padding:22px 20px 60px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:14px;margin:0 0 8px}.sub{color:var(--dim);margin:0 0 16px}
+a{color:var(--link)}
+.ctl{display:flex;gap:8px;align-items:center;margin:0 0 14px;flex-wrap:wrap}
+.ctl button{padding:5px 12px;border-radius:6px;background:var(--raised);border:1px solid var(--line);color:var(--text);cursor:pointer;font:inherit}
+.ctl button.on{background:var(--accent);color:#211E19;border-color:var(--accent);font-weight:700}
+.ctl .lab{color:var(--muted)}
+.stage{display:flex;justify-content:center}
+.win{position:relative;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg);box-shadow:0 18px 50px rgba(0,0,0,.45);height:560px;width:1300px;max-width:100%;transition:width .2s}
+.title{display:flex;align-items:center;gap:10px;height:32px;padding:0 12px;background:var(--side);border-bottom:1px solid var(--line)}
+.dots span{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:6px;background:#5a4f3f}
+.tool{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+.chip{padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--dim);font-size:12px;white-space:nowrap}
+.chip.ok{color:#1e1b16;background:var(--good);border-color:var(--good);font-weight:700}
+.sp{flex:1}.tbtn{padding:5px 11px;border-radius:6px;background:var(--raised);border:1px solid var(--line);color:var(--text);font-size:12px;white-space:nowrap;cursor:pointer}
+.tbtn.acc{border-color:var(--accent);color:var(--accent);font-weight:700}
+.body{position:relative;display:grid;height:calc(100% - 32px - 41px)}
+.pane{overflow:hidden;padding:10px;border-right:1px solid var(--line)}
+.ph{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.8px;margin:2px 2px 8px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-bottom:8px}
+.card h3{margin:0;padding:7px 10px;font-size:12.5px;border-bottom:1px solid var(--line)}
+.f{display:flex;justify-content:space-between;padding:3.5px 10px}.f .l{color:var(--dim)}
+.view{background:repeating-linear-gradient(45deg,#1c1915,#1c1915 12px,#201d18 12px,#201d18 24px);height:calc(100% - 22px);border:1px solid var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--muted)}
+.verdict .hd{font-size:22px;font-weight:800;color:var(--good);padding:10px 12px 0}.verdict .dt{padding:0 12px 10px;color:var(--dim)}
+/* wide: three columns, inspector docked */
+.win.wide .body{grid-template-columns:260px 1fr 320px}
+.win.wide .grab,.win.wide .scrim{display:none}
+/* narrow: two columns, inspector is a drawer over the view */
+.win.narrow .body{grid-template-columns:240px 1fr}
+.win.narrow .insp{position:absolute;top:0;right:0;bottom:0;width:min(320px,86%);background:var(--bg);border-left:1px solid var(--line);box-shadow:-14px 0 30px rgba(0,0,0,.5);transform:translateX(105%);transition:transform .18s ease;z-index:3}
+.win.narrow.open .insp{transform:none}
+.scrim{position:absolute;inset:0;background:rgba(10,9,7,.45);opacity:0;pointer-events:none;transition:opacity .18s;z-index:2}
+.win.narrow.open .scrim{opacity:1;pointer-events:auto}
+/* edge tab: always visible when the drawer is closed, shows the verdict at a glance */
+.grab{position:absolute;right:0;top:50%;transform:translateY(-50%);z-index:2;writing-mode:vertical-rl;padding:12px 7px;border:1px solid var(--accent);border-right:0;border-radius:8px 0 0 8px;background:var(--panel);color:var(--accent);font-weight:700;cursor:pointer;letter-spacing:.5px}
+.grab b{color:var(--good)}
+.win.narrow.open .grab{display:none}
+/* very narrow: left inputs also collapse */
+.win.tiny .body{grid-template-columns:1fr}.win.tiny .pane.in{display:none}
+.notes{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:20px}.notes section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 16px}
+.notes li{margin:4px 0}.ask{box-shadow:inset 3px 0 0 var(--accent)}
+</style></head><body><div class="wrap">
+<p><a href="index.html">&larr; Overview</a></p>
+<h1>Narrow-window inspector drawer</h1>
+<p class="sub">Shared change for every workbench using the three-column frame (illustrative content). Pick a window width, then click the edge tab to open the drawer; click outside it to close.</p>
+<div class="ctl"><span class="lab">Window width:</span>
+<button data-w="1300" class="on">Wide 1300</button><button data-w="980">Narrow 980</button><button data-w="760">Narrower 760</button><button data-w="600">Small 600</button>
+<span class="lab" style="margin-left:14px">Threshold in the build: below 1100 px the inspector becomes a drawer.</span></div>
+<div class="stage"><div class="win wide" id="win">
+<div class="title"><div class="dots"><span></span><span></span><span></span></div><b>Lug Analysis</b><span style="color:var(--muted)">lug-case.json</span></div>
+<div class="tool"><span class="chip ok">PASS</span><span class="chip">MS +0.18</span><span class="sp"></span><span class="tbtn">Undo</span><span class="tbtn">Save</span><span class="tbtn acc" id="insp-btn" style="display:none">Results</span></div>
+<div class="body">
+<div class="pane in"><div class="ph">Inputs</div>
+<div class="card"><h3>Geometry</h3><div class="f"><span class="l">Hole dia</span><span>0.500 in</span></div><div class="f"><span class="l">Edge dist</span><span>0.750 in</span></div><div class="f"><span class="l">Thickness</span><span>0.250 in</span></div></div>
+<div class="card"><h3>Load</h3><div class="f"><span class="l">Axial</span><span>4200 lbf</span></div><div class="f"><span class="l">Angle</span><span>30&deg;</span></div></div></div>
+<div class="pane"><div class="ph">Model</div><div class="view">3D view and drawings</div></div>
+<div class="pane insp" style="border-right:0"><div class="ph">Results</div>
+<div class="card verdict"><div class="hd">PASS</div><div class="dt">Governing: net section, MS +0.18</div></div>
+<div class="card"><h3>Margins</h3><div class="f"><span class="l">Net section</span><span>+0.18</span></div><div class="f"><span class="l">Bearing</span><span>+0.42</span></div><div class="f"><span class="l">Hoop</span><span>+0.31</span></div></div></div>
+<div class="scrim" id="scrim"></div>
+<div class="grab" id="grab">Results &middot; <b>PASS</b></div>
+</div></div></div>
+<div class="notes"><section><h2>Behaviour</h2><ul>
+<li><b>Wide (&ge; 1100 px):</b> unchanged. Inspector docked on the right.</li>
+<li><b>Narrow (&lt; 1100 px):</b> the inspector leaves the layout, so the view gets the room. A vertical edge tab on the right shows the live verdict (PASS / FAIL) so the answer is never hidden.</li>
+<li>Click the tab or the top-bar Results button to slide the inspector over the view. Click outside it, or press Esc, to close. No state is lost: it is the same panel, only positioned differently.</li>
+<li><b>Very narrow (&lt; 700 px):</b> the left inputs panel folds the same way, behind an Inputs tab.</li>
+<li>Automatic: no setting and no toggle. Resizing the window switches modes live; it never reorders or hides content in wide mode.</li></ul></section>
+<section class="ask"><h2>For your approval</h2><ul>
+<li>Drawer on the right, as shown, or from the bottom?</li>
+<li>Threshold 1100 px, drawer width 320 px: fine?</li>
+<li>Edge tab with the live verdict, or a plain Results button in the top bar only?</li>
+<li>Fold the inputs panel too below 700 px?</li></ul></section></div>
+</div><script>
+const win=document.getElementById('win'),btns=[...document.querySelectorAll('.ctl button')];
+function setw(w){win.style.width=w+'px';win.classList.remove('open');
+win.classList.toggle('wide',w>=1100);win.classList.toggle('narrow',w<1100);win.classList.toggle('tiny',w<700);
+document.getElementById('insp-btn').style.display=w<1100?'':'none';}
+btns.forEach(b=>b.onclick=()=>{btns.forEach(x=>x.classList.remove('on'));b.classList.add('on');setw(+b.dataset.w)});
+const open=v=>win.classList.toggle('open',v);
+document.getElementById('grab').onclick=()=>open(true);document.getElementById('insp-btn').onclick=()=>open(!win.classList.contains('open'));
+document.getElementById('scrim').onclick=()=>open(false);document.addEventListener('keydown',e=>{if(e.key==='Escape')open(false)});
+</script></body></html>

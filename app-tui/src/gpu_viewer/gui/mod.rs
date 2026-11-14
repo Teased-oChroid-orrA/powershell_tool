@@ -98,6 +98,8 @@ pub struct Gui {
     adapt: Adapt,
     /// Cards the person opened or folded this session (overrides what was learned).
     card_open: HashMap<String, bool>,
+    /// Narrow windows: the workbench pane currently open as a drawer over the views (`workbench::Drawer`).
+    drawer: Option<workbench::Drawer>,
     /// The inspector was closed for this selection (its cards' ids and titles); it returns when they change.
     inspector_dismissed: Option<String>,
     inspector_pinned: bool,
@@ -160,6 +162,7 @@ impl Gui {
             hover_prev: None,
             adapt: Adapt::in_memory(),
             card_open: HashMap::new(),
+            drawer: None,
             inspector_dismissed: None,
             inspector_pinned: false,
             tree_user: None,
@@ -327,6 +330,12 @@ impl Gui {
         self.card_open.get(id).copied()
     }
     #[cfg(test)]
+    /// Opens a workbench pane as a drawer (narrow windows; snapshots).
+    #[cfg(test)]
+    pub(crate) fn open_drawer(&mut self, results: bool) {
+        self.drawer = Some(if results { workbench::Drawer::Results } else { workbench::Drawer::Inputs });
+    }
+
     pub(crate) fn set_card_open(&mut self, id: &str, open: bool) {
         self.card_open.insert(id.into(), open);
     }
