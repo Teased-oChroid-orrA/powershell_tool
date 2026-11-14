@@ -131,6 +131,10 @@ mod tests {
         let loaded = housing_problem(&BushingModel::default()).unwrap();
         let s2 = fea_problem::solve(&loaded, None).unwrap();
         eprintln!("DBG loaded solve {:?} vm {:?} iface {:?}", t.elapsed(), s2.summary.max_von_mises.value, s2.summary.interfaces);
+        // The loaded solve runs looser multiplier passes (`LOADED_FIT_OUTER_TOL`): its mean fit pressure stays with the no-load fit's
+        // (measured 0.4 % apart; the tolerance moved it 0.03 %).
+        let loaded_mean = s2.summary.interfaces[0].mean_pressure;
+        assert!((loaded_mean - fit.mean_pressure).abs() / fit.mean_pressure < 0.02, "loaded mean {loaded_mean} vs no-load {}", fit.mean_pressure);
         assert!(rel < 0.10, "FE mean fit pressure {} psi vs closed form {analytic} psi ({:.1} % apart)", fit.mean_pressure, 100.0 * rel);
     }
 }
