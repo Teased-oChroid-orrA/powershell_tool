@@ -18,32 +18,34 @@ const TOOLBAR: f32 = 44.0;
 const MODEL_SHARE: f32 = 0.56;
 /// Below this centre width the two drawings stack instead of sitting side by side.
 const STACK_BELOW: f32 = 620.0;
+/// Below this window width the results are a drawer over the views instead of a docked pane.
+const DRAWER_BELOW: f32 = 1100.0;
+/// Below this window width the inputs are a drawer too.
+const INPUTS_DRAWER_BELOW: f32 = 700.0;
+/// Width of an open drawer (at most 86 % of the window).
+const DRAWER_WIDTH: f32 = 320.0;
+/// Below this window width the top bar drops the status chips and folds the secondary actions into a menu.
+const COMPACT_BAR_BELOW: f32 = 900.0;
+
+/// A workbench pane that a narrow window folds into a drawer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Drawer {
+    Inputs,
+    Results,
+}
 
 impl Gui {
     pub(super) fn workbench(&mut self, ui: &mut egui::Ui, wb: &Workbench, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
-        egui::Panel::left("wb-inputs").default_size(300.0).size_range(250.0..=440.0).frame(bar_frame(p, Margin::symmetric(12, 10))).show(ui, |ui| {
-            pane_title(ui, "Inputs", p);
-            egui::ScrollArea::vertical().id_salt("wb-inputs-scroll").auto_shrink([false, false]).show(ui, |ui| {
-                for c in &wb.inputs {
-                    self.pane_card(ui, c, true, p, out);
-                }
-                if !wb.inputs_note.is_empty() {
-                    ui.add_space(8.0);
-                    ui.add(egui::Label::new(RichText::new(&wb.inputs_note).size(11.5).color(p.dim)).wrap());
-                }
-            });
-        });
-        egui::Panel::right("wb-results").default_size(350.0).size_range(290.0..=540.0).frame(bar_frame(p, Margin::symmetric(12, 10))).show(ui, |ui| {
-            pane_title(ui, "Results", p);
-            egui::ScrollArea::vertical().id_salt("wb-results-scroll").auto_shrink([false, false]).show(ui, |ui| {
-                for (k, c) in wb.results.iter().enumerate() {
-                    if k > 0 {
-                        ui.add_space(4.0);
-                    }
-                    self.pane_card(ui, c, false, p, out);
-                }
-            });
-        });
+        let window = ui.available_rect_before_wrap();
+        // Narrow windows give the views the room: the results (then also the inputs) become drawers over them.
+        let results_drawer = window.width() < DRAWER_BELOW;
+        let inputs_drawer = window.width() < INPUTS_DRAWER_BELOW;
+        if !inputs_drawer {
+            egui::Panel::left("wb-inputs").default_size(300.0).size_range(250.0..=440.0).frame(bar_frame(p, Margin::symmetric(12, 10))).show(ui, |ui| self.inputs_pane(ui, wb, p, out));
+        }
+        if !results_drawer {
+            egui::Panel::right("wb-results").default_size(350.0).size_range(290.0..=540.0).frame(bar_frame(p, Margin::symmetric(12, 10))).show(ui, |ui| self.results_pane(ui, wb, p, out));
+        }
         let free = ui.available_rect_before_wrap();
         let narrow = free.width() < STACK_BELOW;
         let bar_height = if narrow { 92.0 } else { TOOLBAR };
@@ -105,6 +107,125 @@ impl Gui {
             }
         }
         self.room = self.viewport;
+        self.drawers(ui, window, wb, results_drawer, inputs_drawer, p, out);
+    }
+
+    fn inputs_pane(&mut self, ui: &mut egui::Ui, wb: &Workbench, p: &Palette, out: &mut Vec<Outcome>) {
+        pane_title(ui, "Inputs", p);
+        egui::ScrollArea::vertical().id_salt("wb-inputs-scroll").auto_shrink([false, false]).show(ui, |ui| {
+            for c in &wb.inputs {
+                self.pane_card(ui, c, true, p, out);
+            }
+            if !wb.inputs_note.is_empty() {
+                ui.add_space(8.0);
+                ui.add(egui::Label::new(RichText::new(&wb.inputs_note).size(11.5).color(p.dim)).wrap());
+            }
+        });
+    }
+
+    fn results_pane(&mut self, ui: &mut egui::Ui, wb: &Workbench, p: &Palette, out: &mut Vec<Outcome>) {
+        pane_title(ui, "Results", p);
+        egui::ScrollArea::vertical().id_salt("wb-results-scroll").auto_shrink([false, false]).show(ui, |ui| {
+            for (k, c) in wb.results.iter().enumerate() {
+                if k > 0 {
+                    ui.add_space(4.0);
+                }
+                self.pane_card(ui, c, false, p, out);
+            }
+        });
+    }
+
+    /// The panes a narrow window folds: an edge tab for each (the results' one carries the verdict), and the open one slid
+    /// over the views with a scrim; a click outside it or Esc closes it. The same cards, only placed differently.
+    #[allow(clippy::too_many_arguments)]
+    fn drawers(&mut self, ui: &mut egui::Ui, window: Rect, wb: &Workbench, results: bool, inputs: bool, p: &Palette, out: &mut Vec<Outcome>) {
+        let ctx = ui.ctx().clone();
+        if wb.dialog.is_some() || !(results || inputs) {
+            self.drawer = None;
+            return;
+        }
+        // A pane that is docked again (window grown) cannot stay open as a drawer.
+        match self.drawer {
+            Some(Drawer::Results) if !results => self.drawer = None,
+            Some(Drawer::Inputs) if !inputs => self.drawer = None,
+            _ => {}
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.drawer = None;
+        }
+        let verdict = wb.chips.iter().find(|(_, t)| matches!(t, Tone::Warn | Tone::On));
+        let mut tabs: Vec<(Drawer, String)> = Vec::new();
+        if inputs {
+            tabs.push((Drawer::Inputs, "Inputs".into()));
+        }
+        if results {
+            tabs.push((Drawer::Results, verdict.map_or("Results".into(), |(v, _)| format!("Results  \u{b7}  {v}"))));
+        }
+        if self.drawer.is_none() {
+            for (d, label) in &tabs {
+                self.drawer_tab(&ctx, window, *d, label, verdict.filter(|_| *d == Drawer::Results).map(|(_, t)| *t), p);
+            }
+        }
+        let Some(open) = self.drawer else { return };
+        let width = DRAWER_WIDTH.min(window.width() * 0.86);
+        let rect = match open {
+            Drawer::Results => Rect::from_min_max(Pos2::new(window.right() - width, window.top()), window.max),
+            Drawer::Inputs => Rect::from_min_max(window.min, Pos2::new(window.left() + width, window.bottom())),
+        };
+        let scrim = egui::Area::new(Id::new("wb-scrim")).order(Order::Foreground).fixed_pos(window.min).show(&ctx, |ui| {
+            let (r, resp) = ui.allocate_exact_size(window.size(), Sense::click());
+            ui.painter().rect_filled(r, 0.0, Color32::from_black_alpha(115));
+            resp
+        });
+        if scrim.inner.clicked() {
+            self.drawer = None;
+        }
+        egui::Area::new(Id::new("wb-drawer")).order(Order::Tooltip).fixed_pos(rect.min).show(&ctx, |ui| {
+            ui.set_clip_rect(rect);
+            ui.painter().rect_filled(rect, 0.0, p.panel);
+            let (shadow_x, edge_x) = if open == Drawer::Results { (rect.left() - 10.0, rect.left()) } else { (rect.right(), rect.right()) };
+            ui.painter().rect_filled(Rect::from_min_size(Pos2::new(shadow_x, rect.top()), Vec2::new(10.0, rect.height())), 0.0, Color32::from_black_alpha(60));
+            ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+                bar_frame(p, Margin::symmetric(12, 10)).show(ui, |ui| {
+                    ui.set_min_size(rect.size() - Vec2::new(26.0, 22.0));
+                    ui.set_max_size(rect.size() - Vec2::new(26.0, 22.0));
+                    match open {
+                        Drawer::Results => self.results_pane(ui, wb, p, out),
+                        Drawer::Inputs => self.inputs_pane(ui, wb, p, out),
+                    }
+                });
+            });
+            ui.painter().line_segment([Pos2::new(edge_x, rect.top()), Pos2::new(edge_x, rect.bottom())], Stroke::new(1.0, p.line));
+        });
+    }
+
+    /// A vertical tab on the window's edge that opens a drawer.
+    fn drawer_tab(&mut self, ctx: &egui::Context, window: Rect, which: Drawer, label: &str, tone: Option<Tone>, p: &Palette) {
+        let colour = match tone {
+            Some(Tone::On) => p.good,
+            Some(Tone::Warn) => p.warn,
+            _ => p.accent,
+        };
+        let galley = ctx.fonts_mut(|f| f.layout_no_wrap(label.to_string(), FontId::proportional(12.0), colour));
+        let size = Vec2::new(galley.size().y + 14.0, galley.size().x + 24.0);
+        // Results on the right edge, Inputs on the left; the inputs tab sits above the middle so two tabs never overlap.
+        let (x, y) = match which {
+            Drawer::Results => (window.right() - size.x, window.center().y - size.y / 2.0 + 0.0),
+            Drawer::Inputs => (window.left(), window.center().y - size.y / 2.0),
+        };
+        let rect = Rect::from_min_size(Pos2::new(x, y), size);
+        egui::Area::new(Id::new(("wb-drawer-tab", which as u8))).order(Order::Foreground).fixed_pos(rect.min).show(ctx, |ui| {
+            let (r, resp) = ui.allocate_exact_size(rect.size(), Sense::click());
+            let round = if which == Drawer::Results { CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 } } else { CornerRadius { nw: 0, sw: 0, ne: 8, se: 8 } };
+            ui.painter().rect(r, round, if resp.hovered() { p.raised } else { p.panel }, Stroke::new(1.0, colour), egui::StrokeKind::Inside);
+            // Text runs downward: rotated a quarter turn clockwise about its top-left corner, which then sits at the right.
+            let origin = Pos2::new(r.center().x + galley.size().y / 2.0, r.top() + 12.0);
+            ui.painter().add(egui::epaint::TextShape::new(origin, galley, colour).with_angle(std::f32::consts::FRAC_PI_2));
+            self.targets.push((format!("{label} tab"), r));
+            if resp.clicked() {
+                self.drawer = Some(which);
+            }
+        });
     }
 
     /// The view switch, what the 3D view is coloured by, its switches, and a note at the right.
@@ -291,6 +412,10 @@ impl Gui {
 
     /// The workbench's chips after the title in the top bar (the units, the verdict).
     pub(super) fn workbench_bar(&mut self, ui: &mut egui::Ui, wb: &Workbench, p: &Palette) {
+        // The chips come second to the title and the actions when the window is small (the verdict stays on its drawer tab).
+        if ui.ctx().content_rect().width() < COMPACT_BAR_BELOW {
+            return;
+        }
         for (text, tone) in &wb.chips {
             let c = match tone {
                 Tone::Warn => p.warn,
@@ -307,6 +432,24 @@ impl Gui {
     /// The case's actions, inside the bar's right-to-left part: the last (the main one) at the right in the accent colour.
     pub(super) fn workbench_actions(&mut self, ui: &mut egui::Ui, wb: &Workbench, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         let n = wb.actions.len();
+        let compact = ui.ctx().content_rect().width() < COMPACT_BAR_BELOW;
+        if compact && n > 1 {
+            // Small window: only the main action stays in the bar; the others fold into one menu so nothing overlaps.
+            self.doc_button(ui, &wb.actions[n - 1], p, out, hint, true);
+            let r = ui.menu_button("More", |ui| {
+                for e in &wb.actions[..n - 1] {
+                    let r = ui.add_enabled(e.enabled, egui::Button::new(&e.label));
+                    self.targets.push((e.label.clone(), r.rect));
+                    let r = if e.shortcut.is_empty() { r } else { r.on_hover_text(&e.shortcut) };
+                    if r.clicked() {
+                        ui.close();
+                    }
+                    self.entry_click(&r, e, out, hint);
+                }
+            });
+            self.targets.push(("More".into(), r.response.rect));
+            return;
+        }
         for (k, e) in wb.actions.iter().enumerate().rev() {
             if k + 1 == n {
                 self.doc_button(ui, e, p, out, hint, true);
