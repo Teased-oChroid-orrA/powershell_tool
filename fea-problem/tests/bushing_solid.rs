@@ -45,7 +45,7 @@ fn a_bushing_is_valid_in_an_extruded_solid_and_not_in_a_revolved_one() {
     assert!(p.validate().unwrap_err().contains("bushings are for"), "an axisymmetric model has no bushing");
 }
 
-/// ~3-8 minutes in release: `cargo test --release -p fea-problem --test bushing_solid -- --ignored --nocapture`.
+/// ~1.5 minutes in release (fit 27 s, loaded 53 s): `cargo test --release -p fea-problem --test bushing_solid -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn a_long_solid_bushing_matches_lame_and_the_plane_strain_model_and_the_loaded_fit_balances() {

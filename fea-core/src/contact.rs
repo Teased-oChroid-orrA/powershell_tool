@@ -225,6 +225,118 @@ impl FaceGeom {
         (n, dn)
     }
 
+    /// Shape functions with their first and second derivatives at `xi`, in one pass on 9-node arrays: the closed forms of the
+    /// face families (`element.rs` orders the nodes; `tests::face_shape2_matches_the_element_shapes`). The projection runs
+    /// this a few times per slave point and Newton iteration, so it must not go through the 27-node generic evaluation (nor
+    /// difference the first derivatives for the second).
+    pub fn shape2(&self, xi: [f64; 2]) -> ([f64; 9], [[f64; 2]; 9], [[[f64; 2]; 2]; 9]) {
+        let mut n = [0.0; 9];
+        let mut dn = [[0.0; 2]; 9];
+        let mut d2 = [[[0.0; 2]; 2]; 9];
+        let Some(kind) = self.kind else {
+            let (n1, dn1) = self.shape(xi);
+            if self.nn == 3 {
+                d2[0][0][0] = 1.0;
+                d2[1][0][0] = 1.0;
+                d2[2][0][0] = -2.0;
+            }
+            return (n1, dn1, d2);
+        };
+        let nc = kind.node_coords();
+        match kind {
+            ElementKind::Tri3 | ElementKind::Tri6 => {
+                let l = [1.0 - xi[0] - xi[1], xi[0], xi[1]];
+                let dl = [[-1.0, -1.0], [1.0, 0.0], [0.0, 1.0]];
+                if kind == ElementKind::Tri3 {
+                    for a in 0..3 {
+                        n[a] = l[a];
+                        dn[a] = dl[a];
+                    }
+                } else {
+                    for a in 0..3 {
+                        n[a] = l[a] * (2.0 * l[a] - 1.0);
+                        for k in 0..2 {
+                            dn[a][k] = (4.0 * l[a] - 1.0) * dl[a][k];
+                            for m in 0..2 {
+                                d2[a][k][m] = 4.0 * dl[a][k] * dl[a][m];
+                            }
+                        }
+                    }
+                    for (e, &[p, q]) in [[0usize, 1usize], [1, 2], [2, 0]].iter().enumerate() {
+                        let a = 3 + e;
+                        n[a] = 4.0 * l[p] * l[q];
+                        for k in 0..2 {
+                            dn[a][k] = 4.0 * (l[p] * dl[q][k] + l[q] * dl[p][k]);
+                            for m in 0..2 {
+                                d2[a][k][m] = 4.0 * (dl[p][k] * dl[q][m] + dl[q][k] * dl[p][m]);
+                            }
+                        }
+                    }
+                }
+            }
+            ElementKind::Quad4 => {
+                for a in 0..4 {
+                    let (x, f) = (nc[a], [1.0 + xi[0] * nc[a][0], 1.0 + xi[1] * nc[a][1]]);
+                    n[a] = 0.25 * f[0] * f[1];
+                    dn[a] = [0.25 * x[0] * f[1], 0.25 * x[1] * f[0]];
+                    d2[a][0][1] = 0.25 * x[0] * x[1];
+                    d2[a][1][0] = d2[a][0][1];
+                }
+            }
+            ElementKind::Quad8 => {
+                for a in 0..8 {
+                    let x = nc[a];
+                    let f = [1.0 + xi[0] * x[0], 1.0 + xi[1] * x[1]];
+                    if x[0].abs() > 0.5 && x[1].abs() > 0.5 {
+                        // Corner: 1/4 f0 f1 (s - 1), s = xi x.
+                        let s = xi[0] * x[0] + xi[1] * x[1];
+                        n[a] = 0.25 * f[0] * f[1] * (s - 1.0);
+                        for k in 0..2 {
+                            let j = 1 - k;
+                            dn[a][k] = 0.25 * x[k] * f[j] * (s - 1.0 + f[k]);
+                            d2[a][k][k] = 0.5 * f[j];
+                        }
+                        let c = 0.25 * x[0] * x[1] * (s - 1.0 + f[0] + f[1]);
+                        d2[a][0][1] = c;
+                        d2[a][1][0] = c;
+                    } else {
+                        // Midside: the axis `m` the node is at the middle of carries (1 - xi_m^2) / 2, the other `o` f_o.
+                        let m = if x[0].abs() < 0.5 { 0 } else { 1 };
+                        let o = 1 - m;
+                        n[a] = 0.5 * (1.0 - xi[m] * xi[m]) * f[o];
+                        dn[a][m] = -xi[m] * f[o];
+                        dn[a][o] = 0.5 * (1.0 - xi[m] * xi[m]) * x[o];
+                        d2[a][m][m] = -f[o];
+                        d2[a][m][o] = -xi[m] * x[o];
+                        d2[a][o][m] = d2[a][m][o];
+                    }
+                }
+            }
+            _ => {
+                // Quad9: the tensor product of the quadratic Lagrange functions on -1, 0, 1.
+                let lag = |xn: f64, x: f64| -> (f64, f64, f64) {
+                    if xn < -0.5 {
+                        (0.5 * x * (x - 1.0), x - 0.5, 1.0)
+                    } else if xn > 0.5 {
+                        (0.5 * x * (x + 1.0), x + 0.5, 1.0)
+                    } else {
+                        (1.0 - x * x, -2.0 * x, -2.0)
+                    }
+                };
+                for a in 0..9 {
+                    let (lx, ly) = (lag(nc[a][0], xi[0]), lag(nc[a][1], xi[1]));
+                    n[a] = lx.0 * ly.0;
+                    dn[a] = [lx.1 * ly.0, lx.0 * ly.1];
+                    d2[a][0][0] = lx.2 * ly.0;
+                    d2[a][1][1] = lx.0 * ly.2;
+                    d2[a][0][1] = lx.1 * ly.1;
+                    d2[a][1][0] = d2[a][0][1];
+                }
+            }
+        }
+        (n, dn, d2)
+    }
+
     /// Second derivatives `d2[a][i][j]` by central differences of the (exact) first derivatives.
     pub fn second(&self, xi: [f64; 2]) -> [[[f64; 2]; 2]; 9] {
         let mut out = [[[0.0; 2]; 2]; 9];
@@ -282,6 +394,10 @@ pub struct Projection {
 /// Position, tangents `tau[alpha] = d x / d xi_alpha` of the face at `xi`.
 fn face_point(geom: &FaceGeom, x: &[V3], xi: [f64; 2]) -> (V3, [V3; 2], [f64; 9]) {
     let (n, dn) = geom.shape(xi);
+    face_point_from(geom, x, &n, &dn)
+}
+
+fn face_point_from(geom: &FaceGeom, x: &[V3], n: &[f64; 9], dn: &[[f64; 2]; 9]) -> (V3, [V3; 2], [f64; 9]) {
     let mut xc = [0.0; 3];
     let mut tau = [[0.0; 3]; 2];
     for a in 0..geom.nn {
@@ -292,7 +408,7 @@ fn face_point(geom: &FaceGeom, x: &[V3], xi: [f64; 2]) -> (V3, [V3; 2], [f64; 9]
             }
         }
     }
-    (xc, tau, n)
+    (xc, tau, *n)
 }
 
 /// Outward normal of the face from its tangents (2D: `(ty, -tx)`; 3D: `tau1 x tau2`).
@@ -311,9 +427,9 @@ pub fn project(geom: &FaceGeom, x: &[V3], y: &V3, xi0: [f64; 2]) -> Option<Proje
     let p = geom.p;
     let mut xi = xi0;
     for _ in 0..40 {
-        let (xc, tau, _) = face_point(geom, x, xi);
+        let (n, dn, d2) = geom.shape2(xi);
+        let (xc, tau, _) = face_point_from(geom, x, &n, &dn);
         let r = sub(y, &xc);
-        let d2 = geom.second(xi);
         let mut f = [0.0; 2];
         let mut j = [[0.0; 2]; 2];
         for a in 0..p {
@@ -971,8 +1087,19 @@ impl PointCtx<'_> {
     /// Residual (force-like contribution to `f_int - f_ext`) over the local variables
     /// `v = [y, X_1, ..., X_nm]`.
     fn residual(&self, v: &[f64], r: &mut [f64]) -> LocalOut {
+        self.residual_with(v, r, None)
+    }
+
+    /// [`Self::residual`], and when `natural` is given also the residual with the friction traction that is computed (not the
+    /// frozen one): the two differ only in that traction, so one projection serves both (a rigid master's free dofs, whose
+    /// residual is derived from this one, are not covered: `natural` needs `n_free == 0`).
+    fn residual_with(&self, v: &[f64], r: &mut [f64], mut natural: Option<&mut [f64]>) -> LocalOut {
         let d = self.d;
+        debug_assert!(natural.is_none() || self.n_free == 0);
         r.fill(0.0);
+        if let Some(rn) = natural.as_deref_mut() {
+            rn.fill(0.0);
+        }
         let mut y = [0.0; 3];
         y[..d].copy_from_slice(&v[..d]);
         let nm = self.geom.map_or(0, |g| g.nn);
@@ -1014,6 +1141,9 @@ impl PointCtx<'_> {
                 r[d * (1 + b) + i] += p * w * mshape[b] * n[i];
             }
         }
+        if let Some(rn) = natural.as_deref_mut() {
+            rn.copy_from_slice(r);
+        }
         let mut fric = [0.0; 3];
         let mut slip = false;
         if self.mu > 0.0 {
@@ -1044,17 +1174,24 @@ impl PointCtx<'_> {
             let cap = (self.mu * p).max(0.0);
             let tn = norm(&trial);
             slip = tn > cap;
-            fric = match self.frozen {
-                Some(f) => f,
-                None if slip => scale(&trial, cap / tn),
-                None => trial,
-            };
+            let computed = if slip { scale(&trial, cap / tn) } else { trial };
+            fric = self.frozen.unwrap_or(computed);
             for i in 0..d {
                 r[i] += w * fric[i];
             }
             for b in 0..nm {
                 for i in 0..d {
                     r[d * (1 + b) + i] -= w * mshape[b] * fric[i];
+                }
+            }
+            if let Some(rn) = natural.as_deref_mut() {
+                for i in 0..d {
+                    rn[i] += w * computed[i];
+                }
+                for b in 0..nm {
+                    for i in 0..d {
+                        rn[d * (1 + b) + i] -= w * mshape[b] * computed[i];
+                    }
                 }
             }
         }
@@ -1145,6 +1282,15 @@ impl ContactSet {
                     (lo, hi)
                 })
                 .collect();
+            // The faces' node boxes without the margin, with a slack for the bulge of a curved face (see the candidate order).
+            let tight: Vec<(V3, V3, f64)> = boxes
+                .iter()
+                .map(|(lo, hi)| {
+                    let (l, h): (V3, V3) = (std::array::from_fn(|i| lo[i] + margin), std::array::from_fn(|i| hi[i] - margin));
+                    let ext = (0..3).map(|i| h[i] - l[i]).fold(0.0f64, f64::max);
+                    (l, h, 0.1 * ext)
+                })
+                .collect();
             let bvh = Bvh::build(&boxes);
             let want_k = k.is_some();
             let stabilise = self.stabilise.load(std::sync::atomic::Ordering::Relaxed);
@@ -1191,18 +1337,37 @@ impl ContactSet {
                         if chosen.is_none() {
                             bvh.query(&y, &mut cand);
                         }
-                        for &fi in &cand {
-                            let fi = fi as usize;
+                        // Candidates nearest first: a face whose node box is farther from the point than the best gap found cannot
+                        // be closer (the projection lies on the face, within its box up to a small bulge), so it is not projected.
+                        // Ties keep the BVH order, as an unsorted scan would have; the committed face is always projected (the
+                        // sticky rule needs it).
+                        let mut order: Vec<(f64, usize, usize)> = cand
+                            .iter()
+                            .enumerate()
+                            .map(|(pos, &fi)| {
+                                let (lo, hi, slack) = &tight[fi as usize];
+                                let d2: f64 = (0..3).map(|i| (lo[i] - y[i]).max(y[i] - hi[i]).max(0.0).powi(2)).sum();
+                                ((d2.sqrt() - slack).max(0.0), pos, fi as usize)
+                            })
+                            .collect();
+                        order.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+                        let mut best_pos = usize::MAX;
+                        for &(lb, pos, fi) in &order {
                             let (geom, _) = &faces[fi];
                             let x = &face_x[fi];
                             let committed = os.has_hist && os.face as usize == fi;
+                            if !committed && lb > best {
+                                continue;
+                            }
                             let xi0 = if committed { [os.hist[0], os.hist[1]] } else { geom.centre() };
                             if let Some(pr) = project(geom, x, &y, xi0) {
-                                if geom.contains(pr.xi, 0.1) && pr.g.abs() < margin && pr.g.abs() < best {
-                                    best = pr.g.abs();
+                                let gap = pr.g.abs();
+                                if geom.contains(pr.xi, 0.1) && gap < margin && (gap < best || (gap == best && pos < best_pos)) {
+                                    best = gap;
+                                    best_pos = pos;
                                     chosen = Some((fi, pr.xi));
                                 }
-                                if committed && geom.contains(pr.xi, STICKY_TOL) && pr.g.abs() < margin {
+                                if committed && geom.contains(pr.xi, STICKY_TOL) && gap < margin {
                                     sticky = Some((fi, pr.xi));
                                 }
                             }
@@ -1296,38 +1461,34 @@ impl ContactSet {
                         // A sliding point's capped traction is frozen in the tangent: its derivative is
                         // unsymmetric and (symmetrised) indefinite; the residual keeps the exact friction.
                         let tctx = PointCtx { frozen: if out.slip { Some(out.fric) } else { None }, smooth: true, ..ctx_copy(&ctx) };
+                        // The tangent the solver factorises is symmetric (and freezes sliding friction); the exact
+                        // one differs by the sliding points' `mu dp` coupling and the unsymmetric part. That difference
+                        // is kept as a defect operator and applied by iterative refinement over the factorisation
+                        // (`nonlinear.rs`), which makes the Newton step consistent without an unsymmetric factorisation.
+                        // (Every frictional point: the sticking ones are unsymmetric too through the projection and the
+                        // normal; restricting the defect to sliding points was tried and Newton stalls again.)
+                        let want_defect = spec.mu > 0.0 && n_free == 0;
+                        let mut kfull = vec![0.0; if want_defect { nv * nv } else { 0 }];
+                        // One projection per perturbation serves the frozen and the exact friction (they differ only in the
+                        // traction); a sticking point has no frozen traction, so its two tangents are the same matrix.
+                        let (mut rpn, mut rmn) = (vec![0.0; nv], vec![0.0; nv]);
+                        let pair = want_defect && out.slip;
                         for j in 0..nv {
                             let h = 1e-6 * (1.0 + v[j].abs());
                             let (mut vp, mut vm) = (v.clone(), v.clone());
                             vp[j] += h;
                             vm[j] -= h;
-                            tctx.residual(&vp, &mut rp);
-                            tctx.residual(&vm, &mut rm);
+                            tctx.residual_with(&vp, &mut rp, pair.then_some(&mut rpn[..]));
+                            tctx.residual_with(&vm, &mut rm, pair.then_some(&mut rmn[..]));
                             for i in 0..nv {
                                 kv[i * nv + j] = (rp[i] - rm[i]) / (2.0 * h);
-                            }
-                        }
-                        // The tangent the solver factorises is symmetric (and freezes sliding friction); the exact
-                        // one differs by the sliding points' `mu dp` coupling and the unsymmetric part. That difference
-                        // is kept as a defect operator and applied by iterative refinement over the factorisation
-                        // (`nonlinear.rs`), which makes the Newton step consistent without an unsymmetric factorisation.
-                        let mut kfull = vec![0.0; nv * nv];
-                        // (Every frictional point: the sticking ones are unsymmetric too through the projection and the
-                        // normal; restricting the defect to sliding points was tried and Newton stalls again.)
-                        let want_defect = spec.mu > 0.0 && n_free == 0;
-                        if want_defect {
-                            let fctx = PointCtx { frozen: None, smooth: true, ..ctx_copy(&ctx) };
-                            for j in 0..nv {
-                                let h = 1e-6 * (1.0 + v[j].abs());
-                                let (mut vp, mut vm) = (v.clone(), v.clone());
-                                vp[j] += h;
-                                vm[j] -= h;
-                                fctx.residual(&vp, &mut rp);
-                                fctx.residual(&vm, &mut rm);
-                                for i in 0..nv {
-                                    kfull[i * nv + j] = (rp[i] - rm[i]) / (2.0 * h);
+                                if pair {
+                                    kfull[i * nv + j] = (rpn[i] - rmn[i]) / (2.0 * h);
                                 }
                             }
+                        }
+                        if want_defect && !pair {
+                            kfull.copy_from_slice(&kv);
                         }
                         for i in 0..nv {
                             for j in 0..i {
@@ -1615,6 +1776,39 @@ mod tests {
         let g = FaceGeom::new(2, 3).unwrap();
         let d2 = g.second([0.4, 0.0]);
         assert!((d2[2][0][0] + 2.0).abs() < 1e-6 && (d2[0][0][0] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn face_shape2_matches_the_element_shapes() {
+        // Values and first derivatives against the generic element evaluation, second derivatives against central
+        // differences of those first derivatives, at points over every face family (corners and edges included).
+        let pts: [[f64; 2]; 6] = [[0.21, 0.17], [-0.6, 0.35], [0.0, 0.0], [0.45, 0.3], [-1.0, 1.0], [0.9, -0.2]];
+        for (nn, tri) in [(3usize, true), (6, true), (4, false), (8, false), (9, false)] {
+            let g = FaceGeom::new(3, nn).unwrap();
+            for &xi in &pts {
+                let xi = if tri { [xi[0].abs() * 0.5, xi[1].abs() * 0.5] } else { xi };
+                let (n, dn, d2) = g.shape2(xi);
+                let (n0, dn0) = g.shape(xi);
+                let h = 1e-6;
+                for a in 0..nn {
+                    assert!((n[a] - n0[a]).abs() < 1e-13, "nn {nn} N{a}");
+                    for k in 0..2 {
+                        assert!((dn[a][k] - dn0[a][k]).abs() < 1e-13, "nn {nn} dN{a}/{k}");
+                        let (mut xp, mut xm) = (xi, xi);
+                        xp[k] += h;
+                        xm[k] -= h;
+                        for m in 0..2 {
+                            let fd = (g.shape(xp).1[a][m] - g.shape(xm).1[a][m]) / (2.0 * h);
+                            assert!((d2[a][m][k] - fd).abs() < 1e-6, "nn {nn} d2N{a}/{m}{k}: {} vs {fd}", d2[a][m][k]);
+                        }
+                    }
+                }
+            }
+        }
+        for nn in [2usize, 3] {
+            let g = FaceGeom::new(2, nn).unwrap();
+            assert_eq!(g.shape2([0.3, 0.0]).2, g.second([0.3, 0.0]));
+        }
     }
 
     fn rigid_ctx<'a>(rm: &'a RigidMaster, os: &'a CpState) -> PointCtx<'a> {
