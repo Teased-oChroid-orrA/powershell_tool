@@ -331,3 +331,23 @@ What a symbol table adds, measured on the 15 definition questions: it found ever
 Cost of the minimal extractor: 20 to 52 ms per folder for 1 to 2 MB (41 to 55 MB/s, single thread, regex only), no dependency, offline. Cost of tree-sitter (crates.io published sizes, all MIT): core 230 KB, grammars 180 KB (Python), 369 KB (Rust), 971 KB (C++), 2.6 MB (Julia), `tree-sitter-tags` 13 KB; each grammar is generated C compiled at build time (build time and binary growth not measured; disk limit) and adds a language list to maintain. Licences are compatible with the offline, self-contained target.
 
 Recommendation: do not build code intelligence now. Evidence: the current paths put the gold file in the top 3 for 32 of 33 questions and first for 26; the misses are name collisions that a symbol table also leaves ambiguous; the product's folders are mostly documents with some scripts, and no user report or failure in this repository's issues asks for symbol search. A parser dependency (about 0.4 to 3 MB of grammar source each, plus per-language maintenance) is not justified by four rank improvements. Not tried, by the owner's rule: a definition-line boost inside exact ranking. Limits: 33 questions on four folders of one author's code (three Rust, one scripts); gold written by me; semantic indexing speed in the probe (about 5 to 15 KB/s) was measured on a machine at load 7 to 35 and is not a benchmark; no real engineering-office folders were available; Windows not run.
+
+## 2026-11-14: relationship edges on real public documents (FAA Airworthiness Directives)
+
+No real engineering folder was available (and none may be shared), so the edge builder was run on 400 public FAA Airworthiness Directives for Airbus Helicopters (Federal Register API, US federal works, public domain; `scripts/fetch_faa_ads.py`, stored under `../benchmarks/faa-ad/`, 8.4 MB, publication 2014 to 2026). ADs carry labels of their own: their number, "supersedes AD x" statements and the helicopter models they apply to. `search-core/examples/edges_dump.rs` builds index, catalog, entities and edges and prints every edge; `scripts/score_faa_ad_edges.py` scores SAME_ENTITY edges (the only kind that can fire on these files: names have no version token and no two files are equal) against the labels. A pair is "chain" when one AD cites or supersedes the other (or both sit in one citation component) and "model" when the summaries share a model designation.
+
+Finding 1 (fixed). 1,023 of 4,922 SAME_ENTITY edges (21%) rested only on a hex string such as `83c2c7f0c3e6e2f0e2ade6f6f1ecf3e2ade6f6`: the saved pages carry Cloudflare's encoded e-mail addresses (the same EASA contact address in a few files), and `is_rare_shape` accepted any 5 to 40 character word with a digit and two letters. Some of those edges had confidence 1.0, so the highest bands were the worst. A word of 16 or more hex digits is now not a rare term (hashes, GUIDs and encoded addresses; identical files already have DUPLICATE_OF); `EXTRACTOR` is `pattern-v3`, so stored rows are redone. Regression: `rare_shapes_are_identifier_like_and_quantities_are_not`.
+
+After the fix (400 files, 3,899 SAME_ENTITY edges):
+
+| Confidence band | Edges | Share citing or superseding (chain) | Share with a common model | Neither |
+|---|---|---|---|---|
+| 0.0 to 0.2 | 3,257 | 0.004 | 0.675 | 1,059 |
+| 0.2 to 0.3 | 224 | 0.004 | 0.737 | 58 |
+| 0.3 to 0.5 | 232 | 0.004 | 0.772 | 53 |
+| 0.5 to 0.7 | 94 | 0.149 | 0.777 | 20 |
+| 0.7 and up | 92 | 0.554 | 0.837 | 13 |
+
+Before the fix the model share fell with confidence (0.65, 0.36, 0.42, 0.34, 0.47); after it rises with confidence (0.68 to 0.84), which is what a usable score should do. Supersede recall: 4 of 5 pairs whose predecessor is in the set carry an edge (only five exist: most ADs supersede an older AD outside a 400-file sample).
+
+Limits. "Shares a model" is a proxy label from my regex over the summary, not a judgment of "related"; the 78 edges in the top two bands with neither label were sampled and the ones read were sister types of one family (EC135 and BK117, AS332L2 and EC225LP) that a reader would call related, so the true precision is higher than the table. Chain labels are sparse by nature (ADs seldom cite each other), so the low chain share in the weak bands says nothing against them. 82% of the edges sit below 0.2: the density (about 20 neighbours per file) is a property of a corpus of one manufacturer's ADs sharing model names, and every such edge stays labelled statistical. Not measured here: DUPLICATE_OF, VERSION_OF (no versioned names), gaps and project suggestions (the set has no folder structure). One family only; other manufacturers and the Boeing ADs (larger, more boilerplate) were not tried.

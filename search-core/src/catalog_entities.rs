@@ -3,7 +3,7 @@
 //! share part number X" and say why.
 //!
 //! Every row is a pattern match from `entities::extract_candidates` (class `pattern`, extractor
-//! `pattern-v2`): file, 1-based line, the text as written and a normalised value. Nothing here is a
+//! `pattern-v3`): file, 1-based line, the text as written and a normalised value. Nothing here is a
 //! verified fact or a statistical score. Resolution is by normalisation only (case, spacing, trailing
 //! punctuation); two spellings that normalise differently are different entities. Dimensions and
 //! units are not stored: they do not identify anything.
@@ -24,7 +24,7 @@ use crate::catalog::Catalog;
 use crate::entities::{extract_candidates, EntityKind};
 use crate::extraction;
 
-const EXTRACTOR: &str = "pattern-v2";
+const EXTRACTOR: &str = "pattern-v3";
 const CLASS: &str = "pattern";
 /// Kind string of rare-term rows (not an [`EntityKind`]: the extractor in `entities` knows nothing of it).
 pub const RARE_TERM_KIND: &str = "rare_term";
@@ -77,7 +77,9 @@ fn identifies(kind: EntityKind, shown: &str) -> bool {
 }
 
 /// Whether a word looks like an identifier: 5 to 40 characters of letters, digits, `-` and `_`, with a digit
-/// and at least two letters, or an upper-case letter right after a lower-case one. A number with a short unit
+/// and at least two letters, or an upper-case letter right after a lower-case one. A run of 16 or more hex
+/// digits is a hash, GUID or an e-mail address encoded by a web page, not something an engineer cites: it
+/// would link files by an accident of encoding (duplicates already have their own edge). A number with a short unit
 /// (`100mm`, `3rd`, `2024q3` is not: the suffix is over three letters) is a quantity, not an identifier.
 pub fn is_rare_shape(word: &str) -> bool {
     if !(5..=40 * 4).contains(&word.len()) {
@@ -98,6 +100,9 @@ pub fn is_rare_shape(word: &str) -> bool {
         }
     }
     if !(5..=40).contains(&n) || !((digits > 0 && letters >= 2) || inner_capital) {
+        return false;
+    }
+    if n >= 16 && word.chars().all(|c| c.is_ascii_hexdigit()) {
         return false;
     }
     // number followed by at most three letters: 100mm, 25kg, 3rd
@@ -320,10 +325,11 @@ mod tests {
 
     #[test]
     fn rare_shapes_are_identifier_like_and_quantities_are_not() {
-        for yes in ["xk7741b", "HX-2290", "GsToolbench", "build_7f3a9c", "ab12c"] {
+        for yes in ["xk7741b", "HX-2290", "GsToolbench", "build_7f3a9c", "ab12c", "deadbeef1234"] {
             assert!(is_rare_shape(yes), "{yes}");
         }
-        for no in ["100mm", "25kg", "hello", "WARNING", "Title", "2026-11-10", "a1b2", "x".repeat(41).as_str(), "12345", "Mixed-case"] {
+        for no in ["100mm", "25kg", "hello", "WARNING", "Title", "2026-11-10", "a1b2", "x".repeat(41).as_str(), "12345", "Mixed-case",
+            "83c2c7f0c3e6e2f0e2ade6f6f1ecf3e2ade6f6", "0123456789abcdef0123"] {
             assert!(!is_rare_shape(no), "{no}");
         }
     }
