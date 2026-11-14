@@ -1309,9 +1309,8 @@ pub async fn narrow_candidates(
     out.freshness_ms = phase.elapsed().as_millis() as u64;
     let phase = std::time::Instant::now();
     // The index stores unfolded text and exact words: neither folding nor typo
-    // tolerance can be answered from its trigrams, so those searches scan; so does a phrase that
-    // may span a line break (the break is not the phrase's space).
-    if !settings.use_regex && (settings.fold_accents || settings.typo_tolerance > 0 || settings.match_across_lines) {
+    // tolerance can be answered from its trigrams, so those searches scan.
+    if !settings.use_regex && (settings.fold_accents || settings.typo_tolerance > 0) {
         return Ok(out);
     }
     let indexed_paths = if settings.use_regex {
@@ -1322,6 +1321,23 @@ pub async fn narrow_candidates(
                 Some(alts) if !alts.is_empty() && alts.iter().all(|c| !c.is_empty()) => chunk_sets.extend(alts),
                 _ => return Ok(out),
             }
+        }
+        engine.trigram_candidate_paths_for_chunk_sets(&chunk_sets)?
+    } else if settings.match_across_lines {
+        // A phrase may span a line break, which is not the phrase's space: require each word of a
+        // filter (words of 3+ characters; shorter ones add nothing) rather than the whole phrase.
+        let mut chunk_sets = Vec::with_capacity(settings.filters.len());
+        for f in &settings.filters {
+            let narrowing = crate::near::narrowing_text(f);
+            let words: Vec<String> = narrowing
+                .split_whitespace()
+                .filter(|w| w.chars().count() >= 3)
+                .map(str::to_string)
+                .collect();
+            if words.is_empty() {
+                return Ok(out);
+            }
+            chunk_sets.push(words);
         }
         engine.trigram_candidate_paths_for_chunk_sets(&chunk_sets)?
     } else {
@@ -2547,6 +2563,36 @@ mod tests {
         settings.fold_accents = false;
         settings.typo_tolerance = 1;
         assert!(narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap().candidates.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_phrase_over_a_line_break_still_narrows_by_its_words() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("wrapped.txt"), "the maximum bearing\nstress is low\n").unwrap();
+        std::fs::write(dir.path().join("plain.txt"), "bearing stress here\n").unwrap();
+        std::fs::write(dir.path().join("other.txt"), "nothing relevant\n").unwrap();
+        let mut settings = narrow_settings(dir.path(), "bearing stress");
+        let engine = built_engine(dir.path(), &settings).await;
+        let names = |out: NarrowOutcome| {
+            let mut v: Vec<String> = out
+                .candidates
+                .unwrap()
+                .iter()
+                .map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        // Whole-phrase trigrams: the wrapped file is (wrongly, for a cross-line search) dropped.
+        let exact = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        assert_eq!(names(exact), ["plain.txt"]);
+        settings.match_across_lines = true;
+        let across = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        assert_eq!(names(across), ["plain.txt", "wrapped.txt"]);
+        // Only short words: nothing to narrow on, so every file is scanned.
+        let mut short = narrow_settings(dir.path(), "to be");
+        short.match_across_lines = true;
+        assert!(narrow_candidates(&short, &engine, &CancellationToken::new()).await.unwrap().candidates.is_none());
     }
 
     #[tokio::test]

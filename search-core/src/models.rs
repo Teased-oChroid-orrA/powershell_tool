@@ -149,7 +149,7 @@ pub struct SearchSettings {
     /// Literal and whole-word modes: a multi-word filter also matches when a line break falls
     /// between two of its words (PDF and wrapped text). The hit is reported on the line the
     /// phrase starts on, so line numbers and page provenance stay those of real lines. Two
-    /// adjacent lines only; off by default; turns off the index candidate narrowing.
+    /// adjacent lines only; off by default. The index shortlist then requires each word, not the phrase.
     #[serde(default)]
     pub match_across_lines: bool,
     /// Typo tolerance for literal and whole-word modes: 0 = off (default),
