@@ -209,7 +209,7 @@ unit-tested core; `window.rs` maps winit events to egui and to `Input`, runs the
   (`Solid(SolidAction)` for solids). Add a new model kind by implementing the trait, nothing else in the window changes.
 - **Solid editor**: edits `fea_problem::Problem` with the *same* rows, labels, hints and JSON as the terminal Workbench
   (`fea_workbench::model`: `field_rows`, `row_label/value`, `apply_row_action`, `commit_edit`, `toggle_source`, `apply_material`,
-  `move_selection`). Mesh preview and solve run on `editor/worker.rs` (one job at a time, stale/cancelled answers dropped;
+  `move_selection`). Mesh preview and solve run on `editor/worker.rs` (one job at a time, stale/cancelled answers dropped; `editor/job.rs` (the member Runner) is a thin wrapper on it, so the thread/panic/channel handling exists once; the multi-job Bushing edge-check and Eccentric threads are id-tagged by their toolbox state and keep their own spawn;
   bushed contact solves are explicit only). Surfaces (`bottom`/`right`/..., `edgeN`, `holeN`, `start`/`end`, imported names)
   are picked in the viewport (`pick_surface`) or the tree; a click assigns the picked name to the focused support/load edge.
   Preview colours: 0 body, 1 support, 2 load, 3 selected/edited. Results use `SceneSource::from_solved` (all 11 fields).
