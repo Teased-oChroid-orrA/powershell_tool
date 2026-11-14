@@ -76,10 +76,6 @@ impl BushingState {
             FieldRow::ToggleEndConstraint => self.model.toggle_end_constraint(),
             FieldRow::ToggleCsMode => self.model.toggle_cs_mode(),
             FieldRow::ToggleExtCsMode => self.model.toggle_ext_cs_mode(),
-            FieldRow::ToggleEnforcementEnabled => self.model.toggle_enforcement_enabled(),
-            FieldRow::ToggleLockBore => self.model.toggle_lock_bore(),
-            FieldRow::TogglePreserveBoreNominal => self.model.toggle_preserve_bore_nominal(),
-            FieldRow::ToggleAllowBoreNominalShift => self.model.toggle_allow_bore_nominal_shift(),
             FieldRow::ToggleAssemblyThermalEnabled => self.model.toggle_assembly_thermal_enabled(),
             FieldRow::AdvancedSection => self.model.advanced_open = !self.model.advanced_open,
             FieldRow::Header(_)

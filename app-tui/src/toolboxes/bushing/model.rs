@@ -21,7 +21,7 @@ use bushing_solver::countersink::CsMode;
 use bushing_solver::geometry::{BushingType, IdType};
 use bushing_solver::reamers::ReamerEntry;
 use bushing_solver::solve::{compute, BushingInputs, BushingOutput, EndConstraint};
-use bushing_solver::tolerance::{BoreCapability, EnforcementPolicy};
+use bushing_solver::tolerance::EnforcementPolicy;
 use mechanics_core::materials::{Material, MATERIALS};
 
 /// Leaks a user-added material's owned `String` fields into `&'static str`
@@ -144,8 +144,6 @@ pub enum NumberTarget {
     ExtCsDepthTolMinus,
     ExtCsAngleTolPlus,
     ExtCsAngleTolMinus,
-    MaxBoreNominalShift,
-    BoreCapabilityMinWidth,
     AssemblyHousingTemp,
     AssemblyBushingTemp,
 }
@@ -189,8 +187,6 @@ impl NumberTarget {
             NumberTarget::ExtCsDepthTolMinus => "External CS Depth Tol -",
             NumberTarget::ExtCsAngleTolPlus => "External CS Angle Tol +",
             NumberTarget::ExtCsAngleTolMinus => "External CS Angle Tol -",
-            NumberTarget::MaxBoreNominalShift => "Max Bore Nominal Shift",
-            NumberTarget::BoreCapabilityMinWidth => "Bore Capability Min Width",
             NumberTarget::AssemblyHousingTemp => "Assembly Housing Temp",
             NumberTarget::AssemblyBushingTemp => "Assembly Bushing Temp",
         }
@@ -351,10 +347,6 @@ pub enum FieldRow {
     ToggleEndConstraint,
     ToggleCsMode,
     ToggleExtCsMode,
-    ToggleEnforcementEnabled,
-    ToggleLockBore,
-    TogglePreserveBoreNominal,
-    ToggleAllowBoreNominalShift,
     ToggleAssemblyThermalEnabled,
     OpenHousingMaterialPicker,
     OpenBushingMaterialPicker,
@@ -373,10 +365,6 @@ pub fn row_label(row: FieldRow) -> &'static str {
         FieldRow::ToggleEndConstraint => "End Constraint",
         FieldRow::ToggleCsMode => "Internal CS Mode",
         FieldRow::ToggleExtCsMode => "External CS Mode",
-        FieldRow::ToggleEnforcementEnabled => "Strict Interference Enforcement",
-        FieldRow::ToggleLockBore => "Bore Locked (Reamer-Fixed)",
-        FieldRow::TogglePreserveBoreNominal => "Preserve Bore Nominal",
-        FieldRow::ToggleAllowBoreNominalShift => "Allow Bore Nominal Shift",
         FieldRow::ToggleAssemblyThermalEnabled => "Install Thermal Assist",
         FieldRow::OpenHousingMaterialPicker => "Housing Material",
         FieldRow::OpenBushingMaterialPicker => "Bushing Material",
@@ -393,7 +381,7 @@ pub fn row_label(row: FieldRow) -> &'static str {
 pub fn field_hint(row: FieldRow) -> &'static str {
     match row {
         FieldRow::Header(_) => "",
-        FieldRow::AdvancedSection => "Tolerance bands, installation limits, flange / countersink geometry, tolerance enforcement and install thermal assist. Enter, Space or a click opens and closes the section; the checks use these values whether it is open or not.",
+        FieldRow::AdvancedSection => "Tolerance bands, installation limits, flange / countersink geometry, and install thermal assist. Enter, Space or a click opens and closes the section; the checks use these values whether it is open or not.",
         FieldRow::ToggleToleranceMode => "How every tolerance row is entered and shown: nominal with +tol / -tol, or absolute min / max limits. Switching only changes the view - the same band is kept.",
         FieldRow::Tol(_) => "Tolerance band of the dimension above. Enter or just type: '+0.0005 -0.0003' (plus then minus; one value = symmetric), or in Min / Max mode '0.4995 0.5005'. The nominal stays put when it is inside the limits. A bore band wider than the interference band makes the fit Infeasible.",
         FieldRow::ToggleFitType => "Selecting a fit type loads its typical Target Interference and tolerance band for the current bore (Press ~0.003 x D, Shrink ~0.005 x D plus Install Thermal Assist, Clearance/Slip negative). Everything stays editable afterward; a mismatch between fit type and interference sign is flagged in Results.",
@@ -433,29 +421,27 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         | FieldRow::Number(NumberTarget::ExtCsDepthTolMinus)
         | FieldRow::Number(NumberTarget::ExtCsAngleTolPlus)
         | FieldRow::Number(NumberTarget::ExtCsAngleTolMinus) => "Tolerance on this countersink dimension - only meaningful when it's a direct input for the current mode; feeds the worst-case neck-wall corner search either way.",
-        FieldRow::ToggleEnforcementEnabled => "When enabled, an infeasible bore/interference fit is auto-tightened toward feasibility instead of just being reported Infeasible.",
-        FieldRow::ToggleLockBore => "A reamer-fixed bore can't be auto-tightened at all - enforcement is blocked with a note instead.",
-        FieldRow::TogglePreserveBoreNominal => "Keep the entered bore nominal fixed while tightening the band, rather than letting the nominal shift.",
-        FieldRow::ToggleAllowBoreNominalShift => "Allow the bore nominal itself to shift (up to Max Bore Nominal Shift) when tightening isn't enough alone.",
-        FieldRow::Number(NumberTarget::MaxBoreNominalShift) => "Maximum amount the bore nominal is allowed to shift during enforcement.",
-        FieldRow::Number(NumberTarget::BoreCapabilityMinWidth) => "Process-capability floor on the bore's achievable tolerance width - 0 means no floor is enforced.",
         FieldRow::ToggleAssemblyThermalEnabled => "Model a shrink-fit install assist (e.g. chilling the bushing or heating the housing) as a separate install-time temperature, distinct from the in-service Service Temp Change above.",
         FieldRow::Number(NumberTarget::AssemblyHousingTemp) | FieldRow::Number(NumberTarget::AssemblyBushingTemp) => "Absolute part temperature at the moment of installation (reference is 70 deg F).",
     }
 }
 
-/// The complete navigable row list for the current geometry/enforcement
+/// The complete navigable row list for the current geometry
 /// selection - only fields relevant to the current mode are ever shown,
 /// same "only the mode's direct inputs are editable" discipline
 /// `toolboxes/fastener_hole/model.rs::field_rows` established. Grouped
 /// under `Header` rows so the ~40+ possible fields read as a sectioned
 /// form (Bore & Fit / Housing Geometry / Materials & Friction /
 /// Installation / OD Geometry / ID Geometry / external-countersink-only /
-/// Tolerance Enforcement / Install Thermal Assist) rather than one long
+/// Install Thermal Assist) rather than one long
 /// undifferentiated list.
+/// The narrowest bushing OD tolerance band a ground OD can be held to, in inches. The bore band may use the rest of the
+/// interference band; see `advice::od_band_shortfall`.
+pub const OD_BAND_FLOOR_IN: f64 = 0.0002;
+
 pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
     // Basic: what a first fit check needs. Everything else (tolerance bands, installation limits,
-    // countersinks, enforcement, thermal assist) sits behind the collapsed Advanced section.
+    // countersinks, thermal assist) sits behind the collapsed Advanced section.
     let mut rows = vec![
         FieldRow::Header("Bore & Fit"),
         FieldRow::ToggleFitType,
@@ -527,17 +513,6 @@ pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
             rows.push(FieldRow::Number(NumberTarget::ExtCsAngle));
             rows.push(FieldRow::Tol(TolGroup::ExtCsAngle));
         }
-    }
-    rows.push(FieldRow::Header("Tolerance Enforcement"));
-    rows.push(FieldRow::ToggleEnforcementEnabled);
-    if model.enforcement_enabled {
-        rows.push(FieldRow::ToggleLockBore);
-        rows.push(FieldRow::TogglePreserveBoreNominal);
-        rows.push(FieldRow::ToggleAllowBoreNominalShift);
-        if model.allow_bore_nominal_shift {
-            rows.push(FieldRow::Number(NumberTarget::MaxBoreNominalShift));
-        }
-        rows.push(FieldRow::Number(NumberTarget::BoreCapabilityMinWidth));
     }
     rows.push(FieldRow::Header("Install Thermal Assist"));
     rows.push(FieldRow::ToggleAssemblyThermalEnabled);
@@ -619,12 +594,6 @@ pub struct BushingModel {
     pub ext_cs_angle_tol_plus: f64,
     pub ext_cs_angle_tol_minus: f64,
 
-    pub enforcement_enabled: bool,
-    pub lock_bore: bool,
-    pub preserve_bore_nominal: bool,
-    pub allow_bore_nominal_shift: bool,
-    pub max_bore_nominal_shift: f64,
-    pub bore_capability_min_width: f64,
 
     pub assembly_thermal_enabled: bool,
     pub assembly_housing_temp: f64,
@@ -700,12 +669,6 @@ impl Default for BushingModel {
             ext_cs_depth_tol_minus: 0.0,
             ext_cs_angle_tol_plus: 0.0,
             ext_cs_angle_tol_minus: 0.0,
-            enforcement_enabled: false,
-            lock_bore: true,
-            preserve_bore_nominal: true,
-            allow_bore_nominal_shift: false,
-            max_bore_nominal_shift: 0.0,
-            bore_capability_min_width: 0.0,
             assembly_thermal_enabled: false,
             assembly_housing_temp: 70.0,
             assembly_bushing_temp: 70.0,
@@ -858,14 +821,8 @@ impl BushingModel {
             ext_cs_depth_tol_minus: self.ext_cs_depth_tol_minus,
             ext_cs_angle_tol_plus: self.ext_cs_angle_tol_plus,
             ext_cs_angle_tol_minus: self.ext_cs_angle_tol_minus,
-            enforcement: EnforcementPolicy {
-                enabled: self.enforcement_enabled,
-                lock_bore: self.lock_bore,
-                preserve_bore_nominal: self.preserve_bore_nominal,
-                allow_bore_nominal_shift: self.allow_bore_nominal_shift,
-                max_bore_nominal_shift: self.max_bore_nominal_shift,
-            },
-            bore_capability: (self.bore_capability_min_width > 0.0).then_some(BoreCapability { min_achievable_tol_width: Some(self.bore_capability_min_width) }),
+            enforcement: EnforcementPolicy::default(),
+            bore_capability: None,
             assembly_housing_temperature: self.assembly_thermal_enabled.then_some(self.assembly_housing_temp),
             assembly_bushing_temperature: self.assembly_thermal_enabled.then_some(self.assembly_bushing_temp),
         }
@@ -965,8 +922,6 @@ impl BushingModel {
             NumberTarget::ExtCsDepthTolMinus => self.ext_cs_depth_tol_minus,
             NumberTarget::ExtCsAngleTolPlus => self.ext_cs_angle_tol_plus,
             NumberTarget::ExtCsAngleTolMinus => self.ext_cs_angle_tol_minus,
-            NumberTarget::MaxBoreNominalShift => self.max_bore_nominal_shift,
-            NumberTarget::BoreCapabilityMinWidth => self.bore_capability_min_width,
             NumberTarget::AssemblyHousingTemp => self.assembly_housing_temp,
             NumberTarget::AssemblyBushingTemp => self.assembly_bushing_temp,
         }
@@ -1026,8 +981,6 @@ impl BushingModel {
             NumberTarget::ExtCsDepthTolMinus => self.ext_cs_depth_tol_minus = raw,
             NumberTarget::ExtCsAngleTolPlus => self.ext_cs_angle_tol_plus = raw,
             NumberTarget::ExtCsAngleTolMinus => self.ext_cs_angle_tol_minus = raw,
-            NumberTarget::MaxBoreNominalShift => self.max_bore_nominal_shift = raw,
-            NumberTarget::BoreCapabilityMinWidth => self.bore_capability_min_width = raw,
             NumberTarget::AssemblyHousingTemp => self.assembly_housing_temp = raw,
             NumberTarget::AssemblyBushingTemp => self.assembly_bushing_temp = raw,
         }
@@ -1160,26 +1113,6 @@ impl BushingModel {
 
     pub fn toggle_ext_cs_mode(&mut self) {
         self.ext_cs_mode = cycle_cs_mode(self.ext_cs_mode);
-        self.recompute();
-    }
-
-    pub fn toggle_enforcement_enabled(&mut self) {
-        self.enforcement_enabled = !self.enforcement_enabled;
-        self.recompute();
-    }
-
-    pub fn toggle_lock_bore(&mut self) {
-        self.lock_bore = !self.lock_bore;
-        self.recompute();
-    }
-
-    pub fn toggle_preserve_bore_nominal(&mut self) {
-        self.preserve_bore_nominal = !self.preserve_bore_nominal;
-        self.recompute();
-    }
-
-    pub fn toggle_allow_bore_nominal_shift(&mut self) {
-        self.allow_bore_nominal_shift = !self.allow_bore_nominal_shift;
         self.recompute();
     }
 
@@ -1354,15 +1287,6 @@ mod tests {
         assert!(!rows.contains(&FieldRow::Number(NumberTarget::CsDia)), "dia is derived in DepthAngle mode");
         assert!(rows.contains(&FieldRow::Number(NumberTarget::CsDepth)));
         assert!(rows.contains(&FieldRow::Number(NumberTarget::CsAngle)));
-    }
-
-    #[test]
-    fn field_rows_hides_enforcement_sub_fields_until_enabled() {
-        let mut model = BushingModel::default();
-        model.advanced_open = true;
-        assert!(!field_rows(&model).contains(&FieldRow::ToggleLockBore));
-        model.enforcement_enabled = true;
-        assert!(field_rows(&model).contains(&FieldRow::ToggleLockBore));
     }
 
     #[test]

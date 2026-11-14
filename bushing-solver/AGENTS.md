@@ -51,7 +51,7 @@ for the physics/material data. The dependency only goes one direction.
 | `solve::{BushingInputs, BushingOutput, RangedValue, MarginCandidate, EndConstraint}` | `app-tui` | New field must default via `..Default::default()` (see Contracts) |
 | `geometry::{BushingType, IdType, resolve_bushing_section_params, compute_minimum_bushing_wall}` | `app-tui` Bushing model and native geometry | Consumed directly for cross-section drawing, not just solving |
 | `countersink::{CsMode, CsCorner, solve_countersink}` | `app-tui` | Countersink field derivation display |
-| `tolerance::{ToleranceRange, ToleranceStatus, EnforcementPolicy}` | `app-tui` | Spec-row display, enforcement toggle |
+| `tolerance::{ToleranceRange, ToleranceStatus, EnforcementPolicy}` | `app-tui` | Spec-row display (the app no longer exposes the enforcement policy: it passes the default, disabled one; the fit routes live in `app-tui` `advice.rs`) |
 | `reamers::{ReamerEntry, nearest}` | `app-tui` | Bore-diameter reamer picker dropdown |
 | `mechanics_core::lame::LameSample` (via `BushingOutput` stress-field fields) | `app-tui` | Lives in `mechanics-core`, re-exposed by this crate's output type |
 

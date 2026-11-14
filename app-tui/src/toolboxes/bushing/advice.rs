@@ -15,6 +15,7 @@ use bushing_solver::countersink::CsMode;
 use bushing_solver::geometry::{BushingType, IdType};
 use bushing_solver::tolerance::ToleranceStatus;
 
+use super::model::OD_BAND_FLOOR_IN;
 use super::model::{BushingModel, FitType, NumberTarget};
 
 /// Below this margin of safety a passing check is flagged as a warning.
@@ -36,7 +37,6 @@ pub enum CheckKind {
     BushingStress,
     EdgeSequencing,
     EdgeStrength,
-    Enforcement,
     FitType,
 }
 
@@ -50,7 +50,6 @@ impl CheckKind {
             CheckKind::BushingStress => "Bushing stress",
             CheckKind::EdgeSequencing => "Edge distance (sequencing)",
             CheckKind::EdgeStrength => "Edge distance (strength)",
-            CheckKind::Enforcement => "Tolerance enforcement",
             CheckKind::FitType => "Fit type",
         }
     }
@@ -77,7 +76,6 @@ impl CheckKind {
             CheckKind::HousingStress | CheckKind::BushingStress => &[NumberTarget::Interference],
             CheckKind::EdgeSequencing => &[NumberTarget::EdgeDist],
             CheckKind::EdgeStrength => &[NumberTarget::EdgeDist, NumberTarget::Load],
-            CheckKind::Enforcement => &[NumberTarget::MaxBoreNominalShift, NumberTarget::BoreCapabilityMinWidth],
             CheckKind::FitType => &[NumberTarget::Interference],
         }
     }
@@ -112,6 +110,10 @@ pub fn evaluate(model: &BushingModel) -> Vec<Check> {
         ToleranceStatus::Clamped => (Severity::Warn, "OD nominal clamped into the interference window".to_string()),
         ToleranceStatus::Infeasible => (Severity::Fail, "bore tolerance wider than interference tolerance".to_string()),
     };
+    let (sev, detail) = match od_band_shortfall(model) {
+        Some(od_w) if sev != Severity::Fail => (Severity::Fail, format!("bore band leaves a {od_w:.4} in bushing OD band; {OD_BAND_FLOOR_IN:.4} in is the least that can be ground")),
+        _ => (sev, detail),
+    };
     checks.push(Check { kind: CheckKind::Tolerance, severity: sev, detail });
 
     checks.push(Check {
@@ -128,14 +130,6 @@ pub fn evaluate(model: &BushingModel) -> Vec<Check> {
     checks.push(Check { kind: CheckKind::BushingStress, severity: margin_severity(out.bushing_ms), detail: format!("MS {:+.2}", out.bushing_ms) });
     checks.push(Check { kind: CheckKind::EdgeSequencing, severity: margin_severity(out.sequence_margin), detail: format!("margin {:+.2}", out.sequence_margin) });
     checks.push(Check { kind: CheckKind::EdgeStrength, severity: margin_severity(out.strength_margin), detail: format!("margin {:+.2}", out.strength_margin) });
-
-    if model.enforcement_enabled {
-        checks.push(Check {
-            kind: CheckKind::Enforcement,
-            severity: if out.enforcement_satisfied { Severity::Pass } else { Severity::Fail },
-            detail: if out.enforcement_satisfied { "satisfied".to_string() } else { "could not reach a feasible band".to_string() },
-        });
-    }
 
     let mismatch = match model.fit_type {
         FitType::Clearance | FitType::Slip => model.interference > 0.0,
@@ -224,8 +218,15 @@ fn edits_for_size(model: &BushingModel, target: NumberTarget, size: &super::mode
             Edit { target: NumberTarget::BoreTolPlus, value: size.tol_plus },
             Edit { target: NumberTarget::BoreTolMinus, value: size.tol_minus },
         ];
-        let want_minus = model.interference_tol_minus.max(size.tol_plus);
-        let want_plus = model.interference_tol_plus.max(size.tol_minus);
+        let mut want_minus = model.interference_tol_minus.max(size.tol_plus);
+        let mut want_plus = model.interference_tol_plus.max(size.tol_minus);
+        // ...and leave the bushing OD a band that can be ground.
+        let bore_w = size.tol_plus + size.tol_minus;
+        let short = bore_w + OD_BAND_FLOOR_IN - (want_plus + want_minus);
+        if bore_w > 0.0 && short > 1e-12 {
+            want_plus += short / 2.0;
+            want_minus += short / 2.0;
+        }
         if want_minus > model.interference_tol_minus + 1e-12 {
             edits.push(Edit { target: NumberTarget::InterferenceTolMinus, value: want_minus });
         }
@@ -432,21 +433,23 @@ pub fn recommend(model: &BushingModel) -> Vec<Recommendation> {
         let kind = *kind;
         match kind {
             CheckKind::Tolerance => {
-                // Widen the interference band to contain the bore band...
-                let widen = vec![
-                    Edit { target: NumberTarget::InterferenceTolPlus, value: model.interference_tol_plus.max(model.bore_tol_plus) },
-                    Edit { target: NumberTarget::InterferenceTolMinus, value: model.interference_tol_minus.max(model.bore_tol_minus) },
-                ];
-                if verified(model, &base_fails, kind, &widen) {
-                    push_fix(&mut recs, kind, direct(widen));
+                for (label, fix) in tolerance_routes(model, &base_fails) {
+                    let before = recs.len();
+                    push_fix(&mut recs, kind, fix);
+                    if let Some(r) = recs.get_mut(before) {
+                        r.summary = format!("{label}: {}", r.summary);
+                    }
                 }
-                // ...or tighten the bore band to fit inside the interference band.
-                let tighten = vec![
-                    Edit { target: NumberTarget::BoreTolPlus, value: model.bore_tol_plus.min(model.interference_tol_plus) },
-                    Edit { target: NumberTarget::BoreTolMinus, value: model.bore_tol_minus.min(model.interference_tol_minus) },
-                ];
-                if verified(model, &base_fails, kind, &tighten) {
-                    push_fix(&mut recs, kind, direct(tighten));
+                if !recs.iter().any(|r| r.fixes == kind && r.summary.starts_with("Use a different reamer")) {
+                    recs.push(Recommendation {
+                        fixes: kind,
+                        summary: "Use a different reamer: none in the catalog holds the needed band at or below this bore".to_string(),
+                        outcome: "advice only - nothing to apply".to_string(),
+                        edits: Vec::new(),
+                        impact: Vec::new(),
+                        note: None,
+                        touches_bore: false,
+                    });
                 }
             }
             CheckKind::StraightWall | CheckKind::NeckWall => {
@@ -495,17 +498,6 @@ pub fn recommend(model: &BushingModel) -> Vec<Recommendation> {
                 }
                 push_fix(&mut recs, kind, fix_by(kind, NumberTarget::BoreDia, smaller_bore));
             }
-            CheckKind::Enforcement => {
-                recs.push(Recommendation {
-                    fixes: kind,
-                    summary: "Enable Allow Bore Nominal Shift (and unlock the bore), or widen the interference tolerance".to_string(),
-                    outcome: "manual change - toggles are not auto-applied".to_string(),
-                    edits: Vec::new(),
-                    impact: Vec::new(),
-                    note: None,
-                    touches_bore: false,
-                });
-            }
             CheckKind::FitType => {}
         }
     }
@@ -543,6 +535,62 @@ pub fn recommend(model: &BushingModel) -> Vec<Recommendation> {
     recs
 }
 
+/// How narrow the bushing OD band comes out (inches) when the bore band leaves less of the interference band than a
+/// ground OD can be held to. `None`: no bore band to speak of, or the OD band is wide enough.
+pub fn od_band_shortfall(model: &BushingModel) -> Option<f64> {
+    let bore_w = model.bore_tol_plus + model.bore_tol_minus;
+    let od_w = model.output.od_tol.upper - model.output.od_tol.lower;
+    (bore_w > 0.0 && model.output.tolerance_status != ToleranceStatus::Infeasible && od_w < OD_BAND_FLOOR_IN - 1e-9).then_some(od_w)
+}
+
+/// The routes out of a tolerance failure, each verified by solving a copy: tighten the bore band (the least change: the
+/// reamer nominal, the minimum bore size and the interference requirement all stay), a catalog reamer that holds the band,
+/// or a wider interference band (the requirement itself changes). A route that cannot work is left out or, for the
+/// reamer, replaced by advice saying why.
+fn tolerance_routes(model: &BushingModel, base_fails: &[CheckKind]) -> Vec<(&'static str, Option<Fix>)> {
+    let kind = CheckKind::Tolerance;
+    let width = |p: f64, m: f64| p + m;
+    let (bore_w, int_w) = (width(model.bore_tol_plus, model.bore_tol_minus), width(model.interference_tol_plus, model.interference_tol_minus));
+    // The widest bore band the interference band can carry beside the narrowest OD band.
+    let room = int_w - OD_BAND_FLOOR_IN;
+    let mut routes = Vec::new();
+
+    // 1. Tighten the bore band from the top; the minimum bore size is kept.
+    if room > 1e-9 && bore_w > room + 1e-12 {
+        let low = model.bore_dia - model.bore_tol_minus;
+        let edits = if room >= model.bore_tol_minus {
+            vec![Edit { target: NumberTarget::BoreTolPlus, value: room - model.bore_tol_minus }]
+        } else {
+            // A band narrower than the lower tolerance: the nominal rises to the minimum size so that stays put.
+            vec![Edit { target: NumberTarget::BoreDia, value: low }, Edit { target: NumberTarget::BoreTolMinus, value: 0.0 }, Edit { target: NumberTarget::BoreTolPlus, value: room }]
+        };
+        if verified(model, base_fails, kind, &edits) {
+            let note = format!("needs a finish ream or hone that holds a {room:.4} in band (now {bore_w:.4}); the minimum bore size and your interference requirement stay as entered - confirm your shop can hold it");
+            routes.push(("Tighten the bore band", Some(Fix { edits, note: Some(note) })));
+        }
+    }
+
+    // 2. The nearest catalog reamer whose own tolerance holds that band. The bore is never proposed larger.
+    let mut sizes: Vec<_> = model.catalog_sizes().into_iter().filter(|c| c.source == "reamer" && c.nominal <= model.bore_dia + 1e-9 && c.tol_plus + c.tol_minus <= room + 1e-9 && room > 1e-9).collect();
+    sizes.sort_by(|a, b| (model.bore_dia - a.nominal).total_cmp(&(model.bore_dia - b.nominal)));
+    let reamer = sizes.into_iter().take(8).find_map(|size| {
+        let edits = vec![Edit { target: NumberTarget::BoreDia, value: size.nominal }, Edit { target: NumberTarget::BoreTolPlus, value: size.tol_plus }, Edit { target: NumberTarget::BoreTolMinus, value: size.tol_minus }];
+        verified(model, base_fails, kind, &edits).then(|| Fix { edits, note: Some(format!("reamer {} ({:.4} in, +{:.4}/-{:.4}): its own tolerance holds the band, your interference requirement is unchanged", size.label, size.nominal, size.tol_plus, size.tol_minus)) })
+    });
+    routes.push(("Use a different reamer", reamer));
+
+    // 3. Widen the interference band evenly to carry the bore band and the narrowest OD band.
+    let more = (bore_w + OD_BAND_FLOOR_IN - int_w) / 2.0;
+    if more > 1e-12 {
+        let edits = vec![Edit { target: NumberTarget::InterferenceTolPlus, value: model.interference_tol_plus + more }, Edit { target: NumberTarget::InterferenceTolMinus, value: model.interference_tol_minus + more }];
+        if verified(model, base_fails, kind, &edits) {
+            let note = format!("your interference requirement changes: band {int_w:.4} in becomes {:.4} in, so the pressure and stress range widens; the bore stays as it is", int_w + 2.0 * more);
+            routes.push(("Widen the interference band", Some(Fix { edits, note: Some(note) })));
+        }
+    }
+    routes
+}
+
 fn verified(model: &BushingModel, base_fails: &[CheckKind], kind: CheckKind, edits: &[Edit]) -> bool {
     if edits.iter().all(|e| (model.number_value(e.target) - e.value).abs() < 1e-12) {
         return false;
@@ -566,7 +614,8 @@ fn verified(model: &BushingModel, base_fails: &[CheckKind], kind: CheckKind, edi
 /// the whole interference band leaves no range at all: Infeasible.
 pub fn explain_tolerance(model: &BushingModel) -> Option<Vec<String>> {
     let out = &model.output;
-    if out.tolerance_status == ToleranceStatus::Ok {
+    let shortfall = od_band_shortfall(model);
+    if out.tolerance_status == ToleranceStatus::Ok && shortfall.is_none() {
         return None;
     }
     let (bore, int, od) = (&out.bore_tol, &out.interference_tol, &out.od_tol);
@@ -599,6 +648,12 @@ pub fn explain_tolerance(model: &BushingModel) -> Option<Vec<String>> {
             "Bore Tol + ({}) + Bore Tol - ({}) is larger than Interference Tol + ({}) + Interference Tol - ({}). Widen the interference tolerances or tighten the bore tolerances until the bore band is no wider than the interference band.",
             f(bore_plus), f(bore_minus), f(int_plus), f(int_minus)
         ));
+    } else if let (Some(od_w), ToleranceStatus::Ok) = (shortfall, out.tolerance_status) {
+        p.push("Why the OD band is too tight".to_string());
+        p.push(format!(
+            "The bore band is {} in wide and the interference band {} in wide, which leaves the bushing OD a band of only {} in. A ground OD cannot be held tighter than {} in. Pick a route in the Fixes list: tighten the bore band, use a reamer that holds one, or widen the interference band.",
+            f(bore_width), f(int_width), f(od_w), f(OD_BAND_FLOOR_IN)
+        ));
     } else {
         let shift = od.nominal - desired;
         p.push("Why it is CLAMPED".to_string());
@@ -626,11 +681,6 @@ pub fn explain_tolerance(model: &BushingModel) -> Option<Vec<String>> {
     }
     p.push("How to clear it".to_string());
     p.push("Make the bore tolerance sit inside the interference window on each side separately (Bore Tol + <= Interference Tol -, Bore Tol - <= Interference Tol +), or move the Target Interference so the window re-centres on the bore band. The Fixes list offers verified edits where one exists.".to_string());
-    if model.enforcement_enabled {
-        if let Some(last) = p.last_mut() {
-            last.push_str(" Note: Strict Interference Enforcement is on - the solver may already have tightened the bore band to reach this state; the bore tolerance shown above is the tightened one.");
-        }
-    }
     Some(p)
 }
 
@@ -783,9 +833,11 @@ mod tests {
     #[test]
     fn a_clamped_od_gets_a_verified_fix_that_centres_it() {
         let mut m = model();
-        m.commit_number(NumberTarget::BoreTolPlus, 0.002);
+        m.commit_number(NumberTarget::BoreTolPlus, 0.0018);
         m.commit_number(NumberTarget::InterferenceTolPlus, 0.001);
         m.commit_number(NumberTarget::InterferenceTolMinus, 0.001);
+        assert_eq!(m.output.tolerance_status, ToleranceStatus::Clamped);
+        assert_eq!(severity_of(&m.checks, CheckKind::Tolerance), Severity::Warn);
         let idx = m.recommendations.iter().position(|r| r.fixes == CheckKind::Tolerance).expect("fix for clamped OD");
         m.apply_recommendation(idx);
         assert_eq!(m.output.tolerance_status, ToleranceStatus::Ok);
@@ -882,5 +934,97 @@ mod tests {
         assert!(["reamer", "drill", "saved"].contains(&size.source));
         assert!(rec.note.as_deref().unwrap().contains(size.source));
     }
-}
 
+    fn routes_model() -> BushingModel {
+        // Bore band 0.0010 wide inside an interference band 0.0006 wide: cannot be held.
+        let mut m = model();
+        m.commit_number(NumberTarget::BoreTolPlus, 0.0010);
+        m.commit_number(NumberTarget::InterferenceTolPlus, 0.0003);
+        m.commit_number(NumberTarget::InterferenceTolMinus, 0.0003);
+        m
+    }
+    fn applied(m: &BushingModel, rec: &Recommendation) -> BushingModel {
+        let mut a = m.clone();
+        for e in &rec.edits {
+            a.commit_number(e.target, e.value);
+        }
+        a
+    }
+    fn route<'a>(m: &'a BushingModel, name: &str) -> Option<&'a Recommendation> {
+        m.recommendations.iter().find(|r| r.fixes == CheckKind::Tolerance && r.summary.starts_with(name))
+    }
+
+    #[test]
+    fn a_bore_band_wider_than_the_interference_band_offers_three_verified_routes() {
+        let m = routes_model();
+        assert_eq!(severity_of(&m.checks, CheckKind::Tolerance), Severity::Fail);
+        for name in ["Tighten the bore band", "Use a different reamer", "Widen the interference band"] {
+            assert!(route(&m, name).is_some(), "{name} missing from {:?}", m.recommendations.iter().map(|r| &r.summary).collect::<Vec<_>>());
+        }
+        for name in ["Tighten the bore band", "Widen the interference band"] {
+            let rec = route(&m, name).unwrap();
+            assert!(rec.is_applicable() && rec.note.is_some());
+            assert_ne!(severity_of(&applied(&m, rec).checks, CheckKind::Tolerance), Severity::Fail, "{name}");
+        }
+    }
+
+    #[test]
+    fn tightening_changes_only_the_bore_top_and_leaves_the_requirement_and_minimum_size() {
+        let m = routes_model();
+        let a = applied(&m, route(&m, "Tighten the bore band").unwrap());
+        assert_eq!((a.interference, a.interference_tol_plus, a.interference_tol_minus), (m.interference, m.interference_tol_plus, m.interference_tol_minus));
+        assert_eq!(a.bore_dia - a.bore_tol_minus, m.bore_dia - m.bore_tol_minus, "minimum bore size kept");
+        let width = a.bore_tol_plus + a.bore_tol_minus;
+        assert!((width - (0.0006 - OD_BAND_FLOOR_IN)).abs() < 1e-9, "bore band {width}");
+        assert!(a.output.od_tol.upper - a.output.od_tol.lower >= OD_BAND_FLOOR_IN - 1e-9);
+        // Minimal: a slightly wider bore band no longer passes.
+        let mut t = a.clone();
+        t.commit_number(NumberTarget::BoreTolPlus, a.bore_tol_plus + 0.0001);
+        assert_eq!(severity_of(&evaluate(&t), CheckKind::Tolerance), Severity::Fail);
+    }
+
+    #[test]
+    fn widening_adds_the_same_to_both_sides_and_leaves_the_bore_alone() {
+        let m = routes_model();
+        let a = applied(&m, route(&m, "Widen the interference band").unwrap());
+        assert_eq!((a.bore_dia, a.bore_tol_plus, a.bore_tol_minus), (m.bore_dia, m.bore_tol_plus, m.bore_tol_minus));
+        assert!((a.interference_tol_plus - m.interference_tol_plus - (a.interference_tol_minus - m.interference_tol_minus)).abs() < 1e-12);
+        assert!(((a.interference_tol_plus + a.interference_tol_minus) - (0.0010 + OD_BAND_FLOOR_IN)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_reamer_route_keeps_the_requirement_and_is_never_a_larger_bore() {
+        let m = routes_model();
+        let rec = route(&m, "Use a different reamer").unwrap();
+        if rec.is_applicable() {
+            let a = applied(&m, rec);
+            assert!(a.bore_dia <= m.bore_dia + 1e-9);
+            assert_eq!((a.interference_tol_plus, a.interference_tol_minus), (m.interference_tol_plus, m.interference_tol_minus));
+            assert_eq!(severity_of(&a.checks, CheckKind::Tolerance), Severity::Pass);
+        } else {
+            assert!(rec.summary.contains("none in the catalog"));
+        }
+    }
+
+    #[test]
+    fn a_feasible_band_that_leaves_no_workable_od_band_fails_and_a_zero_band_case_does_not() {
+        let mut m = model();
+        assert!(od_band_shortfall(&m).is_none(), "no bore band: nothing to flag");
+        m.commit_number(NumberTarget::BoreTolPlus, 0.0005);
+        m.commit_number(NumberTarget::InterferenceTolPlus, 0.00026);
+        m.commit_number(NumberTarget::InterferenceTolMinus, 0.00026);
+        assert!(od_band_shortfall(&m).is_some());
+        assert_eq!(severity_of(&m.checks, CheckKind::Tolerance), Severity::Fail);
+        assert!(explain_tolerance(&m).is_some());
+        assert!(route(&m, "Widen the interference band").is_some());
+    }
+
+    #[test]
+    fn no_route_is_offered_to_tighten_when_the_interference_band_cannot_carry_an_od_band() {
+        let m = routes_model();
+        let mut t = m.clone();
+        t.commit_number(NumberTarget::InterferenceTolPlus, 0.0001);
+        t.commit_number(NumberTarget::InterferenceTolMinus, 0.0001);
+        assert!(route(&t, "Tighten the bore band").is_none());
+    }
+}

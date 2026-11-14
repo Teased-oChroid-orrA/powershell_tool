@@ -12,12 +12,12 @@ pub const FORMAT_VERSION: u32 = 1;
 const UNITS: &str = "in-lbf-ksi-F";
 
 /// Every number row. The match forces a compile error when a target is added without a line here.
-pub const NUMBERS: [NumberTarget; 40] = {
+pub const NUMBERS: [NumberTarget; 38] = {
     use NumberTarget::*;
     [
         BoreDia, BoreTolPlus, BoreTolMinus, IdBushing, Interference, InterferenceTolPlus, InterferenceTolMinus, HousingLen, HousingWidth, EdgeDist, Friction, DeltaT, MinWallStraight, EdgeLoadAngleDeg, Load, FlangeOd, FlangeThk, MinWallNeck, CsDia, CsDepth, CsAngle,
-        CsDiaTolPlus, CsDiaTolMinus, CsDepthTolPlus, CsDepthTolMinus, CsAngleTolPlus, CsAngleTolMinus, ExtCsDia, ExtCsDepth, ExtCsAngle, ExtCsDiaTolPlus, ExtCsDiaTolMinus, ExtCsDepthTolPlus, ExtCsDepthTolMinus, ExtCsAngleTolPlus, ExtCsAngleTolMinus, MaxBoreNominalShift,
-        BoreCapabilityMinWidth, AssemblyHousingTemp, AssemblyBushingTemp,
+        CsDiaTolPlus, CsDiaTolMinus, CsDepthTolPlus, CsDepthTolMinus, CsAngleTolPlus, CsAngleTolMinus, ExtCsDia, ExtCsDepth, ExtCsAngle, ExtCsDiaTolPlus, ExtCsDiaTolMinus, ExtCsDepthTolPlus, ExtCsDepthTolMinus, ExtCsAngleTolPlus, ExtCsAngleTolMinus,
+        AssemblyHousingTemp, AssemblyBushingTemp,
     ]
 };
 #[allow(dead_code)]
@@ -25,8 +25,7 @@ fn every_number_target_is_listed(t: NumberTarget) {
     use NumberTarget::*;
     match t {
         BoreDia | BoreTolPlus | BoreTolMinus | IdBushing | Interference | InterferenceTolPlus | InterferenceTolMinus | HousingLen | HousingWidth | EdgeDist | Friction | DeltaT | MinWallStraight | EdgeLoadAngleDeg | Load | FlangeOd | FlangeThk | MinWallNeck | CsDia | CsDepth | CsAngle | CsDiaTolPlus
-        | CsDiaTolMinus | CsDepthTolPlus | CsDepthTolMinus | CsAngleTolPlus | CsAngleTolMinus | ExtCsDia | ExtCsDepth | ExtCsAngle | ExtCsDiaTolPlus | ExtCsDiaTolMinus | ExtCsDepthTolPlus | ExtCsDepthTolMinus | ExtCsAngleTolPlus | ExtCsAngleTolMinus | MaxBoreNominalShift
-        | BoreCapabilityMinWidth | AssemblyHousingTemp | AssemblyBushingTemp => {}
+        | CsDiaTolMinus | CsDepthTolPlus | CsDepthTolMinus | CsAngleTolPlus | CsAngleTolMinus | ExtCsDia | ExtCsDepth | ExtCsAngle | ExtCsDiaTolPlus | ExtCsDiaTolMinus | ExtCsDepthTolPlus | ExtCsDepthTolMinus | ExtCsAngleTolPlus | ExtCsAngleTolMinus | AssemblyHousingTemp | AssemblyBushingTemp => {}
     }
 }
 
@@ -81,10 +80,6 @@ impl BushingFile {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
         let flags = [
-            ("enforcement", m.enforcement_enabled),
-            ("lock bore", m.lock_bore),
-            ("preserve bore nominal", m.preserve_bore_nominal),
-            ("allow bore nominal shift", m.allow_bore_nominal_shift),
             ("install thermal assist", m.assembly_thermal_enabled),
             ("advanced open", m.advanced_open),
         ]
@@ -118,18 +113,6 @@ impl BushingFile {
         choice("internal cs mode", &mut |w| from_label(CsMode::default(), model::cycle_cs_mode, model::label_cs_mode, w).map(|v| m.cs_mode = v).is_some());
         choice("external cs mode", &mut |w| from_label(CsMode::default(), model::cycle_cs_mode, model::label_cs_mode, w).map(|v| m.ext_cs_mode = v).is_some());
         let flag = |key: &str| self.flags.get(key).copied();
-        if let Some(v) = flag("enforcement") {
-            m.enforcement_enabled = v;
-        }
-        if let Some(v) = flag("lock bore") {
-            m.lock_bore = v;
-        }
-        if let Some(v) = flag("preserve bore nominal") {
-            m.preserve_bore_nominal = v;
-        }
-        if let Some(v) = flag("allow bore nominal shift") {
-            m.allow_bore_nominal_shift = v;
-        }
         if let Some(v) = flag("install thermal assist") {
             m.assembly_thermal_enabled = v;
         }
@@ -180,6 +163,19 @@ mod tests {
         labels.sort_unstable();
         labels.dedup();
         assert_eq!(labels.len(), NUMBERS.len());
+    }
+
+    #[test]
+    fn a_case_saved_with_the_retired_enforcement_controls_still_opens_and_ignores_them() {
+        let mut v: serde_json::Value = serde_json::from_str(&BushingFile::capture(&BushingModel::default(), "old").to_json()).unwrap();
+        v["flags"]["enforcement"] = true.into();
+        v["flags"]["lock bore"] = false.into();
+        v["numbers"]["Max Bore Nominal Shift"] = 0.01.into();
+        v["numbers"]["Bore Capability Min Width"] = 0.002.into();
+        let f = BushingFile::from_json(&v.to_string()).unwrap();
+        let mut m = BushingModel::default();
+        assert!(f.apply(&mut m).is_empty());
+        assert_eq!(m.output.tolerance_status, BushingModel::default().output.tolerance_status);
     }
 
     #[test]

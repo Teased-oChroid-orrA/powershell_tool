@@ -23,19 +23,11 @@ pub fn display_value(model: &BushingModel, row: FieldRow) -> String {
         FieldRow::ToggleEndConstraint => model::label_end_constraint(model.end_constraint).to_string(),
         FieldRow::ToggleCsMode => model::label_cs_mode(model.cs_mode).to_string(),
         FieldRow::ToggleExtCsMode => model::label_cs_mode(model.ext_cs_mode).to_string(),
-        FieldRow::ToggleEnforcementEnabled => if model.enforcement_enabled { "Enabled" } else { "Disabled" }.to_string(),
-        FieldRow::ToggleLockBore => bool_label(model.lock_bore),
-        FieldRow::TogglePreserveBoreNominal => bool_label(model.preserve_bore_nominal),
-        FieldRow::ToggleAllowBoreNominalShift => bool_label(model.allow_bore_nominal_shift),
         FieldRow::ToggleAssemblyThermalEnabled => if model.assembly_thermal_enabled { "Enabled" } else { "Disabled" }.to_string(),
         FieldRow::OpenHousingMaterialPicker => model.housing_material().name.to_string(),
         FieldRow::OpenBushingMaterialPicker => model.bushing_material().name.to_string(),
         FieldRow::Number(target) => target.format_value(model.number_value(target)),
     }
-}
-
-fn bool_label(b: bool) -> String {
-    if b { "Yes" } else { "No" }.to_string()
 }
 
 /// The plain-text report (Export report): pure and synchronous, no filesystem access.
