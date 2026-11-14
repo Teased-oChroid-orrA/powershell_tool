@@ -114,6 +114,8 @@ struct FingerprintFields<'a> {
     // defaults for the same reason.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     fold_accents: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    match_across_lines: bool,
     #[serde(skip_serializing_if = "is_zero_u8")]
     typo_tolerance: u8,
     #[serde(skip_serializing_if = "is_default_embed_lines")]
@@ -162,6 +164,7 @@ pub fn compute_fingerprint(settings: &SearchSettings) -> String {
         pdf_yolow: settings.pdf_yolow,
         pdf_timeout_seconds: settings.pdf_timeout_seconds,
         fold_accents: settings.fold_accents,
+        match_across_lines: settings.match_across_lines,
         typo_tolerance: settings.typo_tolerance,
         max_embed_lines: settings.max_embed_lines,
     };
@@ -313,6 +316,9 @@ mod tests {
         let yolow = SearchSettings { pdf_yolow: true, ..base.clone() };
         assert_ne!(compute_fingerprint(&base), compute_fingerprint(&yolow));
         assert!(!compute_fingerprint(&base).contains("pdf_yolow"));
+        let across = SearchSettings { match_across_lines: true, ..base.clone() };
+        assert_ne!(compute_fingerprint(&base), compute_fingerprint(&across));
+        assert!(!compute_fingerprint(&base).contains("match_across_lines"));
     }
 
     #[test]

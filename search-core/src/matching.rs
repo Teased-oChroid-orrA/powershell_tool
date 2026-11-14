@@ -654,6 +654,10 @@ fn apply_filter_group(
         return outcome;
     }
 
+    if settings.match_across_lines && !settings.use_regex {
+        add_cross_line_hits(lines, settings, state, &mut outcome, &mut per_filter_hit_lines);
+    }
+
     if matches!(settings.match_mode, MatchMode::AllInFile | MatchMode::Proximity) {
         for hits in &per_filter_hit_lines {
             if hits.is_empty() {
@@ -674,6 +678,89 @@ fn apply_filter_group(
     }
 
     outcome
+}
+
+/// `SearchSettings::match_across_lines`: reports a multi-word filter whose words are split by a line
+/// break between two adjacent lines, on the first line (so line numbers stay those of real lines).
+/// Literal and whole-word modes; NEAR and typo-tolerant slots are not joined. A line the exclusion
+/// filters reject never takes part. Existing hits are kept as they are.
+fn add_cross_line_hits(
+    lines: &[String],
+    settings: &SearchSettings,
+    state: &CompiledMatchState,
+    outcome: &mut LineMatchOutcome,
+    per_filter_hit_lines: &mut [Vec<i32>],
+) {
+    let needles: Vec<Option<String>> = state
+        .filters_lower
+        .iter()
+        .enumerate()
+        .map(|(fi, f)| {
+            let usable = state.near.get(fi).is_none_or(Option::is_none) && state.fuzzy.get(fi).is_none_or(Option::is_none);
+            let collapsed = f.split_whitespace().collect::<Vec<_>>().join(" ");
+            (usable && collapsed.contains(' ')).then_some(collapsed)
+        })
+        .collect();
+    if needles.iter().all(Option::is_none) {
+        return;
+    }
+    let fold = state.fold;
+    let low = |l: &str| if fold { textfold::fold_lower(l) } else { l.to_lowercase() };
+    let excluded = |l: &str| state.exclude_filters_lower.iter().any(|x| l.contains(x.as_str()));
+    let mut prev: Option<String> = None;
+    for i in 0..lines.len().saturating_sub(1) {
+        let left = match prev.take() {
+            Some(l) => l,
+            None => low(&lines[i]),
+        };
+        let right = low(&lines[i + 1]);
+        let (left_t, right_t) = (left.trim_end(), right.trim_start());
+        let usable_pair = !left_t.is_empty() && !right_t.is_empty() && !excluded(&left) && !excluded(&right);
+        if usable_pair {
+            let line_number = (i + 1) as i32;
+            for (fi, needle) in needles.iter().enumerate() {
+                let Some(needle) = needle else { continue };
+                if per_filter_hit_lines[fi].contains(&line_number)
+                    || !straddles(left_t, right_t, needle, settings.whole_word)
+                {
+                    continue;
+                }
+                per_filter_hit_lines[fi].push(line_number);
+                let name = settings.filters[fi].clone();
+                match outcome.hits.iter_mut().find(|h| h.line_number == line_number) {
+                    Some(h) => h.matched_filters.push(name),
+                    None => outcome.hits.push(LineHit {
+                        line_number,
+                        before: if i > 0 { lines.get(i - 1).cloned() } else { None },
+                        match_line: lines[i].clone(),
+                        after: lines.get(i + 1).cloned(),
+                        matched_filters: vec![name],
+                    }),
+                }
+            }
+        }
+        prev = Some(right);
+    }
+    for hits in per_filter_hit_lines.iter_mut() {
+        hits.sort_unstable();
+        hits.dedup();
+    }
+    outcome.hits.sort_by_key(|h| h.line_number);
+}
+
+/// True when `needle` (lowercase, single spaces) starts at the end of `left` and ends at the start of
+/// `right`, with at least one word on each side of the break; whole-word also needs a word edge at
+/// both ends of the phrase.
+fn straddles(left: &str, right: &str, needle: &str, whole_word: bool) -> bool {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    needle.match_indices(' ').any(|(k, _)| {
+        let (head, tail) = (&needle[..k], &needle[k + 1..]);
+        let (Some(before), Some(after)) = (left.strip_suffix(head), right.strip_prefix(tail)) else {
+            return false;
+        };
+        !whole_word
+            || (!before.chars().next_back().is_some_and(is_word) && !after.chars().next().is_some_and(is_word))
+    })
 }
 
 /// A lowercased filter the ASCII whole-word fast path can decide exactly.
@@ -1277,5 +1364,72 @@ mod tests {
         s.typo_tolerance = 1;
         assert!(near_lines(&s, &["torqe bolt"]).is_empty());
         assert_eq!(near_lines(&s, &["torque bolt"]), vec![1]);
+    }
+
+    fn across(filters: &[&str], whole_word: bool) -> (SearchSettings, CompiledMatchState) {
+        let mut settings = settings_with_filters(filters);
+        settings.match_across_lines = true;
+        settings.whole_word = whole_word;
+        let state = CompiledMatchState::build(&settings).unwrap();
+        (settings, state)
+    }
+
+    #[test]
+    fn phrase_across_a_line_break_is_reported_on_its_first_line() {
+        let lines = lines_of(&["intro", "the maximum bearing", "stress is 40 ksi", "end"]);
+        let (settings, state) = across(&["bearing stress"], false);
+        let outcome = apply_line_matching(&lines, &settings, &state);
+        assert_eq!(outcome.hits.iter().map(|h| h.line_number).collect::<Vec<_>>(), [2]);
+        assert_eq!(outcome.hits[0].match_line, "the maximum bearing");
+        assert_eq!(outcome.hits[0].after.as_deref(), Some("stress is 40 ksi"));
+
+        // Off by default: exact search is unchanged.
+        let off = settings_with_filters(&["bearing stress"]);
+        let off_state = CompiledMatchState::build(&off).unwrap();
+        assert!(apply_line_matching(&lines, &off, &off_state).hits.is_empty());
+    }
+
+    #[test]
+    fn a_split_in_the_middle_of_a_word_or_one_word_phrase_is_not_joined() {
+        let (settings, state) = across(&["bearing stress"], false);
+        let split_word = lines_of(&["the bearing str", "ess is 40"]);
+        assert!(apply_line_matching(&split_word, &settings, &state).hits.is_empty());
+        let (single, single_state) = across(&["bearing"], false);
+        let lines = lines_of(&["bea", "ring"]);
+        assert!(apply_line_matching(&lines, &single, &single_state).hits.is_empty());
+    }
+
+    #[test]
+    fn whole_word_needs_word_edges_at_both_ends_of_a_cross_line_phrase() {
+        let (settings, state) = across(&["bearing stress"], true);
+        let inside = lines_of(&["a reinforcing bearing", "stresses are low"]);
+        assert!(apply_line_matching(&inside, &settings, &state).hits.is_empty());
+        let before = lines_of(&["a nonbearing", "stress case"]);
+        assert!(apply_line_matching(&before, &settings, &state).hits.is_empty());
+        let ok = lines_of(&["the bearing", "stress case"]);
+        assert_eq!(apply_line_matching(&ok, &settings, &state).hits.len(), 1);
+    }
+
+    #[test]
+    fn a_line_already_matching_is_not_duplicated_and_modes_see_the_cross_line_hit() {
+        let lines = lines_of(&["bearing stress here, and the bearing", "stress again", "pin shear"]);
+        let (mut settings, _) = across(&["bearing stress", "pin shear"], false);
+        settings.match_mode = MatchMode::Proximity;
+        settings.proximity_lines = 3;
+        let state = CompiledMatchState::build(&settings).unwrap();
+        let outcome = apply_line_matching(&lines, &settings, &state);
+        assert_eq!(outcome.hits.len(), 2, "{:?}", outcome.hits);
+        assert_eq!(outcome.hits[0].matched_filters, ["bearing stress"]);
+        assert!(outcome.passes_mode);
+    }
+
+    #[test]
+    fn an_excluded_line_does_not_join() {
+        let mut settings = settings_with_filters(&["bearing stress"]);
+        settings.match_across_lines = true;
+        settings.exclude_filters = vec!["draft".into()];
+        let state = CompiledMatchState::build(&settings).unwrap();
+        let lines = lines_of(&["the bearing", "stress draft"]);
+        assert!(apply_line_matching(&lines, &settings, &state).hits.is_empty());
     }
 }

@@ -75,6 +75,8 @@ pub struct SearchToolConfig {
     pub pdf_yolow: bool,
     /// Fold accents, ligatures and curly quotes when matching (off by default).
     pub fold_accents: bool,
+    /// A multi-word filter also matches across a line break (reported on its first line).
+    pub match_across_lines: bool,
     /// Typos allowed per word, 0 to 2 (0 = exact).
     pub typo_tolerance: u8,
     pub file_timeout_seconds: i32,
@@ -123,6 +125,7 @@ impl Default for SearchToolConfig {
             ocr_scanned_pdfs: false,
             pdf_yolow: false,
             fold_accents: false,
+            match_across_lines: false,
             typo_tolerance: 0,
             file_timeout_seconds: 30,
             max_retries: 3,
@@ -359,6 +362,7 @@ pub fn build_settings(config: &SearchToolConfig) -> SearchSettings {
         ocr_scanned_pdfs: config.ocr_scanned_pdfs,
         pdf_yolow: config.pdf_yolow,
         fold_accents: config.fold_accents,
+        match_across_lines: config.match_across_lines,
         typo_tolerance: config.typo_tolerance,
         ocr_cache_dir: crate::paths::app_data_dir().map(|d| d.join("ocr-cache").to_string_lossy().into_owned()),
         export_csv: config.export_csv,

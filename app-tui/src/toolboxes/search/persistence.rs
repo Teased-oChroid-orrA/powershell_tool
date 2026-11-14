@@ -90,6 +90,8 @@ pub struct PersistedSearchSettings {
     pub ocr_scanned_pdfs: bool,
     #[serde(default)]
     pub pdf_yolow: bool,
+    #[serde(default)]
+    pub match_across_lines: bool,
     pub file_timeout_seconds: Option<i32>,
     pub max_retries: Option<i32>,
 
@@ -144,6 +146,7 @@ impl From<&SearchToolConfig> for PersistedSearchSettings {
             pdf_timeout_seconds: Some(config.pdf_timeout_seconds),
             ocr_scanned_pdfs: config.ocr_scanned_pdfs,
             pdf_yolow: config.pdf_yolow,
+            match_across_lines: config.match_across_lines,
             file_timeout_seconds: Some(config.file_timeout_seconds),
             max_retries: Some(config.max_retries),
             index_enabled: config.index.enabled,
@@ -209,6 +212,7 @@ impl PersistedSearchSettings {
         }
         config.ocr_scanned_pdfs = self.ocr_scanned_pdfs;
         config.pdf_yolow = self.pdf_yolow;
+        config.match_across_lines = self.match_across_lines;
         if let Some(v) = self.file_timeout_seconds {
             config.file_timeout_seconds = v;
         }
@@ -380,13 +384,14 @@ mod tests {
     fn matching_settings_round_trip_clamp_and_default_on_old_files() {
         let mut config = SearchToolConfig::default();
         config.fold_accents = true;
+        config.match_across_lines = true;
         config.typo_tolerance = 2;
         let json = serde_json::to_string(&PersistedSearchSettings::from(&config)).unwrap();
         let mut restored = SearchToolConfig::default();
         serde_json::from_str::<PersistedSearchSettings>(&json)
             .unwrap()
             .apply_to(&mut restored);
-        assert!(restored.fold_accents);
+        assert!(restored.fold_accents && restored.match_across_lines);
         assert_eq!(restored.typo_tolerance, 2);
 
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
