@@ -72,3 +72,23 @@ cargo run -p search-core --release --example pdf_extract_bench -- ../benchmarks/
 1. Inspect missed ViDoRe questions by text, table, and visual evidence type. Check whether the judged page's Markdown contains the answer before attributing misses to ranking.
 2. Run a bounded PDF extraction and page-citation comparison against source PDFs and judged pages. Include mixed text-and-scan files where a public label exists.
 3. Use STELLA only with a feasible full-corpus plan; sampling passages changes the retrieval task. Keep a small private, human-judged engineering folder as the product acceptance set.
+
+## 2026-11-14: ViDoRe English misses by evidence type
+
+`scripts/analyze_vidore_misses.py` (pyarrow, analysis only) joins the 149 English queries of the shard to the current hybrid per-query scores, then slices by query attributes and by how many of the reference answer's words (length > 3) appear on the best judged page's published Markdown ("answer coverage"). Hybrid ranking, nDCG@10 / Recall@100:
+
+| Slice | n | nDCG@10 | Recall@100 | Top-10 misses | Answer coverage |
+|---|---:|---:|---:|---:|---:|
+| all | 149 | 0.402 | 0.782 | 31 | 0.62 |
+| human-written | 67 | 0.517 | 0.858 | 6 | 0.69 |
+| synthetic | 82 | 0.309 | 0.720 | 25 | 0.56 |
+| text only | 91 | 0.446 | 0.795 | 22 | 0.64 |
+| table | 39 | 0.337 | 0.781 | 6 | 0.59 |
+| image | 17 | 0.333 | 0.701 | 3 | 0.52 |
+| open-ended | 46 | 0.209 | 0.619 | 20 | 0.49 |
+| extractive | 57 | 0.508 | 0.871 | 5 | 0.72 |
+| enumerative | 27 | 0.278 | 0.708 | 7 | 0.64 |
+| numerical | 13 | 0.683 | 0.951 | 1 | 0.69 |
+
+Of the 31 top-10 misses, 25 are synthetic and 20 are open-ended. Only 2 have a judged page whose Markdown holds at least 80% of the answer words; 17 hold under 50%, and 6 miss even at rank 100. So most misses are broad questions whose answer is spread over several pages or lives outside the page text, not ranking errors a text-level change can fix, and not extraction failures (the text used is the publisher's Markdown). Extractive and numerical questions already score 0.51 and 0.68. Word overlap is a proxy: it cannot tell a paraphrased answer from an absent one. Decision: no ranking change from this set; keep it as a diagnostic. Remaining unmeasured: the same questions over our own PDF extraction (needs the source PDFs, 1 of the shard's documents is local).
+
