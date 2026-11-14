@@ -245,3 +245,24 @@ fn the_error_estimate_adds_zones_where_the_error_is_and_applying_it_lowers_the_e
     p.mesh.target_error = 0.9;
     assert!(fea_problem::advice::error_zones(&fea_problem::solve(&p, None).unwrap()).is_empty());
 }
+
+/// The plate plus a second, separate body 10 to 14 wide with a hole of radius `r` at (12, 2).
+fn two_bodies(r: f64) -> Problem {
+    let mut p = plate();
+    let Geometry::Sketch { regions, .. } = &mut p.geometry else { unreachable!() };
+    regions.push(fea_problem::SketchRegion { outer: Shape::Rect { x0: 10.0, y0: 0.0, x1: 14.0, y1: 4.0 }, holes: vec![Shape::Circle { cx: 12.0, cy: 2.0, r }] });
+    p
+}
+
+#[test]
+fn a_hole_in_a_later_region_is_a_refinement_region_and_gets_the_hole_size_factor() {
+    let p = two_bodies(0.4);
+    let holes: Vec<_> = refinement_regions(&p).into_iter().filter(|r| r.kind == RegionKind::Hole).collect();
+    assert_eq!(holes.len(), 2, "one hole per region");
+    let second = holes.iter().find(|r| r.centre == [12.0, 2.0]).expect("the second region's hole");
+    assert!(second.reason.contains("hole 1 of region 2"), "{}", second.reason);
+    assert!(!second.loaded, "pin loads and bushings belong to the first region's holes");
+    // The mesh is graded around that hole too: finer at its edge than away from it.
+    let size = build::size_function(&p);
+    assert!(size([12.4, 2.0]) < 0.6 * size([13.9, 0.1]), "{} vs {}", size([12.4, 2.0]), size([13.9, 0.1]));
+}

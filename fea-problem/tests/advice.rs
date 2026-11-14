@@ -99,3 +99,22 @@ fn surface_kinds_and_centroids() {
     assert_eq!(c.iter().find(|(n, _)| n == "left").unwrap().1, [0.0, 2.0]);
     assert_eq!(c.iter().find(|(n, _)| n == "hole1").unwrap().1, [6.0, 2.0]);
 }
+
+#[test]
+fn another_regions_surfaces_are_named_placed_and_classified_like_the_first() {
+    let mut p = plate();
+    let Geometry::Sketch { regions, .. } = &mut p.geometry else { unreachable!() };
+    regions.push(fea_problem::SketchRegion { outer: Shape::Rect { x0: 10.0, y0: 0.0, x1: 14.0, y1: 4.0 }, holes: vec![Shape::Circle { cx: 12.0, cy: 2.0, r: 0.1 }] });
+    let cents = surface_centroids(&p);
+    let find = |n: &str| cents.iter().find(|(m, _)| m == n).map(|(_, c)| *c);
+    assert_eq!(find("r2/hole1"), Some([12.0, 2.0]));
+    assert_eq!(find("r2/left"), Some([10.0, 2.0]));
+    // Every name the advice can place is a surface the problem actually has.
+    let names = p.edge_names();
+    assert!(cents.iter().all(|(n, _)| names.contains(n)), "{cents:?} vs {names:?}");
+    assert_eq!(surface_kind("r2/hole1"), SurfaceKind::Hole);
+    assert_eq!(surface_kind("r3/top"), SurfaceKind::OuterEdge);
+    assert_eq!(boundary_options(&p, "r2/hole1"), boundary_options(&p, "hole1"));
+    // The smallest hole (here in region 2, r = 0.1) drives the hole-size advice.
+    assert!(recommend(&p).iter().any(|a| matches!(a, Advice::HoleFactor { reason, .. } if reason.contains("0.1"))));
+}
