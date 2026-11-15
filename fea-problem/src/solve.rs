@@ -949,8 +949,11 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
             return Err("nothing is applied: add a load, the bodies only touch".into());
         }
         let full = Loads { ground: ground.clone(), ..loads.clone() };
-        let mut opts = tune.options(if plastic { PLASTIC_STEPS } else { 4 });
+        let mut opts = tune.options(if plastic { CONTACT_PLASTIC_STEPS } else { 4 });
         opts.first_step = 0.5;
+        if plastic {
+            opts.ep_step = CONTACT_EP_STEP;
+        }
         let sol = model.solve_nonlinear_contact(&full, &bc, specs(), &opts).map_err(|e| format!("the contact could not be solved: {e}"))?;
         if !sol.complete() {
             return Err(format!("the contact could not be solved: {:?}", sol.stop));
@@ -958,14 +961,21 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         sol
     } else {
         let fit_loads = Loads { ground: ground.clone(), ..Loads::default() };
-        let mut sol = model.solve_nonlinear_contact(&fit_loads, &bc, specs(), &tune.options(if plastic { PLASTIC_STEPS } else { 1 })).map_err(|e| format!("the interference fit could not be solved: {e}"))?;
+        let mut fit_opts = tune.options(if plastic { CONTACT_PLASTIC_STEPS } else { 1 });
+        if plastic {
+            fit_opts.ep_step = CONTACT_EP_STEP;
+        }
+        let mut sol = model.solve_nonlinear_contact(&fit_loads, &bc, specs(), &fit_opts).map_err(|e| format!("the interference fit could not be solved: {e}"))?;
         if !sol.complete() {
             return Err(format!("the interference fit could not be solved: {:?}", sol.stop));
         }
         if has_loads {
             let full = Loads { ground: ground.clone(), ..loads.clone() };
-            let mut opts = Tuning { chord_iters: FIT_CHORD_ITERS, outer_tol: LOADED_FIT_OUTER_TOL, ..Tuning::friction() }.options(if plastic { PLASTIC_STEPS } else { 4 });
+            let mut opts = Tuning { chord_iters: FIT_CHORD_ITERS, outer_tol: LOADED_FIT_OUTER_TOL, ..Tuning::friction() }.options(if plastic { CONTACT_PLASTIC_STEPS } else { 4 });
             opts.first_step = 0.5;
+            if plastic {
+                opts.ep_step = CONTACT_EP_STEP;
+            }
             sol = model.solve_nonlinear_contact_from(&full, &bc, specs(), &opts, Some(&start_from(&sol, 0.0))).map_err(|e| format!("the loaded bushing could not be solved: {e}"))?;
             if !sol.complete() {
                 return Err(format!("the loaded bushing could not be solved: {:?}", sol.stop));
@@ -1179,6 +1189,13 @@ fn solve_resolved(p: &Problem, import_text: Option<&str>, observe: &dyn Fn(&'sta
 /// Load steps of an elastic-plastic solve (the loads grow from zero to their full value in this many increments, more where
 /// the solver has to cut them).
 const PLASTIC_STEPS: usize = 8;
+
+/// Contact solves with a plastic law (interference fits, pin loads on them): `CONTACT_PLASTIC_STEPS` is only the cap of the
+/// load step; `CONTACT_EP_STEP` is the largest rise of the peak equivalent plastic strain one step may add (about one yield
+/// strain of steel), the step control of `NlOptions::ep_step`. A fit that stays elastic takes cap-sized steps (3D: 62 s
+/// against 1258 s at 8 fixed steps); one that yields is shortened where it yields (`docs/issue-234-bushing-plasticity.md`).
+const CONTACT_PLASTIC_STEPS: usize = 4;
+const CONTACT_EP_STEP: f64 = 1e-3;
 
 /// J2 plasticity with linear hardening on the blocks of every region whose material is elastic-plastic (the first region's is
 /// `Problem::material`, region `k`'s own is `region_materials`); the other blocks stay elastic.

@@ -417,6 +417,8 @@ const STAGNATION_ITERATIONS: usize = 8;
 /// Step cuts a stagnating load step gets under `stick_slip_guard`: halving the step released none of the stick-slip cycles
 /// seen (a failing first attempt cost 59 s with all 12 cuts, 13 s with 3), and the caller has other attempts to try.
 const STAGNATION_CUTS: usize = 3;
+/// Shortest step of the plastic-increment control (`NlOptions::ep_step`), as a fraction of the cap.
+const EP_STEP_FLOOR: f64 = 64.0;
 /// Iterations a solve gets on top of `max_iter` once its active set is held.
 const HOLD_EXTRA_ITERATIONS: usize = 15;
 /// Prefix of the Newton error of a stagnated solve (`Stop::NoConvergence` carries it).
@@ -484,6 +486,12 @@ pub struct NlOptions {
     /// meets its stiffest transition at the first touch, and a step that fails there costs a full set of iterations
     /// before it is halved.
     pub first_step: f64,
+    /// Load control: largest rise of the peak equivalent plastic strain one step may add (`0` = off). A plastic path is
+    /// integrated step by step, so its accuracy follows the plastic increment, not the Newton effort: a step that adds more
+    /// is taken again with a shorter one (down to `1/64` of the cap `1 / steps`), and the step does not grow while the
+    /// increment is above half of this. With it `steps` is only the cap, and a model that stays elastic (a plastic law whose
+    /// yield stress is never reached) goes in cap-sized steps (measured: a 3D fit 62 s instead of 1258 s).
+    pub ep_step: f64,
     /// Give up early on a deadline or a cancel request (`Stop::Interrupted`).
     pub interrupt: Interrupt,
     /// Frictional contact that cycles between stick and slip (the residual alternates or plateaus far above `tol`):
@@ -513,7 +521,7 @@ impl NlOptions {
 
 impl Default for NlOptions {
     fn default() -> Self {
-        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0, interrupt: Interrupt::default(), stick_slip_guard: false, observer: None }
+        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0, ep_step: 0.0, interrupt: Interrupt::default(), stick_slip_guard: false, observer: None }
     }
 }
 
@@ -1620,6 +1628,12 @@ impl Ctx<'_> {
                         dl *= 0.5;
                         continue;
                     }
+                    let dep = if self.opt.ep_step > 0.0 { sn.max_ep() - state.max_ep() } else { 0.0 };
+                    if dep > self.opt.ep_step && self.opt.ep_step > 0.0 && dl > dl_max / EP_STEP_FLOOR {
+                        lambda = lambda_before;
+                        dl = (dl * 0.9 * self.opt.ep_step / dep).max(dl_max / EP_STEP_FLOOR);
+                        continue;
+                    }
                     if let Some(obs) = &self.opt.observer {
                         (obs.0)(&StepEvent { step: steps.len() + 1, lambda, master_force: master_force.first().map(|f| norm(f)), factorisations: self.factorisations.get() });
                     }
@@ -1631,7 +1645,7 @@ impl Ctx<'_> {
                     stagnated_cuts = 0; // (per load step, as documented: the budget was cumulative over the whole analysis)
                     // Frictional contact converges linearly (the sliding traction is frozen in the tangent), so
                     // its first pass legitimately takes 10-15 iterations.
-                    if newton_effort <= if self.contacts.is_some() { 16 } else { 5 } {
+                    if newton_effort <= if self.contacts.is_some() { 16 } else { 5 } && (self.opt.ep_step == 0.0 || dep <= 0.5 * self.opt.ep_step) {
                         dl = (dl * 1.5).min(dl_max);
                     }
                     if self.opt.failure_ep.is_some_and(|lim| max_ep >= lim) {
