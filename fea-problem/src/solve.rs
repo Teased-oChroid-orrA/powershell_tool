@@ -958,13 +958,13 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         sol
     } else {
         let fit_loads = Loads { ground: ground.clone(), ..Loads::default() };
-        let mut sol = model.solve_nonlinear_contact(&fit_loads, &bc, specs(), &tune.options(1)).map_err(|e| format!("the interference fit could not be solved: {e}"))?;
+        let mut sol = model.solve_nonlinear_contact(&fit_loads, &bc, specs(), &tune.options(if plastic { PLASTIC_STEPS } else { 1 })).map_err(|e| format!("the interference fit could not be solved: {e}"))?;
         if !sol.complete() {
             return Err(format!("the interference fit could not be solved: {:?}", sol.stop));
         }
         if has_loads {
             let full = Loads { ground: ground.clone(), ..loads.clone() };
-            let mut opts = Tuning { chord_iters: FIT_CHORD_ITERS, outer_tol: LOADED_FIT_OUTER_TOL, ..Tuning::friction() }.options(4);
+            let mut opts = Tuning { chord_iters: FIT_CHORD_ITERS, outer_tol: LOADED_FIT_OUTER_TOL, ..Tuning::friction() }.options(if plastic { PLASTIC_STEPS } else { 4 });
             opts.first_step = 0.5;
             sol = model.solve_nonlinear_contact_from(&full, &bc, specs(), &opts, Some(&start_from(&sol, 0.0))).map_err(|e| format!("the loaded bushing could not be solved: {e}"))?;
             if !sol.complete() {
@@ -977,7 +977,9 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     let contacts: Vec<ContactResult> = p.contacts.iter().zip(&pairs.pairs).enumerate().map(|(k, (c, _))| contact_result(&sol, 2 * p.bushings.len() + 2 * k, &c.a, &c.b, c.friction)).collect();
     if plastic {
         // the stress is that of the converged plastic state, not the elastic law of the displacements
+        let interfaces = p.bushings.iter().enumerate().map(|(i, b)| interface_result(&sol, 2 * i, b.hole, b.friction, p.hole_at(b.hole).map_or([0.0, 0.0], |(s, ..)| s.centre()))).collect();
         let mut pass = plastic_pass(p, model, &loads, sol, solve_ms)?;
+        pass.interfaces = interfaces;
         pass.contacts = contacts;
         pass.warnings.extend(warnings);
         return Ok(pass);
@@ -1146,9 +1148,9 @@ fn solve_resolved(p: &Problem, import_text: Option<&str>, observe: &dyn Fn(&'sta
     if p.any_plastic() && goal_oriented {
         return Err("goal-oriented adaptivity is for elastic materials; an elastic-plastic problem adapts on its own recovery-based indicator".into());
     }
-    // the plastic driver has no contact: a plastic problem with contact pairs adapts like an elastic one, remeshing and solving
+    // the plastic driver has no contact: a plastic problem with contact pairs or bushings adapts like an elastic one, remeshing and solving
     // each pass through `solve_mesh`
-    let pass = if p.any_plastic() && adaptive && p.contacts.is_empty() {
+    let pass = if p.any_plastic() && adaptive && p.contacts.is_empty() && p.bushings.is_empty() {
         solve_plastic_adaptive(p, first, &mut history, &mut mesh_notes)?
     } else if goal_oriented {
         solve_goal_oriented(p, first, &mut history, &mut mesh_notes)?
@@ -1182,8 +1184,13 @@ const PLASTIC_STEPS: usize = 8;
 /// `Problem::material`, region `k`'s own is `region_materials`); the other blocks stay elastic.
 fn attach_plasticity(mesh: &mut Mesh, p: &Problem) -> Result<(), String> {
     use fea_core::material::J2;
+    // The bushings are the last blocks (see `fit_setup`) and have a material of their own.
+    let first_bushing = mesh.blocks.len().saturating_sub(p.bushings.len());
     for b in 0..mesh.blocks.len() {
-        let m = p.region_material(crate::build::block_region(&mesh.blocks[b]) - 1);
+        let m = match b.checked_sub(first_bushing).filter(|_| !p.bushings.is_empty()) {
+            Some(i) => &p.bushings[i].material,
+            None => p.region_material(crate::build::block_region(&mesh.blocks[b]) - 1),
+        };
         if !m.plastic {
             continue;
         }

@@ -729,7 +729,7 @@ impl Problem {
 
     /// Whether any material of the problem (the first region's, or a region's own) is elastic-plastic.
     pub fn any_plastic(&self) -> bool {
-        self.material.plastic || self.region_materials.iter().flatten().any(|m| m.plastic)
+        self.material.plastic || self.region_materials.iter().flatten().any(|m| m.plastic) || self.bushings.iter().any(|b| b.material.plastic)
     }
 
     /// Whether any region has a material of its own.
@@ -970,9 +970,14 @@ impl Problem {
             return Ok(());
         }
         // each region's own material carries its own law: yield stress and hardening of every plastic one
-        let materials = std::iter::once((1, &self.material)).chain(self.region_materials.iter().enumerate().filter_map(|(i, m)| m.as_ref().map(|m| (i + 2, m))));
-        for (k, m) in materials.filter(|(_, m)| m.plastic) {
-            let who = if k == 1 { "an elastic-plastic material".to_string() } else { format!("the elastic-plastic material of region {k}") };
+        let plate = std::iter::once((1, &self.material)).chain(self.region_materials.iter().enumerate().filter_map(|(i, m)| m.as_ref().map(|m| (i + 2, m))));
+        let bushings = self.bushings.iter().enumerate().map(|(i, b)| (-(i as i64) - 1, &b.material));
+        for (k, m) in plate.map(|(k, m)| (k as i64, m)).chain(bushings).filter(|(_, m)| m.plastic) {
+            let who = match k {
+                1 => "an elastic-plastic material".to_string(),
+                k if k > 1 => format!("the elastic-plastic material of region {k}"),
+                k => format!("the elastic-plastic material of bushing {}", -k),
+            };
             match m.yield_stress {
                 Some(y) if y.is_finite() && y > 0.0 => {}
                 _ => return Err(format!("{who} needs a positive yield stress")),
@@ -980,9 +985,6 @@ impl Problem {
             if !(m.hardening.is_finite() && m.hardening >= 0.0) {
                 return Err(format!("the hardening modulus of {who} must be zero or positive"));
             }
-        }
-        if !self.bushings.is_empty() {
-            return Err("an elastic-plastic material does not combine with bushings (the contact fit has its own solver)".into());
         }
         if self.study != crate::thermal::Study::Structural {
             return Err("an elastic-plastic material is for the structural study (not thermal)".into());
