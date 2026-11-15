@@ -186,6 +186,10 @@ required-features = ["neural-search"]
 name = "gaps_eval"
 required-features = ["neural-search"]
 
+[[example]]
+name = "edges_dump"
+required-features = ["neural-search"]
+
 [dependencies.search-ml]
 path = "../search-ml"
 optional = true
