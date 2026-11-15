@@ -117,4 +117,24 @@ Harness history. The first run returned all zeros: the index serves a file only 
 
 `yolowpdf` reports `scanned` only when the whole document has no text layer; OCR then runs through the scanner path. A page without a text layer inside a text document is marked "is a scanned image with no text layer", which `pdf_yolow.rs` drops, so that page gets neither text nor OCR. Measured with `search-core/examples/pdf_scanned_pages.rs` over the 27 parseable PDFs: 4,861 pages, 3 scanned pages (0.06%), all in 3 documents that yolowpdf treats as text documents (`AFD-100607-009`, `TO_00-25-172`, `TO_35-1-18`, one page each); 0 documents are scanned as a whole.
 
-Not fixed here. The scanner cannot do it (it pairs images by file order, not page), but `yolowpdf` 0.1.2 can: `PdfPage` carries `number`, `scanned`, `image_count`, `images` and `ocr`, and `Options.ocr` takes a `PageOcr` engine that it runs on scanned pages (`force_ocr` for every page with an image), merging the recognised lines into the page layout. The route is to implement `PageOcr` over `ocr.rs` (ocrs) and pass it in `pdf_yolow::run`, which would also give OCR text a page number. Open: the engine returns text lines (`OcrOutput.lines`), so `ocr.rs` must return line boxes, and the whole-document `scanned` fallback to the scanner would become redundant. In this public set the loss is 3 pages, so the effect is small; whether it is larger in mixed company scans is unmeasured because no labelled public file exists. Recognised-text confidence stays blocked (`ocrs` 0.12 exposes no score; see `docs/search-benchmarks.md`, "#0116").
+Fixed in the next section: the scanner cannot do it (it pairs images by file order, not page), but `yolowpdf` 0.1.2 exposes `PdfPage.images` and a `PageOcr` hook, which now runs the bundled ocrs. Recognised-text confidence stays blocked (`ocrs` 0.12 exposes no score; see `docs/search-benchmarks.md`, "#0116").
+
+## 2026-11-15: yolowpdf page OCR and Phase 1 ablations (same folder, same 160 queries)
+
+Change: `pdf_yolow::run` passes the bundled ocrs engine to yolowpdf as `Options.ocr` when OCR is on (`BundledOcr`, over the new `ocr::ocr_gray_boxes`, which returns each line with its box in the image's own pixels). A page with no text layer inside a text document is then recognised and its lines keep that page number. Test: `search-core/test-data/mixed-text-scan.pdf` (2 text pages and one JPEG-only page, made by `scripts/make_mixed_scan_pdf.py`); without OCR the scan page yields nothing, with OCR the page 3 lines contain "hydraulic", "relief", "valve", "torque" and "ms21250". A second test checks the boxes lie inside the image and follow reading order. (The fixture has three pages, not two: yolowpdf calls a document scanned when half its pages are.)
+
+All rows are `pdf_folder_eval` over the 27 PDFs, one machine (`yolow` is the row above; the variants are `yolow-ocr`, `yolow-shuffle`, `yolow-hdr`):
+
+| Variant | Lines | Chunks | Doc hit@1 | Doc hit@5 | Page hit@1 | Page hit@10 | Page nDCG@10 | Page recall@100 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| yolow | 80,945 | 15,697 | 0.675 | 0.912 | 0.375 | 0.775 | 0.383 | 0.711 |
+| yolow + page OCR | 80,979 | 15,699 | 0.675 | 0.912 | 0.375 | 0.775 | 0.383 | 0.711 |
+| yolow, lines of each page shuffled | 80,979 | 15,671 | 0.681 | 0.938 | 0.369 | 0.719 | 0.380 | 0.686 |
+| yolow, section heading prefixed to every line | 80,979 | 20,080 | 0.662 | 0.919 | 0.388 | 0.731 | 0.373 | 0.707 |
+
+Reading.
+- **OCR:** the three scanned pages come back (34 lines, 2 chunks) and no metric moves to three decimals: 3 pages of 4,861, none of them judged in a way that matters here. The change is for completeness and correct citation, not ranking.
+- **Reading order:** shuffling each page's lines costs page hit@10 0.056 (0.775 to 0.719) and recall@100 0.025, but page nDCG@10 only 0.003. Order matters, modestly, and yolowpdf's layout order is already the lever; no separate sorter was added. (Shuffle changes chunk contents, not page membership, which is why page-level scores barely move.)
+- **Headings:** prefixing the section heading to each line grows the chunk count by 28% and lowers every page-level metric except hit@1 (nDCG@10 0.373 against 0.383). Not adopted. Heading text as its own line (already kept) stays.
+- **Boxes:** not measured, not available. yolowpdf 0.1.2 returns Markdown per page with no text-layer boxes (only OCR lines have them), and a citation box does not change retrieval, so `pdf_folder_eval` could not score it. A box for text-layer lines needs our own content-stream interpretation or an upstream change; not started.
+- **Limits:** one machine, 10 judged documents, 160 queries, binary relevance, shuffle uses one fixed hash order. OCR text has no recognised-text cache on this path and ocrs reports no score (#0116).

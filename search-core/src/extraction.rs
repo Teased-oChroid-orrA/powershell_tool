@@ -63,7 +63,7 @@ pub(crate) fn extract_for_semantic_index(
         // yolowpdf splits pages itself (page citation 0.989 vs the scanner's 0.54 per file,
         // docs/search-benchmarks.md); scans, errors and no-text files fall through below.
         #[cfg(feature = "pdf-yolow")]
-        if let Some(paged) = crate::pdf_yolow::extract_paged_if_enabled(bytes) {
+        if let Some(paged) = crate::pdf_yolow::extract_paged_if_enabled(bytes, ocr_scanned_pdfs) {
             let pages = paged
                 .iter()
                 .map(|(page, _)| u32::try_from(*page).ok().and_then(std::num::NonZeroU32::new))
@@ -102,14 +102,14 @@ pub(crate) fn extract_for_semantic_index(
 /// backend, `None` page where the page could not be established. Not a stable API.
 #[doc(hidden)]
 #[cfg(all(feature = "semantic-search", feature = "pdf-yolow"))]
-pub fn eval_pdf_cited_lines(bytes: &[u8], yolow: bool) -> Option<Vec<(String, Option<u32>)>> {
+pub fn eval_pdf_cited_lines(bytes: &[u8], yolow: bool, ocr: bool) -> Option<Vec<(String, Option<u32>)>> {
     if yolow {
         let bytes = &*crate::pdf_decrypt::open_with_empty_password(bytes);
-        return crate::pdf_yolow::extract_paged(bytes).map(|v| {
+        return crate::pdf_yolow::extract_paged(bytes, ocr).map(|v| {
             v.into_iter().map(|(p, l)| (l, u32::try_from(p).ok())).collect()
         });
     }
-    let e = extract_for_semantic_index(".pdf", bytes, 300, false).ok()?;
+    let e = extract_for_semantic_index(".pdf", bytes, 300, ocr).ok()?;
     let pages = e.pages;
     Some(
         e.lines
@@ -121,6 +121,14 @@ pub fn eval_pdf_cited_lines(bytes: &[u8], yolow: bool) -> Option<Vec<(String, Op
             })
             .collect(),
     )
+}
+
+/// yolowpdf lines with page and nearest preceding heading (evaluation of headings as chunk context).
+#[cfg(feature = "pdf-yolow")]
+#[doc(hidden)]
+pub fn eval_pdf_sections(bytes: &[u8], ocr: bool) -> Option<Vec<(usize, Option<String>, String)>> {
+    let bytes = &*crate::pdf_decrypt::open_with_empty_password(bytes);
+    crate::pdf_yolow::extract_paged_sections(bytes, ocr)
 }
 
 /// Points the persistent OCR text cache at `dir` (`None` = memory only). A
@@ -1873,7 +1881,7 @@ fn extract_pdf_lines_capture(
     // results fall through to the scanner below (which also runs OCR).
     #[cfg(feature = "pdf-yolow")]
     if !collect_origins {
-        if let Some(lines) = crate::pdf_yolow::extract_lines(bytes) {
+        if let Some(lines) = crate::pdf_yolow::extract_lines(bytes, ocr_scanned_pdfs) {
             return PdfExtraction {
                 lines: Some(lines),
                 truncated: false,

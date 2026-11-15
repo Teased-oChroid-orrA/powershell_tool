@@ -192,7 +192,7 @@ required-features = ["semantic-search"]
 
 [[example]]
 name = "pdf_folder_eval"
-required-features = ["semantic-search", "pdf-yolow"]
+required-features = ["semantic-search", "pdf-yolow", "ocr"]
 
 [[example]]
 name = "edges_dump"

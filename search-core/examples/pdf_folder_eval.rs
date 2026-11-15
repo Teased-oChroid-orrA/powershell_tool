@@ -4,7 +4,7 @@
 //! recall, hit rate and nDCG@10 (binary relevance), so extraction and page mapping errors count against the result.
 //!
 //!   python3 scripts/prepare_vidore_folder.py <dir>
-//!   cargo run -p search-core --release --features semantic-search,pdf-yolow --example pdf_folder_eval -- <work-dir> <dir> <scanner|yolow> [max-pdfs]
+//!   cargo run -p search-core --release --features semantic-search,pdf-yolow --example pdf_folder_eval -- <work-dir> <dir> <scanner|yolow|yolow-ocr|yolow-shuffle|yolow-hdr> [max-pdfs]
 use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -24,12 +24,32 @@ fn main() {
     let mut pdfs: Vec<_> = std::fs::read_dir(Path::new(dir).join("pdfs")).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "pdf")).collect();
     pdfs.sort();
     pdfs.truncate(max);
+    let queries: Vec<serde_json::Value> = std::fs::read_to_string(Path::new(dir).join("folder_queries.jsonl")).unwrap().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    if std::env::var_os("PDF_EVAL_JUDGED_ONLY").is_some() {
+        // Only the documents that hold judged pages (the corpus the ColQwen probe in scripts/colqwen_probe.py uses).
+        let judged: HashSet<String> = queries.iter().flat_map(|q| q["pages"].as_array().unwrap().iter().map(|p| p[0].as_str().unwrap().to_string())).collect();
+        pdfs.retain(|p| judged.contains(&*p.file_stem().unwrap().to_string_lossy()));
+    }
     let (mut lines_total, mut chunks_total, mut no_text) = (0usize, 0usize, Vec::new());
     let t0 = Instant::now();
     for p in &pdfs {
         let bytes = std::fs::read(p).unwrap();
         let t = Instant::now();
-        let Some(cited) = search_core::extraction::eval_pdf_cited_lines(&bytes, backend == "yolow") else {
+        let cited = match backend {
+            // Ablations of yolow-ocr: lines of each page in a fixed pseudo-random order (what reading order is worth),
+            // and each line prefixed with its section heading (headings as chunk context).
+            "yolow-shuffle" | "yolow-hdr" => search_core::extraction::eval_pdf_sections(&bytes, true).map(|rows| {
+                let mut rows = rows;
+                if backend == "yolow-shuffle" {
+                    rows.sort_by_key(|(page, _, line)| (*page, line.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))));
+                }
+                rows.into_iter()
+                    .map(|(page, heading, line)| (if backend == "yolow-hdr" && heading.as_deref().is_some_and(|h| h != line) { format!("{}: {line}", heading.unwrap()) } else { line }, u32::try_from(page).ok()))
+                    .collect()
+            }),
+            _ => search_core::extraction::eval_pdf_cited_lines(&bytes, backend.starts_with("yolow"), backend == "yolow-ocr"),
+        };
+        let Some(cited) = cited else {
             no_text.push(p.file_name().unwrap().to_string_lossy().into_owned());
             continue;
         };
@@ -43,7 +63,6 @@ fn main() {
         eprintln!("{} {} lines {:.1}s extract, {:.0}s elapsed", p.file_name().unwrap().to_string_lossy(), lines.len(), extract, t0.elapsed().as_secs_f64());
     }
     println!("{backend}: {} pdfs, {lines_total} lines, {chunks_total} chunks, no text: {no_text:?}, {:.0}s", pdfs.len(), t0.elapsed().as_secs_f64());
-    let queries: Vec<serde_json::Value> = std::fs::read_to_string(Path::new(dir).join("folder_queries.jsonl")).unwrap().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
     let present: HashSet<String> = pdfs.iter().map(|p| p.file_stem().unwrap().to_string_lossy().into_owned()).collect();
     let config = LexicalConfig::default();
     let (mut n, mut dh1, mut dh5, mut ph1, mut ph10, mut pr100, mut ndcg) = (0usize, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
