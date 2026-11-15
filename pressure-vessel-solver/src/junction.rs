@@ -78,6 +78,11 @@ pub struct JunctionSolution {
     pub junction_radial_displacement: f64,
     pub n_elements: usize,
     pub n_dofs: usize,
+    /// Support reaction at the single axial constraint (the only force the supports carry): zero when the loads (pressure on
+    /// the inside, closed-end traction at the far end) are in global equilibrium.
+    pub axial_reaction: f64,
+    /// The axial load it is measured against: the pressure thrust `p pi R_i^2`.
+    pub axial_thrust: f64,
 }
 
 impl JunctionSolution {
@@ -330,7 +335,7 @@ pub fn solve_junction(inp: JunctionInput) -> Result<JunctionSolution, JunctionEr
             inside_normal: line[0].3,
         });
     }
-    Ok(JunctionSolution { stations, decay_length: 1.0 / beta, junction_radial_displacement: junction_u, n_elements, n_dofs: model.mesh.n_dofs() })
+    Ok(JunctionSolution { stations, decay_length: 1.0 / beta, junction_radial_displacement: junction_u, n_elements, n_dofs: model.mesh.n_dofs(), axial_reaction: sol.reactions[axis[0] * 2 + 1], axial_thrust: p * std::f64::consts::PI * ri * ri })
 }
 
 /// Thin-shell closed form for a cylinder joined to a hemisphere of the same wall under internal pressure `p`, all at

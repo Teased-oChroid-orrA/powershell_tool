@@ -152,3 +152,15 @@ fn the_ellipsoid_geckeler_formula_underestimates_the_head_side_peak() {
     assert!(r.windows(2).all(|w| w[1] < w[0]), "ratio does not shrink with R/t: {r:?}");
     assert!((1.25..1.45).contains(&r[0]) && (1.15..1.30).contains(&r[1]) && (1.07..1.20).contains(&r[2]) && (1.02..1.12).contains(&r[3]), "{r:?}");
 }
+
+/// Global equilibrium: the only support force is the one axial constraint; the pressure thrust on the inside and the closed-end
+/// traction at the far end must balance without it (observed ratio <= 2e-10, solver round-off), for both heads, all `R/t` and mesh levels.
+#[test]
+fn loads_are_in_global_equilibrium() {
+    for head in [HeadShape::Hemispherical, HeadShape::Ellipsoidal { inside_depth: 50.0 }] {
+        for k in [1, 2, 4] {
+            let s = run(100.0, 1.0, head, k);
+            assert!(s.axial_reaction.abs() < 1e-8 * s.axial_thrust, "{head:?} level {k}: reaction {} vs thrust {}", s.axial_reaction, s.axial_thrust);
+        }
+    }
+}

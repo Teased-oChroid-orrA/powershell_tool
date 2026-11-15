@@ -33,7 +33,7 @@ API only: no window (waits on the owner's mockup).
   (Sec. 13.3, cylinder with rigid end caps) uses the same cylinder edge formulas. The solver uses mid-surface radius `R`.
 - **Ellipsoid: no Roark expression.** Roark 7th ed. has no cylinder-to-ellipsoid junction table; for non-spherical shells it only advises an
   "equivalent spherical shell" approximation (Sec. 13.3, Ref. 6) with no rule for the equivalent radius. The ellipsoid is therefore validated by membrane limits,
-  convergence and load balance, not against Roark. Linked sources not used: the NASA SP-5039 scan is a general design survey (no OCR checked for this formula),
+  convergence and global equilibrium, not against Roark. Linked sources not used: the NASA SP-5039 scan is a general design survey (no OCR checked for this formula),
   the Wiley excerpt is not identifiable, and the ScienceDirect link is a time-limited signed URL that had expired.
 - Proof (`pressure-vessel-solver/tests/junction.rs`, release): far cylinder axial = Lame `p Ri^2/(Ro^2-Ri^2)` (0.1 %), hoop bending = exact Lame linear part,
   crown = far field (0.5 %), inside normal stress = `-p` (0.1 %); peak discontinuity bending vs reference (level-4 mesh) 2.4 / 1.5 / 0.8 / 0.1 % at `R_i/t` =
@@ -59,3 +59,5 @@ is 1.35 / 1.25 / 1.23 / 1.14 / 1.07 times the formula at `R/t` = 50 / 87 / 100 /
 `O(h/R)` (< 5 %) error: about 25 % at the paper's own `R/h` = 87. The head's meridian curvature (`R1 = b^2/a` at the equator) changes its decay, which the symmetric
 cylinder-like model omits. Do not use the closed form as a design value for the head side; use `solve_junction`. Locked by
 `the_ellipsoid_geckeler_formula_underestimates_the_head_side_peak` in `tests/junction.rs`.
+
+Global equilibrium (`loads_are_in_global_equilibrium`): the single axial support reaction is <= 2e-10 of the pressure thrust `p pi R_i^2` for both heads at mesh levels 1, 2, 4.
