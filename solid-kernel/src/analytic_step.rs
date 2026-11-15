@@ -301,6 +301,15 @@ fn radius(e: &Entity, v: &Value, scale: f64) -> Result<f64, Error> {
         Err(error(e, "invalid or unsupported geometric radius"))
     }
 }
+/// The radius of a cone at its placement: zero is legal (the placement is the apex), which the other radii refuse.
+fn cone_radius(e: &Entity, v: &Value, scale: f64) -> Result<f64, Error> {
+    let r = scalar(e, v)? * scale;
+    if r == 0. {
+        Ok(0.)
+    } else {
+        radius(e, v, scale)
+    }
+}
 /// Resolve only the bounded 3D curve wrapper chain. Associated p-curves are
 /// not validated here; terminal geometry remains the caller's responsibility.
 pub(crate) fn curve_geometry(data: &Inventory, mut id: u64) -> Result<&Entity, Error> {
@@ -470,7 +479,7 @@ fn surface(
                 }
                 Ok(Surface::Cone {
                     frame: frame(data, *f, scale)?,
-                    radius: radius(e, r, scale)?,
+                    radius: cone_radius(e, r, scale)?,
                     semi_angle,
                     centre: 0.,
                 })
@@ -817,10 +826,12 @@ fn samples(
                 let x = dot(d, frame.x);
                 let y = dot(d, frame.y);
                 let rho = x.hypot(y);
-                if rho == 0.
-                    || (rho - radius).abs().hypot(dot(d, frame.z)) > opt.geometry_tolerance_mm
-                {
-                    return Err(error(e, "edge endpoint is not on its declared circle"));
+                let off = (rho - radius).abs().hypot(dot(d, frame.z));
+                if rho == 0. || off > opt.geometry_tolerance_mm {
+                    return Err(error(
+                        e,
+                        format!("edge endpoint is not on its declared circle (off by {off:e} mm, radius {radius:e})"),
+                    ));
                 }
                 angle.push(y.atan2(x));
             }

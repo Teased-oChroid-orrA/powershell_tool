@@ -65,6 +65,13 @@ fn cases() -> Vec<Case> {
             faces: 2,
         },
         Case {
+            // CONICAL_SURFACE radius 0.: the placement is the apex (NIST PMI files place cones that way).
+            name: "cone placed at its apex (radius 0)",
+            source: include_str!("data/cone-apex-placement.step"),
+            exact: PI * 25. * 8. / 3.,
+            faces: 2,
+        },
+        Case {
             name: "hemisphere (seam and pole inside the face)",
             source: include_str!("data/hemisphere.step"),
             exact: 2. / 3. * PI * 64.,

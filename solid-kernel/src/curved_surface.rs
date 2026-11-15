@@ -19,7 +19,7 @@
 //! the cylinder. Faces containing a pole, the apex, or wrapping a full sphere or torus are refused, not approximated.
 use crate::{
     analytic_step::{AnalyticModel, Frame, Projection, Surface},
-    cylindrical_step::unwrap_period,
+    cylindrical_step::unwrap_period_tie,
     planar_step::{classify, TrimLoop},
     step::{Error, ErrorKind},
     V3,
@@ -1156,6 +1156,17 @@ impl AnalyticModel {
         face_id: u64,
         max_work: usize,
     ) -> Result<PeriodicTrims, Error> {
+        // A boundary that turns exactly half a period at an apex (a wedge of a cone, or a section of a torus through its
+        // axis) is the same polygon in two charts, one per direction of the turn: take the direction in which it closes.
+        self.periodic_trims_toward(face_id, max_work, Some(1.))
+            .or_else(|first| self.periodic_trims_toward(face_id, max_work, Some(-1.)).map_err(|_| first))
+    }
+    fn periodic_trims_toward(
+        &self,
+        face_id: u64,
+        max_work: usize,
+        tie: Option<f64>,
+    ) -> Result<PeriodicTrims, Error> {
         let face = self
             .body()
             .faces
@@ -1198,7 +1209,7 @@ impl AnalyticModel {
                     } else {
                         for k in 0..2 {
                             if let Some(period) = periods[k] {
-                                raw[k] = unwrap_period(raw[k], last[k], period)?;
+                                raw[k] = unwrap_period_tie(raw[k], last[k], period, tie)?;
                             }
                         }
                     }
@@ -1230,7 +1241,7 @@ impl AnalyticModel {
         for k in 0..2 {
             let Some(period) = periods[k] else { continue };
             let first = raws[0][k];
-            let closing = unwrap_period(first, raws.last().unwrap()[k], period)?;
+            let closing = unwrap_period_tie(first, raws.last().unwrap()[k], period, tie)?;
             let roundoff = 64. * f64::EPSILON * period;
             if (closing - first).abs() > roundoff && (k != 0 || apex.is_empty()) {
                 return Err(fail(
