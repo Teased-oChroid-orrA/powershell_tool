@@ -26,12 +26,15 @@ API only: no window (waits on the owner's mockup).
 - Geometry: mid-surface cylinder `R_i + t/2` tangent to a quarter ellipse `(R_i + t/2, h + t/2)`; wall = constant-thickness offset (inside of an
   ellipsoid differs from the exact inside ellipse by `O(t^2)`). Closed-end axial traction at the far end (exact Lame state, no end disturbance);
   cylinder length 6 decay lengths.
-- Reference (`cylinder_hemisphere_reference`): Geckeler / beam-on-elastic-foundation closed form for the equal-wall cylinder-hemisphere joint, derived
-  in its doc comment from the standard semi-infinite-cylinder edge-load response: `M0 = 0`, `Q0 = beta^3 D delta`, `delta = p R^2/(2 E t)`,
-  `M_max = 0.3224 Q0/beta` at `beta x = pi/4`, surface stress `6 M/t^2` (about `0.29 p R/(2t)/sqrt(1-nu^2)`).
-  **Roark's own table coefficients were not available offline and are not quoted**; the reference is the textbook derivation the Roark shell-edge cases
-  also rest on. **No closed form was sourced for the cylinder-to-ellipsoid junction**, so the ellipsoid is validated by membrane limits, convergence and
-  load equilibrium, not against Roark: if a sourced expression is wanted, it needs the owner's copy of Roark Ch. 13 (or Timoshenko) to add as a second reference.
+- Reference (`cylinder_hemisphere_reference`): Roark's Formulas for Stress and Strain, 7th ed. (Young & Budynas; table numbers are that edition's): cylinder
+  edge loads Table 13.2 cases 8 / 10, partial-sphere edge loads Table 13.3 case 1 (Hetenyi) at `phi = 90 deg`, where it reduces to the cylinder form (checked:
+  both give `dR = 2 Q0 R beta/(E t)`), membrane growth Table 13.1. The joint is symmetric, so `M0 = 0`, `Q0 = beta^3 D delta`, `delta = p R^2/(2 E t)`,
+  `M_max = 0.3224 Q0/beta` at `beta x = pi/4`, surface stress `6 M/t^2` (about `0.29 p R/(2t)/sqrt(1-nu^2)`). The same Roark 7th ed. worked example
+  (Sec. 13.3, cylinder with rigid end caps) uses the same cylinder edge formulas. The solver uses mid-surface radius `R`.
+- **Ellipsoid: no Roark expression.** Roark 7th ed. has no cylinder-to-ellipsoid junction table; for non-spherical shells it only advises an
+  "equivalent spherical shell" approximation (Sec. 13.3, Ref. 6) with no rule for the equivalent radius. The ellipsoid is therefore validated by membrane limits,
+  convergence and load balance, not against Roark. Linked sources not used: the NASA SP-5039 scan is a general design survey (no OCR checked for this formula),
+  the Wiley excerpt is not identifiable, and the ScienceDirect link is a time-limited signed URL that had expired.
 - Proof (`pressure-vessel-solver/tests/junction.rs`, release): far cylinder axial = Lame `p Ri^2/(Ro^2-Ri^2)` (0.1 %), hoop bending = exact Lame linear part,
   crown = far field (0.5 %), inside normal stress = `-p` (0.1 %); peak discontinuity bending vs reference (level-4 mesh) 2.4 / 1.5 / 0.8 / 0.1 % at `R_i/t` =
   50 / 100 / 200 / 400 (tolerances 3 / 2 / 1 / 1 %; the residual is the reference's own thin-shell error, it falls with `R/t`), junction displacement 0.7 / 0.3 / 0.2 /

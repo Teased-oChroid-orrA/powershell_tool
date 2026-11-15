@@ -14,9 +14,10 @@
 //! R_i^2)`), which is the exact Lame state, so it adds no end disturbance; the cylinder is long enough (six decay lengths
 //! `1/beta`) that the junction does not feel it.
 //!
-//! The thin-shell reference [`cylinder_hemisphere_reference`] is the textbook beam-on-elastic-foundation (Geckeler)
-//! solution for the equal-wall cylinder-hemisphere junction, derived in its doc comment from the standard edge-load
-//! response of a semi-infinite cylinder.
+//! The thin-shell reference [`cylinder_hemisphere_reference`] is Roark's cylinder + partial-sphere edge-load method for
+//! the equal-wall cylinder-hemisphere junction (Young & Budynas, Roark's Formulas for Stress and Strain, 7th ed.: Table
+//! 13.2 cases 8 and 10, Table 13.3 case 1 at `phi = 90 deg`, Table 13.1 case 1c for the membrane growth), worked out in
+//! its doc comment.
 
 use fea_core::analysis::Model;
 use fea_core::element::ElementKind;
@@ -333,9 +334,12 @@ pub fn solve_junction(inp: JunctionInput) -> Result<JunctionSolution, JunctionEr
 }
 
 /// Thin-shell closed form for a cylinder joined to a hemisphere of the same wall under internal pressure `p`, all at
-/// mean radius `R` and thickness `t` (Geckeler / Timoshenko beam-on-elastic-foundation theory).
+/// mean radius `R` and thickness `t`: Roark 7th ed. Table 13.2 cases 8 / 10 (cylinder edge shear `V0` / moment `M0`:
+/// `y = V0/(2 D l^3)`, `psi = V0/(2 D l^2)`; `y = M0/(2 D l^2)`, `psi = M0/(D l)`) with the Table 13.3 case 1 partial-sphere edge
+/// response, which at `phi = 90 deg` (`K1 = K2 = 1`) reduces to the same cylinder expressions (`dR = 2 Q0 R beta/(E t)` both ways), and
+/// the Table 13.1 case 1c / sphere membrane growths. Worked below so the sources are traceable.
 ///
-/// Derivation (nothing here is a tabulated coefficient). The semi-infinite cylinder under an edge shear `Q0` and moment
+/// Derivation. The semi-infinite cylinder under an edge shear `Q0` and moment
 /// `M0` per unit circumference has the textbook edge response (`D = E t^3 / (12 (1 - nu^2))`,
 /// `beta^4 = 3 (1 - nu^2) / (R^2 t^2)`): deflection `Q0/(2 beta^3 D) + M0/(2 beta^2 D)`, slope `-(Q0/(2 beta^2 D) + M0/(beta D))`,
 /// moment `M(x) = e^(-beta x) (Q0 sin(beta x) / beta + M0 (cos(beta x) + sin(beta x)))`. The hemisphere is treated the same way

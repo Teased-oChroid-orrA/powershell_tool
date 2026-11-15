@@ -11,7 +11,7 @@
 
 ## Contracts
 - `junction.rs` builds on `fea-core` (`grid` + axisymmetric `Model`), with no kernel changes. Stresses are linear elastic, linearised through the wall (membrane + bending), meridional / hoop components in the shell frame.
-- Only the equal-wall cylinder-hemisphere case has a closed-form reference (`cylinder_hemisphere_reference`, a derived Geckeler result, not a quoted Roark table). The ellipsoid has none sourced: do not describe it as Roark-validated.
+- Only the equal-wall cylinder-hemisphere case has a closed-form reference (`cylinder_hemisphere_reference`, Roark 7th ed. Tables 13.1-13.3 at `phi = 90 deg`). The ellipsoid has none sourced: do not describe it as Roark-validated.
 - Never loosen the `tests/junction.rs` tolerances to pass; they are tied to measured errors that fall with `R/t`.
 
 ## Pitfalls
