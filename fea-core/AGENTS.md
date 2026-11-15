@@ -43,7 +43,8 @@ Does not own: any UI, material tables (`mechanics-core`), the lug physics (`lug-
 | Iterative solver vs direct, mesh-independent iteration counts | `tests/iterative.rs` |
 | Anisotropic law (equivalence, rotation, patch, thermal, bending, frame invariance) | `tests/anisotropic.rs` |
 | Nonlinear: uniaxial analytic, thick cylinder / sphere limit loads, Hill, finite-strain collapse | `tests/nonlinear.rs` |
-| Contact: Hertz 2D/3D, friction, shrink fit, patch test, contact + plasticity | `tests/contact.rs` |
+| Contact: Hertz 2D/3D, friction, shrink fit, patch test, contact + plasticity (rigid master) | `tests/contact.rs` |
+| Deformable two-pass contact + plasticity: yielded interference fit vs Hill's thick-cylinder solution, elastic limit, fully plastic limit, per-body yield | `tests/contact_plastic.rs` |
 | Contact on random stacked blocks (2D/3D, matching and non-matching meshes, friction below the limit) | `tests/contact_sweep.rs` |
 | Unstructured meshes vs Lame / Kirsch, multi-hole regions | `tests/mesh2d.rs` |
 | Adaptive vs uniform refinement, size field, the shared loop | `tests/adapt.rs` |
@@ -171,3 +172,5 @@ Plan and measured numbers: `docs/fea-core.md`. Sibling solvers: `lug-solver/AGEN
 
 #### Frame end releases (#234)
 `Member::FrameReleased { .., releases: EndReleases }` releases local rotations (x torsion, y/z bending) at either end. `condense` removes the released DOFs from each decoupled 4x4 / 2x2 local block (`K' = Kff - Kfr Krr^-1 Krf`, same for the fixed-end load vector), so recovery (`K'u - f'`) gives exactly zero released moments. `Member::Frame` is unchanged (additive variant). A node rotation that no member stiffens (all releasing it) is held at zero automatically in `solve`; a released chain that leaves a translational mechanism (collinear pinned-both members, transverse load) is not detected by `check_field_supports` and fails in the solve. Proof: pinned-fixed beam (wall moment qL^2/8, reactions 3qL/8 / 5qL/8), joint rotation M L/(4EI) with a pinned neighbour, PINNED_BOTH triangle == `Member::Truss` to 1e-12, no-release == `Frame`, torsion release carries no torque.
+
+- **Contact + plasticity with deformable masters (verified 2026-11-14, `tests/contact_plastic.rs`; no kernel change was needed).** Plane-strain shrink fit, hub elastic-perfectly-plastic (J2): a yield stress far above any stress reproduces the elastic contact solution to 1e-6 (and Lame to 1e-6); with the plastic zone at `c` the interface pressure matches Hill's `Y'[ln(c/a) + (1 - c^2/b^2)/2]` (`Y' = 2 sigma_y/sqrt 3`) to 0.5 %; a very large interference approaches `Y' ln(b/a)` to 0.01 %; the body with the lower yield stress yields and the other does not. **Read the interface pressure from the transmitted force** (`sum |master_force|` of the two passes over the projected length), not from the unweighted mean of Gauss-point pressures: once the pressure is not uniform that mean read 12 % high while the stress field matched Hill exactly.
