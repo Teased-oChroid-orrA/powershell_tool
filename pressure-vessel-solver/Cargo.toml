@@ -23,5 +23,7 @@ publish = false
 [dependencies]
 mechanics-core = { path = "../mechanics-core" }
 engineering-math = { path = "../engineering-math" }
+# Axisymmetric FE of the shell-to-head junction (`junction.rs`, #234).
+fea-core = { path = "../fea-core" }
 
 [dev-dependencies]

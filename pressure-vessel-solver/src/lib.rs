@@ -7,6 +7,7 @@ pub mod buckling;
 pub mod failure;
 pub mod geometry;
 pub mod heads;
+pub mod junction;
 pub mod pressure;
 pub mod stress;
 pub mod thermal;
