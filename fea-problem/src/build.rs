@@ -365,6 +365,18 @@ fn mesh_bonded(p: &Problem, first: &Region, extras: &[Region], physics: Physics,
     Ok(m.mesh)
 }
 
+/// Prefix the blocks of region `k` (1-based) with `rK/`, the naming of a bonded multi-material mesh.
+fn name_blocks(mesh: &mut Mesh, k: usize) {
+    for b in &mut mesh.blocks {
+        b.name = format!("r{k}/{}", b.name);
+    }
+}
+
+/// The sketch region (1-based) a block of a multi-region mesh belongs to (`rK/...`); a single-region mesh is region 1.
+pub fn block_region(block: &fea_core::mesh::Block) -> usize {
+    block.name.strip_prefix('r').and_then(|r| r.split_once('/')).and_then(|(k, _)| k.parse().ok()).unwrap_or(1)
+}
+
 /// [`sketch_mesh_sized`] that also reports why a requested strategy was not used (`notes`).
 pub fn sketch_mesh_noted(p: &Problem, field: Option<&dyn Fn([f64; 2]) -> f64>, notes: &mut Vec<String>) -> Result<Mesh, String> {
     p.validate_geometry()?;
@@ -386,9 +398,14 @@ pub fn sketch_mesh_noted(p: &Problem, field: Option<&dyn Fn([f64; 2]) -> f64>, n
         mesh_bonded(p, &region, &extras, physics_2d, &size, notes)?
     } else {
         let mut mesh = mesh_planar(p, &region, physics_2d, &size, notes)?;
-        // The sketch's other regions are separate bodies: meshed alone and appended with their own surface names.
+        // The sketch's other regions are separate bodies: meshed alone and appended with their own surface names. With
+        // several regions their blocks are named `rK/...` as in the bonded mesh (`block_region` reads the region back).
+        if !extras.is_empty() {
+            name_blocks(&mut mesh, 1);
+        }
         for (k, reg) in extras.iter().enumerate() {
-            let m = mesh_planar(p, reg, physics_2d, &size, notes)?;
+            let mut m = mesh_planar(p, reg, physics_2d, &size, notes)?;
+            name_blocks(&mut m, k + 2);
             mesh.append(&m, &format!("r{}/", k + 2))?;
         }
         mesh
