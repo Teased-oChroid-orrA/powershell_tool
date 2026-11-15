@@ -448,8 +448,10 @@ pub fn build_loads(mesh: &mut Mesh, p: &Problem) -> Result<Loads, String> {
                 if p.analysis == Analysis::Axisymmetric {
                     return Err("a bearing load is for plane problems and extruded sketches".into());
                 }
-                let Geometry::Sketch { holes, .. } = &p.geometry else { return Err("a bearing load needs a sketch hole".into()) };
-                let shape = holes.get(hole.wrapping_sub(1)).ok_or_else(|| format!("bearing load: there is no hole {hole}"))?;
+                if !matches!(p.geometry, Geometry::Sketch { .. }) {
+                    return Err("a bearing load needs a sketch hole".into());
+                }
+                let (shape, _, surface) = p.hole_at(*hole).ok_or_else(|| format!("bearing load: there is no hole {hole}"))?;
                 let mag = fx.hypot(*fy);
                 if mag.is_nan() || mag <= 0.0 {
                     continue;
@@ -464,7 +466,7 @@ pub fn build_loads(mesh: &mut Mesh, p: &Problem) -> Result<Loads, String> {
                     let w = cos.max(0.0);
                     [w * dir[0], w * dir[1], 0.0]
                 });
-                let faces = named_faces(mesh, &format!("hole{hole}"))?;
+                let faces = named_faces(mesh, &surface)?;
                 // Scale the unit field so its resultant along the load direction is |F|.
                 let probe = Loads { field_faces: faces.iter().map(|f| (f.clone(), unit.clone())).collect(), ..Loads::default() };
                 let fv = loads::assemble(mesh, &probe)?;
@@ -745,15 +747,17 @@ fn fit_setup(p: &Problem, mesh: &Mesh) -> Result<FitSetup, String> {
         .iter()
         .enumerate()
         .map(|(i, b)| {
-            let plate = mesh.surfaces.get(&format!("plate_hole{}", b.hole)).cloned().ok_or_else(|| format!("bushing {}: no plate hole surface", i + 1))?;
+            let surface = p.hole_at(b.hole).map(|h| h.2).ok_or_else(|| format!("bushing {}: there is no hole {}", i + 1, b.hole))?;
+            let plate = mesh.surfaces.get(&format!("plate_{surface}")).cloned().ok_or_else(|| format!("bushing {}: no plate hole surface", i + 1))?;
             let od = mesh.surfaces.get(&format!("b{}/od", i + 1)).cloned().ok_or_else(|| format!("bushing {}: no outer surface", i + 1))?;
             Ok((b.hole, plate, od))
         })
         .collect::<Result<_, String>>()?;
     let mut ground = Vec::new();
-    // The bushings are the blocks after the plate's; without bushings there is nothing to hold.
-    for (bi, blk) in mesh.blocks.iter().enumerate().skip(1).filter(|_| !p.bushings.is_empty()) {
-        let k = 1e-9 * p.bushings.get(bi - 1).map_or(p.material.e, |b| b.material.e) * if let Physics::PlaneStress { thickness } | Physics::PlaneStrain { thickness } = mesh.physics { thickness } else { 1.0 };
+    // The bushings are the last blocks (the plate's, and any further region's, come first); without bushings there is nothing to hold.
+    let first_bushing = mesh.blocks.len().saturating_sub(p.bushings.len());
+    for (bi, blk) in mesh.blocks.iter().enumerate().skip(first_bushing).filter(|_| !p.bushings.is_empty()) {
+        let k = 1e-9 * p.bushings.get(bi - first_bushing).map_or(p.material.e, |b| b.material.e) * if let Physics::PlaneStress { thickness } | Physics::PlaneStrain { thickness } = mesh.physics { thickness } else { 1.0 };
         let mut seen = std::collections::BTreeSet::new();
         for &n in &blk.conn {
             if seen.insert(n) {
@@ -761,10 +765,7 @@ fn fit_setup(p: &Problem, mesh: &Mesh) -> Result<FitSetup, String> {
             }
         }
     }
-    let r_hole: f64 = hole_faces.iter().map(|(h, ..)| match &p.geometry {
-        Geometry::Sketch { holes, .. } => holes.get(h - 1).map_or(1.0, |s| s.reach()),
-        _ => 1.0,
-    }).fold(f64::INFINITY, f64::min);
+    let r_hole: f64 = hole_faces.iter().map(|(h, ..)| p.hole_at(*h).map_or(1.0, |(s, ..)| s.reach())).fold(f64::INFINITY, f64::min);
     let e_min = p.bushings.iter().map(|b| b.material.e).fold(p.material.e, f64::min);
     let tune = Tuning { newton_tol: 1e-6, chord_iters: FIT_CHORD_ITERS, ..Tuning::friction() };
     let eps_n = tune.eps_n(e_min, r_hole);
@@ -980,7 +981,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     };
     let zz = model.zz_error(&sol.u, p.delta_t)?;
     let strain_energy = model.strain_energy(&sol.u)?;
-    let interfaces = p.bushings.iter().enumerate().map(|(i, b)| interface_result(&sol, 2 * i, b.hole, b.friction, match &p.geometry { Geometry::Sketch { holes, .. } => holes[b.hole - 1].centre(), _ => [0.0, 0.0] })).collect();
+    let interfaces = p.bushings.iter().enumerate().map(|(i, b)| interface_result(&sol, 2 * i, b.hole, b.friction, p.hole_at(b.hole).map_or([0.0, 0.0], |(s, ..)| s.centre()))).collect();
     let contacts = p.contacts.iter().zip(&pairs.pairs).enumerate().map(|(k, (c, _))| contact_result(&sol, 2 * p.bushings.len() + 2 * k, &c.a, &c.b, c.friction)).collect();
     let scale = force_scale(&f, &sol.reactions);
     Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces, contacts, warnings, heat: None, plastic: None })

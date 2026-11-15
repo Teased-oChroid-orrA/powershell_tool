@@ -252,14 +252,12 @@ pub fn estimate_mesh(p: &Problem) -> Result<MeshEstimate, String> {
         }
     }
     // bushing annuli are meshed directly with the plate's element type
-    if let Geometry::Sketch { holes, .. } = &p.geometry {
-        for b in &p.bushings {
-            if let Some(Shape::Circle { r, .. }) = holes.get(b.hole.wrapping_sub(1)) {
-                let ri = 0.5 * b.inner_diameter;
-                let wall = r - ri - b.offset[0].hypot(b.offset[1]);
-                let h = (p.mesh.size * p.mesh.hole_factor).min(wall.max(r / 25.0));
-                out.elements += per_area * std::f64::consts::PI * (r * r - ri * ri) / (h * h);
-            }
+    for b in &p.bushings {
+        if let Some((Shape::Circle { r, .. }, ..)) = p.hole_at(b.hole) {
+            let ri = 0.5 * b.inner_diameter;
+            let wall = r - ri - b.offset[0].hypot(b.offset[1]);
+            let h = (p.mesh.size * p.mesh.hole_factor).min(wall.max(r / 25.0));
+            out.elements += per_area * std::f64::consts::PI * (r * r - ri * ri) / (h * h);
         }
     }
     if cells > 0.0 {
@@ -274,10 +272,9 @@ pub fn estimate_mesh(p: &Problem) -> Result<MeshEstimate, String> {
 /// The plate's own hole surface is kept as `plate_holeH`, and the name `holeH` is re-pointed at the bore so that a load or
 /// support on the hole acts on the bushing.
 pub fn add_bushings(p: &Problem, mesh: &mut Mesh, field: Option<&dyn Fn([f64; 2]) -> f64>) -> Result<(), String> {
-    let Geometry::Sketch { holes, .. } = &p.geometry else { return Ok(()) };
     for (i, b) in p.bushings.iter().enumerate() {
         let n = i + 1;
-        let Some(Shape::Circle { cx, cy, r }) = holes.get(b.hole.wrapping_sub(1)) else { return Err(format!("bushing {n}: hole {} is not a circle", b.hole)) };
+        let Some((Shape::Circle { cx, cy, r }, _, surface)) = p.hole_at(b.hole) else { return Err(format!("bushing {n}: hole {} is not a circle", b.hole)) };
         let ri = 0.5 * b.inner_diameter;
         let wall = r - ri - b.offset[0].hypot(b.offset[1]);
         let region = Region::new(Loop::circle([*cx, *cy], *r, "od")?, vec![Loop::circle([cx + b.offset[0], cy + b.offset[1]], ri, "id")?], b.material.elastic())?;
@@ -288,11 +285,11 @@ pub fn add_bushings(p: &Problem, mesh: &mut Mesh, field: Option<&dyn Fn([f64; 2]
         let h = (p.mesh.size * p.mesh.hole_factor).min(cap);
         let size = |x: [f64; 2]| field.map_or(h, |sf| sf(x).min(cap));
         let bm = mesh_region(&region, mesh.physics, p.mesh.element.kind(), &size, mesh_options())?;
-        let plate = mesh.surfaces.get(&format!("hole{}", b.hole)).cloned().ok_or_else(|| format!("bushing {n}: the plate has no surface hole{}", b.hole))?;
-        mesh.surfaces.insert(format!("plate_hole{}", b.hole), plate);
+        let plate = mesh.surfaces.get(&surface).cloned().ok_or_else(|| format!("bushing {n}: the plate has no surface {surface}"))?;
+        mesh.surfaces.insert(format!("plate_{surface}"), plate);
         mesh.append(&bm, &format!("b{n}/"))?;
         let bore = mesh.surfaces.get(&format!("b{n}/id")).cloned().ok_or("the bushing has no bore surface")?;
-        mesh.surfaces.insert(format!("hole{}", b.hole), bore);
+        mesh.surfaces.insert(surface, bore);
     }
     Ok(())
 }
