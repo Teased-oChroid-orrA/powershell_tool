@@ -206,6 +206,8 @@ fn fully_restrained_thermal_stress_is_e_alpha_dt_and_reduces_to_uniaxial_yield()
     close(r.margins[1].applied, sigma, 1e-11, "Tresca equals the uniaxial stress");
     close(vm.margin, 40000.0 / sigma - 1.0, 1e-11, "margin = Fy / sigma - 1");
     close(r.margins[2].margin, 60000.0 / (1.5 * sigma) - 1.0, 1e-11, "ultimate margin with factor 1.5");
+    assert_eq!(r.margins[3].criterion, Criterion::UltimateVonMises);
+    close(r.margins[3].margin, r.margins[2].margin, 1e-11, "von Mises ultimate equals max-principal ultimate in uniaxial stress");
     close(r.reactions[0].force[0], sigma * tube().area(), 1e-11, "anchor reaction");
     close(r.reactions[0].force[0], -r.reactions[1].force[0], 1e-11, "anchor reactions balance");
 }
@@ -295,6 +297,32 @@ fn bending_run_margin_and_worst_angle_match_m_c_over_i() {
     close(vm.location.x, l / 2.0, 1e-12, "governing station");
     assert_eq!(vm.location.surface, Surface::Outer);
     assert!((vm.location.theta.sin().abs() - 1.0).abs() < 1e-9, "worst fibre is at +-z, got theta {}", vm.location.theta);
+}
+
+#[test]
+fn von_mises_ultimate_is_stricter_than_max_principal_in_shear_and_equal_in_equibiaxial_tension() {
+    let class = MaterialClass::Ductile { yield_strength: 100.0, ultimate_strength: 200.0, yield_factor_of_safety: 1.0, ultimate_factor_of_safety: 1.5 };
+    // Pure shear tau = 40: principals +-40, von Mises = sqrt(3) * 40, max |principal| = 40.
+    let shear = PointStress { sigma_x: 0.0, hoop: 0.0, radial: 0.0, tau: 40.0 };
+    let (u_vm, a_vm) = utilization_of(&class, Criterion::UltimateVonMises, &shear, 1.0);
+    close(a_vm, 3.0_f64.sqrt() * 40.0, 1e-14, "von Mises in pure shear");
+    close(u_vm, 1.5 * 3.0_f64.sqrt() * 40.0 / 200.0, 1e-14, "utilization with FS 1.5");
+    close(utilization_of(&class, Criterion::UltimateMaxPrincipal, &shear, 1.0).0, 1.5 * 40.0 / 200.0, 1e-14, "max principal");
+    let biax = PointStress { sigma_x: 50.0, hoop: 50.0, radial: 0.0, tau: 0.0 };
+    close(utilization_of(&class, Criterion::UltimateVonMises, &biax, 1.0).0, utilization_of(&class, Criterion::UltimateMaxPrincipal, &biax, 1.0).0, 1e-14, "equibiaxial");
+}
+
+#[test]
+fn pressure_thrust_load_with_pressure_end_load_is_refused_and_accepted_without() {
+    let mut rn = run(vec![anchored(0.0, false), anchored(100.0, false)], 100.0, 0.0);
+    rn.point_loads.push(PointLoad { x: 40.0, force: [70.0, 0.0, 0.0], pressure_thrust: true, ..Default::default() });
+    let mut c = case([0.0; 3]);
+    c.internal_pressure = 100.0;
+    c.pressure_end_load = true;
+    let e = analyze(&rn, &ductile(), &[c.clone()]).unwrap_err();
+    assert!(matches!(&e, LineRunError::InvalidInput(s) if s.contains("pressure_end_load")), "{e}");
+    c.pressure_end_load = false;
+    assert!(analyze(&rn, &ductile(), &[c]).is_ok());
 }
 
 #[test]

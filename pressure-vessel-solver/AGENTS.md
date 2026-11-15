@@ -23,6 +23,6 @@ buckling, UG-27 heads, and the supported-tube line run check. Consumed by `app-t
 - Every `line_run` case self-checks equilibrium and solve residual (`BALANCE_LIMIT`); never loosen it to make a case pass.
 
 ## Pitfalls
-- `pressure_end_load = true` (Closed) and an explicit `flow_thrust` at the same bends double count the pressure thrust.
+- `pressure_end_load = true` (Closed) plus an explicit `flow_thrust` double counts the pressure thrust: mark thrust loads `pressure_thrust: true`; `analyze` refuses the combination.
 - Thin-wall `tau_x,theta` is an approximation for thick tubes; `PD/2t`, `PD/4t` tests carry an `O(t/r_m)` tolerance on purpose.
 - Roark / Shigley table and page numbers are not verified against the sources (see the doc's Sources section).

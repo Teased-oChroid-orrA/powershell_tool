@@ -124,6 +124,9 @@ pub struct PointLoad {
     pub weight: f64,
     pub moment: [f64; 3],
     pub offset: [f64; 3],
+    /// Set on a load that already contains the pressure thrust (a [`flow_thrust`] result). A case with
+    /// `pressure_end_load = true` refuses such a load: the wall would carry that thrust twice.
+    pub pressure_thrust: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -177,6 +180,7 @@ pub enum Criterion {
     VonMisesYield,
     TrescaYield,
     UltimateMaxPrincipal,
+    UltimateVonMises,
     Rankine,
     CoulombMohr,
 }
@@ -186,6 +190,7 @@ impl Criterion {
             Self::VonMisesYield => "Von Mises yield",
             Self::TrescaYield => "Tresca (maximum shear) yield",
             Self::UltimateMaxPrincipal => "Ultimate (maximum principal)",
+            Self::UltimateVonMises => "Ultimate (von Mises)",
             Self::Rankine => "Rankine (maximum normal stress)",
             Self::CoulombMohr => "Coulomb-Mohr",
         }
@@ -314,7 +319,7 @@ pub struct FlowLeg {
 /// Steady-state force of the fluid on a bend, tee or other junction: the control-volume momentum
 /// balance `F = sum_in (p A + m_dot v) d - sum_out (p A + m_dot v) d` (gauge pressures; atmospheric
 /// pressure cancels over the closed surface). A 90 degree bend with equal legs gives
-/// `(p A + m_dot v)(d_in - d_out)`. Apply the result as a [`PointLoad::force`] at the junction.
+/// `(p A + m_dot v)(d_in - d_out)`. Apply the result as a [`PointLoad::force`] at the junction.  Set `pressure_thrust: true` on that load.
 pub fn flow_thrust(legs: &[FlowLeg]) -> Result<[f64; 3], LineRunError> {
     let mut f = [0.0; 3];
     for l in legs {
@@ -378,6 +383,10 @@ fn utilization_of(class: &MaterialClass, criterion: Criterion, s: &PointStress, 
             let v = max_abs_principal_stress(&st);
             (ultimate_factor_of_safety * v / ultimate_strength, v)
         }
+        (MaterialClass::Ductile { ultimate_strength, ultimate_factor_of_safety, .. }, Criterion::UltimateVonMises) => {
+            let v = von_mises_stress(&st);
+            (ultimate_factor_of_safety * v / ultimate_strength, v)
+        }
         (MaterialClass::Brittle { ultimate_tension: ft, ultimate_compression: fc, factor_of_safety: fs }, Criterion::Rankine) => {
             let [s1, _, s3] = s.principals();
             let u = (s1 / ft).max(-s3 / fc).max(0.0);
@@ -402,7 +411,7 @@ fn utilization_of(class: &MaterialClass, criterion: Criterion, s: &PointStress, 
 
 fn criteria_of(class: &MaterialClass) -> &'static [Criterion] {
     match class {
-        MaterialClass::Ductile { .. } => &[Criterion::VonMisesYield, Criterion::TrescaYield, Criterion::UltimateMaxPrincipal],
+        MaterialClass::Ductile { .. } => &[Criterion::VonMisesYield, Criterion::TrescaYield, Criterion::UltimateMaxPrincipal, Criterion::UltimateVonMises],
         MaterialClass::Brittle { .. } => &[Criterion::Rankine, Criterion::CoulombMohr],
         _ => unreachable!("validated"),
     }
@@ -527,6 +536,9 @@ fn evaluate_case(run: &LineRun, class: &MaterialClass, mesh: &Mesh, case: &LoadC
     let (mut mzn, mut myn) = (vec![0.0; nn], vec![0.0; nn]);
     let mut applied = Vec::new();
     for pl in run.point_loads.iter().chain(&case.point_loads) {
+        if pl.pressure_thrust && case.pressure_end_load {
+            return Err(LineRunError::InvalidInput(format!("case '{}': the load at x = {} carries the pressure thrust (flow_thrust) while pressure_end_load = true counts it again; set pressure_end_load = false", case.name, pl.x)));
+        }
         let (f, m) = resolve_point(pl, n)?;
         let i = node_of(mesh, pl.x, tol);
         px[i] += f[0];
