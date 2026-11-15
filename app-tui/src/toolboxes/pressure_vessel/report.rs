@@ -7,6 +7,7 @@ use crate::theme::fmt_margin;
 use pressure_vessel_solver::buckling::BucklingApplicability;
 use pressure_vessel_solver::failure::governing;
 use pressure_vessel_solver::geometry::{classify, GeometryClassification};
+use pressure_vessel_solver::heads::HeadError;
 use pressure_vessel_solver::thickness::ThicknessSolverOutcome;
 
 use super::model::{FieldRow, PressureVesselModel};
@@ -16,9 +17,39 @@ pub fn display_value(model: &PressureVesselModel, row: FieldRow) -> String {
     match row {
         FieldRow::Header(_) => String::new(),
         FieldRow::ToggleEndCondition => if model.closed_ends { "Closed ends" } else { "Open ends" }.to_string(),
+        FieldRow::ToggleHeadComponent => model.head.component.label().to_string(),
         FieldRow::OpenMaterialPicker => model.material().name.to_string(),
         FieldRow::Number(target) => target.format_value(model.number_value(target)),
     }
+}
+
+/// Why the code check gave no number, in the words both the window and the report use.
+pub fn head_error_text(e: &HeadError) -> String {
+    match e {
+        HeadError::InvalidInput(what) => format!("Invalid input: {what}."),
+        HeadError::OutsideRules(why) => format!("Outside the code rules: {why}."),
+    }
+}
+
+/// The code check as report lines (empty text never: an error is stated, not omitted).
+fn heads_report(model: &PressureVesselModel, out: &mut String) {
+    let h = &model.head;
+    let c = &model.heads;
+    out.push_str(&format!("\nASME VIII-1 code check (UG-27 / UG-32): {}\n", h.component.label()));
+    out.push_str(&format!("  R {:.4} in, L {:.4} in, r {:.4} in, S {:.0} psi, E {:.2}, P {:.0} psi (corroded condition)\n", h.radius, h.crown_radius, h.knuckle_radius, h.allowable_stress, h.efficiency, h.pressure));
+    match &c.required {
+        Ok(t) => out.push_str(&format!("  Required thickness: {t:.4} in\n")),
+        Err(e) => out.push_str(&format!("  Required thickness: {}\n", head_error_text(e))),
+    }
+    match (&c.provided, &c.mawp) {
+        (Some(t), Some(Ok(p))) => out.push_str(&format!("  Provided (remaining wall): {t:.4} in, MAWP {p:.0} psi\n")),
+        (Some(t), Some(Err(e))) => out.push_str(&format!("  Provided (remaining wall): {t:.4} in, MAWP: {}\n", head_error_text(e))),
+        _ => out.push_str("  Provided thickness: none, the vessel geometry is invalid.\n"),
+    }
+    if let Some(m) = c.margin() {
+        out.push_str(&format!("  Margin: {}\n", fmt_margin(m)));
+    }
+    out.push_str("  Allowable stress and efficiency are entered, not looked up; check the coefficients against your code edition.\n");
 }
 
 /// A check passes at a margin of zero or more. An unbounded margin (nothing loads that check, e.g. no pressure) passes.
@@ -52,6 +83,7 @@ pub fn build_report_text(model: &PressureVesselModel) -> String {
             if let Err(e) = p {
                 out.push_str(&format!("Invalid pressure: {e:?}\n"));
             }
+            heads_report(model, &mut out);
             return out;
         }
     };
@@ -99,6 +131,7 @@ pub fn build_report_text(model: &PressureVesselModel) -> String {
         None => {}
     }
 
+    heads_report(model, &mut out);
     out
 }
 

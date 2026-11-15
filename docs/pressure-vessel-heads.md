@@ -13,5 +13,10 @@ torispherical head (general `M`), under internal pressure, with the allowable st
 - Proof (`cargo test -p pressure-vessel-solver`): hand values, `P -> t -> P` round trip for every component, the 2:1 head (`K = 1`),
   hemisphere = sphere rule, torispherical at L/r = 16.6 within 0.2 % of the `0.885 PL/(SE - 0.1P)` form, and the code thickness against the
   exact Lame hoop stress of this crate (within 2 %).
-- Not built: the window layout for this check (waiting on the owner's mockup approval); external pressure (UG-28) and the shell-to-head
-  junction FE check are separate #234 items.
+- Window (2026-11-14, owner-approved mockup): the Pressure Vessel window has an input section "Head / Shell Code Check (UG-27)" (component
+  cycle, inside radius R, crown L and knuckle r for torispherical, S, E, design pressure P) and a result card "Head / shell code check"
+  (required thickness, provided = the vessel's remaining wall, margin, MAWP; a violated limit shows the `HeadError` reason). Case format 3
+  stores the inputs; older cases load with the defaults. The defaults (S 20000 psi, E 1, P 300 psi, R 24 in) are placeholders. The report
+  has the same section. R is entered, not taken from the vessel bore, so the card compares a code head of radius R with the wall the
+  vessel inputs leave.
+- Not built: external pressure (UG-28) and the shell-to-head junction FE check are separate #234 items.

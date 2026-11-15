@@ -27,6 +27,7 @@ Does not own: stress/failure/buckling/thickness math (`pressure-vessel-solver`);
 - `report.rs` and `model.rs` are ratatui-free except for `theme::fmt_margin` (plain formatting), so the window reads every row and report string here.
 
 ## Pitfalls
+- The code check (`heads: HeadsCheck`, inputs `head: HeadInputs`) is independent of the Lame analysis: `recompute_heads` runs even when `geometry` is invalid (provided thickness is then `None`). S and E are placeholders by design; never default them from the material table. Dimensions are corroded-condition inputs; the provided thickness is the remaining wall.
 - Custom materials persist in `settings-tui-pressure-vessel.json`; keep forward-compat discipline (`#[serde(default)]`/`Option<T>`) on any new persisted field.
 
 ## Design Rationale
