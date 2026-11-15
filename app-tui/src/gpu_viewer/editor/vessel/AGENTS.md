@@ -27,6 +27,7 @@ Does not own: any stress, margin, buckling or thickness formula (`pressure-vesse
 - **Custom materials persist in `settings-tui-pressure-vessel.json`** (`persistence::config_path`, kept name for existing files; held in `VesselSession::library`) and travel with a case (`VesselFile::custom_material`). A case naming a material this machine lacks and does not describe is reported in the status bar; the rest applies.
 - `bench()` is `Static`, `benches()` is empty. Export writes `report::build_report_text` beside the case (`<case>.report.txt`).
 - Wall Thickness is nominal. `WallAllowance` in `pressure-vessel-solver::geometry` applies mill undertolerance first, then internal corrosion, at fixed entered OD. Checks and the contour use the remaining wall and enlarged bore. The minimum-wall solve retains its fixed analyzed bore convention; its nominal equivalent includes both allowances and can change OD. It excludes thermal stress and buckling.
+- Case format 3 adds the code check's inputs (`head ...` numbers, `head_component`); older cases get `HeadInputs::default()` even over edited state. The "Head / shell code check" card (`cards.rs` `heads_card`) draws `model.heads`; a violated rule shows `report::head_error_text`, never a number.
 - Case format 2 adds corrosion allowance (in) and mill undertolerance (%). Format 0/1 cases remain readable with zero loss, including when applied over edited state. Older builds reject format 2 instead of silently ignoring loss.
 
 ## Pitfalls
