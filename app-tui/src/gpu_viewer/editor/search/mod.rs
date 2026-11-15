@@ -1398,10 +1398,10 @@ impl SearchSession {
         self.execute(effects);
     }
 
-    #[cfg(feature = "semantic-search")]
     /// The first query of a session spends about 2 s at 35,000 chunks loading the model and building the in-memory
     /// snapshot. Typing in Find is the signal that a semantic query may follow, so do that work now on a worker, once per
     /// index folder per session; people who never type pay nothing.
+    #[cfg(feature = "semantic-search")]
     fn warm_semantic(&mut self) {
         if !self.st.config.index.semantic || self.st.config.filters_text.trim().is_empty() {
             return;
@@ -1417,6 +1417,7 @@ impl SearchSession {
         }
     }
 
+    #[cfg(feature = "semantic-search")]
     fn semantic_search(&mut self) {
         let query = self.st.config.filters_text.trim().to_string();
         if !self.st.config.index.semantic {
