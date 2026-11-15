@@ -27,3 +27,15 @@ Plane strain, round plate `a = 1 .. b = 2`, E = 10e6, nu = 0.3, bore 0.1, diamet
 | Soft bushing, time only | 250 s | 120 s | 158 s |
 
 Reading: every proof holds at 4 steps (the Lame check drifts 8179.83 -> 8179.38, still inside its 1e-4 bound), so 8 is more than these cases need; but the time does not follow the step count (4 steps is slower than 6 on two tests: the cap only bounds the step, the contact passes and cuts decide the cost). The number was therefore not lowered: these four cases are axisymmetric and mild, and the sweep gives no evidence for a harder case (pin load through a plastic fit, 3D). A real saving needs a step control driven by the plastic increment per step (`StepInfo.max_ep`, `plastic_fraction`) rather than by a fixed count; not built.
+
+### Plastic-increment step control (tried 2026-11-15, not adopted)
+
+Built as an opt-in `NlOptions::ep_step` in `run_load_control`: a step that raised the peak equivalent plastic strain by more than `ep_step` was rejected and retaken shorter (down to 1/64 of the cap `1 / steps`), and the step did not grow while the increment was above half of it; `steps = 2` was only the cap. Measured on the Hill yielding fit of `fea-core/tests/contact_plastic.rs` (release, one run each):
+
+| run | pressure | steps | time |
+|-----|----------|-------|------|
+| fixed 8 steps | 13093.0 | 8 | 18.1 s |
+| `ep_step` 2e-3 | 13092.4 | 12 | 47.8 s |
+| `ep_step` 5e-4 | 13092.4 | 12 | 23.2 s |
+
+Same answer (5e-5), but more steps and no time saved: a fit yields from the first load step, so the controller finds no elastic stretch to cross in one long step, and each rejected step pays a full contact solve. The code was removed. Together with the sweep above, step count is not where the cost sits; the cost is contact passes and factorisations per step (`docs/fea-core.md` Phase 3 and the contact notes). A real saving must reduce factorisations per step, not steps.
