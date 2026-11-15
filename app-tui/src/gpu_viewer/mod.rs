@@ -64,6 +64,8 @@ pub enum EditorKind {
     Preload,
     /// The Lug Analysis workbench (`editor::lug::file::LugFile`).
     Lug,
+    /// The Line Run workbench (`editor::line_run::file::LineRunFile`).
+    LineRun,
 }
 impl EditorKind {
     /// Command-line flag of the editor process.
@@ -80,10 +82,11 @@ impl EditorKind {
             EditorKind::PressureVessel => "--gpu-pressure-vessel",
             EditorKind::Preload => "--gpu-preload",
             EditorKind::Lug => "--gpu-lug",
+            EditorKind::LineRun => "--gpu-line-run",
         }
     }
     pub fn from_flag(flag: &str) -> Option<Self> {
-        [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug].into_iter().find(|k| k.flag() == flag)
+        [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug, EditorKind::LineRun].into_iter().find(|k| k.flag() == flag)
     }
     pub fn title(self) -> &'static str {
         match self {
@@ -98,6 +101,7 @@ impl EditorKind {
             EditorKind::PressureVessel => "Pressure vessel workbench",
             EditorKind::Preload => "Preload analysis workbench",
             EditorKind::Lug => "Lug analysis workbench",
+            EditorKind::LineRun => "Line run workbench",
         }
     }
     /// File used when none is given (Search: none, the saved folder is kept; Material Lookup has no file).
@@ -112,6 +116,7 @@ impl EditorKind {
             EditorKind::PressureVessel => "pressure-vessel-case.json",
             EditorKind::Preload => "preload-case.json",
             EditorKind::Lug => "lug-case.json",
+            EditorKind::LineRun => "line-run-case.json",
             EditorKind::Search | EditorKind::Materials => "",
         }
     }
@@ -141,6 +146,7 @@ pub fn run_native_editor(kind: EditorKind, path: &std::path::Path) -> Result<(),
             EditorKind::PressureVessel => window::run_vessel(editor::vessel::VesselSession::open(path)?),
             EditorKind::Preload => window::run_preload(editor::preload::PreloadSession::open(path)?),
             EditorKind::Lug => window::run_lug(editor::lug::LugSession::open(path)?),
+            EditorKind::LineRun => window::run_line_run(editor::line_run::LineRunSession::open(path)?),
         }
     }
     #[cfg(not(feature = "gpu-viewer"))]
@@ -173,7 +179,7 @@ mod tests {
 
     #[test]
     fn editor_flags_round_trip_and_unknown_flags_are_not_editors() {
-        for k in [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug] {
+        for k in [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug, EditorKind::LineRun] {
             assert_eq!(EditorKind::from_flag(k.flag()), Some(k));
         }
         assert_eq!(EditorKind::from_flag("--gpu-viewer"), None);

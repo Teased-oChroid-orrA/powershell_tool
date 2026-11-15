@@ -17,12 +17,13 @@ pub struct Workbench {
     pub kind: EditorKind,
 }
 
-pub const WORKBENCHES: [Workbench; 11] = [
+pub const WORKBENCHES: [Workbench; 12] = [
     Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", kind: EditorKind::Search },
     Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", kind: EditorKind::FastenerHole },
     Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", kind: EditorKind::Bushing },
     Workbench { id: "bushing-stackup", name: "Bushing Stackup", summary: "Line-reamed through holes and per-member bushing bore preparation.", kind: EditorKind::BushingStackup },
     Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", kind: EditorKind::PressureVessel },
+    Workbench { id: "line-run", name: "Line Run", summary: "Supported pressure tube: moments, reactions and failure margins by load case.", kind: EditorKind::LineRun },
     Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", kind: EditorKind::Preload },
     Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", kind: EditorKind::Lug },
     Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", kind: EditorKind::Eccentric },

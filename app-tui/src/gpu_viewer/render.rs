@@ -2695,6 +2695,72 @@ mod snapshot_tests {
         );
     }
 
+    /// The Line Run workbench (inputs and results, dark and light, a narrow window), as raw RGBA dumps:
+    /// `FEA_SNAPSHOT_LINE_RUN_OUT=/dir cargo test ... line_run_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_LINE_RUN_OUT"]
+    fn line_run_snapshot() {
+        use crate::gpu_viewer::editor::line_run::{file::LineRunFile, LineRunAct, LineRunSession};
+        use crate::gpu_viewer::editor::session::EditorAction;
+        use crate::toolboxes::line_run::model::{Field, LineRunModel};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_LINE_RUN_OUT") else {
+            return;
+        };
+        let _guard = headless_guard();
+        let mut m = LineRunModel::default();
+        for (f, v) in [
+            (Field::Od, 0.5),
+            (Field::Wall, 0.035),
+            (Field::Contents, 0.004),
+            (Field::E, 28.0e6),
+            (Field::Alpha, 9.6e-6),
+            (Field::Density, 0.29),
+            (Field::Fty, 30000.0),
+            (Field::Ftu, 75000.0),
+            (Field::FsYield, 1.5),
+            (Field::FsUltimate, 2.0),
+            (Field::CaseInternal, 3000.0),
+        ] {
+            m.set(f, v);
+        }
+        m.add_support();
+        m.set(Field::SupportX(2), 36.0);
+        m.set(Field::XEnd, 36.0);
+        m.set(Field::SupportX(1), 18.0);
+        m.add_load();
+        m.set(Field::LoadX(0), 9.0);
+        m.set(Field::LoadWeight(0), 0.6);
+        m.add_case();
+        m.set(Field::CaseFactor(2), -9.0);
+        m.select_case(0);
+        let mut session = LineRunSession::new(&LineRunFile::capture(&m, "Hydraulic return"), std::env::temp_dir().join("line-run-snapshot.json"));
+        let shoot = |session: &mut LineRunSession, step: &str, name: &str, dark: bool, (w, h): (u32, u32)| {
+            pollster::block_on(async {
+                let adapter = test_adapter().await.expect("adapter required");
+                let scene = session.scene().unwrap();
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                let view = ViewState::new(&scene);
+                let (yaw, pitch) = session.initial_view().map_or((0.0, 0.0), |v| v.angles());
+                let scenes = [scene];
+                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                gui.select_tab_named(&input, step);
+                draw(&mut r, &mut gui, &texture, &input, [yaw, pitch], session.default_mesh_lines());
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        };
+        shoot(&mut session, "Inputs", "line-run-inputs-dark", true, (1440, 900));
+        shoot(&mut session, "Inputs", "line-run-inputs-light", false, (1440, 900));
+        shoot(&mut session, "Inputs", "line-run-narrow", true, (860, 760));
+        session.act(EditorAction::LineRun(LineRunAct::Step("Results")));
+        shoot(&mut session, "Results", "line-run-results-dark", true, (1440, 900));
+        shoot(&mut session, "Results", "line-run-results-light", false, (1440, 900));
+        session.act(EditorAction::LineRun(LineRunAct::SelectCase(1)));
+        shoot(&mut session, "Results", "line-run-crash-case", true, (1440, 900));
+    }
+
     /// The Preload Analysis workbench (inputs dark, light and in a narrow window; the parts picture before the member FE
     /// answers; the FE stress after; the bolt picker), as raw RGBA dumps:
     /// `FEA_SNAPSHOT_PRELOAD_OUT=/dir cargo test ... preload_snapshot -- --ignored`.

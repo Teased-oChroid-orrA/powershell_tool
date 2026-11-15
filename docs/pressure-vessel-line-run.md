@@ -1,8 +1,8 @@
 # Pressure line run: stress check of a supported tube (#234)
 
 `pressure-vessel-solver/src/line_run.rs` (+ `line_beam.rs`): a long aircraft pressure line (hydraulic / fuel / pneumatic tube)
-supported at `x` positions, checked with the standard failure criterion of its material class. API only: no window yet (a window
-needs an owner-approved mockup; see "Proposed window" below).
+supported at `x` positions, checked with the standard failure criterion of its material class. The native **Line Run** window
+(dashboard tile, `--gpu-line-run`) drives it; see "Window" below.
 
 ## Pipeline
 1. **Member actions per load case.** Two orthogonal bending planes (y, z) plus an axial bar on one station list (support, load and
@@ -66,8 +66,19 @@ approximation; supports are pinned in both transverse directions (optionally cla
 thermal restraint is uniaxial (no Poisson coupling). Ductile ultimate is checked both ways (maximum |principal| per the crate's
 convention, and von Mises, owner request 2026-11-14).
 
-## Proposed window (needs owner approval before any code)
-A "Line Run" page in the native Pressure Vessel family: left, tube inputs (OD, wall, material class and allowables, FS) and a
-support / load table (x, kind, anchor, force, weight, offset); right, a station plot of moment resultant and axial force over `x` with
-supports marked, a margin card per criterion (governing case, `x`, surface, angle), and the reactions table. Case selector for load
-cases (1g, crash factors, thermal). No window is built here.
+## Window (shipped 2026-11-15; owner approved the mockup, a new dashboard tile, with export and unit switching)
+`app-tui` `--gpu-line-run [case.json]`: model `app-tui/src/toolboxes/line_run/`, window `app-tui/src/gpu_viewer/editor/line_run/`
+(each has an `AGENTS.md`). Inspector cards: Tube, Material (class Ductile / Brittle; E, alpha, density, Fty / Ftu / Fcu and the
+factors of safety are owner inputs, shown "not set" and never defaulted: a run without them says which is missing), Supports (x,
+axial anchor, clamp), one card per Point load (x, weight, force, offset, pressure-thrust flag, the case it acts in or every case),
+Load cases (selector rows, name, pressures, temperature change, load factors, end-load flag). Results: verdict with the
+equilibrium residual, a Stat and a utilization bar per criterion of the selected case (governing tagged, with its location),
+two station plots (moment resultant; axial force dashed) with support and governing marks, the reactions. The viewport draws
+the line along the vertical axis coloured by bending moment (axial force as the second field), a collar at each support; the
+tube radius is enlarged for the picture only. Export writes `<case>.report.txt` and `<case>.stations.csv`; Units toggles
+in, lbf, psi, degF / mm, N, MPa, degC (display only: values are stored and solved in the first set).
+Deviations from the mockup, forced by the shared window chrome: moment and axial force are two plots (one axis, two units;
+`Plot` has no fill) and the case pills are selector rows. Proof: `cargo test -p app-tui --lib line_run` (closed-form midspan
+moment `wL^2/8` through the typed inputs, SI entry equals US solve, case-scoped loads, brittle class, refusals, file and export
+round trip); GPU snapshot `line_run_snapshot` (`FEA_SNAPSHOT_LINE_RUN_OUT`). Not verified: real-mouse use on a desktop and Windows.
+Not exposed: point-load moments, subdivisions, composite / other classes.

@@ -23,6 +23,7 @@ pub mod stackup;
 pub mod vessel;
 pub mod preload;
 pub mod lug;
+pub mod line_run;
 pub mod stackup_transfer;
 pub mod solid;
 pub mod sketcher;

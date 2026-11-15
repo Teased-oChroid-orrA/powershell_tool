@@ -50,7 +50,7 @@ HTML report plus optional CSV/JSON export. It has grown into a multi-tool
 "Toolbench" for GS Engineering: Search, Fastener Holes, Bushing Workbench,
 Pressure Vessel Analyzer, Preload Analysis, Lug Analysis, an FEA Workbench
 (define a 2D / extruded / imported-mesh problem, solve it on `fea-core`, contour
-the result) and Material Lookup
+the result), Line Run (supported pressure tube) and Material Lookup
 (placeholders remain for Dupes/Rename/Logs). Every workbench opens in a native
 window from the dashboard; Pressure Vessel, Preload, Lug and Material Lookup
 have no terminal toolbox any more (removed 2026-11-03).
@@ -91,7 +91,7 @@ nodes.
 | Problem definition over the kernel (sketch / extrusion / imported mesh, supports, loads, solve, results, raster; bolt-joint member compliance) | `fea-problem/` | `fea-problem/AGENTS.md` | Active. Consumed by the `app-tui` FEA Workbench and Preload Analysis. |
 | Eccentric bushing spin capacity (offset bore: friction torque of the fit vs F e sin(angle); maximum offset / load; meshed elastic pin, direct spin simulation, round boss or edge-limited plate) | `eccentric-bushing/` | `eccentric-bushing/AGENTS.md` + `app-tui/src/toolboxes/eccentric_bushing/AGENTS.md` | Active. Plane contact FE on `fea-core`; the terminal toolbox currently uses a default Bushing case until #242 restores case handoff. Plan/evidence: `docs/eccentric-bushing.md`. |
 | B-rep solids (ADR-019): face-tagged surface mesh with BVH signed distance, tetrahedral volume meshing; OpenCascade modelling behind the off-by-default `occt` feature (STEP, booleans, fillets) | `solid-kernel/` | `solid-kernel/AGENTS.md` | Active. `occt` uses prebuilt OCCT; `occt-source` builds it with CMake and is required for static-CRT Windows releases. Volume mesher: `fea-core/src/tetmesh.rs`. |
-| Pressure vessel solver (Lame, failure margins, UG-27 heads, supported-tube line run) | `pressure-vessel-solver/` | `pressure-vessel-solver/AGENTS.md` | Active. Sibling pattern to `bushing-solver`; line run: `docs/pressure-vessel-line-run.md`. |
+| Pressure vessel solver (Lame, failure margins, UG-27 heads, supported-tube line run) | `pressure-vessel-solver/` | `pressure-vessel-solver/AGENTS.md` | Active. Sibling pattern to `bushing-solver`; line run: `docs/pressure-vessel-line-run.md`; its window is `app-tui` Line Run (`toolboxes/line_run/AGENTS.md`, `gpu_viewer/editor/line_run/AGENTS.md`). |
 | Shared math (Lamé, materials) | `engineering-math/`, `mechanics-core/` | *(no node)* | No re-export shim; import directly. |
 | CLI | `cli/` | *(no node)* | Second `search-core` consumer. |
 | Current native CAD/meshing statement of work | `docs/issue-46-resume.md` | Live pointer and Claude continuation workflow | Active epic #46; scoped milestones and broad exit gates remain distinct. |

@@ -1133,6 +1133,12 @@ pub fn run_preload(mut session: super::editor::preload::PreloadSession) -> Resul
     launch(ViewerProject::single(scene), Some(Box::new(session)))
 }
 
+/// Open the Line Run workbench on `session`.
+pub fn run_line_run(mut session: super::editor::line_run::LineRunSession) -> Result<(), String> {
+    let scene = super::editor::authoring::Authoring::scene(&mut session)?;
+    launch(ViewerProject::single(scene), Some(Box::new(session)))
+}
+
 /// Open the Lug Analysis workbench on `session`.
 pub fn run_lug(mut session: super::editor::lug::LugSession) -> Result<(), String> {
     let scene = super::editor::authoring::Authoring::scene(&mut session)?;

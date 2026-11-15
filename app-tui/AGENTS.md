@@ -136,6 +136,7 @@ Per-toolbox nodes (read the one for the toolbox you are changing):
 | Bushing Workbench model (window-only) | `src/toolboxes/bushing/AGENTS.md`; window `src/gpu_viewer/editor/bushing/AGENTS.md` |
 | Pressure Vessel model (window-only) | `src/toolboxes/pressure_vessel/AGENTS.md`; window `src/gpu_viewer/editor/vessel/AGENTS.md` |
 | Preload Analysis model (window-only) | `src/toolboxes/preload_analysis/AGENTS.md`; window `src/gpu_viewer/editor/preload/AGENTS.md` |
+| Line Run model (window-only) | `src/toolboxes/line_run/AGENTS.md`; window `src/gpu_viewer/editor/line_run/AGENTS.md` |
 | Eccentric Bushing | `src/toolboxes/eccentric_bushing/AGENTS.md` |
 | Lug Analysis model (window-only) | `src/toolboxes/lug_analysis/AGENTS.md`; window `src/gpu_viewer/editor/lug/AGENTS.md` |
 | FEA Workbench | `src/toolboxes/fea_workbench/AGENTS.md` |
