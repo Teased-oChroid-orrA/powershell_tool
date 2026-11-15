@@ -191,6 +191,10 @@ name = "semantic_startup"
 required-features = ["semantic-search"]
 
 [[example]]
+name = "pdf_folder_eval"
+required-features = ["semantic-search", "pdf-yolow"]
+
+[[example]]
 name = "edges_dump"
 required-features = ["neural-search"]
 
@@ -228,3 +232,7 @@ harness = false
 [[bench]]
 name = "result_processing_phases"
 harness = false
+
+[[example]]
+name = "pdf_scanned_pages"
+required-features = ["pdf-yolow"]

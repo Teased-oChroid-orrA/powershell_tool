@@ -70,7 +70,7 @@ cargo run -p search-core --release --example pdf_extract_bench -- ../benchmarks/
 ## Next measurement
 
 1. Inspect missed ViDoRe questions by text, table, and visual evidence type. Check whether the judged page's Markdown contains the answer before attributing misses to ranking.
-2. Run a bounded PDF extraction and page-citation comparison against source PDFs and judged pages. Include mixed text-and-scan files where a public label exists.
+2. (Done 2026-11-14, see the end-to-end section below; mixed text-and-scan files remain unmeasured beyond 3 pages.) Run a bounded PDF extraction and page-citation comparison against source PDFs and judged pages.
 3. Use STELLA only with a feasible full-corpus plan; sampling passages changes the retrieval task. Keep a small private, human-judged engineering folder as the product acceptance set.
 
 ## 2026-11-14: ViDoRe English misses by evidence type
@@ -92,3 +92,29 @@ cargo run -p search-core --release --example pdf_extract_bench -- ../benchmarks/
 
 Of the 31 top-10 misses, 25 are synthetic and 20 are open-ended. Only 2 have a judged page whose Markdown holds at least 80% of the answer words; 17 hold under 50%, and 6 miss even at rank 100. So most misses are broad questions whose answer is spread over several pages or lives outside the page text, not ranking errors a text-level change can fix, and not extraction failures (the text used is the publisher's Markdown). Extractive and numerical questions already score 0.51 and 0.68. Word overlap is a proxy: it cannot tell a paraphrased answer from an absent one. Decision: no ranking change from this set; keep it as a diagnostic. Remaining unmeasured: the same questions over our own PDF extraction (needs the source PDFs, 1 of the shard's documents is local).
 
+
+## 2026-11-14: end to end on the source PDFs (extraction backend against page and document metrics)
+
+Harness: `search-core/examples/pdf_folder_eval.rs`, queries and judgments from `scripts/prepare_vidore_folder.py` (160 English ViDoRe v3 Industrial queries whose judged pages lie in the 28 downloaded source PDFs, 10 judged documents; pyarrow needed). Every PDF is read by the product extraction (`scanner` = byte scanner, `yolow` = yolowpdf), indexed with page numbers through `index_document_with_pages`, and each query is searched with the default hybrid ranking. Relevance is binary: a judged (document, page) pair. Extraction and page-mapping errors therefore count against the score.
+
+```sh
+python3 scripts/prepare_vidore_folder.py ../benchmarks/vidore-industrial
+cargo run -p search-core --release --features semantic-search,pdf-yolow --example pdf_folder_eval -- <work-dir> ../benchmarks/vidore-industrial <scanner|yolow>
+```
+
+| Backend | PDFs read | Lines | Chunks | Doc hit@1 | Doc hit@5 | Page hit@1 | Page hit@10 | Page nDCG@10 | Page recall@100 | Wall time |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| scanner | 27 of 28 | 512,110 | 15,075 | **0.719** | **0.919** | n/a | n/a | n/a | n/a | 1,020 s |
+| yolowpdf | 27 of 28 | 80,945 | 15,697 | 0.675 | 0.912 | 0.375 | 0.775 | 0.383 | 0.711 | 1,031 s |
+
+Reading. The byte scanner has no page numbers, so only yolowpdf can answer a page citation (page hit@10 0.775: a judged page is in the top ten for about three queries in four). At document level the two are close and the scanner is slightly ahead (hit@1 0.719 against 0.675, 160 queries, about 7 queries of difference, not tested for significance); the scanner's 512k lines against 81k are fragments, not more text. Time is dominated by embedding (about 15k chunks), not extraction (0.0 to 3.0 s per file). Each backend lost one file: `AFD-091005-062.pdf` (2 pages) yields no text on the scanner and `TO_36-1-191.pdf` returns none under yolowpdf (default options give a parse error), so neither index holds those two.
+
+Limits. 10 judged documents and 160 queries, one machine, scanner against yolowpdf only (no poppler reference here). Page numbers come from each backend's own page split, so a page-numbering disagreement with the judges' (PDF page index) counts as a miss and is not separated from a retrieval miss. Binary relevance ignores the score-2 grading. The numbers are not comparable with the Markdown-chunk baseline above (different corpus: whole folder of 27 PDFs, different granularity). No ranker or extraction default was changed on this basis.
+
+Harness history. The first run returned all zeros: the index serves a file only while its stored mtime and size match the file on disk, and the harness stored a made-up mtime. It now stores the real one. The same rule applies to any caller of `index_document_with_pages`.
+
+### Mixed text and scanned pages under yolowpdf (item 8)
+
+`yolowpdf` reports `scanned` only when the whole document has no text layer; OCR then runs through the scanner path. A page without a text layer inside a text document is marked "is a scanned image with no text layer", which `pdf_yolow.rs` drops, so that page gets neither text nor OCR. Measured with `search-core/examples/pdf_scanned_pages.rs` over the 27 parseable PDFs: 4,861 pages, 3 scanned pages (0.06%), all in 3 documents that yolowpdf treats as text documents (`AFD-100607-009`, `TO_00-25-172`, `TO_35-1-18`, one page each); 0 documents are scanned as a whole.
+
+Not fixed. Per-page OCR needs the page's image, but the scanner pairs images by file order, not page, and yolowpdf does not expose page images, so a fix needs a page-to-image mapping that does not exist here (not a low-risk change). In this public set the loss is 3 pages, so the effect is small; whether it is larger in mixed company scans is unmeasured because no such public file with labels is available. Recognised-text confidence stays blocked (`ocrs` 0.12 exposes no score; see `docs/search-benchmarks.md`, "#0116").
