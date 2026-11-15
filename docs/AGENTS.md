@@ -34,6 +34,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | #2 — Native Offline Search Engine (Tantivy) foundation | `docs/native-search-assessment.md` (Phase 1 recon) → `docs/adr/*` → `docs/issue-2-status.md` (DoD checklist; **closed**) |
 | #6 — index-first/incremental search engine (80-section epic) | `docs/issue-6-status.md` (gap analysis) → `docs/issue-6-phase-1.md` .. `phase-16.md` → `docs/issue-6-validation-report.md` (**closed**, all 16 phases + final validation) |
 | Edge-distance cross-check (stress superposition / FE / allowables vs the legacy `Fbru + 0.8 p` check; merged to main, including the contact FE) | `docs/edge-distance-crosscheck.md` |
+| Pressure line run (supported tube: beam / thermal / pressure / thrust load state, failure criterion by material class, sources and limits) | `docs/pressure-vessel-line-run.md` |
 | Lug Analysis: rigid-pin contact FE (options considered, method, validation numbers, performance, what is not done) | `docs/lug-analysis.md` |
 | Lug solver upgrade pass (15 accuracy/robustness items, status and measured outcome of each) | `docs/lug-solver-upgrade-plan.md` |
 | General FEA kernel `fea-core` (2D/3D elements, assembly, faer solver, validation, measured speed, phase plan; Phase 8: FEA Workbench, toolboxes on the kernel, point location, rigid-body check) | `docs/fea-core.md`; decisions `docs/adr/ADR-012-general-fea-kernel.md`, `docs/adr/ADR-013-eigen-and-transient-methods.md` (eigen / transient / adaptive strategy) |
@@ -52,6 +53,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | #11 — Pressure Vessel Stress/Failure-Mode/Min-Thickness Analyzer | `docs/issue-11-status.md` → `docs/issue-11-phase-1.md` .. `phase-15.md` (no phase-8; folded elsewhere) (**closed**, 15 phases shipped). Also summarized in root `CLAUDE.md` — that summary is being trimmed to point here instead of duplicating it |
 | #12 — FEA Audit 2.0 and core roadmap | `docs/issue-12-claude-handoff.md` (current verification/limitations/next steps) → `docs/issue-12-phase-12.md` .. `phase-19.md` (audit/core roadmap, direct-wgpu playback and interactive native workbench extension; draft PR #13) |
 | #234 — Bushing edge-check uncertainty controls | `docs/issue-234-uncertainty-controls.md` (editable CVs, stale-run behavior, verification) |
+| #234 — Bushings / pin loads on holes of every sketch region | `docs/issue-234-multi-region-bushings.md` (global hole numbering, scope, evidence) |
 
 ### Find It Fast — by current/live status
 | Looking for current status of... | Go to |

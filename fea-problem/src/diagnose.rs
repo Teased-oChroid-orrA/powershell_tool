@@ -131,7 +131,7 @@ impl Edit {
         let of_target = |t: &Target| -> Option<String> {
             match t {
                 Target::Support(i) => p.supports.get(*i).and_then(|s| s.edge()).map(str::to_string),
-                Target::Load(i) => p.loads.get(*i).and_then(advice::edge_of_load),
+                Target::Load(i) => p.loads.get(*i).and_then(|l| advice::edge_of_load(p, l)),
                 Target::HeatSupport(i) => p.thermal.supports.get(*i).and_then(|s| s.edge()).map(str::to_string),
                 Target::HeatLoad(i) => p.thermal.loads.get(*i).and_then(|l| l.edge()).map(str::to_string),
             }
@@ -145,7 +145,7 @@ impl Edit {
             Edit::Reorient => Vec::new(),
             Edit::WidenHole { hole, .. } => vec![format!("hole{hole}")],
             Edit::ScaleModulus { .. } | Edit::DeclareUnits(_) => Vec::new(),
-            Edit::SetBushingModulus { bushing, .. } => p.bushings.get(*bushing).map(|b| format!("hole{}", b.hole)).into_iter().collect(),
+            Edit::SetBushingModulus { bushing, .. } => p.bushings.get(*bushing).and_then(|b| p.hole_at(b.hole)).map(|h| h.2).into_iter().collect(),
         }
     }
 
@@ -701,7 +701,7 @@ fn non_finite(p: &Problem) -> Vec<Diagnosis> {
 fn support_candidates(p: &Problem) -> Vec<String> {
     let cents = advice::surface_centroids(p);
     let taken: Vec<&str> = p.supports.iter().filter_map(surface_of_support).collect();
-    let loaded: Vec<String> = p.loads.iter().filter_map(advice::edge_of_load).collect();
+    let loaded: Vec<String> = p.loads.iter().filter_map(|l| advice::edge_of_load(p, l)).collect();
     let loaded_refs: Vec<&str> = loaded.iter().map(String::as_str).collect();
     let mut names: Vec<(String, f64)> = if cents.is_empty() {
         p.edge_names().into_iter().filter(|n| !taken.contains(&n.as_str()) && !loaded.contains(n)).map(|n| (n, 0.0)).collect()

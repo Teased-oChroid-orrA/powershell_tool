@@ -4158,6 +4158,7 @@ version = "0.1.0"
 dependencies = [
  "engineering-math",
  "fea-core",
+ "fea-problem",
  "mechanics-core",
 ]
 

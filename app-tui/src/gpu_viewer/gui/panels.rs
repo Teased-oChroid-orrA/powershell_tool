@@ -201,6 +201,9 @@ impl Gui {
             .show(ui, |ui| {
                 let compact = ui.available_width() < 420.0;
                 let minimal = ui.available_width() < 300.0;
+                // The circadian slider and its clock label need about 220 px; below this width they ran under the
+                // breadcrumb on the left (860 px window with the sidebar open).
+                let tight = ui.available_width() < 700.0;
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let menu = ui.button("Menu");
                     self.targets.push(("Menu".into(), menu.rect));
@@ -251,7 +254,9 @@ impl Gui {
                         }
                         let light = ui.ctx().theme() == egui::Theme::Dark;
                         theme::theme_picker(ui);
-                        theme::circadian_control(ui, p);
+                        if !tight {
+                            theme::circadian_control(ui, p);
+                        }
                         let theme = ui.add_visible(
                             theme::is_circadian(),
                             egui::Button::new(if light { "Light" } else { "Dark" })

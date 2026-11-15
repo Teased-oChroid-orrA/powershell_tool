@@ -687,6 +687,41 @@ impl Problem {
         if self.analysis == Analysis::Solid { 3 } else { 2 }
     }
 
+    /// Hole `n` (1-based) of a sketch: its shape, its region (0 = the outline of `geometry`, 1.. = `regions`) and its mesh
+    /// surface name. Holes are counted through the first region's, then each further region's in order, so a sketch with one
+    /// region numbers them as before; region `k + 1`'s own hole `m` is `r{k + 1}/hole{m}`. `Load::Bearing::hole` and
+    /// `Bushing::hole` use this number.
+    pub fn hole_at(&self, n: usize) -> Option<(&Shape, usize, String)> {
+        let Geometry::Sketch { holes, regions, .. } = &self.geometry else { return None };
+        let mut i = n.checked_sub(1)?;
+        if let Some(s) = holes.get(i) {
+            return Some((s, 0, format!("hole{n}")));
+        }
+        i -= holes.len();
+        for (k, r) in regions.iter().enumerate() {
+            if let Some(s) = r.holes.get(i) {
+                return Some((s, k + 1, format!("r{}/hole{}", k + 2, i + 1)));
+            }
+            i -= r.holes.len();
+        }
+        None
+    }
+
+    /// Number of the hole whose surface is called `surface` (inverse of [`Problem::hole_at`]).
+    pub fn hole_number(&self, surface: &str) -> Option<usize> {
+        let Geometry::Sketch { holes, regions, .. } = &self.geometry else { return None };
+        let (prefix, local) = match surface.split_once('/') {
+            Some((r, rest)) => (r.strip_prefix('r')?.parse::<usize>().ok().filter(|k| *k >= 2)? - 1, rest),
+            None => (0, surface),
+        };
+        let m: usize = local.strip_prefix("hole")?.parse().ok().filter(|m| *m >= 1)?;
+        if prefix == 0 {
+            return (m <= holes.len()).then_some(m);
+        }
+        let r = regions.get(prefix - 1)?;
+        (m <= r.holes.len()).then(|| holes.len() + regions[..prefix - 1].iter().map(|r| r.holes.len()).sum::<usize>() + m)
+    }
+
     /// Material of region `k` (0 = the outline and holes of `geometry`, 1.. = its `regions`).
     pub fn region_material(&self, k: usize) -> &MaterialSpec {
         k.checked_sub(1).and_then(|i| self.region_materials.get(i)).and_then(Option::as_ref).unwrap_or(&self.material)
@@ -832,9 +867,6 @@ impl Problem {
                         m.elastic().validate().map_err(|e| format!("region {} material: {e}", i + 2))?;
                     }
                 }
-                if !regions.is_empty() && !self.bushings.is_empty() {
-                    return Err("a bushing is placed in a hole of the first region; a sketch with several regions cannot have bushings".into());
-                }
             }
             Geometry::Imported { path, scale } => {
                 if !scale.valid() {
@@ -866,7 +898,9 @@ impl Problem {
         if self.bushings.is_empty() {
             return Ok(());
         }
-        let Geometry::Sketch { holes, .. } = &self.geometry else { return Err("a bushing needs a sketch hole (not an imported mesh)".into()) };
+        if !matches!(self.geometry, Geometry::Sketch { .. }) {
+            return Err("a bushing needs a sketch hole (not an imported mesh)".into());
+        }
         // A 3D solid is the plane profile extruded, bushing annuli included: a swept or revolved body has no straight bore.
         let straight = self.history.as_ref().map_or(true, |h| h.rebuild().is_ok_and(|b| !matches!(b.body, crate::history::Body::Revolve { .. } | crate::history::Body::Sweep { .. })));
         if !(matches!(self.analysis, Analysis::PlaneStress | Analysis::PlaneStrain) || (self.analysis == Analysis::Solid && straight)) {
@@ -874,7 +908,7 @@ impl Problem {
         }
         for (i, b) in self.bushings.iter().enumerate() {
             let n = i + 1;
-            let Some(Shape::Circle { r, .. }) = holes.get(b.hole.wrapping_sub(1)) else { return Err(format!("bushing {n}: hole {} is not a circle", b.hole)) };
+            let Some((Shape::Circle { r, .. }, ..)) = self.hole_at(b.hole) else { return Err(format!("bushing {n}: hole {} is not a circle", b.hole)) };
             if self.bushings.iter().take(i).any(|o| o.hole == b.hole) {
                 return Err(format!("bushing {n}: hole {} already has a bushing", b.hole));
             }
@@ -906,7 +940,7 @@ impl Problem {
             return Err("contact needs separate bodies: a sketch with more than one region, not bonded (Mesh > Bond regions off)".into());
         }
         if !self.bushings.is_empty() {
-            return Err("contact pairs do not combine with bushings yet (a sketch with several regions cannot have bushings)".into());
+            return Err("contact pairs do not combine with bushings yet".into());
         }
         if self.study.is_thermal() {
             return Err("contact pairs are for the structural study (not thermal)".into());

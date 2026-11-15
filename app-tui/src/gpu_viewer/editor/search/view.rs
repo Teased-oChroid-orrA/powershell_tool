@@ -1870,14 +1870,14 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
             "search-matching",
             "Matching",
             Relevance::Context,
-            setting_rows(s, &["Filters", "Matching"]),
+            setting_rows(s, &["Filters", "Matching", "Phrases"]),
         )
         .for_steps(&["Search"]),
         files: Card::new(
             "search-files",
             "Files and folders",
             Relevance::Context,
-            setting_rows(s, &["Search", "Extensions & Exclusions"]),
+            setting_rows(s, &["Search", "Extensions & Exclusions", "PDF"]),
         )
         .for_steps(&["Search"]),
         performance: Card::new(
