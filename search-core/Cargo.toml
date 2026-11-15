@@ -187,6 +187,10 @@ name = "gaps_eval"
 required-features = ["neural-search"]
 
 [[example]]
+name = "semantic_startup"
+required-features = ["semantic-search"]
+
+[[example]]
 name = "edges_dump"
 required-features = ["neural-search"]
 
