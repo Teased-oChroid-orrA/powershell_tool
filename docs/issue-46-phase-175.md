@@ -36,3 +36,21 @@ Reading the extent at a coarser chord (0.5 mm) before the final read, to loosen 
 ## Limits
 
 Import only: none of the 9 was meshed or solved against OpenCASCADE here (no OCCT prebuilt on this machine), so the retirement gate's mesh and parity criteria are not re-measured. Retirement remains unapproved.
+
+## Increment 2: zero-radius cones, and the corpus tool now shows the final refusal
+
+The corpus test printed only the first 150 characters of a refusal, which cut the tolerant-read (second-stage) reason that decides the outcome; it now prints 600. The table above is therefore the strict read's reason. The reasons that end the import, after the tolerant read (24 files at the time of this measurement):
+
+| Final reason | Files |
+|---|---|
+| edge/surface disagreement 5e-3 to 2e-2 mm | ctc_01 (rd, ap203), ctc_02 (rc, ap203), ftc_11 e2, stc_10 e2 |
+| spline edge sample off the face's spline surface, 5e-3 to 8e-3 mm | ftc_07 (rd, e2), ctc_05 (ap203, e1) |
+| ambiguous half-turn cylindrical trim | ctc_01 e1, ctc_02 e2, ftc_10 e2 |
+| parallel or unresolved placement directions | ctc_04 rd, ftc_08 rc |
+| boundary winds without a chart-closing seam | ctc_04 ap203, ftc_10 rb |
+| spherical face orientation and extent | ftc_06 rd, stc_06 |
+| edge endpoint off its declared circle (1.8e-2 mm) | ctc_05 rd |
+| edge/surface disagreement 4.8e-2 mm | ctc_04 e1 |
+| one supported body (product structure) / unsupported item | ftc_08 e1-tg / stc_07 |
+
+Fixed: `CONICAL_SURFACE` with radius `0.` (the placement is the apex; NIST places cones that way) was refused as "invalid or unsupported geometric radius". `cone_radius` accepts zero for cones only (other radii stay positive). Native imports **10 of 33** (`ftc_06 e2` is new); `ctc_01 e1`, `ctc_02 e2` and `ctc_04 e1` get past it to the next refusal above. Regression: `curved_step` case "cone placed at its apex (radius 0)" (`tests/data/cone-apex-placement.step`, the `cone.step` cone re-placed at its apex, closed-form volume). The circle-endpoint refusal message now reports the offset and radius.
