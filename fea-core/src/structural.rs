@@ -496,11 +496,33 @@ impl MemberModel {
         )?;
         let mut assembly = FieldAssembly::new(self.map.clone());
         let mut elements = Vec::new();
-        let mut stiff = vec![false; self.map.n_dofs()];
+        // Per-node 3x3 blocks of the translation (0) and rotation (1) stiffness, summed over the
+        // members at the node: a null direction of a block is a mechanism of that node alone.
+        let mut owner = vec![None; self.map.n_dofs()];
+        for node in 0..self.nodes.len() {
+            for &field in self.map.fields(node).unwrap_or(&[]) {
+                let (kind, axis) = match field {
+                    Field::Translation(a) => (0, a),
+                    Field::Rotation(a) => (1, a),
+                    Field::Temperature => continue,
+                };
+                owner[self.map.index(node, field)?] = Some((node, kind, axis));
+            }
+        }
+        let mut blocks = vec![[[0.0_f64; 9]; 2]; self.nodes.len()];
         for member in &self.members {
             let elem = self.element(member)?;
-            for (i, &dof) in elem.dofs.iter().enumerate() {
-                stiff[dof] |= elem.k[i * elem.dofs.len() + i] > 0.0;
+            let n = elem.dofs.len();
+            for i in 0..n {
+                for j in 0..n {
+                    if let (Some((n1, k1, a1)), Some((n2, k2, a2))) =
+                        (owner[elem.dofs[i]], owner[elem.dofs[j]])
+                    {
+                        if n1 == n2 && k1 == k2 {
+                            blocks[n1][k1][a1 * 3 + a2] += elem.k[i * n + j];
+                        }
+                    }
+                }
             }
             assembly.add_element(&elem.dofs, &elem.k)?;
             if !elem.truss {
@@ -516,17 +538,83 @@ impl MemberModel {
         for &(node, field, force) in nodal_loads {
             assembly.add_load(self.map.index(node, field)?, force)?;
         }
-        // A rotation no member stiffens (every member there releases it) is a free-floating
-        // DOF with no load; hold it at zero so it does not make the system singular.
-        let mut bc = bc.clone();
-        for node in 0..self.nodes.len() {
-            for &field in self.map.fields(node).unwrap_or(&[]) {
-                let dof = self.map.index(node, field)?;
-                if matches!(field, Field::Rotation(_))
-                    && !stiff[dof]
-                    && bc.prescribed(dof)?.is_none()
-                {
-                    bc.prescribe(&self.map, node, field, 0.0)?;
+        // Null directions of a node block (eigenvalue at round-off of the largest) leave the
+        // system singular. A translation one is a real mechanism: refuse it, naming the node.
+        // A rotation one is a free pin (every member there releases it): the stabilising
+        // spring `s v v^T` changes nothing (`K v = 0`, so `u.v` stays 0) as long as no moment
+        // is applied about it, which is refused.
+        let scales: [f64; 2] = std::array::from_fn(|kind| {
+            blocks
+                .iter()
+                .flat_map(|b| [b[kind][0], b[kind][4], b[kind][8]])
+                .fold(0.0_f64, f64::max)
+                .max(f64::MIN_POSITIVE)
+        });
+        for (node, pair) in blocks.iter().enumerate() {
+            for (kind, block) in pair.iter().enumerate() {
+                let fields = if kind == 0 { Field::Translation } else { Field::Rotation };
+                if self.map.index(node, fields(0)).is_err() {
+                    continue;
+                }
+                let scale = scales[kind];
+                let free: Vec<usize> = (0..3)
+                    .filter(|&a| {
+                        bc.prescribed(self.map.index(node, fields(a)).unwrap())
+                            .ok()
+                            .flatten()
+                            .is_none()
+                    })
+                    .collect();
+                if free.is_empty() {
+                    continue;
+                }
+                let m = free.len();
+                let sub: Vec<f64> = free
+                    .iter()
+                    .flat_map(|&i| free.iter().map(move |&j| block[i * 3 + j]))
+                    .collect();
+                let (val, vec) = crate::dense::sym_eigen(&sub, m);
+                let top = val.last().copied().unwrap_or(0.0).max(0.0);
+                for (k, &lam) in val.iter().enumerate() {
+                    if lam > 1e-12 * top.max(f64::MIN_POSITIVE) && top > 0.0 {
+                        continue;
+                    }
+                    let v = &vec[k * m..(k + 1) * m];
+                    if kind == 0 {
+                        return Err(format!(
+                            "member model: node {node} is a mechanism (no member stiffens it along {:?}); \
+                             add a support, a bending-stiff member or a non-collinear member",
+                            std::array::from_fn::<f64, 3, _>(|a| free
+                                .iter()
+                                .position(|&f| f == a)
+                                .map_or(0.0, |p| v[p]))
+                        ));
+                    }
+                    let moment: f64 = free
+                        .iter()
+                        .enumerate()
+                        .map(|(p, &a)| {
+                            let load: f64 = nodal_loads
+                                .iter()
+                                .filter(|(n, f, _)| *n == node && *f == Field::Rotation(a))
+                                .map(|l| l.2)
+                                .sum();
+                            v[p] * load
+                        })
+                        .sum();
+                    if moment.abs() > 1e-12 * scale {
+                        return Err(format!(
+                            "member model: moment applied at node {node} about a rotation every member there releases"
+                        ));
+                    }
+                    let dofs = free
+                        .iter()
+                        .map(|&a| self.map.index(node, Field::Rotation(a)))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let spring: Vec<f64> = (0..m * m)
+                        .map(|q| scale * v[q / m] * v[q % m])
+                        .collect();
+                    assembly.add_element(&dofs, &spring)?;
                 }
             }
         }
