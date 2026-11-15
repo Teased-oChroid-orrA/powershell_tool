@@ -45,14 +45,23 @@ fn fail(kind: ErrorKind, text: &str) -> Error {
     }
 }
 pub(crate) fn unwrap_period(raw: f64, previous: f64, period: f64) -> Result<f64, Error> {
+    unwrap_period_tie(raw, previous, period, None)
+}
+/// `unwrap_period`, with the exact half-turn step (two branches equally near the previous value) resolved toward `tie`
+/// (`+1.` or `-1.`) instead of refused. The caller owns the choice: only a later check (the loop closing without winding)
+/// can tell which branch is the face's.
+pub(crate) fn unwrap_period_tie(raw: f64, previous: f64, period: f64, tie: Option<f64>) -> Result<f64, Error> {
     // Reconstruct from the raw parameter plus an integer period. Adding
     // incremental remainders would accumulate drift around a long boundary.
-    let u = raw + ((previous - raw) / period).round() * period;
+    let mut u = raw + ((previous - raw) / period).round() * period;
     if (u - previous).abs() == period / 2. {
-        return Err(fail(
-            ErrorKind::Geometry,
-            "ambiguous half-turn cylindrical trim segment",
-        ));
+        let Some(sign) = tie else {
+            return Err(fail(
+                ErrorKind::Geometry,
+                &format!("ambiguous half-turn cylindrical trim segment (from {previous:e} to {u:e}, period {period:e})"),
+            ));
+        };
+        u = if sign * (u - previous) > 0. { u } else if sign > 0. { u + period } else { u - period };
     }
     if !u.is_finite() {
         return Err(fail(ErrorKind::Geometry, "unresolved cylindrical chart"));
@@ -339,5 +348,11 @@ mod tests {
         assert!((unwrap_period(-3., 3., TAU).unwrap() - (TAU - 3.)).abs() < 1e-14);
         assert!((unwrap_period(3., -3., TAU).unwrap() - (3. - TAU)).abs() < 1e-14);
         assert!(unwrap_period(std::f64::consts::PI, 0., TAU).is_err());
+        // An exact half-turn is two equally near branches: refused unless the caller picks the direction.
+        let pi = std::f64::consts::PI;
+        assert!((unwrap_period_tie(pi, 0., TAU, Some(1.)).unwrap() - pi).abs() < 1e-14);
+        assert!((unwrap_period_tie(pi, 0., TAU, Some(-1.)).unwrap() + pi).abs() < 1e-14);
+        assert!((unwrap_period_tie(-pi, 0., TAU, Some(1.)).unwrap() - pi).abs() < 1e-14);
+        assert!((unwrap_period_tie(3., 0., TAU, Some(-1.)).unwrap() - 3.).abs() < 1e-14, "only an exact half-turn is a tie");
     }
 }

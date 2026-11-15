@@ -29,7 +29,7 @@ fn the_native_import_over_a_local_corpus() {
         ok += usize::from(r.is_ok());
         let what = match &r {
             Ok(i) => format!("ok: {} faces, {} triangles, size {:.3}", i.cache.face_names().len(), i.cache.triangles.len(), i.size),
-            Err(e) => format!("REFUSED: {}", e.chars().take(150).collect::<String>()),
+            Err(e) => format!("REFUSED: {}", e.chars().take(600).collect::<String>()),
         };
         eprintln!("{:<42} {:>6.1}s  {what}", p.file_name().unwrap().to_string_lossy(), t.elapsed().as_secs_f64());
     }
