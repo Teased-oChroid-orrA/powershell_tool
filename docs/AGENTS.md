@@ -53,6 +53,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | #12 — FEA Audit 2.0 and core roadmap | `docs/issue-12-claude-handoff.md` (current verification/limitations/next steps) → `docs/issue-12-phase-12.md` .. `phase-19.md` (audit/core roadmap, direct-wgpu playback and interactive native workbench extension; draft PR #13) |
 | #234 — Bushing edge-check uncertainty controls | `docs/issue-234-uncertainty-controls.md` (editable CVs, stale-run behavior, verification) |
 | #234 — Bushings / pin loads on holes of every sketch region | `docs/issue-234-multi-region-bushings.md` (global hole numbering, scope, evidence) |
+| #234 — Plasticity with bushings | `docs/issue-234-bushing-plasticity.md` (what the lift needed, Lame / Hill / fully plastic evidence, cost) |
 
 ### Find It Fast — by current/live status
 | Looking for current status of... | Go to |
