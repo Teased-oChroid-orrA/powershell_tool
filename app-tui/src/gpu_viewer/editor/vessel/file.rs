@@ -3,17 +3,18 @@
 //! (`custom_material`) and is added to the catalog when a machine opening it does not have it. Results are never
 //! stored: they are recomputed.
 use crate::toolboxes::pressure_vessel::{
-    model::{is_custom, NumberTarget, PressureVesselModel},
+    model::{is_custom, HeadComponent, HeadInputs, NumberTarget, PressureVesselModel},
     persistence::PersistedMaterial,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 // Older readers must not silently ignore wall-loss inputs and show optimistic checks.
-const FORMAT_VERSION: u32 = 2;
+// Format 3 adds the code check's inputs; an older build would drop them and show a different check.
+const FORMAT_VERSION: u32 = 3;
 
 /// Every number input with its key in the file.
-pub const NUMBERS: [(NumberTarget, &str); 9] = [
+pub const NUMBERS: [(NumberTarget, &str); 15] = [
     (NumberTarget::OuterDiameter, "outer diameter"),
     (NumberTarget::WallThickness, "wall thickness"),
     (NumberTarget::CorrosionAllowance, "corrosion allowance"),
@@ -23,12 +24,18 @@ pub const NUMBERS: [(NumberTarget, &str); 9] = [
     (NumberTarget::RequiredMs, "required minimum MS"),
     (NumberTarget::UnsupportedLength, "unsupported length"),
     (NumberTarget::TemperatureDifferential, "temperature differential"),
+    (NumberTarget::HeadRadius, "head inside radius"),
+    (NumberTarget::HeadCrownRadius, "head crown radius"),
+    (NumberTarget::HeadKnuckleRadius, "head knuckle radius"),
+    (NumberTarget::HeadAllowableStress, "head allowable stress"),
+    (NumberTarget::HeadEfficiency, "head joint efficiency"),
+    (NumberTarget::HeadPressure, "head design pressure"),
 ];
 #[allow(dead_code)]
 fn every_number_target_is_listed(t: NumberTarget) {
     use NumberTarget::*;
     match t {
-        OuterDiameter | WallThickness | CorrosionAllowance | MillUndertolerance | InternalPressure | ExternalPressure | RequiredMs | UnsupportedLength | TemperatureDifferential => {}
+        OuterDiameter | WallThickness | CorrosionAllowance | MillUndertolerance | InternalPressure | ExternalPressure | RequiredMs | UnsupportedLength | TemperatureDifferential | HeadRadius | HeadCrownRadius | HeadKnuckleRadius | HeadAllowableStress | HeadEfficiency | HeadPressure => {}
     }
 }
 
@@ -44,6 +51,9 @@ pub struct VesselFile {
     pub closed_ends: Option<bool>,
     #[serde(default)]
     pub material: String,
+    /// The code check's component, by `HeadComponent::label`.
+    #[serde(default)]
+    pub head_component: Option<String>,
     /// The material's properties when it is a user-added one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_material: Option<PersistedMaterial>,
@@ -58,6 +68,7 @@ impl VesselFile {
             numbers: NUMBERS.iter().map(|(t, key)| (key.to_string(), m.number_value(*t))).collect(),
             closed_ends: Some(m.closed_ends),
             material: material.name.to_string(),
+            head_component: Some(m.head.component.label().to_string()),
             custom_material: is_custom(material).then(|| material.into()),
         }
     }
@@ -69,10 +80,19 @@ impl VesselFile {
         // Cases written before wall allowances mean zero loss, including when applied over an edited model.
         m.corrosion_allowance = 0.0;
         m.mill_undertolerance = 0.0;
+        // Cases written before the code check carry none: the defaults, also over an edited model.
+        if self.version < 3 {
+            m.head = HeadInputs::default();
+        }
         for (t, key) in NUMBERS {
             if let Some(v) = self.numbers.get(key) {
                 m.commit_number(t, *v);
             }
+        }
+        match self.head_component.as_deref().map(|l| (l, HeadComponent::from_label(l))) {
+            Some((_, Some(c))) => m.head.component = c,
+            Some((l, None)) => skipped.push(format!("code check component: {l}")),
+            None => {}
         }
         if let Some(closed) = self.closed_ends {
             m.closed_ends = closed;

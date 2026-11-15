@@ -57,6 +57,11 @@ struct AlertFile {
 pub enum AlertChange {
     New { path: String },
     Updated { path: String, cosine_distance: f32 },
+    /// Size or modification time changed but the sampled text did not: the edit is outside the few lines
+    /// the alert reads, so nothing can be said about how large it is.
+    Touched { path: String },
+    /// A file in the baseline is no longer an exact hit (edited so it stops matching, moved or deleted).
+    Removed { path: String },
 }
 
 impl AlertRun {
@@ -125,6 +130,7 @@ impl SavedSearchAlert {
             .collect();
         let mut next_baseline = Vec::new();
         let mut pending = Vec::new();
+        let mut touched = Vec::new();
         for result in &run.files {
             let fingerprint = evidence_fingerprint(&result.evidence);
             match previous.get(result.path.as_str()) {
@@ -135,10 +141,24 @@ impl SavedSearchAlert {
                 {
                     next_baseline.push((*old).clone());
                 }
+                Some(old) if old.fingerprint == fingerprint => {
+                    touched.push(result.path.clone());
+                    next_baseline.push(BaselineFile {
+                        modified_ns: result.modified_ns,
+                        size: result.size,
+                        ..(*old).clone()
+                    });
+                }
                 old => pending.push((result, old.copied(), fingerprint)),
             }
         }
-        let mut changes = Vec::new();
+        let current: std::collections::HashSet<&str> = run.files.iter().map(|f| f.path.as_str()).collect();
+        let mut changes: Vec<AlertChange> = baseline
+            .iter()
+            .filter(|file| !current.contains(file.path.as_str()))
+            .map(|file| AlertChange::Removed { path: file.path.clone() })
+            .collect();
+        changes.extend(touched.into_iter().map(|path| AlertChange::Touched { path }));
         for chunk in pending.chunks(16) {
             let evidence = chunk
                 .iter()
@@ -572,9 +592,7 @@ mod tests {
             1_700_000_000_000_000_001,
         )]);
         let touched = alert.check_and_update(&settings, &unchanged).unwrap();
-        assert!(touched.iter().any(
-            |change| matches!(change, AlertChange::Updated { path, .. } if path == "/records/a.txt")
-        ));
+        assert_eq!(touched, vec![AlertChange::Touched { path: "/records/a.txt".into() }]);
         assert!(alert
             .check_and_update(&settings, &unchanged)
             .unwrap()
@@ -636,6 +654,55 @@ mod tests {
         assert!(changes.iter().any(
             |change| matches!(change, AlertChange::Updated { path, .. } if path == "/records/a.txt")
         ));
+    }
+
+    #[test]
+    fn a_file_that_stops_matching_is_reported_once_and_dropped_from_the_baseline() {
+        let settings = SearchSettings {
+            search_path: "/records".into(),
+            filters: vec!["engineering".into()],
+            ..Default::default()
+        };
+        let mut alert = SavedSearchAlert::create("Engineering changes".into(), settings.clone()).unwrap();
+        let t = 1_700_000_000_000_000_000;
+        alert
+            .capture_baseline(&alert_run(vec![
+                result("/records/a.txt", "engineering one", t),
+                result("/records/b.txt", "engineering two", t),
+            ]))
+            .unwrap();
+        let after = alert_run(vec![result("/records/a.txt", "engineering one", t)]);
+        let changes = alert.check_and_update(&settings, &after).unwrap();
+        assert_eq!(changes, vec![AlertChange::Removed { path: "/records/b.txt".into() }]);
+        assert!(alert.check_and_update(&settings, &after).unwrap().is_empty());
+        // coming back later is a new hit, not a silent return
+        let back = alert_run(vec![
+            result("/records/a.txt", "engineering one", t),
+            result("/records/b.txt", "engineering two", t),
+        ]);
+        let changes = alert.check_and_update(&settings, &back).unwrap();
+        assert_eq!(changes, vec![AlertChange::New { path: "/records/b.txt".into() }]);
+    }
+
+    #[test]
+    fn an_edit_outside_the_sampled_lines_is_touched_not_zero_percent_different() {
+        let settings = SearchSettings {
+            search_path: "/records".into(),
+            filters: vec!["engineering".into()],
+            ..Default::default()
+        };
+        let mut alert = SavedSearchAlert::create("Engineering changes".into(), settings.clone()).unwrap();
+        let lines = |edited: &str| {
+            let mut r = result("/records/a.txt", "engineering report", 1_700_000_000_000_000_000);
+            r.lines_cache = (0..200).map(|i| format!("engineering line {i}")).collect();
+            r.lines_cache[77] = edited.into(); // 77 is not one of the six sampled indexes
+            r
+        };
+        alert.capture_baseline(&alert_run(vec![lines("allowable 100 MPa")])).unwrap();
+        let mut after = lines("allowable 150 MPa");
+        after.modified = after.modified + chrono::Duration::seconds(5);
+        let changes = alert.check_and_update(&settings, &alert_run(vec![after])).unwrap();
+        assert_eq!(changes, vec![AlertChange::Touched { path: "/records/a.txt".into() }]);
     }
 
     #[test]

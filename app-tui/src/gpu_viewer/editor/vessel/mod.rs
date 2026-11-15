@@ -187,6 +187,12 @@ impl VesselSession {
                 self.model.toggle_end_condition();
                 self.changed();
             }
+            FieldRow::ToggleHeadComponent => {
+                self.prompt = None;
+                self.checkpoint();
+                self.model.toggle_head_component();
+                self.changed();
+            }
             FieldRow::OpenMaterialPicker => self.open_picker(),
         }
     }

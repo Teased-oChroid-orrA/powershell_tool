@@ -15,7 +15,7 @@ use crate::gpu_viewer::{
 use crate::theme::{fmt_margin, tone_for_margin, StatusTone};
 use crate::toolboxes::pressure_vessel::{
     model::{self, FieldRow},
-    report::{display_value, passes},
+    report::{display_value, head_error_text, passes},
 };
 use mechanics_core::lame::lame_constants;
 use pressure_vessel_solver::{
@@ -88,6 +88,7 @@ impl VesselSession {
         let mut cards = self.input_cards();
         cards.push(self.result_card());
         cards.extend(self.check_cards());
+        cards.push(self.heads_card());
         cards.push(self.drawing_card());
         cards
     }
@@ -203,6 +204,32 @@ impl VesselSession {
         cards
     }
 
+    /// The ASME VIII-1 code check: required thickness at P, the vessel's remaining wall, the margin between them and
+    /// MAWP. A rule's limit that is exceeded shows its reason instead of a number.
+    fn heads_card(&self) -> Card {
+        let h = &self.model.heads;
+        let inputs = &self.model.head;
+        let mut items = vec![value("Component", inputs.component.label())];
+        items.push(match &h.required {
+            Ok(t) => value(format!("Required thickness at {:.0} psi", inputs.pressure), format!("{t:.4} in")),
+            Err(e) => line(head_error_text(e), Tone::Warn),
+        });
+        match h.provided {
+            Some(t) => items.push(value("Provided (remaining wall)", format!("{t:.4} in"))),
+            None => items.push(line("No provided thickness: the vessel inputs make no wall.", Tone::Warn)),
+        }
+        if let Some(m) = h.margin() {
+            items.push(DockItem::field("Margin", format!("{} {}", fmt_margin(m), if m >= 0.0 { "adequate" } else { "short" }), margin_tone(m), None, false));
+        }
+        match &h.mawp {
+            Some(Ok(p)) => items.push(DockItem::field("MAWP", psi(*p), ok_tone(*p >= inputs.pressure), None, false)),
+            Some(Err(e)) => items.push(line(format!("MAWP: {}", head_error_text(e)), Tone::Warn)),
+            None => {}
+        }
+        items.push(line("Thin-wall code rules (UG-27, UG-32). Dimensions in the corroded condition; S and E are entered, not looked up.", Tone::Dim));
+        Card::new("vessel-heads", "Head / shell code check", Relevance::Context, items).for_steps(&["Results", "Report"])
+    }
+
     fn drawing_card(&self) -> Card {
         let items = match (&self.model.geometry, &self.model.pressure) {
             (Ok(g), Ok(_)) => vec![line(
@@ -245,7 +272,7 @@ impl VesselSession {
             entry("Save", "Ctrl/Cmd+S", VesselAct::Save),
         ];
         vec![
-            RibbonTab::new("Inputs").group("Vessel", vec![entry("End condition", "", VesselAct::Row(FieldRow::ToggleEndCondition)), entry("Material", "", VesselAct::Row(FieldRow::OpenMaterialPicker))]).group("Edit", edit),
+            RibbonTab::new("Inputs").group("Vessel", vec![entry("End condition", "", VesselAct::Row(FieldRow::ToggleEndCondition)), entry("Code component", "", VesselAct::Row(FieldRow::ToggleHeadComponent)), entry("Material", "", VesselAct::Row(FieldRow::OpenMaterialPicker))]).group("Edit", edit),
             RibbonTab::new("Results").group("Results", vec![entry("Export report", "", VesselAct::Export)]),
             RibbonTab::new("Report").group("Report", vec![entry("Export report", "", VesselAct::Export), entry("Save", "Ctrl/Cmd+S", VesselAct::Save)]),
         ]
@@ -258,7 +285,7 @@ impl VesselSession {
         vec![
             Menu { title: "File".into(), items: pick("Report", &["Save", "Export report"]) },
             Menu { title: "Edit".into(), items: pick("Inputs", &["Undo", "Redo"]) },
-            Menu { title: "Tools".into(), items: pick("Inputs", &["End condition", "Material"]) },
+            Menu { title: "Tools".into(), items: pick("Inputs", &["End condition", "Code component", "Material"]) },
         ]
     }
 }

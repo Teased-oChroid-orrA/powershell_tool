@@ -51,7 +51,7 @@ fn it_opens_on_the_models_inputs_with_the_checks_and_a_contour() {
     let cards = s.inspector();
     assert_eq!(
         ids(&cards),
-        ["vessel-geometry", "vessel-pressure-end-condition", "vessel-material", "vessel-analysis-options", "vessel-result", "vessel-checks", "vessel-thickness", "vessel-wall", "vessel-drawing"]
+        ["vessel-geometry", "vessel-pressure-end-condition", "vessel-material", "vessel-analysis-options", "vessel-head-shell-code-check-ug-27", "vessel-result", "vessel-checks", "vessel-thickness", "vessel-wall", "vessel-heads", "vessel-drawing"]
     );
     let t = texts(&cards);
     // The rows are the model's labels and values; the checks are the solver's.
@@ -227,7 +227,7 @@ fn allowances_drive_the_checks_contour_minimum_wall_and_undo() {
 fn invalid_allowances_clear_results_and_old_cases_reset_losses_to_zero() {
     let mut s = session("invalid-allowances");
     let mut old = s.snapshot();
-    assert_eq!(old.version, 2, "older readers must reject cases whose wall losses they cannot apply");
+    assert_eq!(old.version, 3, "older readers must reject cases whose wall losses they cannot apply");
     old.version = 1;
     old.numbers.remove("corrosion allowance");
     old.numbers.remove("mill undertolerance percent");
@@ -256,4 +256,67 @@ fn a_file_with_an_unknown_material_applies_the_rest_and_says_what_it_skipped() {
     assert_eq!(s.model().outer_diameter, 8.0);
     assert!(s.status().contains("material: Unobtainium"), "{}", s.status());
     assert!(VesselFile::from_json("{\"version\": 99}").unwrap_err().contains("newer version"));
+}
+
+#[test]
+fn the_code_check_matches_the_hand_value_follows_the_wall_and_round_trips() {
+    use crate::toolboxes::pressure_vessel::model::HeadComponent;
+    let mut s = session("heads");
+    // R 24 in, S 20000 psi, E 1, P 300 psi, cylinder hoop: t = 7200 / 19820.
+    act(&mut s, VesselAct::Row(FieldRow::ToggleHeadComponent));
+    act(&mut s, VesselAct::Row(FieldRow::ToggleHeadComponent));
+    act(&mut s, VesselAct::Row(FieldRow::ToggleHeadComponent));
+    assert_eq!(s.model.head.component, HeadComponent::CylinderHoop);
+    let t = s.model.heads.required.clone().unwrap();
+    assert!((t - 7200.0 / 19_820.0).abs() < 1e-12, "{t}");
+    // The provided thickness is the vessel's remaining wall: 1 in nominal, 12.5 % mill loss, 0.125 in corrosion.
+    edit(&mut s, NumberTarget::CorrosionAllowance, "0.125");
+    edit(&mut s, NumberTarget::MillUndertolerance, "12.5");
+    assert!((s.model.heads.provided.unwrap() - 0.75).abs() < 1e-12);
+    let m = s.model.heads.margin().unwrap();
+    assert!((m - (0.75 / t - 1.0)).abs() < 1e-12 && m > 0.0);
+    let text = texts(&s.inspector());
+    assert!(text.contains("Required thickness at 300 psi  0.3633 in") && text.contains("Provided (remaining wall)  0.7500 in"), "{text}");
+    assert!(text.contains("adequate") && text.contains("MAWP"), "{text}");
+    // Undo reaches the component and the numbers; the case file keeps them.
+    edit(&mut s, NumberTarget::HeadPressure, "500");
+    assert_eq!(s.model.head.pressure, 500.0);
+    act(&mut s, VesselAct::Save);
+    let back = VesselSession::open(&s.path).unwrap();
+    assert_eq!(back.model().head, s.model().head);
+    act(&mut s, VesselAct::Undo);
+    assert_eq!(s.model.head.pressure, 300.0);
+    // The report states the check.
+    let report = report::build_report_text(s.model());
+    assert!(report.contains("Cylinder, hoop stress") && report.contains("Required thickness: 0.3633 in"), "{report}");
+}
+
+#[test]
+fn a_case_outside_the_code_rules_shows_the_reason_not_a_number() {
+    let mut s = session("heads-outside");
+    act(&mut s, VesselAct::Row(FieldRow::ToggleHeadComponent)); // torispherical
+    edit(&mut s, NumberTarget::HeadKnuckleRadius, "2");
+    assert!(s.model.heads.required.is_err());
+    let text = texts(&s.inspector());
+    assert!(text.contains("Outside the code rules") && text.contains("16.67"), "{text}");
+    assert!(!text.contains("Required thickness at"), "{text}");
+    assert!(NumberTarget::HeadEfficiency.validation_hint(&s.model).is_none());
+    edit(&mut s, NumberTarget::HeadEfficiency, "1.5");
+    assert!(NumberTarget::HeadEfficiency.validation_hint(&s.model).is_some());
+    assert!(texts(&s.inspector()).contains("Invalid input"));
+}
+
+#[test]
+fn an_older_case_gets_the_default_code_check_and_a_newer_component_is_reported() {
+    let mut s = session("heads-old");
+    s.model.head.pressure = 999.0;
+    let mut old = s.snapshot();
+    old.version = 2;
+    old.head_component = None;
+    old.numbers.retain(|k, _| !k.starts_with("head "));
+    old.apply(&mut s.model);
+    assert_eq!(s.model.head, crate::toolboxes::pressure_vessel::model::HeadInputs::default());
+    let mut f = s.snapshot();
+    f.head_component = Some("Conical head".into());
+    assert!(f.apply(&mut s.model).iter().any(|m| m.contains("Conical head")));
 }

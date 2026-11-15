@@ -75,7 +75,16 @@ fn a_contact_the_model_cannot_have_is_refused_with_its_reason() {
     assert!(reason(&|p| p.contacts[0].friction = 3.0).contains("friction"));
     assert!(reason(&|p| p.mesh.bond_regions = true).contains("separate bodies"));
     assert!(reason(&|p| p.analysis = Analysis::Axisymmetric).contains("plane"));
-    assert!(reason(&|p| p.material.plastic = true).contains("elastic") || true);
+    assert!(reason(&|p| p.study = fea_problem::thermal::Study::Thermal).contains("not thermal"));
+    assert!(reason(&|p| {
+        p.material.plastic = true;
+        p.material.yield_stress = None;
+    })
+    .contains("positive yield stress"));
+    assert!(reason(&|p| {
+        p.region_materials = vec![Some(fea_problem::MaterialSpec { plastic: true, yield_stress: Some(-1.0), ..p.material.clone() })];
+    })
+    .contains("region 2"));
     let mut single = stack();
     if let Geometry::Sketch { regions, .. } = &mut single.geometry {
         regions.clear();
@@ -105,4 +114,73 @@ fn a_body_dragged_across_another_slides_at_the_friction_limit() {
     assert!((c.normal_force - 500.0).abs() / 500.0 < 0.03, "normal {}", c.normal_force);
     assert!((c.tangential_force - limit).abs() / limit < 0.05, "sliding transmits mu N = {limit} lbf: {}", c.tangential_force);
     assert!(c.slip_share > 0.9, "the whole interface is at its limit: {}", c.slip_share);
+}
+
+/// Contact with plasticity, a closed form: a pressed column is a uniaxial stress state equal to the pressure whatever the
+/// bodies' stiffness, so a body with yield stress `y` and hardening `H` carries the plastic strain `(p - y) / H` and a body whose
+/// yield stress lies above the pressure none. Each region has a law of its own: the upper yields at 800 psi, the lower (also
+/// elastic-plastic, yield 1200) stays elastic, and the interface still transmits the applied force.
+#[test]
+fn each_region_yields_by_its_own_law_across_a_contact_pair() {
+    let mut p = stack();
+    let h = 2.0e5;
+    p.material.plastic = true;
+    p.material.yield_stress = Some(1200.0);
+    p.material.hardening = h;
+    p.region_materials = vec![Some(fea_problem::MaterialSpec { yield_stress: Some(800.0), ..p.material.clone() })];
+    p.validate().unwrap();
+    let s = fea_problem::solve(&p, None).expect("the plastic stack solves");
+    let c = &s.summary.contacts[0];
+    let applied = 1000.0 * 2.0 * 0.25;
+    assert!((c.normal_force - applied).abs() / applied < 0.03, "the interface transmits {} lbf of {applied}", c.normal_force);
+    let ep = s.plastic.as_ref().expect("a plastic result");
+    let peak = |region: usize| {
+        let mut m = 0.0f64;
+        for b in s.model.mesh.blocks.iter().filter(|b| fea_problem::build::block_region(b) == region) {
+            for &n in &b.conn {
+                m = m.max(ep[n]);
+            }
+        }
+        m
+    };
+    let want = (1000.0 - 800.0) / h;
+    let (lower, upper) = (peak(1), peak(2));
+    eprintln!("plastic strain: lower {lower:.3e}, upper {upper:.3e} (closed form {want:.3e}); {:?}", s.summary.plastic);
+    assert_eq!(lower, 0.0, "the lower region's yield stress is above the pressure");
+    assert!((upper - want).abs() / want < 0.05, "upper plastic strain {upper} vs {want}");
+    let pl = s.summary.plastic.as_ref().unwrap();
+    assert!((pl.max_strain - want).abs() / want < 0.08, "peak Gauss-point plastic strain {} vs {want}", pl.max_strain);
+    assert!(pl.yielded_fraction > 0.3 && pl.yielded_fraction < 0.7, "about half of the model (the upper body) yields: {}", pl.yielded_fraction);
+    // the converged stress is the plastic state's: the column carries the pressure (the elastic law would not be bounded by it)
+    let vm = s.summary.max_von_mises.value;
+    assert!(vm > 950.0 && vm < 1250.0, "von Mises {vm}");
+    // the same problem with the plastic laws turned off yields nowhere
+    let mut elastic = p.clone();
+    elastic.material.plastic = false;
+    elastic.region_materials = vec![Some(fea_problem::MaterialSpec { plastic: false, ..p.region_materials[0].clone().unwrap() })];
+    assert!(fea_problem::solve(&elastic, None).unwrap().summary.plastic.is_none());
+}
+
+/// The same per-region laws on a bonded (conforming) pair of regions, no contact. Not the exact uniaxial state of the contact
+/// case: bonded, the plastic body's incompressible lateral growth is held by the elastic one at the interface, so the peak
+/// plastic strain there is above the free-column value `(p - y) / H` (measured 1.25x), never below it.
+#[test]
+fn region_yield_stresses_also_select_the_law_on_bonded_regions() {
+    let mut p = stack();
+    p.contacts.clear();
+    p.mesh.bond_regions = true;
+    p.material.plastic = true;
+    p.material.yield_stress = Some(1200.0);
+    p.material.hardening = 2.0e5;
+    p.region_materials = vec![Some(fea_problem::MaterialSpec { yield_stress: Some(800.0), ..p.material.clone() })];
+    let s = fea_problem::solve(&p, None).expect("the bonded plastic stack solves");
+    let want = 200.0 / 2.0e5;
+    let pl = s.summary.plastic.as_ref().unwrap();
+    assert!(pl.max_strain > 0.99 * want && pl.max_strain < 1.5 * want, "peak plastic strain {} vs free column {want}", pl.max_strain);
+    assert!(pl.yielded_fraction > 0.3 && pl.yielded_fraction < 0.7, "only the upper body yields: {}", pl.yielded_fraction);
+    let ep = s.plastic.as_ref().unwrap();
+    let lower = s.model.mesh.blocks.iter().filter(|b| fea_problem::build::block_region(b) == 1).flat_map(|b| b.conn.iter()).filter(|&&n| s.model.mesh.nodes[n][1] < 0.7).map(|&n| ep[n]).fold(0.0, f64::max);
+    // (nodes of the shared interface average in the upper body's elements, so only the lower body's inner nodes are read)
+    // (bonded, the constraint of the yielding upper body raises the lower one's stress a little: measured 0.04 of `want`)
+    assert!(lower < 0.1 * want, "the lower region (yield 1200 > 1000) stays essentially elastic: {lower}");
 }

@@ -24,6 +24,7 @@ use mechanics_core::materials::{Material, MATERIALS};
 use pressure_vessel_solver::buckling::{evaluate_buckling, BucklingApplicability};
 use pressure_vessel_solver::failure::{evaluate_failure_modes_with_thermal, MarginResult};
 use pressure_vessel_solver::geometry::{CylinderGeometry, GeometryError, WallAllowance};
+use pressure_vessel_solver::heads::{self, HeadError};
 use pressure_vessel_solver::pressure::{EndCondition, PressureError, PressureLoading};
 use pressure_vessel_solver::thermal::ThermalLoading;
 use pressure_vessel_solver::thickness::{solve_minimum_thickness, ThicknessSolverInputs, ThicknessSolverOutcome};
@@ -42,6 +43,12 @@ pub enum NumberTarget {
     RequiredMs,
     UnsupportedLength,
     TemperatureDifferential,
+    HeadRadius,
+    HeadCrownRadius,
+    HeadKnuckleRadius,
+    HeadAllowableStress,
+    HeadEfficiency,
+    HeadPressure,
 }
 
 impl NumberTarget {
@@ -56,6 +63,12 @@ impl NumberTarget {
             NumberTarget::RequiredMs => "Required Minimum MS",
             NumberTarget::UnsupportedLength => "Unsupported Length",
             NumberTarget::TemperatureDifferential => "Temp Differential",
+            NumberTarget::HeadRadius => "Inside Radius R",
+            NumberTarget::HeadCrownRadius => "Crown Radius L",
+            NumberTarget::HeadKnuckleRadius => "Knuckle Radius r",
+            NumberTarget::HeadAllowableStress => "Allowable Stress S",
+            NumberTarget::HeadEfficiency => "Joint Efficiency E",
+            NumberTarget::HeadPressure => "Design Pressure P",
         }
     }
 
@@ -65,9 +78,10 @@ impl NumberTarget {
     /// `LINEAR_DECIMALS`/`ANGLE_DECIMALS` constants).
     pub fn format_value(self, value: f64) -> String {
         match self {
-            NumberTarget::OuterDiameter | NumberTarget::WallThickness | NumberTarget::CorrosionAllowance | NumberTarget::UnsupportedLength => format!("{value:.4} in"),
+            NumberTarget::OuterDiameter | NumberTarget::WallThickness | NumberTarget::CorrosionAllowance | NumberTarget::UnsupportedLength | NumberTarget::HeadRadius | NumberTarget::HeadCrownRadius | NumberTarget::HeadKnuckleRadius => format!("{value:.4} in"),
             NumberTarget::MillUndertolerance => format!("{value:.2} %"),
-            NumberTarget::InternalPressure | NumberTarget::ExternalPressure => format!("{value:.0} psi"),
+            NumberTarget::InternalPressure | NumberTarget::ExternalPressure | NumberTarget::HeadAllowableStress | NumberTarget::HeadPressure => format!("{value:.0} psi"),
+            NumberTarget::HeadEfficiency => format!("{value:.2}"),
             NumberTarget::RequiredMs => format!("{value:.2}"),
             NumberTarget::TemperatureDifferential => format!("{value:+.1} \u{b0}F"),
         }
@@ -115,6 +129,10 @@ impl NumberTarget {
             // (positive, negative, or zero) are all legitimate inputs -
             // no invalid range exists for either.
             NumberTarget::RequiredMs | NumberTarget::TemperatureDifferential => None,
+            NumberTarget::HeadRadius | NumberTarget::HeadCrownRadius | NumberTarget::HeadKnuckleRadius | NumberTarget::HeadAllowableStress | NumberTarget::HeadPressure => {
+                (model.head_input(self) <= 0.0).then(|| "must be > 0".to_string())
+            }
+            NumberTarget::HeadEfficiency => (!(model.head.efficiency > 0.0 && model.head.efficiency <= 1.0)).then(|| "must be > 0 and \u{2264} 1".to_string()),
         }
     }
 }
@@ -131,6 +149,8 @@ pub enum FieldRow {
     /// same reasoning, applied here.
     Header(&'static str),
     ToggleEndCondition,
+    /// Cycles the component the code check applies to (`HeadComponent`).
+    ToggleHeadComponent,
     /// Opens the material picker (the window's `editor/vessel/picker.rs`,
     /// filtered by `material_picker::visible_indices`) rather than cycling in place - once custom materials exist alongside the
     /// 17 built-in ones, a filterable list is strictly more usable than
@@ -161,6 +181,14 @@ pub fn field_rows() -> Vec<FieldRow> {
         FieldRow::Number(NumberTarget::RequiredMs),
         FieldRow::Number(NumberTarget::UnsupportedLength),
         FieldRow::Number(NumberTarget::TemperatureDifferential),
+        FieldRow::Header("Head / Shell Code Check (UG-27)"),
+        FieldRow::ToggleHeadComponent,
+        FieldRow::Number(NumberTarget::HeadRadius),
+        FieldRow::Number(NumberTarget::HeadCrownRadius),
+        FieldRow::Number(NumberTarget::HeadKnuckleRadius),
+        FieldRow::Number(NumberTarget::HeadAllowableStress),
+        FieldRow::Number(NumberTarget::HeadEfficiency),
+        FieldRow::Number(NumberTarget::HeadPressure),
     ]
 }
 
@@ -168,6 +196,7 @@ pub fn row_label(row: FieldRow) -> &'static str {
     match row {
         FieldRow::Header(text) => text,
         FieldRow::ToggleEndCondition => "End Condition",
+        FieldRow::ToggleHeadComponent => "Component",
         FieldRow::OpenMaterialPicker => "Material",
         FieldRow::Number(target) => target.label(),
     }
@@ -182,6 +211,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
     match row {
         FieldRow::Header(_) => "",
         FieldRow::ToggleEndCondition => "Open ends (e.g. a pipe run) or closed ends (a capped vessel) - changes the axial stress term in the failure-mode solve.",
+        FieldRow::ToggleHeadComponent => "The shell or head the ASME VIII-1 code rule checks: 2:1 ellipsoidal, torispherical or hemispherical head, or a cylinder (hoop or longitudinal stress governs).",
         FieldRow::OpenMaterialPicker => "Pick from the built-in material catalog or a previously-added custom material - Enter opens a filterable list.",
         FieldRow::Number(NumberTarget::OuterDiameter) => "Vessel outer diameter.",
         FieldRow::Number(NumberTarget::WallThickness) => "Nominal wall before mill undertolerance and corrosion; must be less than half the outer diameter.",
@@ -192,6 +222,12 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::Number(NumberTarget::RequiredMs) => "Required minimum margin of safety - the minimum-thickness solve targets this margin, not just zero.",
         FieldRow::Number(NumberTarget::UnsupportedLength) => "Unsupported axial length between stiffening rings/supports - needed for the buckling check alongside external pressure.",
         FieldRow::Number(NumberTarget::TemperatureDifferential) => "Inner-to-outer temperature difference - 0 means thermal stress is not evaluated at all, not evaluated at zero.",
+        FieldRow::Number(NumberTarget::HeadRadius) => "Inside radius of the component in the corroded condition (the sphere radius for a hemispherical head; the head diameter is 2R for a 2:1 head). Compared against the vessel's remaining wall.",
+        FieldRow::Number(NumberTarget::HeadCrownRadius) => "Inside crown radius L - used by the torispherical head only.",
+        FieldRow::Number(NumberTarget::HeadKnuckleRadius) => "Inside knuckle radius r - used by the torispherical head only; the rule holds to L/r = 16.67 (knuckle at least 6 % of L).",
+        FieldRow::Number(NumberTarget::HeadAllowableStress) => "Code allowable stress S at design temperature, from your material source - not defaulted from the material table (the value here is a placeholder).",
+        FieldRow::Number(NumberTarget::HeadEfficiency) => "Joint efficiency E of the part, 0 < E <= 1.",
+        FieldRow::Number(NumberTarget::HeadPressure) => "Design pressure P for the code thickness; MAWP is reported beside it.",
     }
 }
 
@@ -224,6 +260,89 @@ fn leak_custom_material(name: String, e_ksi: f64, sy_ksi: f64, ftu_ksi: f64, nu:
     Box::leak(Box::new(Material { id, name, e_ksi, sy_ksi, fbru_ksi: 0.0, fbru_e15_ksi: 0.0, fsu_ksi: 0.0, ftu_ksi, nu, alpha_u_f, extra: None }))
 }
 
+/// The component the UG-27 / UG-32 code check applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadComponent {
+    Ellipsoidal2to1,
+    Torispherical,
+    Hemispherical,
+    CylinderHoop,
+    CylinderLongitudinal,
+}
+
+impl HeadComponent {
+    const ALL: [HeadComponent; 5] = [Self::Ellipsoidal2to1, Self::Torispherical, Self::Hemispherical, Self::CylinderHoop, Self::CylinderLongitudinal];
+
+    /// Display text, also the key in the case file.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ellipsoidal2to1 => "2:1 ellipsoidal head",
+            Self::Torispherical => "Torispherical head",
+            Self::Hemispherical => "Hemispherical head",
+            Self::CylinderHoop => "Cylinder, hoop stress",
+            Self::CylinderLongitudinal => "Cylinder, longitudinal stress",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.label() == label)
+    }
+
+    fn next(self) -> Self {
+        Self::ALL[(Self::ALL.iter().position(|c| *c == self).unwrap_or(0) + 1) % Self::ALL.len()]
+    }
+}
+
+/// Inputs of the code check (`pressure_vessel_solver::heads`). Dimensions are in the corroded condition.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeadInputs {
+    pub component: HeadComponent,
+    pub radius: f64,
+    pub crown_radius: f64,
+    pub knuckle_radius: f64,
+    pub allowable_stress: f64,
+    pub efficiency: f64,
+    pub pressure: f64,
+}
+
+impl Default for HeadInputs {
+    fn default() -> Self {
+        // The allowable stress is a placeholder: it has to come from the owner's material source.
+        Self { component: HeadComponent::Ellipsoidal2to1, radius: 24.0, crown_radius: 48.0, knuckle_radius: 4.8, allowable_stress: 20_000.0, efficiency: 1.0, pressure: 300.0 }
+    }
+}
+
+impl HeadInputs {
+    fn solver_component(&self) -> heads::Component {
+        let r = self.radius;
+        match self.component {
+            // A 2:1 head is as deep as a quarter of its inside diameter.
+            HeadComponent::Ellipsoidal2to1 => heads::Component::Ellipsoidal { inside_diameter: 2.0 * r, inside_depth: 0.5 * r },
+            HeadComponent::Torispherical => heads::Component::Torispherical { crown_radius: self.crown_radius, knuckle_radius: self.knuckle_radius },
+            HeadComponent::Hemispherical => heads::Component::Sphere { inside_radius: r },
+            HeadComponent::CylinderHoop => heads::Component::CylinderCircumferential { inside_radius: r },
+            HeadComponent::CylinderLongitudinal => heads::Component::CylinderLongitudinal { inside_radius: r },
+        }
+    }
+}
+
+/// The code check's results: required thickness at P, MAWP at the provided thickness, and the margin between them.
+/// Each is the solver's own answer, an error naming the violated rule included.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeadsCheck {
+    pub required: Result<f64, HeadError>,
+    /// `None` when the vessel's geometry is invalid (no remaining wall to provide).
+    pub provided: Option<f64>,
+    pub mawp: Option<Result<f64, HeadError>>,
+}
+
+impl HeadsCheck {
+    /// `provided / required - 1`; `None` without both.
+    pub fn margin(&self) -> Option<f64> {
+        Some(heads::margin(self.provided?, *self.required.as_ref().ok()?))
+    }
+}
+
 /// The whole toolbox's engineering state, plus every derived result -
 /// recomputed fresh on every field mutation via [`PressureVesselModel::recompute`],
 /// mirroring `FastenerHoleModel`'s own "recompute on every mutation, never
@@ -247,6 +366,7 @@ pub struct PressureVesselModel {
     /// [`PressureVesselModel::material_catalog`] - `material_index` indexes
     /// into that combined sequence, built-ins first.
     pub custom_materials: Vec<&'static Material>,
+    pub head: HeadInputs,
 
     pub geometry: Result<CylinderGeometry, GeometryError>,
     pub pressure: Result<PressureLoading, PressureError>,
@@ -264,6 +384,8 @@ pub struct PressureVesselModel {
     /// has no thermal-aware variant) - documented at its call site in
     /// `view.rs`, not silently presented as thermal-inclusive.
     pub thickness_outcome: Option<ThicknessSolverOutcome>,
+    /// The UG-27 / UG-32 code check; independent of the Lame analysis, so it is present even when `geometry` is invalid.
+    pub heads: HeadsCheck,
 }
 
 impl Default for PressureVesselModel {
@@ -285,6 +407,8 @@ impl Default for PressureVesselModel {
             unsupported_length: 0.0,
             temperature_differential: 0.0,
             custom_materials,
+            head: HeadInputs::default(),
+            heads: HeadsCheck { required: Err(HeadError::InvalidInput("not evaluated")), provided: None, mawp: None },
             geometry: Err(GeometryError::NonPositiveInnerRadius),
             pressure: Err(PressureError::NegativePressure),
             rows: Vec::new(),
@@ -342,6 +466,20 @@ impl PressureVesselModel {
             NumberTarget::RequiredMs => self.required_ms,
             NumberTarget::UnsupportedLength => self.unsupported_length,
             NumberTarget::TemperatureDifferential => self.temperature_differential,
+            _ => self.head_input(target),
+        }
+    }
+
+    /// The value of a code-check input.
+    pub fn head_input(&self, target: NumberTarget) -> f64 {
+        match target {
+            NumberTarget::HeadRadius => self.head.radius,
+            NumberTarget::HeadCrownRadius => self.head.crown_radius,
+            NumberTarget::HeadKnuckleRadius => self.head.knuckle_radius,
+            NumberTarget::HeadAllowableStress => self.head.allowable_stress,
+            NumberTarget::HeadEfficiency => self.head.efficiency,
+            NumberTarget::HeadPressure => self.head.pressure,
+            _ => unreachable!("not a code-check input"),
         }
     }
 
@@ -367,7 +505,18 @@ impl PressureVesselModel {
             NumberTarget::RequiredMs => self.required_ms = raw,
             NumberTarget::UnsupportedLength => self.unsupported_length = raw,
             NumberTarget::TemperatureDifferential => self.temperature_differential = raw,
+            NumberTarget::HeadRadius => self.head.radius = raw,
+            NumberTarget::HeadCrownRadius => self.head.crown_radius = raw,
+            NumberTarget::HeadKnuckleRadius => self.head.knuckle_radius = raw,
+            NumberTarget::HeadAllowableStress => self.head.allowable_stress = raw,
+            NumberTarget::HeadEfficiency => self.head.efficiency = raw,
+            NumberTarget::HeadPressure => self.head.pressure = raw,
         }
+        self.recompute();
+    }
+
+    pub fn toggle_head_component(&mut self) {
+        self.head.component = self.head.component.next();
         self.recompute();
     }
 
@@ -393,6 +542,7 @@ impl PressureVesselModel {
             .and_then(|nominal| self.wall_allowance()?.remaining_geometry(nominal));
         let end_condition = if self.closed_ends { EndCondition::Closed } else { EndCondition::Open };
         self.pressure = PressureLoading::new(self.internal_pressure, self.external_pressure, end_condition);
+        self.recompute_heads();
 
         let (Ok(geometry), Ok(pressure)) = (self.geometry, self.pressure) else {
             self.rows = Vec::new();
@@ -416,6 +566,19 @@ impl PressureVesselModel {
             100,
             1e-6,
         ));
+    }
+
+    /// The code check at the vessel's remaining wall (the thickness left after corrosion and mill undertolerance).
+    fn recompute_heads(&mut self) {
+        let h = self.head;
+        let component = h.solver_component();
+        let joint = heads::Joint { allowable_stress: h.allowable_stress, efficiency: h.efficiency };
+        let provided = self.geometry.ok().map(|g| g.wall_thickness());
+        self.heads = HeadsCheck {
+            required: heads::required_thickness(component, h.pressure, joint),
+            provided,
+            mawp: provided.map(|t| heads::maximum_allowable_pressure(component, t, joint)),
+        };
     }
 
     /// `None` when the temperature differential is exactly zero - "not
