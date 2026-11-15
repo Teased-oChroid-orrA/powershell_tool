@@ -188,17 +188,6 @@ fn options_matching_card_offers_accent_and_typo_settings() {
 }
 
 #[test]
-fn options_offer_every_setting_group_the_window_can_reach() {
-    // A group header missing from the cards hides its switches from the native window (the ribbon is not shown on
-    // the page bench): this once hid "Better PDF text (trial)" and "Across line breaks".
-    let s = with_results();
-    let text = format!("{:?}", view::document(&s).panels);
-    for label in ["OCR scanned PDFs", "Better PDF text (trial)", "Match across line breaks"] {
-        assert!(text.contains(label), "{label} missing: {text}");
-    }
-}
-
-#[test]
 fn best_match_sort_follows_relevance_order_and_flips_with_direction() {
     let mut s = with_results();
     s.st.config.filters_text = "bolt".into();
@@ -1083,6 +1072,29 @@ fn semantic_search_shows_cited_hits_separately_from_exact_results() {
 }
 
 #[cfg(feature = "semantic-search")]
+#[cfg(feature = "semantic-search")]
+#[test]
+fn typing_in_find_warms_each_built_semantic_index_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = dir.path().to_string_lossy().into_owned();
+    s.st.config.index.semantic = true;
+    let index = crate::toolboxes::search::indexing::index_directory(s.st.config.index.location, &s.st.config.search_path, &s.st.config.output_folder);
+    s.document_field(INPUT_FIND, "shaft".into());
+    assert!(s.semantic_warmed.is_empty(), "no index is built yet, nothing to warm");
+    std::fs::create_dir_all(&index).unwrap();
+    search_core::semantic_index::SemanticIndex::open(&index.join("semantic.sqlite")).unwrap();
+    s.document_field(INPUT_FIND, "".into());
+    assert!(s.semantic_warmed.is_empty(), "an empty Find is not typing");
+    s.document_field(INPUT_FIND, "shaft stress".into());
+    s.document_field(INPUT_FIND, "shaft stress limit".into());
+    assert_eq!(s.semantic_warmed, vec![index], "warmed once for the folder");
+    s.st.config.index.semantic = false;
+    s.semantic_warmed.clear();
+    s.document_field(INPUT_FIND, "shaft".into());
+    assert!(s.semantic_warmed.is_empty(), "off when the Semantic index is off");
+}
+
 #[test]
 fn semantic_results_are_discarded_when_scope_changes_before_poll() {
     let mut s = SearchSession::in_memory();

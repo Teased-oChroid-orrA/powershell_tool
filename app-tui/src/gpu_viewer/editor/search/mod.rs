@@ -287,6 +287,9 @@ pub struct SearchSession {
     semantic_hits: Option<Vec<search_core::semantic_index::SemanticHit>>,
     #[cfg(feature = "semantic-search")]
     semantic_error: Option<String>,
+    /// Index folders already warmed this session (see `warm_semantic`).
+    #[cfg(feature = "semantic-search")]
+    semantic_warmed: Vec<PathBuf>,
     /// How the Find text is read (Auto picks from what was typed).
     find_as: find::FindAs,
     /// Project suggestions read from the catalog on request (#240 P3-2): `None` until asked.
@@ -928,6 +931,8 @@ impl SearchSession {
             semantic_hits: None,
             #[cfg(feature = "semantic-search")]
             semantic_error: None,
+            #[cfg(feature = "semantic-search")]
+            semantic_warmed: Vec::new(),
             find_as: find::FindAs::Auto,
             projects: None,
             projects_running: false,
@@ -1394,6 +1399,24 @@ impl SearchSession {
     }
 
     #[cfg(feature = "semantic-search")]
+    /// The first query of a session spends about 2 s at 35,000 chunks loading the model and building the in-memory
+    /// snapshot. Typing in Find is the signal that a semantic query may follow, so do that work now on a worker, once per
+    /// index folder per session; people who never type pay nothing.
+    fn warm_semantic(&mut self) {
+        if !self.st.config.index.semantic || self.st.config.filters_text.trim().is_empty() {
+            return;
+        }
+        for (index, _) in semantic_search_roots(&self.st.config) {
+            if self.semantic_warmed.contains(&index) || !index.join("semantic.sqlite").is_file() {
+                continue;
+            }
+            self.semantic_warmed.push(index.clone());
+            self.rt.spawn_blocking(move || {
+                let _ = search_core::semantic_index::warm_directory(&index);
+            });
+        }
+    }
+
     fn semantic_search(&mut self) {
         let query = self.st.config.filters_text.trim().to_string();
         if !self.st.config.index.semantic {
@@ -3322,7 +3345,11 @@ impl Authoring for SearchSession {
     fn document_field(&mut self, id: u8, text: String) {
         match id {
             INPUT_FOLDER => self.st.config.search_path = text,
-            INPUT_FIND => self.st.config.filters_text = text,
+            INPUT_FIND => {
+                self.st.config.filters_text = text;
+                #[cfg(feature = "semantic-search")]
+                self.warm_semantic();
+            }
             INPUT_FILTER => self.filter = text,
             INPUT_EXCLUDE => self.st.config.exclude_filters_text = text,
             INPUT_OUTPUT => self.st.config.output_folder = text,
