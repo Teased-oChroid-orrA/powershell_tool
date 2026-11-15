@@ -252,3 +252,34 @@ fn tiny_and_huge_unit_systems_solve_with_the_same_relative_accuracy() {
         assert!(rel(out.members[0].axial_stress, load / area) < 1e-9);
     }
 }
+
+#[test]
+fn released_end_gives_the_timoshenko_pinned_fixed_beam_and_round_trips() {
+    // Pin at the start (translations held, bending released), wall at the end, uniform load q.
+    // Compatibility with shear flexibility: R = 3qL/8 (1 + 4k) / (1 + 3k), k = E I / (G As L^2).
+    let mut p = templates().remove(1);
+    let (tip, l, s) = cantilever(&p);
+    let (id, root) = (p.members[0].id, p.members[0].nodes[0]);
+    let MemberKind::Frame { section, reference, .. } = p.members[0].kind else { panic!() };
+    let q = 2.0;
+    p.apply(Edit::SetKind { id, kind: MemberKind::Frame { section, reference, uniform_load: [0.0, q, 0.0] } }).unwrap();
+    p.apply(Edit::SetLoad { node: tip, force: [0.0; 3], moment: [0.0; 3] }).unwrap();
+    p.apply(Edit::SetSupport { node: root, fixed: [true, true, true, false, false, false] }).unwrap();
+    p.apply(Edit::SetSupport { node: tip, fixed: [true; 6] }).unwrap();
+    p.apply(Edit::SetReleases { id, releases: ReleaseSpec { start: [false, true, true], end: [false; 3] } }).unwrap();
+    let out = p.solve().unwrap();
+    let k = s.e * s.iz / (s.g * s.shear_areas.unwrap()[0] * l * l);
+    let r = 3.0 * q * l / 8.0 * (1.0 + 4.0 * k) / (1.0 + 3.0 * k);
+    let ri = p.nodes.iter().position(|n| n.id == root).unwrap();
+    assert!(rel(out.reaction[ri][1], -r) < 1e-9, "{} vs {}", out.reaction[ri][1], -r);
+    assert!(rel(out.members[0].max_bending_moment, q * l * l / 2.0 - r * l) < 1e-8);
+    // Saved projects keep the releases, and a file without the field reads as rigid.
+    let json = serde_json::to_string(&p).unwrap();
+    assert_eq!(serde_json::from_str::<MemberProblem>(&json).unwrap().members[0].releases, p.members[0].releases);
+    let old = json.replace(r#","releases":{"start":[false,true,true],"end":[false,false,false]}"#, "");
+    assert!(serde_json::from_str::<MemberProblem>(&old).unwrap().members[0].releases.is_rigid());
+    // Releases are for frames only.
+    let mut t = templates().remove(0);
+    let tid = t.members[0].id;
+    assert!(t.apply(Edit::SetReleases { id: tid, releases: ReleaseSpec { start: [false, true, true], end: [false; 3] } }).is_err());
+}

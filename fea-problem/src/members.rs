@@ -3,7 +3,7 @@
 //! that pass its own acceptance checks (finite values, backward error, force and moment balance).
 //! Pure data and functions; the native viewer's editor drives it, nothing here knows about UI.
 use fea_core::fields::Field;
-use fea_core::structural::{member_axes, FrameSection, Member, MemberModel};
+use fea_core::structural::{member_axes, EndReleases, FrameSection, Member, MemberModel};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -57,11 +57,29 @@ pub struct NodeSpec {
     pub id: u32,
     pub pos: [f64; 3],
 }
+/// Rotational end releases of a frame member about its local `[x (torsion), y, z]` axes: `true`
+/// transmits no moment (a pin). Default: both ends rigid.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseSpec {
+    pub start: [bool; 3],
+    pub end: [bool; 3],
+}
+impl ReleaseSpec {
+    pub fn is_rigid(&self) -> bool {
+        *self == Self::default()
+    }
+    fn core(self) -> EndReleases {
+        EndReleases { start: self.start, end: self.end }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemberSpec {
     pub id: u32,
     pub nodes: [u32; 2],
     pub kind: MemberKind,
+    /// Frame members only; absent in older saved projects (rigid).
+    #[serde(default)]
+    pub releases: ReleaseSpec,
 }
 /// Fixed degrees of freedom `[ux, uy, uz, rx, ry, rz]` (value 0). Rotations need a frame member at the node.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -105,6 +123,8 @@ pub enum Edit {
     AddMember { a: u32, b: u32, kind: MemberKind },
     RemoveMember { id: u32 },
     SetKind { id: u32, kind: MemberKind },
+    /// Frame members only; all-false makes both ends rigid again.
+    SetReleases { id: u32, releases: ReleaseSpec },
     /// All-false removes the support.
     SetSupport { node: u32, fixed: [bool; 6] },
     /// Zero force and moment remove the load.
@@ -211,6 +231,9 @@ impl MemberProblem {
                 return Err(format!("members {} and {} connect the same nodes", pairs[&(a.min(b), a.max(b))], m.id));
             }
             Self::check_kind(&m.kind)?;
+            if !m.kind.is_frame() && !m.releases.is_rigid() {
+                return Err(format!("member {}: end releases apply to frame members only", m.id));
+            }
             let delta = [pb.pos[0] - pa.pos[0], pb.pos[1] - pa.pos[1], pb.pos[2] - pa.pos[2]];
             if delta.iter().fold(0.0_f64, |n, v| n.hypot(*v)) <= 0.0 {
                 return Err(format!("member {} has zero length", m.id));
@@ -305,7 +328,7 @@ impl MemberProblem {
                     return Err(format!("at most {MAX_MEMBERS} members"));
                 }
                 let id = self.take_id()?;
-                self.members.push(MemberSpec { id, nodes: [a, b], kind });
+                self.members.push(MemberSpec { id, nodes: [a, b], kind, releases: ReleaseSpec::default() });
                 Ok(Some(id))
             }
             Edit::RemoveMember { id } => {
@@ -317,8 +340,17 @@ impl MemberProblem {
                 Ok(None)
             }
             Edit::SetKind { id, kind } => {
-                self.members.iter_mut().find(|m| m.id == id).ok_or("no such member")?.kind = kind;
+                let m = self.members.iter_mut().find(|m| m.id == id).ok_or("no such member")?;
+                m.kind = kind;
+                if !kind.is_frame() {
+                    m.releases = ReleaseSpec::default();
+                }
                 self.prune_rotational();
+                Ok(None)
+            }
+            Edit::SetReleases { id, releases } => {
+                let m = self.members.iter_mut().find(|m| m.id == id).ok_or("no such member")?;
+                m.releases = releases;
                 Ok(None)
             }
             Edit::SetSupport { node, fixed } => {
@@ -374,7 +406,8 @@ impl MemberProblem {
                 let nodes = [index[&m.nodes[0]], index[&m.nodes[1]]];
                 match m.kind {
                     MemberKind::Truss { e, area } => Member::Truss { nodes, e, area },
-                    MemberKind::Frame { section, reference, uniform_load } => Member::Frame { nodes, section: section.core(), reference, uniform_load },
+                    MemberKind::Frame { section, reference, uniform_load } if m.releases.is_rigid() => Member::Frame { nodes, section: section.core(), reference, uniform_load },
+                    MemberKind::Frame { section, reference, uniform_load } => Member::FrameReleased { nodes, section: section.core(), reference, uniform_load, releases: m.releases.core() },
                 }
             })
             .collect();

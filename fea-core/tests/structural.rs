@@ -347,15 +347,13 @@ fn both_ends_pinned_reduces_to_the_truss_bar() {
 #[test]
 fn no_release_equals_plain_frame_and_torsion_release_carries_no_torque() {
     let l = 2.5;
-    let run = |m: Member| {
+    let run = |m: Member, torque: f64| {
         let (model, bc) = cantilever(vec![[0.0; 3], [l, 0.0, 0.0]], vec![m]);
-        let out = model
-            .solve(&bc, &[(1, U(1), 3.0), (1, R(0), 2.0)], 1e-13)
-            .unwrap();
-        (
+        let out = model.solve(&bc, &[(1, U(1), 3.0), (1, R(0), torque)], 1e-13)?;
+        Ok::<_, String>((
             out.fields.value(1, U(1)).unwrap(),
             out.fields.reactions[model.fields().index(0, R(0)).unwrap()],
-        )
+        ))
     };
     let plain = Member::Frame {
         nodes: [0, 1],
@@ -364,15 +362,64 @@ fn no_release_equals_plain_frame_and_torsion_release_carries_no_torque() {
         uniform_load: [0.0; 3],
     };
     let none = released([0, 1], EndReleases::default(), [0.0; 3]);
-    assert_eq!(run(plain), run(none));
-    // Torsion released at one end: the wall sees no torque from the member.
-    let t = released(
-        [0, 1],
-        EndReleases {
-            start: [false; 3],
-            end: [true, false, false],
-        },
-        [0.0; 3],
-    );
-    assert!(run(t).1.abs() < 1e-12);
+    assert_eq!(run(plain, 2.0).unwrap(), run(none, 2.0).unwrap());
+    let t = || {
+        released(
+            [0, 1],
+            EndReleases {
+                start: [false; 3],
+                end: [true, false, false],
+            },
+            [0.0; 3],
+        )
+    };
+    // Torsion released at one end: the wall sees no torque from the member ...
+    assert!(run(t(), 0.0).unwrap().1.abs() < 1e-12);
+    // ... so a torque applied at the released end has nowhere to go and is refused.
+    assert!(run(t(), 2.0).unwrap_err().contains("releases"));
+}
+
+#[test]
+fn collinear_pinned_chain_is_refused_naming_the_node() {
+    let nodes = vec![[0.0; 3], [2.0, 0.0, 0.0], [4.0, 0.0, 0.0]];
+    let model = MemberModel::new(
+        nodes,
+        vec![
+            released([0, 1], EndReleases::PINNED_BOTH, [0.0; 3]),
+            released([1, 2], EndReleases::PINNED_BOTH, [0.0; 3]),
+        ],
+    )
+    .unwrap();
+    let mut bc = model.fields().constraints();
+    fix(&model, &mut bc, 0, true);
+    fix(&model, &mut bc, 2, true);
+    let err = model.solve(&bc, &[(1, U(1), 1.0)], 1e-12).unwrap_err();
+    assert!(err.contains("node 1 is a mechanism"), "{err}");
+}
+
+#[test]
+fn inclined_pin_ended_cantilever_matches_closed_form() {
+    // Member along (1,1,0), wall at node 1, pin (bending released, torsion kept) at node 0.
+    // The free rotations at the pin are not along global axes; the tip behaves as a plain
+    // cantilever: u = P L^3 / (3 E I) along the local bending axis (global z here, I = iz).
+    let s = eb_section();
+    let l = 3.0 * 2.0_f64.sqrt();
+    let model = MemberModel::new(
+        vec![[0.0; 3], [3.0, 3.0, 0.0]],
+        vec![Member::FrameReleased {
+            nodes: [1, 0],
+            section: s,
+            reference: [0.0, 0.0, 1.0],
+            uniform_load: [0.0; 3],
+            releases: EndReleases::pin_end(),
+        }],
+    )
+    .unwrap();
+    let mut bc = model.fields().constraints();
+    fix(&model, &mut bc, 1, true);
+    let p = 100.0;
+    let out = model.solve(&bc, &[(0, U(2), p)], 1e-13).unwrap();
+    let want = p * l.powi(3) / (3.0 * s.e * s.iz);
+    let got = out.fields.value(0, U(2)).unwrap();
+    assert!((got - want).abs() < 1e-9 * want, "{got} vs {want}");
 }
