@@ -727,6 +727,11 @@ impl Problem {
         k.checked_sub(1).and_then(|i| self.region_materials.get(i)).and_then(Option::as_ref).unwrap_or(&self.material)
     }
 
+    /// Whether any material of the problem (the first region's, or a region's own) is elastic-plastic.
+    pub fn any_plastic(&self) -> bool {
+        self.material.plastic || self.region_materials.iter().flatten().any(|m| m.plastic)
+    }
+
     /// Whether any region has a material of its own.
     pub fn has_region_materials(&self) -> bool {
         self.region_materials.iter().any(|m| m.as_ref().is_some_and(|m| *m != self.material))
@@ -937,8 +942,8 @@ impl Problem {
         if !self.bushings.is_empty() {
             return Err("contact pairs do not combine with bushings yet".into());
         }
-        if self.study.is_thermal() || self.material.plastic {
-            return Err("contact pairs are for the elastic structural study".into());
+        if self.study.is_thermal() {
+            return Err("contact pairs are for the structural study (not thermal)".into());
         }
         let names = self.edge_names();
         let region_of = |n: &str| n.split_once('/').and_then(|(p, _)| p.strip_prefix('r')?.parse::<usize>().ok()).unwrap_or(1);
@@ -961,24 +966,26 @@ impl Problem {
 
     /// The elastic-plastic request is consistent: a yield stress, a plain structural study, and no features that need other solvers.
     fn validate_plasticity(&self) -> Result<(), String> {
-        if !self.material.plastic {
+        if !self.any_plastic() {
             return Ok(());
         }
-        match self.material.yield_stress {
-            Some(y) if y.is_finite() && y > 0.0 => {}
-            _ => return Err("an elastic-plastic material needs a positive yield stress".into()),
-        }
-        if !(self.material.hardening.is_finite() && self.material.hardening >= 0.0) {
-            return Err("the hardening modulus must be zero or positive".into());
+        // each region's own material carries its own law: yield stress and hardening of every plastic one
+        let materials = std::iter::once((1, &self.material)).chain(self.region_materials.iter().enumerate().filter_map(|(i, m)| m.as_ref().map(|m| (i + 2, m))));
+        for (k, m) in materials.filter(|(_, m)| m.plastic) {
+            let who = if k == 1 { "an elastic-plastic material".to_string() } else { format!("the elastic-plastic material of region {k}") };
+            match m.yield_stress {
+                Some(y) if y.is_finite() && y > 0.0 => {}
+                _ => return Err(format!("{who} needs a positive yield stress")),
+            }
+            if !(m.hardening.is_finite() && m.hardening >= 0.0) {
+                return Err(format!("the hardening modulus of {who} must be zero or positive"));
+            }
         }
         if !self.bushings.is_empty() {
             return Err("an elastic-plastic material does not combine with bushings (the contact fit has its own solver)".into());
         }
         if self.study != crate::thermal::Study::Structural {
             return Err("an elastic-plastic material is for the structural study (not thermal)".into());
-        }
-        if self.has_region_materials() {
-            return Err("an elastic-plastic material applies to one material; regions with materials of their own are not supported with it".into());
         }
         Ok(())
     }

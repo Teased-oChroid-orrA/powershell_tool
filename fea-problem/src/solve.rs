@@ -600,9 +600,10 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     let bc = apply_supports(&mesh, &p.supports)?;
     let mut loads = build_loads(&mut mesh, p)?;
     if !p.bushings.is_empty() || !p.contacts.is_empty() {
+        attach_plasticity(&mut mesh, p)?;
         return solve_mesh_contact(p, mesh, loads, bc);
     }
-    if p.material.plastic {
+    if p.any_plastic() {
         attach_plasticity(&mut mesh, p)?;
         let model = Model::new(mesh)?;
         return solve_plastic_model(p, model, loads, bc);
@@ -940,6 +941,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     let warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && !matches!(i.code, "low_order_element" | "no_load")).map(|i| i.message.clone()).collect();
     let specs = || fit_specs(p, &model.mesh, &setup).into_iter().chain(pair_specs(p, &pairs)).collect::<Vec<_>>();
     let t0 = std::time::Instant::now();
+    let plastic = model.mesh.blocks.iter().any(|b| b.plasticity.is_some());
     let has_loads = !loads.nodal.is_empty() || !loads.faces.is_empty() || !loads.field_faces.is_empty() || loads.body.is_some() || loads.delta_t != 0.0;
     let sol = if p.bushings.is_empty() {
         // Contact pairs alone: the loads are applied in steps on the touching bodies.
@@ -947,7 +949,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
             return Err("nothing is applied: add a load, the bodies only touch".into());
         }
         let full = Loads { ground: ground.clone(), ..loads.clone() };
-        let mut opts = tune.options(4);
+        let mut opts = tune.options(if plastic { PLASTIC_STEPS } else { 4 });
         opts.first_step = 0.5;
         let sol = model.solve_nonlinear_contact(&full, &bc, specs(), &opts).map_err(|e| format!("the contact could not be solved: {e}"))?;
         if !sol.complete() {
@@ -972,6 +974,14 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         sol
     };
     let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
+    let contacts: Vec<ContactResult> = p.contacts.iter().zip(&pairs.pairs).enumerate().map(|(k, (c, _))| contact_result(&sol, 2 * p.bushings.len() + 2 * k, &c.a, &c.b, c.friction)).collect();
+    if plastic {
+        // the stress is that of the converged plastic state, not the elastic law of the displacements
+        let mut pass = plastic_pass(p, model, &loads, sol, solve_ms)?;
+        pass.contacts = contacts;
+        pass.warnings.extend(warnings);
+        return Ok(pass);
+    }
     let f = loads::assemble(&model.mesh, &loads)?;
     let (reaction, applied) = totals(d, &sol.reactions, &f);
     let gauss = model.gauss_stresses(&sol.u, p.delta_t)?;
@@ -982,7 +992,6 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     let zz = model.zz_error(&sol.u, p.delta_t)?;
     let strain_energy = model.strain_energy(&sol.u)?;
     let interfaces = p.bushings.iter().enumerate().map(|(i, b)| interface_result(&sol, 2 * i, b.hole, b.friction, p.hole_at(b.hole).map_or([0.0, 0.0], |(s, ..)| s.centre()))).collect();
-    let contacts = p.contacts.iter().zip(&pairs.pairs).enumerate().map(|(k, (c, _))| contact_result(&sol, 2 * p.bushings.len() + 2 * k, &c.a, &c.b, c.friction)).collect();
     let scale = force_scale(&f, &sol.reactions);
     Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces, contacts, warnings, heat: None, plastic: None })
 }
@@ -1134,10 +1143,12 @@ fn solve_resolved(p: &Problem, import_text: Option<&str>, observe: &dyn Fn(&'sta
         return Err("goal-oriented adaptivity does not support bushings (contact); use the ZZ error estimate".into());
     }
     let mut history = Vec::new();
-    if p.material.plastic && goal_oriented {
+    if p.any_plastic() && goal_oriented {
         return Err("goal-oriented adaptivity is for elastic materials; an elastic-plastic problem adapts on its own recovery-based indicator".into());
     }
-    let pass = if p.material.plastic && adaptive {
+    // the plastic driver has no contact: a plastic problem with contact pairs adapts like an elastic one, remeshing and solving
+    // each pass through `solve_mesh`
+    let pass = if p.any_plastic() && adaptive && p.contacts.is_empty() {
         solve_plastic_adaptive(p, first, &mut history, &mut mesh_notes)?
     } else if goal_oriented {
         solve_goal_oriented(p, first, &mut history, &mut mesh_notes)?
@@ -1167,13 +1178,18 @@ fn solve_resolved(p: &Problem, import_text: Option<&str>, observe: &dyn Fn(&'sta
 /// the solver has to cut them).
 const PLASTIC_STEPS: usize = 8;
 
-/// J2 plasticity with linear hardening on every block of `mesh`.
+/// J2 plasticity with linear hardening on the blocks of every region whose material is elastic-plastic (the first region's is
+/// `Problem::material`, region `k`'s own is `region_materials`); the other blocks stay elastic.
 fn attach_plasticity(mesh: &mut Mesh, p: &Problem) -> Result<(), String> {
     use fea_core::material::J2;
-    let y = p.material.yield_stress.ok_or("an elastic-plastic material needs a yield stress")?;
-    // the table runs to a plastic strain of 1, far beyond what a small-strain analysis means
-    let law = mechanics_core::hardening::Hardening::linear(y, p.material.hardening, 1.0)?;
     for b in 0..mesh.blocks.len() {
+        let m = p.region_material(crate::build::block_region(&mesh.blocks[b]) - 1);
+        if !m.plastic {
+            continue;
+        }
+        let y = m.yield_stress.ok_or("an elastic-plastic material needs a yield stress")?;
+        // the table runs to a plastic strain of 1, far beyond what a small-strain analysis means
+        let law = mechanics_core::hardening::Hardening::linear(y, m.hardening, 1.0)?;
         mesh.set_plasticity(b, J2::small(law))?;
     }
     Ok(())
