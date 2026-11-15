@@ -60,26 +60,15 @@ pub struct FaceHit {
 }
 
 impl FaceHit {
-    pub(crate) fn surface_normal(
-        &self,
-        x: V3,
-        fd: &dyn Fn(V3) -> Vec<FaceHit>,
-        tol: f64,
-    ) -> Option<V3> {
-        if !self.dist.is_finite() || self.normal.iter().any(|v| !v.is_finite()) {
-            return None;
-        }
+    pub(crate) fn surface_normal(&self, x: V3, fd: &dyn Fn(V3) -> Vec<FaceHit>, tol: f64) -> Option<V3> {
+        if !self.dist.is_finite() || self.normal.iter().any(|v| !v.is_finite()) { return None; }
         let foot = std::array::from_fn(|k| x[k] - self.dist * self.normal[k]);
-        if foot.iter().any(|v| !v.is_finite()) {
-            return None;
-        }
+        if foot.iter().any(|v| !v.is_finite()) { return None; }
         let on_face = fd(foot).into_iter().find(|f| f.face == self.face)?;
         if !(on_face.dist.abs() <= tol)
             || on_face.normal.iter().any(|v| !v.is_finite())
             || (norm(on_face.normal) - 1.0).abs() > 1e-6
-        {
-            return None;
-        }
+        { return None; }
         Some(on_face.normal)
     }
 }
@@ -100,14 +89,7 @@ pub struct TetOptions {
 }
 impl Default for TetOptions {
     fn default() -> Self {
-        Self {
-            base: 1.0,
-            boundary_size: 0.25,
-            max_tets: 2_000_000,
-            quadratic: false,
-            snap: true,
-            repair: false,
-        }
+        Self { base: 1.0, boundary_size: 0.25, max_tets: 2_000_000, quadratic: false, snap: true, repair: false }
     }
 }
 
@@ -144,11 +126,7 @@ fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 fn cross(a: V3, b: V3) -> V3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -157,18 +135,11 @@ fn norm(a: V3) -> f64 {
     dot(a, a).sqrt()
 }
 fn mid(a: V3, b: V3) -> V3 {
-    [
-        (a[0] + b[0]) / 2.0,
-        (a[1] + b[1]) / 2.0,
-        (a[2] + b[2]) / 2.0,
-    ]
+    [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0]
 }
 /// Signed volume of the tetrahedron (positive when `d` is on the side `(b - a) x (c - a)` points to).
 fn volume(p: &[V3], t: [usize; 4]) -> f64 {
-    dot(
-        cross(sub(p[t[1]], p[t[0]]), sub(p[t[2]], p[t[0]])),
-        sub(p[t[3]], p[t[0]]),
-    ) / 6.0
+    dot(cross(sub(p[t[1]], p[t[0]]), sub(p[t[2]], p[t[0]])), sub(p[t[3]], p[t[0]])) / 6.0
 }
 /// Remove the smaller sectors where the kept cut is pinched: the tetrahedra around a vertex or an edge must form one
 /// face-connected fan, otherwise the boundary is not a manifold there (two sectors touching only along that edge or at that
@@ -185,10 +156,7 @@ fn drop_pinched_sectors(p: &[V3], cells: &mut Vec<[usize; 4]>) -> usize {
             }
         }
         let mut doomed = BTreeSet::new();
-        let mut keys: Vec<Vec<usize>> = (0..p.len())
-            .filter(|&v| !vt[v].is_empty())
-            .map(|v| vec![v])
-            .collect();
+        let mut keys: Vec<Vec<usize>> = (0..p.len()).filter(|&v| !vt[v].is_empty()).map(|v| vec![v]).collect();
         let mut edges = BTreeSet::new();
         for t in cells.iter() {
             for i in 0..4 {
@@ -199,11 +167,7 @@ fn drop_pinched_sectors(p: &[V3], cells: &mut Vec<[usize; 4]>) -> usize {
         }
         keys.extend(edges.into_iter().map(|(a, b)| vec![a, b]));
         for key in keys {
-            let fan: Vec<usize> = vt[key[0]]
-                .iter()
-                .copied()
-                .filter(|&i| !doomed.contains(&i) && key.iter().all(|v| cells[i].contains(v)))
-                .collect();
+            let fan: Vec<usize> = vt[key[0]].iter().copied().filter(|&i| !doomed.contains(&i) && key.iter().all(|v| cells[i].contains(v))).collect();
             if fan.len() < 2 {
                 continue;
             }
@@ -211,17 +175,10 @@ fn drop_pinched_sectors(p: &[V3], cells: &mut Vec<[usize; 4]>) -> usize {
             let need = 3 - key.len();
             let mut by_rest = BTreeMap::<Vec<usize>, Vec<usize>>::new();
             for &i in &fan {
-                let rest: Vec<usize> = cells[i]
-                    .iter()
-                    .copied()
-                    .filter(|v| !key.contains(v))
-                    .collect();
+                let rest: Vec<usize> = cells[i].iter().copied().filter(|v| !key.contains(v)).collect();
                 for mask in 0u32..1 << rest.len() {
                     if mask.count_ones() as usize == need {
-                        let mut f: Vec<usize> = (0..rest.len())
-                            .filter(|k| mask & (1 << k) != 0)
-                            .map(|k| rest[k])
-                            .collect();
+                        let mut f: Vec<usize> = (0..rest.len()).filter(|k| mask & (1 << k) != 0).map(|k| rest[k]).collect();
                         f.sort_unstable();
                         by_rest.entry(f).or_default().push(i);
                     }
@@ -255,11 +212,7 @@ fn drop_pinched_sectors(p: &[V3], cells: &mut Vec<[usize; 4]>) -> usize {
             }
             let weight = |s: &Vec<usize>| s.iter().map(|&i| volume(p, cells[i]).abs()).sum::<f64>();
             let keep = (0..sectors.len())
-                .max_by(|&a, &b| {
-                    weight(&sectors[a])
-                        .total_cmp(&weight(&sectors[b]))
-                        .then_with(|| sectors[b].iter().min().cmp(&sectors[a].iter().min()))
-                })
+                .max_by(|&a, &b| weight(&sectors[a]).total_cmp(&weight(&sectors[b])).then_with(|| sectors[b].iter().min().cmp(&sectors[a].iter().min())))
                 .unwrap();
             for (k, s) in sectors.iter().enumerate() {
                 if k != keep {
@@ -418,10 +371,7 @@ impl<'a> Refiner<'a> {
                 return Err(format!("more than {} tetrahedra: the size field is too fine (raise the sizes or the limit)", self.max_tets));
             }
             let e = self.longest(top);
-            let blocker = self
-                .around
-                .get(&e)
-                .and_then(|l| l.iter().copied().find(|&u| self.longest(u) != e));
+            let blocker = self.around.get(&e).and_then(|l| l.iter().copied().find(|&u| self.longest(u) != e));
             match blocker {
                 Some(u) => stack.push(u),
                 None => {
@@ -446,22 +396,11 @@ fn lattice(lo: V3, hi: V3, base: f64) -> Result<(Vec<V3>, Vec<[usize; 4]>), Stri
     for k in 0..=n[2] {
         for j in 0..=n[1] {
             for i in 0..=n[0] {
-                p.push([
-                    lo[0] + h[0] * i as f64,
-                    lo[1] + h[1] * j as f64,
-                    lo[2] + h[2] * k as f64,
-                ]);
+                p.push([lo[0] + h[0] * i as f64, lo[1] + h[1] * j as f64, lo[2] + h[2] * k as f64]);
             }
         }
     }
-    const PERMS: [[usize; 3]; 6] = [
-        [0, 1, 2],
-        [0, 2, 1],
-        [1, 0, 2],
-        [1, 2, 0],
-        [2, 0, 1],
-        [2, 1, 0],
-    ];
+    const PERMS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
     let mut tets = Vec::new();
     for k in 0..n[2] {
         for j in 0..n[1] {
@@ -517,20 +456,7 @@ fn reconnect(p: &[V3], tet: &[[usize; 4]]) -> Option<(Vec<[usize; 4]>, Vec<V3>)>
         tet_topology::TetTopology,
     };
     let top = TetTopology::new(p.to_vec(), tet.to_vec(), tet.len() * 4 + 16).ok()?;
-    let (out, _) = optimize(
-        &top,
-        &std::collections::BTreeSet::new(),
-        FlipOptions {
-            max_passes: 3,
-            ..FlipOptions::default()
-        },
-        &SmoothOptions {
-            max_passes: 2,
-            ..SmoothOptions::default()
-        },
-        1,
-    )
-    .ok()?;
+    let (out, _) = optimize(&top, &std::collections::BTreeSet::new(), FlipOptions { max_passes: 3, ..FlipOptions::default() }, &SmoothOptions { max_passes: 2, ..SmoothOptions::default() }, 1).ok()?;
     let points = out.points().to_vec();
     let cells = out
         .cells()
@@ -552,43 +478,13 @@ pub fn mesh_solid(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<(Mesh, Me
 }
 
 /// [`mesh_solid`] that also returns what the boundary-layer repair did (`None` when it did not run).
-pub fn mesh_solid_reported(
-    s: &Solid,
-    mat: Elastic,
-    opts: TetOptions,
-) -> Result<
-    (
-        Mesh,
-        MeshReport,
-        Option<crate::meshing::boundary_repair::RepairReport>,
-    ),
-    String,
-> {
-    let finite_box =
-        (0..3).all(|k| s.hi[k].is_finite() && s.lo[k].is_finite() && s.hi[k] > s.lo[k]);
-    if !(opts.base.is_finite()
-        && opts.base > 0.0
-        && opts.boundary_size.is_finite()
-        && opts.boundary_size > 0.0
-        && finite_box)
-    {
-        return Err(
-            "the mesher needs a positive base size, a positive boundary size and a box with volume"
-                .into(),
-        );
+pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<(Mesh, MeshReport, Option<crate::meshing::boundary_repair::RepairReport>), String> {
+    let finite_box = (0..3).all(|k| s.hi[k].is_finite() && s.lo[k].is_finite() && s.hi[k] > s.lo[k]);
+    if !(opts.base.is_finite() && opts.base > 0.0 && opts.boundary_size.is_finite() && opts.boundary_size > 0.0 && finite_box) {
+        return Err("the mesher needs a positive base size, a positive boundary size and a box with volume".into());
     }
     let (p, tets) = lattice(s.lo, s.hi, opts.base)?;
-    let mut r = Refiner {
-        p,
-        tets: Vec::new(),
-        alive: Vec::new(),
-        around: HashMap::new(),
-        mids: HashMap::new(),
-        s,
-        boundary_size: opts.boundary_size,
-        max_tets: opts.max_tets,
-        live: 0,
-    };
+    let mut r = Refiner { p, tets: Vec::new(), alive: Vec::new(), around: HashMap::new(), mids: HashMap::new(), s, boundary_size: opts.boundary_size, max_tets: opts.max_tets, live: 0 };
     for t in tets {
         r.add_tet(t);
     }
@@ -607,10 +503,7 @@ pub fn mesh_solid_reported(
     }
 
     // Keep what is inside.
-    let mut kept: Vec<[usize; 4]> = (0..r.tets.len())
-        .filter(|&t| r.alive[t] && (s.sdf)(r.centroid(t)) < 0.0)
-        .map(|t| r.tets[t])
-        .collect();
+    let mut kept: Vec<[usize; 4]> = (0..r.tets.len()).filter(|&t| r.alive[t] && (s.sdf)(r.centroid(t)) < 0.0).map(|t| r.tets[t]).collect();
     drop_pinched_sectors(&r.p, &mut kept);
     if kept.is_empty() {
         return Err("no tetrahedron lies inside the solid: the size is too coarse for it or the box misses it".into());
@@ -636,14 +529,7 @@ pub fn mesh_solid_reported(
 
     // Boundary faces: faces of exactly one tetrahedron, each with the fourth vertex of that tetrahedron (the interior side).
     let boundary_of = |tet: &[[usize; 4]]| -> Vec<([usize; 3], usize)> {
-        let faces_of = |v: [usize; 4]| -> [([usize; 3], usize); 4] {
-            [
-                ([v[1], v[2], v[3]], v[0]),
-                ([v[0], v[3], v[2]], v[1]),
-                ([v[0], v[1], v[3]], v[2]),
-                ([v[0], v[2], v[1]], v[3]),
-            ]
-        };
+        let faces_of = |v: [usize; 4]| -> [([usize; 3], usize); 4] { [([v[1], v[2], v[3]], v[0]), ([v[0], v[3], v[2]], v[1]), ([v[0], v[1], v[3]], v[2]), ([v[0], v[2], v[1]], v[3])] };
         let mut count: HashMap<[usize; 3], (usize, [usize; 3], usize)> = HashMap::new();
         for v in tet {
             for (f, opposite) in faces_of(*v) {
@@ -653,11 +539,7 @@ pub fn mesh_solid_reported(
                 e.0 += 1;
             }
         }
-        let mut boundary: Vec<([usize; 3], usize)> = count
-            .values()
-            .filter(|c| c.0 == 1)
-            .map(|c| (c.1, c.2))
-            .collect();
+        let mut boundary: Vec<([usize; 3], usize)> = count.values().filter(|c| c.0 == 1).map(|c| (c.1, c.2)).collect();
         boundary.sort();
         boundary
     };
@@ -690,15 +572,7 @@ pub fn mesh_solid_reported(
             }
             // Reach is local: the longest edge at the vertex, not the global boundary size. Where the size field asks for
             // elements far smaller than `boundary_size`, a global reach would pull several vertices onto one feature point.
-            let local: Vec<f64> = (0..p.len())
-                .map(|v| {
-                    neighbours[v]
-                        .iter()
-                        .map(|&u| norm(sub(p[u], p[v])))
-                        .fold(0.0, f64::max)
-                        .min(opts.boundary_size)
-                })
-                .collect();
+            let local: Vec<f64> = (0..p.len()).map(|v| neighbours[v].iter().map(|&u| norm(sub(p[u], p[v]))).fold(0.0, f64::max).min(opts.boundary_size)).collect();
             let mut order: Vec<usize> = (0..p.len()).filter(|&v| on_boundary[v]).collect();
             order.sort_by(|&a, &b| (s.sdf)(p[a]).abs().total_cmp(&(s.sdf)(p[b]).abs()));
             for _pass in 0..SNAP_PASSES {
@@ -709,39 +583,22 @@ pub fn mesh_solid_reported(
                         continue;
                     }
                     let target = match s.face_dists {
-                        Some(fd) => snap_to_features(fd, s.sdf, p[v], 0.5 * local[v], reach, eps)
-                            .unwrap_or_else(|| project(s.sdf, p[v], eps)),
+                        Some(fd) => snap_to_features(fd, s.sdf, p[v], 0.5 * local[v], reach, eps).unwrap_or_else(|| project(s.sdf, p[v], eps)),
                         None => project(s.sdf, p[v], eps),
                     };
                     // The feature snap intersects the planes of the nearest triangle of each face; where those planes are nearly
                     // parallel (a fillet meeting a flat face tangentially) the intersection is ill-conditioned and the alternating
                     // projection can end more than an element away (a vertex 1.4 mm above a 16 mm face at a 1 mm size). A target
                     // that is not on the surface is no feature point: take the plain projection instead.
-                    let target = if s.face_dists.is_some()
-                        && (s.sdf)(target).abs() > OFF_SURFACE * local[v]
-                    {
-                        project(s.sdf, p[v], eps)
-                    } else {
-                        target
-                    };
+                    let target = if s.face_dists.is_some() && (s.sdf)(target).abs() > OFF_SURFACE * local[v] { project(s.sdf, p[v], eps) } else { target };
                     if norm(sub(target, p[v])) < 1e-9 * local[v] {
                         continue;
                     }
                     let old = p[v];
-                    let before = incident[v]
-                        .iter()
-                        .map(|&t| quality(&p, tet[t]))
-                        .fold(f64::INFINITY, f64::min);
+                    let before = incident[v].iter().map(|&t| quality(&p, tet[t])).fold(f64::INFINITY, f64::min);
                     for fraction in [1.0, 0.5, 0.25] {
-                        p[v] = [
-                            old[0] + fraction * (target[0] - old[0]),
-                            old[1] + fraction * (target[1] - old[1]),
-                            old[2] + fraction * (target[2] - old[2]),
-                        ];
-                        let after = incident[v]
-                            .iter()
-                            .map(|&t| quality(&p, tet[t]))
-                            .fold(f64::INFINITY, f64::min);
+                        p[v] = [old[0] + fraction * (target[0] - old[0]), old[1] + fraction * (target[1] - old[1]), old[2] + fraction * (target[2] - old[2])];
+                        let after = incident[v].iter().map(|&t| quality(&p, tet[t])).fold(f64::INFINITY, f64::min);
                         if after >= MIN_QUALITY.min(before) && after >= MAX_QUALITY_LOSS * before {
                             moved_any = true;
                             break;
@@ -756,12 +613,7 @@ pub fn mesh_solid_reported(
                             continue;
                         }
                         let old = p[v];
-                        let worst = |p: &[V3]| {
-                            incident[v]
-                                .iter()
-                                .map(|&t| quality(p, tet[t]))
-                                .fold(f64::INFINITY, f64::min)
-                        };
+                        let worst = |p: &[V3]| incident[v].iter().map(|&t| quality(p, tet[t])).fold(f64::INFINITY, f64::min);
                         let before = worst(&p);
                         let n = neighbours[v].len() as f64;
                         let mut c = [0.0; 3];
@@ -781,19 +633,12 @@ pub fn mesh_solid_reported(
                 }
             }
             // Nothing left to gain once every boundary vertex that could be snapped sits on the surface.
-            if order
-                .iter()
-                .all(|&v| (s.sdf)(p[v]).abs() <= 0.02 * local[v])
-            {
+            if order.iter().all(|&v| (s.sdf)(p[v]).abs() <= 0.02 * local[v]) {
                 break;
             }
             if round < RECONNECT_ROUNDS {
                 // Accept the reconnection only if the mesher's own worst quality does not fall below the floor it keeps.
-                let worst = |p: &[V3], tet: &[[usize; 4]]| {
-                    tet.iter()
-                        .map(|&t| quality(p, t))
-                        .fold(f64::INFINITY, f64::min)
-                };
+                let worst = |p: &[V3], tet: &[[usize; 4]]| tet.iter().map(|&t| quality(p, t)).fold(f64::INFINITY, f64::min);
                 let before = worst(&p, &tet);
                 if let Some((cells, points)) = reconnect(&p, &tet) {
                     if worst(&points, &cells) >= before.min(MIN_QUALITY) {
@@ -817,12 +662,7 @@ pub fn mesh_solid_reported(
             face_dists: s.face_dists,
             triangle_face: s.face_dists.map(|_| &classify as &dyn Fn([V3; 3]) -> usize),
         };
-        let (_remap, rep) = crate::meshing::boundary_repair::repair(
-            &mut p,
-            &mut tet,
-            &ctx,
-            crate::meshing::boundary_repair::RepairOptions::default(),
-        );
+        let (_remap, rep) = crate::meshing::boundary_repair::repair(&mut p, &mut tet, &ctx, crate::meshing::boundary_repair::RepairOptions::default());
         boundary = boundary_of(&tet);
         on_boundary = vec![false; p.len()];
         for (f, _) in &boundary {
@@ -887,10 +727,7 @@ pub fn mesh_solid_reported(
         worst = worst.min(6.0 * 2f64.sqrt() * vol / lrms.powi(3));
     }
     if worst <= 0.0 {
-        return Err(
-            "the mesh has an inverted or flat tetrahedron: the size is too coarse for the boundary"
-                .into(),
-        );
+        return Err("the mesh has an inverted or flat tetrahedron: the size is too coarse for the boundary".into());
     }
     if let Some(rep) = &mut repair_report {
         rep.min_sj_after = repair_min_sj;
@@ -903,11 +740,7 @@ pub fn mesh_solid_reported(
     for x in &p {
         mesh.add_node(*x);
     }
-    let kind = if opts.quadratic {
-        ElementKind::Tet10
-    } else {
-        ElementKind::Tet4
-    };
+    let kind = if opts.quadratic { ElementKind::Tet10 } else { ElementKind::Tet4 };
     const EDGES: [[usize; 2]; 6] = [[0, 1], [1, 2], [2, 0], [0, 3], [1, 3], [2, 3]];
     // Midside nodes (Tet10) start on the straight edges.
     let mut mids: HashMap<(usize, usize), usize> = HashMap::new();
@@ -916,9 +749,7 @@ pub fn mesh_solid_reported(
         conn.extend_from_slice(v);
         if opts.quadratic {
             for [a, b] in EDGES {
-                let m = *mids
-                    .entry(key(v[a], v[b]))
-                    .or_insert_with(|| mesh.add_node(mid(mesh.nodes[v[a]], mesh.nodes[v[b]])));
+                let m = *mids.entry(key(v[a], v[b])).or_insert_with(|| mesh.add_node(mid(mesh.nodes[v[a]], mesh.nodes[v[b]])));
                 conn.push(m);
             }
         }
@@ -929,36 +760,16 @@ pub fn mesh_solid_reported(
     }
 
     // Named, outward-oriented boundary faces.
-    let faces = faces_of_named(
-        &boundary,
-        &mesh.nodes,
-        s,
-        if opts.quadratic { Some(&mids) } else { None },
-        opts.boundary_size,
-    );
+    let faces = faces_of_named(&boundary, &mesh.nodes, s, if opts.quadratic { Some(&mids) } else { None }, opts.boundary_size);
     for (name, list) in faces {
         mesh.surfaces.insert(name, list);
     }
-    let report = MeshReport {
-        tets: tet.len(),
-        nodes: mesh.nodes.len(),
-        volume: total,
-        worst_quality: worst,
-        snapped,
-        refused,
-    };
+    let report = MeshReport { tets: tet.len(), nodes: mesh.nodes.len(), volume: total, worst_quality: worst, snapped, refused };
     Ok((mesh, report, repair_report))
 }
 
-fn faces_of_named(
-    boundary: &[([usize; 3], usize)],
-    p: &[V3],
-    s: &Solid,
-    mids: Option<&HashMap<(usize, usize), usize>>,
-    size: f64,
-) -> Vec<(String, Vec<Vec<usize>>)> {
-    let mut by_face: std::collections::BTreeMap<usize, Vec<Vec<usize>>> =
-        std::collections::BTreeMap::new();
+fn faces_of_named(boundary: &[([usize; 3], usize)], p: &[V3], s: &Solid, mids: Option<&HashMap<(usize, usize), usize>>, size: f64) -> Vec<(String, Vec<Vec<usize>>)> {
+    let mut by_face: std::collections::BTreeMap<usize, Vec<Vec<usize>>> = std::collections::BTreeMap::new();
     for &(f, _) in boundary {
         // Outward by construction: the face is taken from a positively oriented tetrahedron, whose face opposite vertex k
         // is ordered so that its normal points away from that vertex. (Deciding it by a dot product with the fourth
@@ -968,31 +779,13 @@ fn faces_of_named(
         if let Some(m) = mids {
             nodes.extend([m[&key(a, b)], m[&key(b, c)], m[&key(c, a)]]);
         }
-        by_face
-            .entry(face_of_triangle(s, [p[a], p[b], p[c]], size))
-            .or_default()
-            .push(nodes);
+        by_face.entry(face_of_triangle(s, [p[a], p[b], p[c]], size)).or_default().push(nodes);
     }
-    by_face
-        .into_iter()
-        .map(|(i, list)| (format!("face{}", i + 1), list))
-        .collect()
+    by_face.into_iter().map(|(i, list)| (format!("face{}", i + 1), list)).collect()
 }
 
 /// Reference points at which a quadratic tetrahedron's mapping must stay orientation preserving.
-const SAMPLES: [[f64; 3]; 11] = [
-    [0.0, 0.0, 0.0],
-    [1.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0],
-    [0.0, 0.0, 1.0],
-    [0.5, 0.0, 0.0],
-    [0.5, 0.5, 0.0],
-    [0.0, 0.5, 0.0],
-    [0.0, 0.0, 0.5],
-    [0.5, 0.0, 0.5],
-    [0.0, 0.5, 0.5],
-    [0.25, 0.25, 0.25],
-];
+const SAMPLES: [[f64; 3]; 11] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.5, 0.0, 0.0], [0.5, 0.5, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 0.5], [0.5, 0.0, 0.5], [0.0, 0.5, 0.5], [0.25, 0.25, 0.25]];
 
 /// Is the quadratic tetrahedron `nodes` (10 node ids) a proper, not badly distorted, element?
 fn tet10_ok(mesh: &Mesh, nodes: &[usize]) -> bool {
@@ -1008,9 +801,7 @@ fn tet10_ok(mesh: &Mesh, nodes: &[usize]) -> bool {
                 }
             }
         }
-        let det = j[0][0] * (j[1][1] * j[2][2] - j[1][2] * j[2][1])
-            - j[0][1] * (j[1][0] * j[2][2] - j[1][2] * j[2][0])
-            + j[0][2] * (j[1][0] * j[2][1] - j[1][1] * j[2][0]);
+        let det = j[0][0] * (j[1][1] * j[2][2] - j[1][2] * j[2][1]) - j[0][1] * (j[1][0] * j[2][2] - j[1][2] * j[2][0]) + j[0][2] * (j[1][0] * j[2][1] - j[1][1] * j[2][0]);
         if det < 0.1 * linear {
             return false;
         }
@@ -1023,14 +814,7 @@ fn tet10_ok(mesh: &Mesh, nodes: &[usize]) -> bool {
 
 /// Move the midside node of every boundary edge onto the surface (curved elements), as far as keeps every tetrahedron
 /// around it a proper element.
-fn curve_boundary_edges(
-    mesh: &mut Mesh,
-    s: &Solid,
-    boundary: &[([usize; 3], usize)],
-    mids: &HashMap<(usize, usize), usize>,
-    tet: &[[usize; 4]],
-    size: f64,
-) {
+fn curve_boundary_edges(mesh: &mut Mesh, s: &Solid, boundary: &[([usize; 3], usize)], mids: &HashMap<(usize, usize), usize>, tet: &[[usize; 4]], size: f64) {
     let mut around: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
     for (t, v) in tet.iter().enumerate() {
         for i in 0..4 {
@@ -1053,14 +837,8 @@ fn curve_boundary_edges(
         let target = project(s.sdf, straight, size * 1e-3);
         let travel = sub(target, straight);
         for fraction in [1.0, 0.5, 0.25] {
-            mesh.nodes[m] = [
-                straight[0] + fraction * travel[0],
-                straight[1] + fraction * travel[1],
-                straight[2] + fraction * travel[2],
-            ];
-            let ok = around[&e]
-                .iter()
-                .all(|&t| tet10_ok(mesh, &mesh.blocks[0].conn[t * 10..t * 10 + 10]));
+            mesh.nodes[m] = [straight[0] + fraction * travel[0], straight[1] + fraction * travel[1], straight[2] + fraction * travel[2]];
+            let ok = around[&e].iter().all(|&t| tet10_ok(mesh, &mesh.blocks[0].conn[t * 10..t * 10 + 10]));
             if ok {
                 break;
             }
@@ -1069,82 +847,44 @@ fn curve_boundary_edges(
     }
 }
 
-pub(crate) fn reentrant_edge(
-    fd: &dyn Fn(V3) -> Vec<FaceHit>,
-    sdf: &dyn Fn(V3) -> f64,
-    y: V3,
-    faces: [usize; 2],
-    eps: f64,
-) -> bool {
-    if !eps.is_finite() || eps <= 0.0 {
-        return false;
-    }
+pub(crate) fn reentrant_edge(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, y: V3, faces: [usize; 2], eps: f64) -> bool {
+    if !eps.is_finite() || eps <= 0.0 { return false; }
     let hits = fd(y);
-    let [Some(a), Some(b)] = faces.map(|f| hits.iter().find(|h| h.face == f)) else {
-        return false;
-    };
+    let [Some(a), Some(b)] = faces.map(|f| hits.iter().find(|h| h.face == f)) else { return false };
     // `eps` is the surface accuracy (a thousandth of the size), not round-off: the two faces of a tessellated model need not
     // meet exactly at their seam, and the alternating projection stops up to about `eps` off one of them (1e-6 to 1.2e-3 on
     // the t-junction at sizes near 1). A round-off tolerance never proved such a seam, and the snap pulled the wall vertices
     // beside it onto the edge. The sectors are sampled well beyond that gap.
     let tol = eps;
-    if !(a.dist.abs() <= tol && b.dist.abs() <= tol) {
-        return false;
-    }
-    let (Some(n0), Some(n1)) = (a.surface_normal(y, fd, tol), b.surface_normal(y, fd, tol)) else {
-        return false;
-    };
+    if !(a.dist.abs() <= tol && b.dist.abs() <= tol) { return false; }
+    let (Some(n0), Some(n1)) = (a.surface_normal(y, fd, tol), b.surface_normal(y, fd, tol)) else { return false };
     let c = dot(n0, n1);
-    if c.abs() >= 0.9 {
-        return false;
-    }
+    if c.abs() >= 0.9 { return false; }
     let dual0: V3 = std::array::from_fn(|k| (n0[k] - c * n1[k]) / (1.0 - c * c));
     let dual1: V3 = std::array::from_fn(|k| (n1[k] - c * n0[k]) / (1.0 - c * c));
     for (s0, s1) in [(1.0, 1.0), (-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0)] {
         let step = 8.0 * eps;
         let sample = std::array::from_fn(|k| y[k] + step * (s0 * dual0[k] + s1 * dual1[k]));
         let d = sdf(sample);
-        if !d.is_finite()
-            || if s0 > 0.0 && s1 > 0.0 {
-                d <= step / 2.0
-            } else {
-                d >= -step / 2.0
-            }
-        {
-            return false;
-        }
+        if !d.is_finite() || if s0 > 0.0 && s1 > 0.0 { d <= step / 2.0 } else { d >= -step / 2.0 } { return false; }
     }
     true
 }
 
 /// Project onto nearby faces, retaining a single patch at a proven reentrant edge.
-fn snap_to_features(
-    fd: &dyn Fn(V3) -> Vec<FaceHit>,
-    sdf: &dyn Fn(V3) -> f64,
-    x: V3,
-    edge_reach: f64,
-    reach: f64,
-    eps: f64,
-) -> Option<V3> {
+fn snap_to_features(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, x: V3, edge_reach: f64, reach: f64, eps: f64) -> Option<V3> {
     let hits = fd(x);
     let surface_dist = sdf(x).abs();
     // The wide positive reach finds a nearby bore, but a distant tangent face must not pull the vertex off its patch.
-    let mut active: Vec<usize> = hits
-        .iter()
-        .filter(|h| {
-            if h.dist > 0.0 {
-                h.dist < reach && (surface_dist <= eps || h.dist <= surface_dist + eps)
-            } else {
-                h.dist.abs() < edge_reach
-            }
-        })
-        .map(|h| h.face)
-        .collect();
+    let mut active: Vec<usize> = hits.iter().filter(|h| {
+        if h.dist > 0.0 {
+            h.dist < reach && (surface_dist <= eps || h.dist <= surface_dist + eps)
+        } else {
+            h.dist.abs() < edge_reach
+        }
+    }).map(|h| h.face).collect();
     if active.is_empty() {
-        let nearest = hits
-            .iter()
-            .filter(|h| h.dist.abs() < reach)
-            .min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?;
+        let nearest = hits.iter().filter(|h| h.dist.abs() < reach).min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?;
         active.push(nearest.face);
     }
     let mut y = x;
@@ -1162,19 +902,10 @@ fn snap_to_features(
     }
     if let [a, b] = active.as_slice() {
         if reentrant_edge(fd, sdf, y, [*a, *b], eps) {
-            let nearest = hits
-                .iter()
-                .filter(|h| h.face == *a || h.face == *b)
-                .min_by(|a, b| {
-                    a.dist
-                        .abs()
-                        .total_cmp(&b.dist.abs())
-                        .then(a.face.cmp(&b.face))
-                })?;
+            let nearest = hits.iter().filter(|h| h.face == *a || h.face == *b)
+                .min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()).then(a.face.cmp(&b.face)))?;
             let foot: V3 = std::array::from_fn(|k| x[k] - nearest.dist * nearest.normal[k]);
-            if foot.iter().all(|v| v.is_finite()) && sdf(foot).abs() <= 1e-3 * eps {
-                return Some(foot);
-            }
+            if foot.iter().all(|v| v.is_finite()) && sdf(foot).abs() <= 1e-3 * eps { return Some(foot); }
         }
     }
     Some(y)
@@ -1182,122 +913,57 @@ fn snap_to_features(
 
 /// Pull only a boundary vertex that makes a triangle straddle two CAD patches onto their nearby shared seam.
 /// The move is judged on every incident surface triangle and tetrahedron before Tet10 midsides are constructed.
-fn align_near_seams(
-    p: &mut [V3],
-    tet: &[[usize; 4]],
-    boundary: &[([usize; 3], usize)],
-    sdf: &dyn Fn(V3) -> f64,
-    fd: &dyn Fn(V3) -> Vec<FaceHit>,
-    size: f64,
-) {
+fn align_near_seams(p: &mut [V3], tet: &[[usize; 4]], boundary: &[([usize; 3], usize)], sdf: &dyn Fn(V3) -> f64, fd: &dyn Fn(V3) -> Vec<FaceHit>, size: f64) {
     use std::collections::{BTreeMap, BTreeSet};
     let tol = FACE_TOL * size;
     let min_sj = crate::meshing::quality::QualityThresholds::default().min_scaled_jacobian;
-    let on = |hits: &[FaceHit]| -> BTreeSet<usize> {
-        hits.iter()
-            .filter(|h| h.dist.abs() <= tol)
-            .map(|h| h.face)
-            .collect()
-    };
+    let on = |hits: &[FaceHit]| -> BTreeSet<usize> { hits.iter().filter(|h| h.dist.abs() <= tol).map(|h| h.face).collect() };
     let mut surface_at = vec![Vec::new(); p.len()];
     let mut cells_at = vec![Vec::new(); p.len()];
     for (i, &(f, _)) in boundary.iter().enumerate() {
-        for v in f {
-            surface_at[v].push(i);
-        }
+        for v in f { surface_at[v].push(i); }
     }
     for (i, t) in tet.iter().enumerate() {
-        for &v in t {
-            cells_at[v].push(i);
-        }
+        for &v in t { cells_at[v].push(i); }
     }
     let mut proposals: BTreeMap<usize, (f64, V3)> = BTreeMap::new();
     for &(f, _) in boundary {
         let hits = f.map(|v| fd(p[v]));
         let members = hits.each_ref().map(|h| on(h));
-        if !members[0]
-            .intersection(&members[1])
-            .any(|face| members[2].contains(face))
-        {
+        if !members[0].intersection(&members[1]).any(|face| members[2].contains(face)) {
             for off in 0..3 {
                 let a = (off + 1) % 3;
                 let b = (off + 2) % 3;
                 for &target_face in members[a].intersection(&members[b]) {
-                    if members[off].contains(&target_face) {
-                        continue;
-                    }
-                    let Some(hit) = hits[off].iter().find(|h| h.face == target_face) else {
-                        continue;
-                    };
-                    let Some(&source_face) = members[off]
-                        .iter()
-                        .next()
-                        .filter(|_| members[off].len() == 1)
-                    else {
-                        continue;
-                    };
-                    if source_face == target_face {
-                        continue;
-                    }
+                    if members[off].contains(&target_face) { continue; }
+                    let Some(hit) = hits[off].iter().find(|h| h.face == target_face) else { continue };
+                    let Some(&source_face) = members[off].iter().next().filter(|_| members[off].len() == 1) else { continue };
+                    if source_face == target_face { continue; }
                     let v = f[off];
-                    let local = cells_at[v]
-                        .iter()
-                        .flat_map(|&i| tet[i])
-                        .map(|u| norm(sub(p[u], p[v])))
-                        .fold(0.0, f64::max)
-                        .min(size);
+                    let local = cells_at[v].iter().flat_map(|&i| tet[i]).map(|u| norm(sub(p[u], p[v]))).fold(0.0, f64::max).min(size);
                     let reach = OFF_SURFACE * local;
-                    if !(hit.dist.abs() > tol && hit.dist.abs() <= reach) {
-                        continue;
-                    }
+                    if !(hit.dist.abs() > tol && hit.dist.abs() <= reach) { continue; }
                     let foot = std::array::from_fn(|k| p[v][k] - hit.dist * hit.normal[k]);
-                    if foot.iter().any(|x| !x.is_finite()) || sdf(foot).abs() > 1e-3 * local {
-                        continue;
-                    }
+                    if foot.iter().any(|x| !x.is_finite()) || sdf(foot).abs() > 1e-3 * local { continue; }
                     let at_foot = fd(foot);
-                    if [source_face, target_face].iter().any(|face| {
-                        !at_foot
-                            .iter()
-                            .any(|h| h.face == *face && h.dist.abs() <= 1e-3 * local)
-                    }) {
-                        continue;
-                    }
+                    if [source_face, target_face].iter().any(|face| !at_foot.iter().any(|h| h.face == *face && h.dist.abs() <= 1e-3 * local)) { continue; }
                     let travel = norm(sub(foot, p[v]));
-                    if travel > reach {
-                        continue;
-                    }
+                    if travel > reach { continue; }
                     let candidate = (travel, foot);
-                    if proposals.get(&v).is_none_or(|old| travel < old.0) {
-                        proposals.insert(v, candidate);
-                    }
+                    if proposals.get(&v).is_none_or(|old| travel < old.0) { proposals.insert(v, candidate); }
                 }
             }
         }
     }
     for (v, (_, foot)) in proposals {
-        let before_faces: Vec<_> = surface_at[v]
-            .iter()
-            .map(|&i| {
-                let f = boundary[i].0;
-                let sets = f.map(|u| on(&fd(p[u])));
-                sets[0]
-                    .intersection(&sets[1])
-                    .filter(|face| sets[2].contains(*face))
-                    .copied()
-                    .collect::<BTreeSet<_>>()
-            })
-            .collect();
-        let before_bad = before_faces
-            .iter()
-            .filter(|owners| owners.is_empty())
-            .count();
-        if before_bad == 0 {
-            continue;
-        }
-        let old_quality: Vec<_> = cells_at[v]
-            .iter()
-            .map(|&i| crate::meshing::boundary_repair::scaled_jacobian(p, tet[i]))
-            .collect();
+        let before_faces: Vec<_> = surface_at[v].iter().map(|&i| {
+            let f = boundary[i].0;
+            let sets = f.map(|u| on(&fd(p[u])));
+            sets[0].intersection(&sets[1]).filter(|face| sets[2].contains(*face)).copied().collect::<BTreeSet<_>>()
+        }).collect();
+        let before_bad = before_faces.iter().filter(|owners| owners.is_empty()).count();
+        if before_bad == 0 { continue; }
+        let old_quality: Vec<_> = cells_at[v].iter().map(|&i| crate::meshing::boundary_repair::scaled_jacobian(p, tet[i])).collect();
         let old = p[v];
         p[v] = foot;
         let mut after_bad = 0;
@@ -1305,11 +971,7 @@ fn align_near_seams(
         for (j, &i) in surface_at[v].iter().enumerate() {
             let f = boundary[i].0;
             let sets = f.map(|u| on(&fd(p[u])));
-            let owners: BTreeSet<_> = sets[0]
-                .intersection(&sets[1])
-                .filter(|face| sets[2].contains(*face))
-                .copied()
-                .collect();
+            let owners: BTreeSet<_> = sets[0].intersection(&sets[1]).filter(|face| sets[2].contains(*face)).copied().collect();
             after_bad += usize::from(owners.is_empty());
             preserved &= before_faces[j].is_empty() || !before_faces[j].is_disjoint(&owners);
             let triangle = |vertices: [V3; 3]| {
@@ -1318,16 +980,13 @@ fn align_near_seams(
             };
             let n1 = triangle(f.map(|u| p[u]));
             let n0 = triangle(f.map(|u| if u == v { old } else { p[u] }));
-            preserved &= dot(n0, n1) > 0.5 * norm(n0) * norm(n1)
-                && (0.5..=2.0).contains(&(norm(n1) / norm(n0)));
+            preserved &= dot(n0, n1) > 0.5 * norm(n0) * norm(n1) && (0.5..=2.0).contains(&(norm(n1) / norm(n0)));
         }
         let cells_ok = cells_at[v].iter().zip(old_quality).all(|(&i, before)| {
             let after = crate::meshing::boundary_repair::scaled_jacobian(p, tet[i]);
             after.is_finite() && after >= before.min(min_sj) - 1e-12
         });
-        if after_bad >= before_bad || !preserved || !cells_ok {
-            p[v] = old;
-        }
+        if after_bad >= before_bad || !preserved || !cells_ok { p[v] = old; }
     }
 }
 
@@ -1342,10 +1001,7 @@ fn face_of_triangle(s: &Solid, v: [V3; 3], size: f64) -> usize {
         let per: Vec<Vec<FaceHit>> = v.iter().map(|x| fd(*x)).collect();
         let mut best: Option<(f64, usize)> = None;
         for h in &per[0] {
-            let others: Vec<f64> = per[1..]
-                .iter()
-                .filter_map(|l| l.iter().find(|o| o.face == h.face).map(|o| o.dist.abs()))
-                .collect();
+            let others: Vec<f64> = per[1..].iter().filter_map(|l| l.iter().find(|o| o.face == h.face).map(|o| o.dist.abs())).collect();
             if others.len() == 2 && h.dist.abs() < tol && others.iter().all(|d| *d < tol) {
                 let mut distances = [h.dist.abs(), others[0], others[1]];
                 distances.sort_by(f64::total_cmp);
@@ -1365,11 +1021,7 @@ fn face_of_triangle(s: &Solid, v: [V3; 3], size: f64) -> usize {
         let (mut sum, mut correction) = (0.0_f64, 0.0_f64);
         for x in values {
             let next = sum + x;
-            correction += if sum.abs() >= x.abs() {
-                (sum - next) + x
-            } else {
-                (x - next) + sum
-            };
+            correction += if sum.abs() >= x.abs() { (sum - next) + x } else { (x - next) + sum };
             sum = next;
         }
         (sum + correction) / 3.0
@@ -1380,62 +1032,26 @@ fn face_of_triangle(s: &Solid, v: [V3; 3], size: f64) -> usize {
 #[cfg(test)]
 mod tests {
     fn concave_faces(x: V3) -> Vec<FaceHit> {
-        [
-            ([x[0].max(0.0), x[1], 0.0], [0.0, 0.0, 1.0]),
-            ([0.0, x[1], x[2].max(0.0)], [1.0, 0.0, 0.0]),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(face, (q, n))| {
-            let offset = sub(x, q);
-            let distance = norm(offset);
-            let signed = if dot(offset, n) < 0.0 {
-                -distance
-            } else {
-                distance
-            };
-            FaceHit {
-                face,
-                dist: signed,
-                normal: if distance == 0.0 {
-                    n
-                } else {
-                    offset.map(|v| v / signed)
-                },
-            }
-        })
-        .collect()
+        [([x[0].max(0.0), x[1], 0.0], [0.0, 0.0, 1.0]),
+         ([0.0, x[1], x[2].max(0.0)], [1.0, 0.0, 0.0])]
+            .into_iter().enumerate().map(|(face, (q, n))| {
+                let offset = sub(x, q);
+                let distance = norm(offset);
+                let signed = if dot(offset, n) < 0.0 { -distance } else { distance };
+                FaceHit { face, dist: signed, normal: if distance == 0.0 { n } else { offset.map(|v| v / signed) } }
+            }).collect()
     }
 
     fn concave_sdf(x: V3) -> f64 {
-        let distance = concave_faces(x)
-            .iter()
-            .map(|h| h.dist.abs())
-            .fold(f64::INFINITY, f64::min);
-        if x[0] > 0.0 && x[2] > 0.0 {
-            distance
-        } else {
-            -distance
-        }
+        let distance = concave_faces(x).iter().map(|h| h.dist.abs()).fold(f64::INFINITY, f64::min);
+        if x[0] > 0.0 && x[2] > 0.0 { distance } else { -distance }
     }
 
-    fn legacy_snap(
-        fd: &dyn Fn(V3) -> Vec<FaceHit>,
-        x: V3,
-        edge_reach: f64,
-        reach: f64,
-    ) -> Option<V3> {
+    fn legacy_snap(fd: &dyn Fn(V3) -> Vec<FaceHit>, x: V3, edge_reach: f64, reach: f64) -> Option<V3> {
         let hits = fd(x);
-        let mut active: Vec<usize> = hits
-            .iter()
-            .filter(|h| h.dist.abs() < edge_reach || (h.dist > 0.0 && h.dist < reach))
-            .map(|h| h.face)
-            .collect();
+        let mut active: Vec<usize> = hits.iter().filter(|h| h.dist.abs() < edge_reach || (h.dist > 0.0 && h.dist < reach)).map(|h| h.face).collect();
         if active.is_empty() {
-            let nearest = hits
-                .iter()
-                .filter(|h| h.dist.abs() < reach)
-                .min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?;
+            let nearest = hits.iter().filter(|h| h.dist.abs() < reach).min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?;
             active.push(nearest.face);
         }
         let mut y = x;
@@ -1459,113 +1075,45 @@ mod tests {
         let check = |fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, x| {
             let old = legacy_snap(fd, x, 0.125, 0.275);
             let new = snap_to_features(fd, sdf, x, 0.125, 0.275, 0.00025);
-            assert_eq!(
-                new.map(|p| p.map(f64::to_bits)),
-                old.map(|p| p.map(f64::to_bits)),
-                "{x:?}"
-            );
+            assert_eq!(new.map(|p| p.map(f64::to_bits)), old.map(|p| p.map(f64::to_bits)), "{x:?}");
         };
         let hit = |face, x: V3, q: V3, n: V3| {
             let offset = sub(x, q);
             let distance = norm(offset);
-            let signed = if dot(offset, n) < 0.0 {
-                -distance
-            } else {
-                distance
-            };
-            FaceHit {
-                face,
-                dist: signed,
-                normal: if distance == 0.0 {
-                    n
-                } else {
-                    offset.map(|v| v / signed)
-                },
-            }
+            let signed = if dot(offset, n) < 0.0 { -distance } else { distance };
+            FaceHit { face, dist: signed, normal: if distance == 0.0 { n } else { offset.map(|v| v / signed) } }
         };
-        let convex = |x: V3| {
-            vec![
-                hit(0, x, [x[0].min(0.0), x[1], 0.0], [0.0, 0.0, 1.0]),
-                hit(1, x, [0.0, x[1], x[2].min(0.0)], [1.0, 0.0, 0.0]),
-            ]
-        };
-        let convex_sdf =
-            |x: V3| norm([x[0].max(0.0), 0.0, x[2].max(0.0)]) + x[0].max(x[2]).min(0.0);
-        for x in [[-0.02, 0.0, 0.03], [0.03, 0.0, 0.02], [-0.02, 0.0, -0.03]] {
-            check(&convex, &convex_sdf, x);
-        }
+        let convex = |x: V3| vec![
+            hit(0, x, [x[0].min(0.0), x[1], 0.0], [0.0,0.0,1.0]),
+            hit(1, x, [0.0,x[1],x[2].min(0.0)], [1.0,0.0,0.0]),
+        ];
+        let convex_sdf = |x: V3| norm([x[0].max(0.0),0.0,x[2].max(0.0)]) + x[0].max(x[2]).min(0.0);
+        for x in [[-0.02,0.0,0.03],[0.03,0.0,0.02],[-0.02,0.0,-0.03]] { check(&convex, &convex_sdf, x); }
         let bore = |x: V3| {
             let r = x[0].hypot(x[1]);
-            let n = [x[0] / r, x[1] / r, 0.0];
-            let cap = if r < 1.0 {
-                [n[0], n[1], 1.0]
-            } else {
-                [x[0], x[1], 1.0]
-            };
-            vec![
-                hit(0, x, [n[0], n[1], x[2].min(1.0)], [-n[0], -n[1], 0.0]),
-                hit(1, x, cap, [0.0, 0.0, 1.0]),
-            ]
+            let n = [x[0]/r,x[1]/r,0.0];
+            let cap = if r < 1.0 { [n[0],n[1],1.0] } else { [x[0],x[1],1.0] };
+            vec![hit(0,x,[n[0],n[1],x[2].min(1.0)],[-n[0],-n[1],0.0]), hit(1,x,cap,[0.0,0.0,1.0])]
         };
         let bore_sdf = |x: V3| {
-            let (a, b) = (1.0 - x[0].hypot(x[1]), x[2] - 1.0);
+            let (a,b) = (1.0-x[0].hypot(x[1]),x[2]-1.0);
             a.max(0.0).hypot(b.max(0.0)) + a.max(b).min(0.0)
         };
-        for x in [[0.98, 0.0, 0.98], [1.02, 0.0, 0.98], [1.02, 0.0, 1.02]] {
-            check(&bore, &bore_sdf, x);
-        }
-        let normals = [[1.0, 0.0, 0.0], [0.1_f64.cos(), 0.1_f64.sin(), 0.0]];
-        let tangent = |x: V3| {
-            normals
-                .iter()
-                .enumerate()
-                .map(|(face, &normal)| FaceHit {
-                    face,
-                    dist: dot(x, normal),
-                    normal,
-                })
-                .collect()
-        };
-        let tangent_sdf = |x: V3| {
-            normals
-                .iter()
-                .map(|&n| dot(x, n))
-                .fold(f64::NEG_INFINITY, f64::max)
-        };
-        check(&tangent, &tangent_sdf, [0.02, 0.03, 0.0]);
-        let sphere = |x: V3| {
-            let r = norm(x);
-            vec![FaceHit {
-                face: 0,
-                dist: r - 1.0,
-                normal: x.map(|v| v / r),
-            }]
-        };
-        check(&sphere, &|x| norm(x) - 1.0, [1.02, 0.03, 0.04]);
-        let corner = |x: V3| {
-            (0..3)
-                .map(|face| FaceHit {
-                    face,
-                    dist: x[face],
-                    normal: std::array::from_fn(|k| if k == face { 1.0 } else { 0.0 }),
-                })
-                .collect()
-        };
-        check(
-            &corner,
-            &|x| x.into_iter().fold(f64::NEG_INFINITY, f64::max),
-            [0.02, 0.03, 0.04],
-        );
-        check(&concave_faces, &|_| 0.0, [0.02, 0.0, 0.03]);
+        for x in [[0.98,0.0,0.98],[1.02,0.0,0.98],[1.02,0.0,1.02]] { check(&bore, &bore_sdf, x); }
+        let normals = [[1.0,0.0,0.0], [0.1_f64.cos(),0.1_f64.sin(),0.0]];
+        let tangent = |x: V3| normals.iter().enumerate().map(|(face,&normal)| FaceHit { face, dist: dot(x,normal), normal }).collect();
+        let tangent_sdf = |x: V3| normals.iter().map(|&n|dot(x,n)).fold(f64::NEG_INFINITY,f64::max);
+        check(&tangent, &tangent_sdf, [0.02,0.03,0.0]);
+        let sphere = |x: V3| { let r=norm(x); vec![FaceHit { face:0, dist:r-1.0, normal:x.map(|v|v/r) }] };
+        check(&sphere, &|x| norm(x)-1.0, [1.02,0.03,0.04]);
+        let corner = |x: V3| (0..3).map(|face| FaceHit { face, dist:x[face], normal:std::array::from_fn(|k| if k==face {1.0} else {0.0}) }).collect();
+        check(&corner, &|x|x.into_iter().fold(f64::NEG_INFINITY,f64::max), [0.02,0.03,0.04]);
+        check(&concave_faces, &|_|0.0, [0.02,0.0,0.03]);
     }
 
     #[test]
     fn reentrant_snap_selects_the_nearest_trimmed_patch_deterministically() {
-        let reversed = |x| {
-            let mut h = concave_faces(x);
-            h.reverse();
-            h
-        };
+        let reversed = |x| { let mut h = concave_faces(x); h.reverse(); h };
         for fd in [&concave_faces as &dyn Fn(V3) -> Vec<FaceHit>, &reversed] {
             for (x, expected) in [
                 ([0.0, 0.0, 0.05], [0.0, 0.0, 0.05]),
@@ -1576,10 +1124,7 @@ mod tests {
                 ([-0.02, 0.0, -0.03], [0.0, 0.0, 0.0]),
             ] {
                 let y = snap_to_features(fd, &concave_sdf, x, 0.125, 0.275, 0.00025).unwrap();
-                assert!(
-                    norm(sub(y, expected)) < 1e-12,
-                    "{x:?} -> {y:?}, expected {expected:?}"
-                );
+                assert!(norm(sub(y, expected)) < 1e-12, "{x:?} -> {y:?}, expected {expected:?}");
                 assert!(concave_sdf(y).abs() < 1e-12);
                 let again = snap_to_features(fd, &concave_sdf, y, 0.125, 0.275, 0.00025).unwrap();
                 assert!(norm(sub(again, y)) < 1e-12);
@@ -1590,65 +1135,28 @@ mod tests {
     #[test]
     fn reentrant_sector_proof_uses_oblique_dual_directions_and_refuses_ambiguity() {
         let normals = [[1.0, 0.0, 0.0], [0.5, 0.0, 0.75_f64.sqrt()]];
-        let fd = |x: V3| {
-            normals
-                .iter()
-                .enumerate()
-                .map(|(face, &n)| {
-                    let signed_plane = dot(x, n);
-                    let mut q: V3 = std::array::from_fn(|k| x[k] - signed_plane * n[k]);
-                    if dot(q, normals[1 - face]) < 0.0 {
-                        q = [0.0, x[1], 0.0];
-                    }
-                    let offset = sub(x, q);
-                    let distance = norm(offset);
-                    let signed = if signed_plane < 0.0 {
-                        -distance
-                    } else {
-                        distance
-                    };
-                    FaceHit {
-                        face,
-                        dist: signed,
-                        normal: if distance == 0.0 {
-                            n
-                        } else {
-                            offset.map(|v| v / signed)
-                        },
-                    }
-                })
-                .collect::<Vec<_>>()
-        };
+        let fd = |x: V3| normals.iter().enumerate().map(|(face, &n)| {
+            let signed_plane = dot(x, n);
+            let mut q: V3 = std::array::from_fn(|k| x[k] - signed_plane * n[k]);
+            if dot(q, normals[1 - face]) < 0.0 { q = [0.0, x[1], 0.0]; }
+            let offset = sub(x, q);
+            let distance = norm(offset);
+            let signed = if signed_plane < 0.0 { -distance } else { distance };
+            FaceHit { face, dist: signed, normal: if distance == 0.0 { n } else { offset.map(|v| v / signed) } }
+        }).collect::<Vec<_>>();
         let sdf = |x: V3| {
-            let d = fd(x)
-                .iter()
-                .map(|h| h.dist.abs())
-                .fold(f64::INFINITY, f64::min);
-            if normals.iter().all(|&n| dot(x, n) > 0.0) {
-                d
-            } else {
-                -d
-            }
+            let d = fd(x).iter().map(|h| h.dist.abs()).fold(f64::INFINITY, f64::min);
+            if normals.iter().all(|&n| dot(x, n) > 0.0) { d } else { -d }
         };
         let x = [0.0, 0.0, 0.05];
         assert!(reentrant_edge(&fd, &sdf, [0.0; 3], [0, 1], 0.00025));
         let y = snap_to_features(&fd, &sdf, x, 0.125, 0.275, 0.00025).unwrap();
         assert!(norm(sub(x, y)) < 1e-12);
-        let reversed = |x| {
-            let mut hits = fd(x);
-            hits.reverse();
-            hits
-        };
+        let reversed = |x| { let mut hits = fd(x); hits.reverse(); hits };
         let y = snap_to_features(&reversed, &sdf, x, 0.125, 0.275, 0.00025).unwrap();
         assert!(norm(sub(x, y)) < 1e-12);
         assert!(!reentrant_edge(&fd, &|_| 0.0, [0.0; 3], [0, 1], 0.00025));
-        assert!(!reentrant_edge(
-            &fd,
-            &|_| f64::NAN,
-            [0.0; 3],
-            [0, 1],
-            0.00025
-        ));
+        assert!(!reentrant_edge(&fd, &|_| f64::NAN, [0.0; 3], [0, 1], 0.00025));
         assert!(!reentrant_edge(&fd, &sdf, [0.01; 3], [0, 1], 0.00025));
     }
 
@@ -1659,54 +1167,22 @@ mod tests {
     fn reentrant_snap_holds_where_the_two_faces_miss_each_other_by_a_tessellation_gap() {
         let gap = 1e-4;
         let faces = |x: V3, gap: f64| -> Vec<FaceHit> {
-            [
-                ([x[0].max(0.0), x[1], 0.0], [0.0, 0.0, 1.0]),
-                ([0.0, x[1], x[2].max(gap)], [1.0, 0.0, 0.0]),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(face, (q, n))| {
-                let offset = sub(x, q);
-                let distance = norm(offset);
-                let signed = if dot(offset, n) < 0.0 {
-                    -distance
-                } else {
-                    distance
-                };
-                FaceHit {
-                    face,
-                    dist: signed,
-                    normal: if distance == 0.0 {
-                        n
-                    } else {
-                        offset.map(|v| v / signed)
-                    },
-                }
-            })
-            .collect()
+            [([x[0].max(0.0), x[1], 0.0], [0.0, 0.0, 1.0]), ([0.0, x[1], x[2].max(gap)], [1.0, 0.0, 0.0])]
+                .into_iter().enumerate().map(|(face, (q, n))| {
+                    let offset = sub(x, q);
+                    let distance = norm(offset);
+                    let signed = if dot(offset, n) < 0.0 { -distance } else { distance };
+                    FaceHit { face, dist: signed, normal: if distance == 0.0 { n } else { offset.map(|v| v / signed) } }
+                }).collect()
         };
         let fd = |x: V3| faces(x, gap);
         let sdf = |x: V3| {
-            let distance = fd(x)
-                .iter()
-                .map(|h| h.dist.abs())
-                .fold(f64::INFINITY, f64::min);
-            if x[0] > 0.0 && x[2] > 0.0 {
-                distance
-            } else {
-                -distance
-            }
+            let distance = fd(x).iter().map(|h| h.dist.abs()).fold(f64::INFINITY, f64::min);
+            if x[0] > 0.0 && x[2] > 0.0 { distance } else { -distance }
         };
-        for (x, expected) in [
-            ([0.0, 0.0, 0.05], [0.0, 0.0, 0.05]),
-            ([0.02, 0.0, 0.03], [0.0, 0.0, 0.03]),
-            ([0.03, 0.0, 0.02], [0.03, 0.0, 0.0]),
-        ] {
+        for (x, expected) in [([0.0, 0.0, 0.05], [0.0, 0.0, 0.05]), ([0.02, 0.0, 0.03], [0.0, 0.0, 0.03]), ([0.03, 0.0, 0.02], [0.03, 0.0, 0.0])] {
             let y = snap_to_features(&fd, &sdf, x, 0.125, 0.275, 0.00025).unwrap();
-            assert!(
-                norm(sub(y, expected)) < 1e-12,
-                "{x:?} -> {y:?}, expected {expected:?}"
-            );
+            assert!(norm(sub(y, expected)) < 1e-12, "{x:?} -> {y:?}, expected {expected:?}");
         }
         // a gap wider than the tolerance is no seam: the edge is not proven and the wall point is still projected towards it
         let wide = |x: V3| faces(x, 0.01);
@@ -1717,10 +1193,7 @@ mod tests {
     #[test]
     fn reentrant_snap_preserves_a_point_already_on_the_wall() {
         let x = [0.0, 0.0, 0.05];
-        assert_eq!(
-            snap_to_features(&concave_faces, &concave_sdf, x, 0.125, 0.275, 0.00025),
-            Some(x)
-        );
+        assert_eq!(snap_to_features(&concave_faces, &concave_sdf, x, 0.125, 0.275, 0.00025), Some(x));
     }
 
     use super::*;
@@ -1728,17 +1201,7 @@ mod tests {
 
     #[test]
     fn pinched_sectors_keep_the_largest_fan() {
-        let p = [
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [1.0, 0.0, 0.5],
-            [1.0, 1.0, 0.5],
-            [-1.0, 0.0, 0.5],
-            [-2.0, -2.0, 0.5],
-            [0.0, 3.0, 3.0],
-            [1.0, 3.0, 3.0],
-            [0.0, 4.0, 3.0],
-        ];
+        let p = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.5], [1.0, 1.0, 0.5], [-1.0, 0.0, 0.5], [-2.0, -2.0, 0.5], [0.0, 3.0, 3.0], [1.0, 3.0, 3.0], [0.0, 4.0, 3.0]];
         // two sectors meeting only along the edge 0-1: the larger (cell 1) survives
         let mut cells = vec![[0, 1, 2, 3], [0, 1, 4, 5]];
         assert_eq!(drop_pinched_sectors(&p, &mut cells), 1);
@@ -1761,45 +1224,18 @@ mod tests {
                 let scale = 2_f64.powi(-10);
                 let small = 2_f64.powi(-63);
                 let values = [[scale, small, small], [scale, 0.0, small]];
-                let mut hits: Vec<_> = (0..2)
-                    .map(|face| FaceHit {
-                        face,
-                        dist: if tie {
-                            0.0
-                        } else {
-                            values[face][p[0] as usize]
-                        },
-                        normal: [0.0, 0.0, 1.0],
-                    })
-                    .collect();
-                if p[0] == 0.0 {
-                    hits.reverse();
-                }
+                let mut hits: Vec<_> = (0..2).map(|face| FaceHit {
+                    face, dist: if tie { 0.0 } else { values[face][p[0] as usize] }, normal: [0.0, 0.0, 1.0],
+                }).collect();
+                if p[0] == 0.0 { hits.reverse(); }
                 hits
             };
             let sdf = |p: V3| p[2];
             let size = |_: V3| 1.0;
             let face = |_: V3| 0;
-            let solid = Solid {
-                lo: [-2.0; 3],
-                hi: [2.0; 3],
-                sdf: &sdf,
-                size: &size,
-                face_of: &face,
-                face_dists: Some(&fd),
-            };
-            for order in [
-                [0, 1, 2],
-                [0, 2, 1],
-                [1, 0, 2],
-                [1, 2, 0],
-                [2, 0, 1],
-                [2, 1, 0],
-            ] {
-                assert_eq!(
-                    face_of_triangle(&solid, order.map(|i| vertices[i]), 0.25),
-                    usize::from(!tie)
-                );
+            let solid = Solid { lo: [-2.0; 3], hi: [2.0; 3], sdf: &sdf, size: &size, face_of: &face, face_dists: Some(&fd) };
+            for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+                assert_eq!(face_of_triangle(&solid, order.map(|i| vertices[i]), 0.25), usize::from(!tie));
             }
         }
     }
@@ -1808,58 +1244,23 @@ mod tests {
     fn common_vertex_face_tags_do_not_follow_a_nearer_centroid_patch() {
         let fd = |p: V3| {
             let r = p[0].hypot(p[1]);
-            let direction = if r > 0.0 {
-                [p[0] / r, p[1] / r]
-            } else {
-                [1.0, 0.0]
-            };
-            [(0, r.max(0.5)), (1, r.min(0.5))]
-                .map(|(face, radius)| {
-                    let off = [
-                        p[0] - radius * direction[0],
-                        p[1] - radius * direction[1],
-                        p[2],
-                    ];
-                    let d = (off[0].powi(2) + off[1].powi(2) + off[2].powi(2)).sqrt();
-                    let side = if p[2] < 0.0 { -1.0 } else { 1.0 };
-                    FaceHit {
-                        face,
-                        dist: side * d,
-                        normal: if d > 1e-12 {
-                            off.map(|x| side * x / d)
-                        } else {
-                            [0.0, 0.0, 1.0]
-                        },
-                    }
-                })
-                .to_vec()
+            let direction = if r > 0.0 { [p[0] / r, p[1] / r] } else { [1.0, 0.0] };
+            [(0, r.max(0.5)), (1, r.min(0.5))].map(|(face, radius)| {
+                let off = [p[0] - radius * direction[0], p[1] - radius * direction[1], p[2]];
+                let d = (off[0].powi(2) + off[1].powi(2) + off[2].powi(2)).sqrt();
+                let side = if p[2] < 0.0 { -1.0 } else { 1.0 };
+                FaceHit { face, dist: side * d, normal: if d > 1e-12 { off.map(|x| side * x / d) } else { [0.0, 0.0, 1.0] } }
+            }).to_vec()
         };
         let sdf = |p: V3| p[2];
         let size = |_: V3| 1.0;
         let face = |p: V3| usize::from(p[0].hypot(p[1]) < 0.5);
-        let solid = Solid {
-            lo: [-2.0; 3],
-            hi: [2.0; 3],
-            sdf: &sdf,
-            size: &size,
-            face_of: &face,
-            face_dists: Some(&fd),
-        };
+        let solid = Solid { lo: [-2.0; 3], hi: [2.0; 3], sdf: &sdf, size: &size, face_of: &face, face_dists: Some(&fd) };
         let vertices = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]];
         let centre = [0.0, -1.0 / 3.0, 0.0];
         assert_eq!(face(centre), 1);
-        for order in [
-            [0, 1, 2],
-            [0, 2, 1],
-            [1, 0, 2],
-            [1, 2, 0],
-            [2, 0, 1],
-            [2, 1, 0],
-        ] {
-            assert_eq!(
-                face_of_triangle(&solid, order.map(|i| vertices[i]), 0.25),
-                0
-            );
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            assert_eq!(face_of_triangle(&solid, order.map(|i| vertices[i]), 0.25), 0);
         }
         let fallback = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         assert_eq!(face_of_triangle(&solid, fallback, 0.25), 1);
@@ -1876,26 +1277,9 @@ mod tests {
             assert_eq!(p[1], 1.0 / 3.0);
             1
         };
-        let solid = Solid {
-            lo: [-1e16; 3],
-            hi: [1e16; 3],
-            sdf: &sdf,
-            size: &size,
-            face_of: &face,
-            face_dists: Some(&fd),
-        };
-        for order in [
-            [0, 1, 2],
-            [0, 2, 1],
-            [1, 0, 2],
-            [1, 2, 0],
-            [2, 0, 1],
-            [2, 1, 0],
-        ] {
-            assert_eq!(
-                face_of_triangle(&solid, order.map(|i| vertices[i]), 0.25),
-                1
-            );
+        let solid = Solid { lo: [-1e16; 3], hi: [1e16; 3], sdf: &sdf, size: &size, face_of: &face, face_dists: Some(&fd) };
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            assert_eq!(face_of_triangle(&solid, order.map(|i| vertices[i]), 0.25), 1);
         }
     }
 
@@ -1906,9 +1290,7 @@ mod tests {
         let corners: [V3; 4] = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
         let mut s = 99u64;
         let mut next = || {
-            s = s
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             ((s >> 33) as f64) / (1u64 << 30) as f64 - 1.
         };
         let mut checked = 0;
@@ -1936,34 +1318,18 @@ mod tests {
                         }
                     }
                 }
-                let det = j[0][0] * (j[1][1] * j[2][2] - j[1][2] * j[2][1])
-                    - j[0][1] * (j[1][0] * j[2][2] - j[1][2] * j[2][0])
-                    + j[0][2] * (j[1][0] * j[2][1] - j[1][1] * j[2][0]);
+                let det = j[0][0] * (j[1][1] * j[2][2] - j[1][2] * j[2][1]) - j[0][1] * (j[1][0] * j[2][2] - j[1][2] * j[2][0]) + j[0][2] * (j[1][0] * j[2][1] - j[1][1] * j[2][0]);
                 det >= 0.1
             });
-            let proved = simplex_validity(ElementKind::Tet10, &nodes, 6)
-                .unwrap()
-                .verdict;
+            let proved = simplex_validity(ElementKind::Tet10, &nodes, 6).unwrap().verdict;
             if sampled && proved == Verdict::Invalid {
-                assert!(
-                    !tet10_ok(&mesh, &ids),
-                    "the rigorous check must refuse a folded element"
-                );
+                assert!(!tet10_ok(&mesh, &ids), "the rigorous check must refuse a folded element");
                 checked += 1;
             }
             if proved == Verdict::Valid && sampled {
-                assert!(
-                    tet10_ok(&mesh, &ids)
-                        || simplex_validity(ElementKind::Tet10, &nodes, 5)
-                            .unwrap()
-                            .verdict
-                            != Verdict::Valid
-                );
+                assert!(tet10_ok(&mesh, &ids) || simplex_validity(ElementKind::Tet10, &nodes, 5).unwrap().verdict != Verdict::Valid);
             }
         }
-        assert!(
-            checked >= 3,
-            "the search must find sample-blind elements: {checked}"
-        );
+        assert!(checked >= 3, "the search must find sample-blind elements: {checked}");
     }
 }

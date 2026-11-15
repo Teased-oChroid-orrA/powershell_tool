@@ -341,13 +341,9 @@ impl<'a> Bulk<'a> {
                     // and the cell across it (if any) now has a hull face there
                     degenerate = true;
                     if m != NONE {
-                        let lk = self.slots[m]
-                            .n
-                            .iter()
-                            .position(|&x| x == c)
-                            .ok_or_else(|| {
-                                MeshError::NonConforming("asymmetric tetrahedron adjacency".into())
-                            })?;
+                        let lk = self.slots[m].n.iter().position(|&x| x == c).ok_or_else(|| {
+                            MeshError::NonConforming("asymmetric tetrahedron adjacency".into())
+                        })?;
                         detached.push((m, lk));
                     }
                     continue;
@@ -355,26 +351,16 @@ impl<'a> Bulk<'a> {
                 if m == NONE {
                     // a hull face of a removed cell: the new hull keeps it unless the point sees it
                     if o == Ordering::Less {
-                        cones.push(Cone {
-                            face: f,
-                            outside: None,
-                        });
+                        cones.push(Cone { face: f, outside: None });
                     }
                     continue;
                 }
                 // the face as listed by its lower-numbered owner, as the full rebuild does
-                let lk = self.slots[m]
-                    .n
-                    .iter()
-                    .position(|&x| x == c)
-                    .ok_or_else(|| {
-                        MeshError::NonConforming("asymmetric tetrahedron adjacency".into())
-                    })?;
+                let lk = self.slots[m].n.iter().position(|&x| x == c).ok_or_else(|| {
+                    MeshError::NonConforming("asymmetric tetrahedron adjacency".into())
+                })?;
                 let face = if c < m { f } else { faces(self.slots[m].v)[lk] };
-                cones.push(Cone {
-                    face,
-                    outside: Some((m, lk)),
-                });
+                cones.push(Cone { face, outside: Some((m, lk)) });
             }
         }
         if outside {
@@ -386,10 +372,7 @@ impl<'a> Bulk<'a> {
                 if orientation(self.points[f[0]], self.points[f[1]], self.points[f[2]], p)?
                     == Ordering::Greater
                 {
-                    cones.push(Cone {
-                        face: f,
-                        outside: Some((c, k)),
-                    });
+                    cones.push(Cone { face: f, outside: Some((c, k)) });
                 }
             }
         }
@@ -447,8 +430,7 @@ impl<'a> Bulk<'a> {
         }
         self.alive = self.alive - cavity.len() + fresh.len();
         let slots = &self.slots;
-        self.hull
-            .retain(|&(c, k)| slots[c].alive && slots[c].n[k] == NONE);
+        self.hull.retain(|&(c, k)| slots[c].alive && slots[c].n[k] == NONE);
         for (i, s) in fresh.iter().enumerate() {
             for k in 0..4 {
                 if s.n[k] == NONE {
@@ -659,17 +641,12 @@ mod tests {
             })
             .unwrap();
         let d = (2..input.len())
-            .find(|&i| {
-                orientation(input[0], input[1], input[c], input[i]).unwrap() != Ordering::Equal
-            })
+            .find(|&i| orientation(input[0], input[1], input[c], input[i]).unwrap() != Ordering::Equal)
             .unwrap();
         [0, 1, c, d]
     }
     fn both(input: &[Point]) -> (TetTopology, TetTopology, usize) {
-        let limits = Limits {
-            max_points: 100_000,
-            max_cells: 1_000_000,
-        };
+        let limits = Limits { max_points: 100_000, max_cells: 1_000_000 };
         let seed = seed_of(input);
         let start = TetTopology::new(input.to_vec(), vec![seed], limits.max_cells).unwrap();
         let mut reference = start.clone();
@@ -682,16 +659,10 @@ mod tests {
             reference = insert_index(input, &reference, index, limits.max_cells).unwrap();
             if !bulk.insert(index).unwrap() {
                 fallbacks += 1;
-                let next =
-                    insert_index(input, &bulk.to_topology().unwrap(), index, limits.max_cells)
-                        .unwrap();
+                let next = insert_index(input, &bulk.to_topology().unwrap(), index, limits.max_cells).unwrap();
                 bulk = Bulk::from_topology(input, &next, limits.max_cells);
             }
-            assert_eq!(
-                bulk.to_topology().unwrap(),
-                reference,
-                "diverged after point {index}"
-            );
+            assert_eq!(bulk.to_topology().unwrap(), reference, "diverged after point {index}");
         }
         (bulk.to_topology().unwrap(), reference, fallbacks)
     }
@@ -699,21 +670,14 @@ mod tests {
     fn bulk_insertion_equals_the_full_rebuild() {
         let mut state = 99u64;
         let mut next = move || {
-            state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             (state >> 11) as f64 / (1u64 << 53) as f64
         };
         // random cloud in arbitrary order: the hull grows on most insertions
-        let cloud: Vec<Point> = (0..120)
-            .map(|_| std::array::from_fn(|_| next() * 2. - 1.))
-            .collect();
+        let cloud: Vec<Point> = (0..120).map(|_| std::array::from_fn(|_| next() * 2. - 1.)).collect();
         let (a, b, fallbacks) = both(&cloud);
         assert_eq!(a, b);
-        assert!(
-            fallbacks < 10,
-            "the local path should handle generic clouds, fell back {fallbacks} times"
-        );
+        assert!(fallbacks < 10, "the local path should handle generic clouds, fell back {fallbacks} times");
         // cospherical lattice, scrambled: ties everywhere, coplanar hull faces
         let mut lattice: Vec<Point> = Vec::new();
         for x in 0..4 {

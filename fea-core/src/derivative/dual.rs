@@ -94,10 +94,7 @@ impl<T: Scalar, const N: usize> Neg for Dual<T, N> {
 
 impl<T: Scalar, const N: usize> Scalar for Dual<T, N> {
     fn cst(v: f64) -> Self {
-        Self {
-            v: T::cst(v),
-            d: [T::cst(0.0); N],
-        }
+        Self { v: T::cst(v), d: [T::cst(0.0); N] }
     }
     fn value(&self) -> f64 {
         self.v.value()

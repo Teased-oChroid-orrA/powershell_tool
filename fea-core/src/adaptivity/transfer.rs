@@ -23,20 +23,10 @@ pub struct Transferred {
 
 pub trait StateTransferOperator {
     /// Displacements of `old` (solved as `from`) on the nodes of `to`.
-    fn transfer(
-        &self,
-        old: &Model,
-        from: &SolverSnapshot,
-        to: &Mesh,
-    ) -> Result<Transferred, MeshError>;
+    fn transfer(&self, old: &Model, from: &SolverSnapshot, to: &Mesh) -> Result<Transferred, MeshError>;
 
     /// Nonlinear history from `old` to `to`. Refused by default.
-    fn transfer_history(
-        &self,
-        _old: &Model,
-        _state: &NlState,
-        _to: &Mesh,
-    ) -> Result<NlState, MeshError> {
+    fn transfer_history(&self, _old: &Model, _state: &NlState, _to: &Mesh) -> Result<NlState, MeshError> {
         Err(MeshError::Unsupported("history-variable transfer between meshes (restart the nonlinear solve from the virgin state)".into()))
     }
 }
@@ -51,28 +41,17 @@ pub struct NodalInterpolation {
 
 impl Default for NodalInterpolation {
     fn default() -> Self {
-        Self {
-            max_unlocated_fraction: 0.0,
-        }
+        Self { max_unlocated_fraction: 0.0 }
     }
 }
 
 impl StateTransferOperator for NodalInterpolation {
-    fn transfer(
-        &self,
-        old: &Model,
-        from: &SolverSnapshot,
-        to: &Mesh,
-    ) -> Result<Transferred, MeshError> {
+    fn transfer(&self, old: &Model, from: &SolverSnapshot, to: &Mesh) -> Result<Transferred, MeshError> {
         if !from.matches(&old.mesh) {
-            return Err(MeshError::Failed(
-                "the snapshot was not computed on this mesh".into(),
-            ));
+            return Err(MeshError::Failed("the snapshot was not computed on this mesh".into()));
         }
         if to.dim() != old.mesh.dim() {
-            return Err(MeshError::Failed(
-                "the meshes have different dimensions".into(),
-            ));
+            return Err(MeshError::Failed("the meshes have different dimensions".into()));
         }
         let d = to.dim();
         let loc = old.locator();
@@ -94,19 +73,10 @@ impl StateTransferOperator for NodalInterpolation {
             }
         }
         if unlocated.len() as f64 > self.max_unlocated_fraction * to.nodes.len() as f64 {
-            return Err(MeshError::Failed(format!(
-                "{} of {} new nodes lie outside the old mesh",
-                unlocated.len(),
-                to.nodes.len()
-            )));
+            return Err(MeshError::Failed(format!("{} of {} new nodes lie outside the old mesh", unlocated.len(), to.nodes.len())));
         }
-        let snapshot =
-            SolverSnapshot::new(to, u, from.delta_t, &format!("{} transferred", from.label))
-                .map_err(MeshError::Failed)?;
-        Ok(Transferred {
-            snapshot,
-            unlocated,
-        })
+        let snapshot = SolverSnapshot::new(to, u, from.delta_t, &format!("{} transferred", from.label)).map_err(MeshError::Failed)?;
+        Ok(Transferred { snapshot, unlocated })
     }
 }
 
@@ -118,17 +88,7 @@ mod tests {
     use crate::mesh::{Elastic, Physics};
 
     fn model(kind: ElementKind, n: usize) -> Model {
-        Model::new(
-            grid(
-                Physics::PlaneStress { thickness: 1.0 },
-                kind,
-                Elastic::new(1.0, 0.3),
-                [n, n, 1],
-                &|p| [2.0 * p[0], p[1], 0.0],
-            )
-            .unwrap(),
-        )
-        .unwrap()
+        Model::new(grid(Physics::PlaneStress { thickness: 1.0 }, kind, Elastic::new(1.0, 0.3), [n, n, 1], &|p| [2.0 * p[0], p[1], 0.0]).unwrap()).unwrap()
     }
 
     fn field(mesh: &Mesh, f: impl Fn(&[f64; 3]) -> [f64; 2]) -> Vec<f64> {
@@ -137,37 +97,16 @@ mod tests {
 
     #[test]
     fn affine_and_quadratic_fields_transfer_exactly() {
-        let affine = |x: &[f64; 3]| {
-            [
-                0.3 + 1.5 * x[0] - 0.7 * x[1],
-                -2.0 + 0.1 * x[0] + 4.0 * x[1],
-            ]
-        };
+        let affine = |x: &[f64; 3]| [0.3 + 1.5 * x[0] - 0.7 * x[1], -2.0 + 0.1 * x[0] + 4.0 * x[1]];
         let quad = |x: &[f64; 3]| [x[0] * x[0] + 3.0 * x[0] * x[1], x[1] * x[1] - x[0]];
-        for (kind, f, exact) in [
-            (
-                ElementKind::Quad4,
-                &affine as &dyn Fn(&[f64; 3]) -> [f64; 2],
-                "affine",
-            ),
-            (ElementKind::Quad8, &quad, "quadratic"),
-            (ElementKind::Tri6, &quad, "quadratic"),
-        ] {
+        for (kind, f, exact) in [(ElementKind::Quad4, &affine as &dyn Fn(&[f64; 3]) -> [f64; 2], "affine"), (ElementKind::Quad8, &quad, "quadratic"), (ElementKind::Tri6, &quad, "quadratic")] {
             let old = model(kind, 3);
             let snap = SolverSnapshot::new(&old.mesh, field(&old.mesh, f), 0.0, "old").unwrap();
             let new = model(ElementKind::Quad4, 7).mesh;
-            let t = NodalInterpolation::default()
-                .transfer(&old, &snap, &new)
-                .unwrap();
+            let t = NodalInterpolation::default().transfer(&old, &snap, &new).unwrap();
             assert!(t.unlocated.is_empty());
             let want = field(&new, f);
-            let err = t
-                .snapshot
-                .u
-                .iter()
-                .zip(&want)
-                .map(|(a, b)| (a - b).abs())
-                .fold(0.0, f64::max);
+            let err = t.snapshot.u.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
             assert!(err < 1e-12, "{kind:?} {exact}: {err:e}");
             assert!(t.snapshot.matches(&new));
         }
@@ -176,18 +115,11 @@ mod tests {
     #[test]
     fn a_node_outside_the_old_mesh_fails_the_transfer() {
         let old = model(ElementKind::Quad4, 2);
-        let snap =
-            SolverSnapshot::new(&old.mesh, vec![0.0; old.mesh.n_dofs()], 0.0, "old").unwrap();
+        let snap = SolverSnapshot::new(&old.mesh, vec![0.0; old.mesh.n_dofs()], 0.0, "old").unwrap();
         let mut new = model(ElementKind::Quad4, 2).mesh;
         new.nodes[0][0] = -3.0;
-        assert!(NodalInterpolation::default()
-            .transfer(&old, &snap, &new)
-            .is_err());
-        let lenient = NodalInterpolation {
-            max_unlocated_fraction: 0.2,
-        }
-        .transfer(&old, &snap, &new)
-        .unwrap();
+        assert!(NodalInterpolation::default().transfer(&old, &snap, &new).is_err());
+        let lenient = NodalInterpolation { max_unlocated_fraction: 0.2 }.transfer(&old, &snap, &new).unwrap();
         assert_eq!(lenient.unlocated, vec![0]);
     }
 
@@ -200,18 +132,13 @@ mod tests {
         assert!(SolverSnapshot::new(&m.mesh, bad, 0.0, "x").is_err());
         let snap = SolverSnapshot::new(&m.mesh, vec![0.0; m.mesh.n_dofs()], 0.0, "x").unwrap();
         let other = model(ElementKind::Quad4, 3);
-        assert!(NodalInterpolation::default()
-            .transfer(&other, &snap, &m.mesh)
-            .is_err());
+        assert!(NodalInterpolation::default().transfer(&other, &snap, &m.mesh).is_err());
     }
 
     #[test]
     fn history_transfer_is_refused_not_faked() {
         let m = model(ElementKind::Quad4, 2);
         let st = NlState::new(&m.mesh);
-        assert!(matches!(
-            NodalInterpolation::default().transfer_history(&m, &st, &m.mesh),
-            Err(MeshError::Unsupported(_))
-        ));
+        assert!(matches!(NodalInterpolation::default().transfer_history(&m, &st, &m.mesh), Err(MeshError::Unsupported(_))));
     }
 }

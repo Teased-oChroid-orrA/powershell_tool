@@ -48,27 +48,11 @@ fn children(kind: ElementKind) -> Vec<Vec<V2>> {
     if kind.is_simplex() {
         let (v0, v1, v2) = ([0.0, 0.0], [1.0, 0.0], [0.0, 1.0]);
         let (m01, m12, m20) = (mid(v0, v1), mid(v1, v2), mid(v2, v0));
-        vec![
-            vec![v0, m01, m20],
-            vec![m01, v1, m12],
-            vec![m20, m12, v2],
-            vec![m01, m12, m20],
-        ]
+        vec![vec![v0, m01, m20], vec![m01, v1, m12], vec![m20, m12, v2], vec![m01, m12, m20]]
     } else {
         let (v0, v1, v2, v3) = ([-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]);
-        let (m01, m12, m23, m30, c) = (
-            mid(v0, v1),
-            mid(v1, v2),
-            mid(v2, v3),
-            mid(v3, v0),
-            [0.0, 0.0],
-        );
-        vec![
-            vec![v0, m01, c, m30],
-            vec![m01, v1, m12, c],
-            vec![c, m12, v2, m23],
-            vec![m30, c, m23, v3],
-        ]
+        let (m01, m12, m23, m30, c) = (mid(v0, v1), mid(v1, v2), mid(v2, v3), mid(v3, v0), [0.0, 0.0]);
+        vec![vec![v0, m01, c, m30], vec![m01, v1, m12, c], vec![c, m12, v2, m23], vec![m30, c, m23, v3]]
     }
 }
 
@@ -81,10 +65,7 @@ fn child_nodes(kind: ElementKind, corners: &[V2]) -> Vec<V2> {
             v.push(mid(corners[k], corners[(k + 1) % nc]));
         }
         if kind == ElementKind::Quad9 {
-            let c = [
-                corners.iter().map(|p| p[0]).sum::<f64>() / 4.0,
-                corners.iter().map(|p| p[1]).sum::<f64>() / 4.0,
-            ];
+            let c = [corners.iter().map(|p| p[0]).sum::<f64>() / 4.0, corners.iter().map(|p| p[1]).sum::<f64>() / 4.0];
             v.push(c);
         }
     }
@@ -94,19 +75,9 @@ fn child_nodes(kind: ElementKind, corners: &[V2]) -> Vec<V2> {
 /// Uniform refinement of a 2D mesh of triangles and quadrilaterals.
 pub fn refine_uniform_2d(mesh: &Mesh) -> Result<Refined, MeshError> {
     if mesh.dim() != 2 {
-        return Err(MeshError::Unsupported(
-            "uniform refinement for the enriched dual is implemented for 2D meshes".into(),
-        ));
+        return Err(MeshError::Unsupported("uniform refinement for the enriched dual is implemented for 2D meshes".into()));
     }
-    let (lo, hi) =
-        mesh.nodes
-            .iter()
-            .fold(([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]), |(l, h), x| {
-                (
-                    [l[0].min(x[0]), l[1].min(x[1])],
-                    [h[0].max(x[0]), h[1].max(x[1])],
-                )
-            });
+    let (lo, hi) = mesh.nodes.iter().fold(([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]), |(l, h), x| ([l[0].min(x[0]), l[1].min(x[1])], [h[0].max(x[0]), h[1].max(x[1])]));
     let diag = (hi[0] - lo[0]).hypot(hi[1] - lo[1]).max(1e-300);
     // the welder over the node list, coarse nodes first (they keep their indices)
     let mut welder = NodeWelder::new(1e-10 * diag);
@@ -125,18 +96,8 @@ pub fn refine_uniform_2d(mesh: &Mesh) -> Result<Refined, MeshError> {
     let mut parent_of_elem: Vec<usize> = Vec::new();
     let mut global = 0usize;
     for blk in &mesh.blocks {
-        if !matches!(
-            blk.kind,
-            ElementKind::Tri3
-                | ElementKind::Tri6
-                | ElementKind::Quad4
-                | ElementKind::Quad8
-                | ElementKind::Quad9
-        ) {
-            return Err(MeshError::Unsupported(format!(
-                "{:?} elements cannot be refined for the enriched dual",
-                blk.kind
-            )));
+        if !matches!(blk.kind, ElementKind::Tri3 | ElementKind::Tri6 | ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9) {
+            return Err(MeshError::Unsupported(format!("{:?} elements cannot be refined for the enriched dual", blk.kind)));
         }
         let kids = children(blk.kind);
         let mut conn: Vec<usize> = Vec::with_capacity(blk.n_elems() * 4 * blk.kind.n_nodes());
@@ -169,15 +130,7 @@ pub fn refine_uniform_2d(mesh: &Mesh) -> Result<Refined, MeshError> {
             }
             global += 1;
         }
-        blocks.push(Block {
-            kind: blk.kind,
-            conn,
-            material: blk.material,
-            name: blk.name.clone(),
-            plasticity: blk.plasticity,
-            density: blk.density,
-            thermal: blk.thermal.clone(),
-        });
+        blocks.push(Block { kind: blk.kind, conn, material: blk.material, name: blk.name.clone(), plasticity: blk.plasticity, density: blk.density, thermal: blk.thermal.clone() });
     }
     // coarse nodes: place them by their own parent (the first element that contains them)
     let mut g = 0usize;
@@ -205,13 +158,7 @@ pub fn refine_uniform_2d(mesh: &Mesh) -> Result<Refined, MeshError> {
     // The coarse nodes keep their indices on the fine mesh, so a node-set goal (`GoalSpec::mean_displacement`, `reaction`) means the
     // same nodes on both meshes; without the sets such a goal could not be built on the enriched dual ("no node set").
     fine.node_sets = mesh.node_sets.clone();
-    Ok(Refined {
-        mesh: fine,
-        parent_of_elem,
-        origin,
-        parents_of_node,
-        n_coarse_nodes: n_coarse,
-    })
+    Ok(Refined { mesh: fine, parent_of_elem, origin, parents_of_node, n_coarse_nodes: n_coarse })
 }
 
 impl Refined {
@@ -246,10 +193,7 @@ impl Refined {
 
 /// Constraints and loads of the coarse problem on the refined mesh. A fine node is fixed in a component when it is a fixed
 /// coarse node, or when it lies on a coarse element edge whose both ends are fixed in that component.
-fn refined_problem(
-    ctx: &EstimatorContext,
-    rf: &Refined,
-) -> Result<(Model, Loads, Dirichlet), MeshError> {
+fn refined_problem(ctx: &EstimatorContext, rf: &Refined) -> Result<(Model, Loads, Dirichlet), MeshError> {
     let coarse = &ctx.model.mesh;
     let d = coarse.dim();
     let model = Model::new(rf.mesh.clone()).map_err(MeshError::Failed)?;
@@ -285,10 +229,7 @@ fn refined_problem(
                 for c in 0..d {
                     if ctx.bc.fixed[conn[k] * d + c] && ctx.bc.fixed[conn[(k + 1) % nc] * d + c] {
                         // the prescribed value along the edge is the coarse interpolation of the end values
-                        let v = ctx.bc.value[conn[k] * d + c]
-                            + (ctx.bc.value[conn[(k + 1) % nc] * d + c]
-                                - ctx.bc.value[conn[k] * d + c])
-                                * (dotp / l2).clamp(0.0, 1.0);
+                        let v = ctx.bc.value[conn[k] * d + c] + (ctx.bc.value[conn[(k + 1) % nc] * d + c] - ctx.bc.value[conn[k] * d + c]) * (dotp / l2).clamp(0.0, 1.0);
                         bc.fix(i, c, v);
                     }
                 }
@@ -297,14 +238,7 @@ fn refined_problem(
     }
     // loads: a face splits into two; the nodes are found by position on the coarse face curve
     let find = {
-        let mut w = NodeWelder::new(
-            1e-10
-                * rf.mesh
-                    .nodes
-                    .iter()
-                    .fold(0.0f64, |m, x| m.max(x[0].abs()).max(x[1].abs()))
-                    .max(1.0),
-        );
+        let mut w = NodeWelder::new(1e-10 * rf.mesh.nodes.iter().fold(0.0f64, |m, x| m.max(x[0].abs()).max(x[1].abs())).max(1.0));
         let mut scratch: Vec<[f64; 3]> = Vec::new();
         for x in &rf.mesh.nodes {
             w.node(&mut scratch, *x);
@@ -318,25 +252,13 @@ fn refined_problem(
                 [a[0] + s * (b[0] - a[0]), a[1] + s * (b[1] - a[1]), 0.0]
             } else {
                 // quadratic edge through the end nodes and the midside node (VTK order: ends, then the middle)
-                let (a, b, m) = (
-                    coarse.nodes[face[0]],
-                    coarse.nodes[face[1]],
-                    coarse.nodes[face[2]],
-                );
+                let (a, b, m) = (coarse.nodes[face[0]], coarse.nodes[face[1]], coarse.nodes[face[2]]);
                 let t = 2.0 * s - 1.0;
                 let (na, nb, nm) = (0.5 * t * (t - 1.0), 0.5 * t * (t + 1.0), 1.0 - t * t);
-                [
-                    na * a[0] + nb * b[0] + nm * m[0],
-                    na * a[1] + nb * b[1] + nm * m[1],
-                    0.0,
-                ]
+                [na * a[0] + nb * b[0] + nm * m[0], na * a[1] + nb * b[1] + nm * m[1], 0.0]
             }
         };
-        let id = |s: f64| {
-            find(pos(s)).ok_or_else(|| {
-                MeshError::Failed("a loaded face has no counterpart on the refined mesh".into())
-            })
-        };
+        let id = |s: f64| find(pos(s)).ok_or_else(|| MeshError::Failed("a loaded face has no counterpart on the refined mesh".into()));
         if face.len() == 2 {
             let m = id(0.5)?;
             Ok([vec![face[0], m], vec![m, face[1]]])
@@ -345,13 +267,7 @@ fn refined_problem(
             Ok([vec![face[0], m, q1], vec![m, face[1], q2]])
         }
     };
-    let mut fine_loads = Loads {
-        body: ctx.loads.body,
-        block_body: ctx.loads.block_body.clone(),
-        delta_t: ctx.loads.delta_t,
-        nodal: ctx.loads.nodal.clone(),
-        ..Default::default()
-    };
+    let mut fine_loads = Loads { body: ctx.loads.body, block_body: ctx.loads.block_body.clone(), delta_t: ctx.loads.delta_t, nodal: ctx.loads.nodal.clone(), ..Default::default() };
     for (face, load) in &ctx.loads.faces {
         for half in face_halves(face)? {
             fine_loads.faces.push((half, *load));
@@ -363,42 +279,25 @@ fn refined_problem(
         }
     }
     if !ctx.loads.field_faces.is_empty() {
-        return Err(MeshError::Unsupported(
-            "position-dependent boundary force fields".into(),
-        ));
+        return Err(MeshError::Unsupported("position-dependent boundary force fields".into()));
     }
     Ok((model, fine_loads, bc))
 }
 
 /// Rebuilds a goal on another mesh (the builder of a [`super::controller::GoalSpec`]).
-pub type Builder<'a> =
-    &'a (dyn Fn(&Model, &Loads) -> Result<LinearFunctional, MeshError> + Send + Sync);
+pub type Builder<'a> = &'a (dyn Fn(&Model, &Loads) -> Result<LinearFunctional, MeshError> + Send + Sync);
 
 /// Goal-oriented estimator with an h-enriched dual. `goals` are builders: the goal is rebuilt on the fine mesh.
 pub struct EnrichedDwrEstimator;
 
 impl EnrichedDwrEstimator {
     /// Estimate the error of each goal; `coarse_goals[k]` is the goal on the coarse mesh and `builders[k]` rebuilds it.
-    pub fn estimate_goals(
-        &self,
-        ctx: &EstimatorContext,
-        coarse_goals: &[&LinearFunctional],
-        builders: &[Builder],
-    ) -> Result<Vec<DwrResult>, MeshError> {
+    pub fn estimate_goals(&self, ctx: &EstimatorContext, coarse_goals: &[&LinearFunctional], builders: &[Builder]) -> Result<Vec<DwrResult>, MeshError> {
         let t0 = Instant::now();
         let name = |g: &LinearFunctional| format!("edwr:{}", g.name);
         let plastic = ctx.model.mesh.blocks.iter().any(|b| b.plasticity.is_some());
         let unsupported = |why: &str| -> Vec<DwrResult> {
-            coarse_goals
-                .iter()
-                .map(|g| DwrResult {
-                    goal: g.name.clone(),
-                    value: g.value(ctx.u),
-                    estimated_error: 0.0,
-                    corrected: g.value(ctx.u),
-                    field: ErrorField::unsupported(&name(g), why, ctx.n_elems()),
-                })
-                .collect()
+            coarse_goals.iter().map(|g| DwrResult { goal: g.name.clone(), value: g.value(ctx.u), estimated_error: 0.0, corrected: g.value(ctx.u), field: ErrorField::unsupported(&name(g), why, ctx.n_elems()) }).collect()
         };
         if plastic {
             return Ok(unsupported("plastic blocks need the nonlinear adjoint"));
@@ -420,23 +319,9 @@ impl EnrichedDwrEstimator {
         // fine system, one factorisation for the residual and every dual
         fmodel.check_constrained(&fbc).map_err(MeshError::Failed)?;
         let k = fmodel.assemble().map_err(MeshError::Failed)?;
-        let red = Reduced::with_ordering(
-            &fmodel.pattern,
-            &fbc,
-            Some(&fmodel.mesh.nodes),
-            Ordering::Auto,
-        )
-        .map_err(|e| MeshError::Failed(e.to_string()))?;
+        let red = Reduced::with_ordering(&fmodel.pattern, &fbc, Some(&fmodel.mesh.nodes), Ordering::Auto).map_err(|e| MeshError::Failed(e.to_string()))?;
         let free: Vec<usize> = red.free_dofs().iter().map(|&x| x as usize).collect();
-        let solver = crate::derivative::linalg::TangentSolver::new(
-            &red,
-            &fmodel.pattern,
-            &k,
-            fmodel.mesh.n_dofs(),
-            &free,
-            &[],
-        )
-        .map_err(|e| MeshError::Failed(e.to_string()))?;
+        let solver = crate::derivative::linalg::TangentSolver::new(&red, &fmodel.pattern, &k, fmodel.mesh.n_dofs(), &free, &[]).map_err(|e| MeshError::Failed(e.to_string()))?;
         let f = loads::assemble(&fmodel.mesh, &floads).map_err(MeshError::Failed)?;
         // the coarse solution on the fine mesh, with the prescribed values on the constrained dofs
         let u_fine = rf.prolong(&ctx.model.mesh, ctx.u);
@@ -475,35 +360,13 @@ impl EnrichedDwrEstimator {
             let value = goal.value(ctx.u);
             let mut reliability = Reliability::Reliable;
             if coarse_dual.residual > 1e-6 {
-                reliability = Reliability::Failed(format!(
-                    "the coarse dual solve left a relative residual of {:.2e}",
-                    coarse_dual.residual
-                ));
+                reliability = Reliability::Failed(format!("the coarse dual solve left a relative residual of {:.2e}", coarse_dual.residual));
             } else if !goal.regularised {
-                reliability = Reliability::Degraded(
-                    "point functional: its dual solution is singular at the point".into(),
-                );
+                reliability = Reliability::Degraded("point functional: its dual solution is singular at the point".into());
             }
-            let mut field = ErrorField::new(
-                &name(goal),
-                Indicator::Signed,
-                eta,
-                estimated,
-                reliability,
-                t0.elapsed().as_secs_f64(),
-            );
-            field.notes.push(format!(
-                "fine mesh: {} nodes, {} elements",
-                nfine,
-                fmodel.mesh.n_elems()
-            ));
-            results.push(DwrResult {
-                goal: goal.name.clone(),
-                value,
-                estimated_error: estimated,
-                corrected: value + estimated,
-                field,
-            });
+            let mut field = ErrorField::new(&name(goal), Indicator::Signed, eta, estimated, reliability, t0.elapsed().as_secs_f64());
+            field.notes.push(format!("fine mesh: {} nodes, {} elements", nfine, fmodel.mesh.n_elems()));
+            results.push(DwrResult { goal: goal.name.clone(), value, estimated_error: estimated, corrected: value + estimated, field });
         }
         Ok(results)
     }
@@ -517,33 +380,17 @@ mod tests {
 
     #[test]
     fn refinement_quadruples_the_elements_keeps_curved_edges_and_conforms() {
-        for kind in [
-            ElementKind::Tri3,
-            ElementKind::Tri6,
-            ElementKind::Quad4,
-            ElementKind::Quad8,
-            ElementKind::Quad9,
-        ] {
+        for kind in [ElementKind::Tri3, ElementKind::Tri6, ElementKind::Quad4, ElementKind::Quad8, ElementKind::Quad9] {
             // a quarter annulus: curved sides
-            let m = grid(
-                Physics::PlaneStress { thickness: 1.0 },
-                kind,
-                Elastic::new(1.0, 0.3),
-                [3, 2, 1],
-                &|p| {
-                    let (r, th) = (1.0 + p[0], p[1] * std::f64::consts::FRAC_PI_2);
-                    [r * th.cos(), r * th.sin(), 0.0]
-                },
-            )
+            let m = grid(Physics::PlaneStress { thickness: 1.0 }, kind, Elastic::new(1.0, 0.3), [3, 2, 1], &|p| {
+                let (r, th) = (1.0 + p[0], p[1] * std::f64::consts::FRAC_PI_2);
+                [r * th.cos(), r * th.sin(), 0.0]
+            })
             .unwrap();
             let rf = refine_uniform_2d(&m).unwrap();
             assert_eq!(rf.mesh.n_elems(), 4 * m.n_elems(), "{kind:?}");
             let c = rf.mesh.conformity();
-            assert!(
-                c.is_conforming() && c.components == 1,
-                "{kind:?}: {}",
-                c.summary()
-            );
+            assert!(c.is_conforming() && c.components == 1, "{kind:?}: {}", c.summary());
             assert_eq!(rf.mesh.quality().inverted, 0, "{kind:?}");
             // the coarse nodes keep their positions and indices
             for (i, x) in m.nodes.iter().enumerate() {
@@ -556,44 +403,25 @@ mod tests {
                 for blk in &mesh.blocks {
                     let t = blk.kind.table();
                     for e in 0..blk.n_elems() {
-                        let xyz: Vec<[f64; 3]> =
-                            blk.elem(e).iter().map(|&n| mesh.nodes[n]).collect();
+                        let xyz: Vec<[f64; 3]> = blk.elem(e).iter().map(|&n| mesh.nodes[n]).collect();
                         crate::kernel::geometry(blk.kind, mesh.physics, &xyz, &mut work).unwrap();
                         a += (0..t.ngp).map(|g| work.wdet[g]).sum::<f64>();
                     }
                 }
                 a
             };
-            assert!(
-                (area(&m) - area(&rf.mesh)).abs() < 1e-12 * area(&m),
-                "{kind:?}"
-            );
+            assert!((area(&m) - area(&rf.mesh)).abs() < 1e-12 * area(&m), "{kind:?}");
         }
     }
 
     #[test]
     fn prolongation_is_exact_for_the_coarse_space() {
-        for kind in [
-            ElementKind::Tri6,
-            ElementKind::Quad8,
-            ElementKind::Quad9,
-            ElementKind::Tri3,
-        ] {
-            let m = grid(
-                Physics::PlaneStress { thickness: 1.0 },
-                kind,
-                Elastic::new(1.0, 0.3),
-                [3, 3, 1],
-                &|p| [2.0 * p[0] + 0.1 * p[1], p[1], 0.0],
-            )
-            .unwrap();
+        for kind in [ElementKind::Tri6, ElementKind::Quad8, ElementKind::Quad9, ElementKind::Tri3] {
+            let m = grid(Physics::PlaneStress { thickness: 1.0 }, kind, Elastic::new(1.0, 0.3), [3, 3, 1], &|p| [2.0 * p[0] + 0.1 * p[1], p[1], 0.0]).unwrap();
             let rf = refine_uniform_2d(&m).unwrap();
             // a field the coarse space reproduces: quadratic for quadratic elements, affine otherwise
             let f = |x: &[f64; 3]| -> [f64; 2] {
-                if matches!(
-                    kind,
-                    ElementKind::Tri6 | ElementKind::Quad8 | ElementKind::Quad9
-                ) {
+                if matches!(kind, ElementKind::Tri6 | ElementKind::Quad8 | ElementKind::Quad9) {
                     [1.0 + x[0] * x[0] - 0.5 * x[0] * x[1], x[1] * x[1] + x[0]]
                 } else {
                     [1.0 + 2.0 * x[0] - x[1], 0.3 * x[0] + 0.7 * x[1]]
@@ -604,11 +432,7 @@ mod tests {
             for (i, x) in rf.mesh.nodes.iter().enumerate() {
                 let w = f(x);
                 // Quad8 reproduces only the serendipity space: x^2 y terms are absent, ours has x y which is in it
-                assert!(
-                    (fine[2 * i] - w[0]).abs() < 1e-10 && (fine[2 * i + 1] - w[1]).abs() < 1e-10,
-                    "{kind:?} node {i}: {:?} vs {w:?}",
-                    [fine[2 * i], fine[2 * i + 1]]
-                );
+                assert!((fine[2 * i] - w[0]).abs() < 1e-10 && (fine[2 * i + 1] - w[1]).abs() < 1e-10, "{kind:?} node {i}: {:?} vs {w:?}", [fine[2 * i], fine[2 * i + 1]]);
             }
         }
     }

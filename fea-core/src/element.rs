@@ -177,14 +177,7 @@ impl ElementKind {
     }
 }
 
-const TRI6: [[f64; 3]; 6] = [
-    [0., 0., 0.],
-    [1., 0., 0.],
-    [0., 1., 0.],
-    [0.5, 0., 0.],
-    [0.5, 0.5, 0.],
-    [0., 0.5, 0.],
-];
+const TRI6: [[f64; 3]; 6] = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0.5, 0., 0.], [0.5, 0.5, 0.], [0., 0.5, 0.]];
 
 const QUAD9: [[f64; 3]; 9] = [
     [-1., -1., 0.],
@@ -264,13 +257,7 @@ const WEDGE15: [[f64; 3]; 15] = [
 /// Pyramid nodes (VTK order): the base corners counter-clockwise seen from the apex side (so the base normal points at the apex),
 /// then the apex. The base is the square `[-1, 1]^2` at `zeta = 0`, the apex is `(0, 0, 1)`; the section at height `zeta` is
 /// `|xi|, |eta| <= 1 - zeta`.
-const PYRAMID5: [[f64; 3]; 5] = [
-    [-1., -1., 0.],
-    [1., -1., 0.],
-    [1., 1., 0.],
-    [-1., 1., 0.],
-    [0., 0., 1.],
-];
+const PYRAMID5: [[f64; 3]; 5] = [[-1., -1., 0.], [1., -1., 0.], [1., 1., 0.], [-1., 1., 0.], [0., 0., 1.]];
 
 /// Rational pyramid functions (Bedrosian, 1992): `N_i = 1/4 [(1 + s_i xi)(1 + t_i eta) - zeta + s_i t_i xi eta zeta / (1 - zeta)]`
 /// for the base corners `(s_i, t_i)`, `N_5 = zeta`. They reproduce linear fields, are bilinear on the base (a hexahedron's face)
@@ -279,22 +266,11 @@ fn pyramid_shape(xi: [f64; 3], n: &mut [f64; MAX_NODES], dn: &mut [[f64; 3]; MAX
     let [x, y, z] = xi;
     let r = 1.0 - z;
     // g = x y z / (1 - z) and its derivatives; on the axis (x = y = 0) and at the apex they are the limits.
-    let (g, gx, gy, gz) = if r.abs() < 1e-14 {
-        (0.0, 0.0, 0.0, 0.0)
-    } else {
-        (x * y * z / r, y * z / r, x * z / r, x * y / (r * r))
-    };
-    for (a, &(s, t)) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
-        .iter()
-        .enumerate()
-    {
+    let (g, gx, gy, gz) = if r.abs() < 1e-14 { (0.0, 0.0, 0.0, 0.0) } else { (x * y * z / r, y * z / r, x * z / r, x * y / (r * r)) };
+    for (a, &(s, t)) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].iter().enumerate() {
         let st = s * t;
         n[a] = 0.25 * ((1.0 + s * x) * (1.0 + t * y) - z + st * g);
-        dn[a] = [
-            0.25 * (s * (1.0 + t * y) + st * gx),
-            0.25 * (t * (1.0 + s * x) + st * gy),
-            0.25 * (-1.0 + st * gz),
-        ];
+        dn[a] = [0.25 * (s * (1.0 + t * y) + st * gx), 0.25 * (t * (1.0 + s * x) + st * gy), 0.25 * (-1.0 + st * gz)];
     }
     n[4] = z;
     dn[4] = [0.0, 0.0, 1.0];
@@ -303,12 +279,7 @@ fn pyramid_shape(xi: [f64; 3], n: &mut [f64; MAX_NODES], dn: &mut [[f64; 3]; MAX
 /// Triangular prism: barycentric coordinates `L` of the unit triangle times the axial coordinate `zeta` in `[-1, 1]`.
 /// Wedge6 `N = L_i (1 + s zeta) / 2`; Wedge15 corners `N = 1/2 L_i (2 L_i - 1)(1 + s zeta) - 1/2 L_i (1 - zeta^2)`, in-plane
 /// midsides `N = 2 L_a L_b (1 + s zeta)`, vertical midsides `N = L_i (1 - zeta^2)`.
-fn wedge_shape(
-    kind: ElementKind,
-    xi: [f64; 3],
-    n: &mut [f64; MAX_NODES],
-    dn: &mut [[f64; 3]; MAX_NODES],
-) {
+fn wedge_shape(kind: ElementKind, xi: [f64; 3], n: &mut [f64; MAX_NODES], dn: &mut [[f64; 3]; MAX_NODES]) {
     let z = xi[2];
     let l = [1.0 - xi[0] - xi[1], xi[0], xi[1]];
     let dl = [[-1.0, -1.0], [1.0, 0.0], [0.0, 1.0]];
@@ -317,11 +288,7 @@ fn wedge_shape(
         for a in 0..6 {
             let (i, s) = (a % 3, if a < 3 { -1.0 } else { 1.0 });
             n[a] = l[i] * 0.5 * (1.0 + s * z);
-            dn[a] = [
-                dl[i][0] * 0.5 * (1.0 + s * z),
-                dl[i][1] * 0.5 * (1.0 + s * z),
-                l[i] * 0.5 * s,
-            ];
+            dn[a] = [dl[i][0] * 0.5 * (1.0 + s * z), dl[i][1] * 0.5 * (1.0 + s * z), l[i] * 0.5 * s];
         }
         return;
     }
@@ -329,37 +296,22 @@ fn wedge_shape(
         let (i, s) = (a % 3, if a < 3 { -1.0 } else { 1.0 });
         let f = 1.0 + s * z;
         let q = 0.5 * l[i] * (2.0 * l[i] - 1.0);
-        let dq = [
-            0.5 * (4.0 * l[i] - 1.0) * dl[i][0],
-            0.5 * (4.0 * l[i] - 1.0) * dl[i][1],
-        ];
+        let dq = [0.5 * (4.0 * l[i] - 1.0) * dl[i][0], 0.5 * (4.0 * l[i] - 1.0) * dl[i][1]];
         n[a] = q * f - 0.5 * l[i] * (1.0 - z * z);
-        dn[a] = [
-            dq[0] * f - 0.5 * dl[i][0] * (1.0 - z * z),
-            dq[1] * f - 0.5 * dl[i][1] * (1.0 - z * z),
-            q * s + l[i] * z,
-        ];
+        dn[a] = [dq[0] * f - 0.5 * dl[i][0] * (1.0 - z * z), dq[1] * f - 0.5 * dl[i][1] * (1.0 - z * z), q * s + l[i] * z];
     }
     for (e, &[p, q]) in tri_edges.iter().enumerate() {
         for (lvl, s) in [(0usize, -1.0f64), (1, 1.0)] {
             let a = 6 + 3 * lvl + e;
             let f = 1.0 + s * z;
             n[a] = 2.0 * l[p] * l[q] * f;
-            dn[a] = [
-                2.0 * (dl[p][0] * l[q] + l[p] * dl[q][0]) * f,
-                2.0 * (dl[p][1] * l[q] + l[p] * dl[q][1]) * f,
-                2.0 * l[p] * l[q] * s,
-            ];
+            dn[a] = [2.0 * (dl[p][0] * l[q] + l[p] * dl[q][0]) * f, 2.0 * (dl[p][1] * l[q] + l[p] * dl[q][1]) * f, 2.0 * l[p] * l[q] * s];
         }
     }
     for i in 0..3 {
         let a = 12 + i;
         n[a] = l[i] * (1.0 - z * z);
-        dn[a] = [
-            dl[i][0] * (1.0 - z * z),
-            dl[i][1] * (1.0 - z * z),
-            -2.0 * z * l[i],
-        ];
+        dn[a] = [dl[i][0] * (1.0 - z * z), dl[i][1] * (1.0 - z * z), -2.0 * z * l[i]];
     }
 }
 
@@ -368,12 +320,7 @@ const TRI6_EDGES: [[usize; 2]; 3] = [[0, 1], [1, 2], [2, 0]];
 const TET10_EDGES: [[usize; 2]; 6] = [[0, 1], [1, 2], [2, 0], [0, 3], [1, 3], [2, 3]];
 
 /// Barycentric coordinates and their natural gradients: `L[0] = 1 - sum xi`, `L[a] = xi[a-1]`.
-fn simplex_shape(
-    kind: ElementKind,
-    xi: [f64; 3],
-    n: &mut [f64; MAX_NODES],
-    dn: &mut [[f64; 3]; MAX_NODES],
-) {
+fn simplex_shape(kind: ElementKind, xi: [f64; 3], n: &mut [f64; MAX_NODES], dn: &mut [[f64; 3]; MAX_NODES]) {
     let d = kind.dim();
     let nc = d + 1;
     let mut l = [0.0; 4];
@@ -411,12 +358,7 @@ fn simplex_shape(
 }
 
 /// Bilinear / trilinear: `prod (1 + xi x_n) / 2^d`.
-fn multilinear_shape(
-    kind: ElementKind,
-    xi: [f64; 3],
-    n: &mut [f64; MAX_NODES],
-    dn: &mut [[f64; 3]; MAX_NODES],
-) {
+fn multilinear_shape(kind: ElementKind, xi: [f64; 3], n: &mut [f64; MAX_NODES], dn: &mut [[f64; 3]; MAX_NODES]) {
     let d = kind.dim();
     let scale = 0.5f64.powi(d as i32);
     for (a, x) in kind.node_coords().iter().enumerate() {
@@ -446,12 +388,7 @@ fn lag1(xn: f64, x: f64) -> (f64, f64) {
 }
 
 /// Biquadratic / triquadratic Lagrange: tensor product of the 1D functions.
-fn lagrange_shape(
-    kind: ElementKind,
-    xi: [f64; 3],
-    n: &mut [f64; MAX_NODES],
-    dn: &mut [[f64; 3]; MAX_NODES],
-) {
+fn lagrange_shape(kind: ElementKind, xi: [f64; 3], n: &mut [f64; MAX_NODES], dn: &mut [[f64; 3]; MAX_NODES]) {
     let d = kind.dim();
     for (a, x) in kind.node_coords().iter().enumerate() {
         let mut v = [(1.0, 0.0); 3];
@@ -472,12 +409,7 @@ fn lagrange_shape(
 }
 
 /// Eight- and twenty-node serendipity elements.
-fn serendipity_shape(
-    kind: ElementKind,
-    xi: [f64; 3],
-    n: &mut [f64; MAX_NODES],
-    dn: &mut [[f64; 3]; MAX_NODES],
-) {
+fn serendipity_shape(kind: ElementKind, xi: [f64; 3], n: &mut [f64; MAX_NODES], dn: &mut [[f64; 3]; MAX_NODES]) {
     let d = kind.dim();
     for (a, x) in kind.node_coords().iter().enumerate() {
         let corner = x[..d].iter().all(|c| c.abs() > 0.5);
@@ -510,11 +442,7 @@ fn serendipity_shape(
             }
             n[a] = val;
             for k in 0..d {
-                let mut p = if k == m {
-                    norm * (-2.0 * xi[m])
-                } else {
-                    norm * (1.0 - xi[m] * xi[m]) * x[k]
-                };
+                let mut p = if k == m { norm * (-2.0 * xi[m]) } else { norm * (1.0 - xi[m] * xi[m]) * x[k] };
                 for j in 0..d {
                     if j != m && j != k {
                         p *= f[j];
@@ -562,16 +490,7 @@ impl ShapeTable {
                 }
             }
         }
-        Self {
-            kind,
-            dim,
-            nn,
-            ngp: xi.len(),
-            xi,
-            w,
-            n,
-            dn,
-        }
+        Self { kind, dim, nn, ngp: xi.len(), xi, w, n, dn }
     }
 
     #[inline]
@@ -587,15 +506,8 @@ impl ShapeTable {
     }
 }
 
-const GL2: [(f64, f64); 2] = [
-    (-0.577_350_269_189_625_8, 1.0),
-    (0.577_350_269_189_625_8, 1.0),
-];
-const GL3: [(f64, f64); 3] = [
-    (-0.774_596_669_241_483_4, 5.0 / 9.0),
-    (0.0, 8.0 / 9.0),
-    (0.774_596_669_241_483_4, 5.0 / 9.0),
-];
+const GL2: [(f64, f64); 2] = [(-0.577_350_269_189_625_8, 1.0), (0.577_350_269_189_625_8, 1.0)];
+const GL3: [(f64, f64); 3] = [(-0.774_596_669_241_483_4, 5.0 / 9.0), (0.0, 8.0 / 9.0), (0.774_596_669_241_483_4, 5.0 / 9.0)];
 
 fn tensor(rule: &[(f64, f64)], dim: usize) -> (Vec<[f64; 3]>, Vec<f64>) {
     let mut xi = Vec::new();
@@ -695,21 +607,11 @@ fn quadrature(kind: ElementKind) -> (Vec<[f64; 3]>, Vec<f64>) {
     match kind {
         ElementKind::Tri3 => (vec![[1.0 / 3.0, 1.0 / 3.0, 0.0]], vec![0.5]),
         // Degree 2 (exact for straight-sided Tri6 stiffness).
-        ElementKind::Tri6 => (
-            vec![
-                [1.0 / 6.0, 1.0 / 6.0, 0.0],
-                [2.0 / 3.0, 1.0 / 6.0, 0.0],
-                [1.0 / 6.0, 2.0 / 3.0, 0.0],
-            ],
-            vec![1.0 / 6.0; 3],
-        ),
+        ElementKind::Tri6 => (vec![[1.0 / 6.0, 1.0 / 6.0, 0.0], [2.0 / 3.0, 1.0 / 6.0, 0.0], [1.0 / 6.0, 2.0 / 3.0, 0.0]], vec![1.0 / 6.0; 3]),
         ElementKind::Tet4 => (vec![[0.25, 0.25, 0.25]], vec![1.0 / 6.0]),
         ElementKind::Tet10 => {
             let (a, b) = (0.585_410_196_624_968_5, 0.138_196_601_125_010_5);
-            (
-                vec![[b, b, b], [a, b, b], [b, a, b], [b, b, a]],
-                vec![1.0 / 24.0; 4],
-            )
+            (vec![[b, b, b], [a, b, b], [b, a, b], [b, b, a]], vec![1.0 / 24.0; 4])
         }
         ElementKind::Quad4 => tensor(&GL2, 2),
         ElementKind::Quad8 | ElementKind::Quad9 => tensor(&GL3, 2),
@@ -766,15 +668,7 @@ mod tests {
         for k in ALL_KINDS {
             assert_eq!(k.node_coords().len(), k.n_nodes(), "{k:?}");
             let t = k.table();
-            assert_eq!(
-                (t.nn, t.dim, t.n.len(), t.dn.len()),
-                (
-                    k.n_nodes(),
-                    k.dim(),
-                    t.ngp * k.n_nodes(),
-                    t.ngp * k.n_nodes() * k.dim()
-                )
-            );
+            assert_eq!((t.nn, t.dim, t.n.len(), t.dn.len()), (k.n_nodes(), k.dim(), t.ngp * k.n_nodes(), t.ngp * k.n_nodes() * k.dim()));
         }
     }
 
@@ -785,11 +679,7 @@ mod tests {
                 let (n, _) = k.shape(*x);
                 for a in 0..k.n_nodes() {
                     let want = if a == b { 1.0 } else { 0.0 };
-                    assert!(
-                        (n[a] - want).abs() < 1e-12,
-                        "{k:?} N{a} at node {b} = {}",
-                        n[a]
-                    );
+                    assert!((n[a] - want).abs() < 1e-12, "{k:?} N{a} at node {b} = {}", n[a]);
                 }
             }
         }
@@ -807,17 +697,9 @@ mod tests {
                 let ds: f64 = (0..k.n_nodes()).map(|a| dn[a][ax]).sum();
                 assert!(ds.abs() < 1e-12, "{k:?} sum dN {ds}");
                 // sum N x == xi (the isoparametric map is the identity on the reference element)
-                let x: f64 = (0..k.n_nodes())
-                    .map(|a| n[a] * k.node_coords()[a][ax])
-                    .sum();
-                assert!(
-                    (x - xi[ax]).abs() < 1e-13,
-                    "{k:?} axis {ax}: {x} vs {}",
-                    xi[ax]
-                );
-                let dx: f64 = (0..k.n_nodes())
-                    .map(|a| dn[a][ax] * k.node_coords()[a][ax])
-                    .sum();
+                let x: f64 = (0..k.n_nodes()).map(|a| n[a] * k.node_coords()[a][ax]).sum();
+                assert!((x - xi[ax]).abs() < 1e-13, "{k:?} axis {ax}: {x} vs {}", xi[ax]);
+                let dx: f64 = (0..k.n_nodes()).map(|a| dn[a][ax] * k.node_coords()[a][ax]).sum();
                 assert!((dx - 1.0).abs() < 1e-12, "{k:?} d x / d xi {dx}");
             }
         }
@@ -831,11 +713,7 @@ mod tests {
             for a in 0..k.n_nodes() {
                 for ax in 0..k.dim() {
                     let fd = fd_dn(k, xi, a, ax);
-                    assert!(
-                        (dn[a][ax] - fd).abs() < 1e-7,
-                        "{k:?} dN{a}/d{ax}: {} vs {fd}",
-                        dn[a][ax]
-                    );
+                    assert!((dn[a][ax] - fd).abs() < 1e-7, "{k:?} dN{a}/d{ax}: {} vs {fd}", dn[a][ax]);
                 }
             }
         }
@@ -863,38 +741,19 @@ mod tests {
                 for b in 0..=(2 - a) {
                     let c_range = if d == 3 { 0..=(2 - a - b) } else { 0..=0 };
                     for c in c_range {
-                        let got: f64 = (0..t.ngp)
-                            .map(|g| {
-                                t.w[g]
-                                    * t.xi[g][0].powi(a as i32)
-                                    * t.xi[g][1].powi(b as i32)
-                                    * t.xi[g][2].powi(c as i32)
-                            })
-                            .sum();
+                        let got: f64 = (0..t.ngp).map(|g| t.w[g] * t.xi[g][0].powi(a as i32) * t.xi[g][1].powi(b as i32) * t.xi[g][2].powi(c as i32)).sum();
                         let exact = fact(a) * fact(b) * fact(c) / fact(a + b + c + d as u32);
-                        assert!(
-                            (got - exact).abs() < 1e-14,
-                            "{k:?} x^{a} y^{b} z^{c}: {got} vs {exact}"
-                        );
+                        assert!((got - exact).abs() < 1e-14, "{k:?} x^{a} y^{b} z^{c}: {got} vs {exact}");
                     }
                 }
             }
         }
         // Tensor rules: x^p over [-1, 1] is 2/(p+1) for even p, else 0.
-        for (k, maxp) in [
-            (ElementKind::Quad4, 3),
-            (ElementKind::Hex8, 3),
-            (ElementKind::Quad9, 5),
-            (ElementKind::Hex27, 5),
-        ] {
+        for (k, maxp) in [(ElementKind::Quad4, 3), (ElementKind::Hex8, 3), (ElementKind::Quad9, 5), (ElementKind::Hex27, 5)] {
             let t = k.table();
             for p in 0..=maxp {
                 let got: f64 = (0..t.ngp).map(|g| t.w[g] * t.xi[g][0].powi(p)).sum();
-                let one_d = if p % 2 == 0 {
-                    2.0 / (p as f64 + 1.0)
-                } else {
-                    0.0
-                };
+                let one_d = if p % 2 == 0 { 2.0 / (p as f64 + 1.0) } else { 0.0 };
                 let want = one_d * 2.0f64.powi(k.dim() as i32 - 1);
                 assert!((got - want).abs() < 1e-13, "{k:?} x^{p}: {got} vs {want}");
             }

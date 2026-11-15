@@ -16,11 +16,7 @@ pub struct NodeWelder {
 
 impl NodeWelder {
     pub fn new(tol: f64) -> Self {
-        Self {
-            tol,
-            cell: (2.0 * tol).max(1e-300),
-            bins: HashMap::new(),
-        }
+        Self { tol, cell: (2.0 * tol).max(1e-300), bins: HashMap::new() }
     }
 
     fn key(&self, x: [f64; 3]) -> [i64; 3] {
@@ -35,12 +31,7 @@ impl NodeWelder {
                 for dk in -1..=1 {
                     if let Some(v) = self.bins.get(&[k[0] + di, k[1] + dj, k[2] + dk]) {
                         for &n in v {
-                            if (0..3)
-                                .map(|c| (nodes[n][c] - x[c]).powi(2))
-                                .sum::<f64>()
-                                .sqrt()
-                                <= self.tol
-                            {
+                            if (0..3).map(|c| (nodes[n][c] - x[c]).powi(2)).sum::<f64>().sqrt() <= self.tol {
                                 return Some(n);
                             }
                         }
@@ -59,12 +50,7 @@ impl NodeWelder {
                 for dk in -1..=1 {
                     if let Some(v) = self.bins.get(&[k[0] + di, k[1] + dj, k[2] + dk]) {
                         for &n in v {
-                            if (0..3)
-                                .map(|c| (nodes[n][c] - x[c]).powi(2))
-                                .sum::<f64>()
-                                .sqrt()
-                                <= self.tol
-                            {
+                            if (0..3).map(|c| (nodes[n][c] - x[c]).powi(2)).sum::<f64>().sqrt() <= self.tol {
                                 return n;
                             }
                         }
@@ -91,11 +77,7 @@ pub fn merge(parts: &[Mesh], tol: f64) -> Result<Mesh, MeshError> {
         if part.physics != first.physics {
             return Err(MeshError::Failed("the parts have different physics".into()));
         }
-        let map: Vec<usize> = part
-            .nodes
-            .iter()
-            .map(|&x| welder.node(&mut out.nodes, x))
-            .collect();
+        let map: Vec<usize> = part.nodes.iter().map(|&x| welder.node(&mut out.nodes, x)).collect();
         for blk in &part.blocks {
             let conn: Vec<usize> = blk.conn.iter().map(|&n| map[n]).collect();
             let nn = blk.kind.n_nodes();
@@ -122,14 +104,7 @@ mod tests {
     use crate::mesh::{Elastic, Physics};
 
     fn square(x0: f64, kind: ElementKind) -> Mesh {
-        grid(
-            Physics::PlaneStress { thickness: 1.0 },
-            kind,
-            Elastic::new(1.0, 0.3),
-            [2, 2, 1],
-            &|p| [x0 + p[0], p[1], 0.0],
-        )
-        .unwrap()
+        grid(Physics::PlaneStress { thickness: 1.0 }, kind, Elastic::new(1.0, 0.3), [2, 2, 1], &|p| [x0 + p[0], p[1], 0.0]).unwrap()
     }
 
     #[test]
@@ -138,17 +113,9 @@ mod tests {
             let (a, b) = (square(0.0, kind), square(1.0, kind));
             let m = merge(&[a.clone(), b.clone()], 1e-9).unwrap();
             let shared = if kind == ElementKind::Quad4 { 3 } else { 5 };
-            assert_eq!(
-                m.nodes.len(),
-                a.nodes.len() + b.nodes.len() - shared,
-                "{kind:?}"
-            );
+            assert_eq!(m.nodes.len(), a.nodes.len() + b.nodes.len() - shared, "{kind:?}");
             let r = m.conformity();
-            assert!(
-                r.is_conforming() && r.components == 1,
-                "{kind:?}: {}",
-                r.summary()
-            );
+            assert!(r.is_conforming() && r.components == 1, "{kind:?}: {}", r.summary());
         }
     }
 

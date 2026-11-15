@@ -16,45 +16,15 @@ type Fd<'a> = Option<&'a dyn Fn(V3) -> Vec<FaceHit>>;
 
 const GATE: f64 = 0.1;
 
-fn mesh(
-    lo: V3,
-    hi: V3,
-    sdf: &dyn Fn(V3) -> f64,
-    fd: Fd,
-    h: f64,
-    quadratic: bool,
-    repair: bool,
-) -> (Mesh, MeshReport) {
+fn mesh(lo: V3, hi: V3, sdf: &dyn Fn(V3) -> f64, fd: Fd, h: f64, quadratic: bool, repair: bool) -> (Mesh, MeshReport) {
     let (size, face) = (|_: V3| 10.0, |_: V3| 0usize);
-    let solid = Solid {
-        lo,
-        hi,
-        sdf,
-        size: &size,
-        face_of: &face,
-        face_dists: fd,
-    };
-    let (m, r, _) = mesh_solid_reported(
-        &solid,
-        Elastic::new(1.0, 0.3),
-        TetOptions {
-            base: 0.6,
-            boundary_size: h,
-            quadratic,
-            repair,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let solid = Solid { lo, hi, sdf, size: &size, face_of: &face, face_dists: fd };
+    let (m, r, _) = mesh_solid_reported(&solid, Elastic::new(1.0, 0.3), TetOptions { base: 0.6, boundary_size: h, quadratic, repair, ..Default::default() }).unwrap();
     (m, r)
 }
 
 fn below_gate(m: &Mesh) -> usize {
-    m.quality()
-        .elements
-        .iter()
-        .filter(|e| e.scaled_jacobian < GATE)
-        .count()
+    m.quality().elements.iter().filter(|e| e.scaled_jacobian < GATE).count()
 }
 
 /// Area of each named face.
@@ -66,15 +36,8 @@ fn areas(m: &Mesh) -> BTreeMap<String, f64> {
                 .iter()
                 .map(|f| {
                     let (p, q, r) = (m.nodes[f[0]], m.nodes[f[1]], m.nodes[f[2]]);
-                    let (u, v) = (
-                        [q[0] - p[0], q[1] - p[1], q[2] - p[2]],
-                        [r[0] - p[0], r[1] - p[1], r[2] - p[2]],
-                    );
-                    let c = [
-                        u[1] * v[2] - u[2] * v[1],
-                        u[2] * v[0] - u[0] * v[2],
-                        u[0] * v[1] - u[1] * v[0],
-                    ];
+                    let (u, v) = ([q[0] - p[0], q[1] - p[1], q[2] - p[2]], [r[0] - p[0], r[1] - p[1], r[2] - p[2]]);
+                    let c = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
                     0.5 * (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt()
                 })
                 .sum();
@@ -92,21 +55,9 @@ fn cylinder(x: V3) -> f64 {
 fn cylinder_faces(x: V3) -> Vec<FaceHit> {
     let r = (x[0] * x[0] + x[1] * x[1]).sqrt().max(1e-12);
     let mut v = vec![
-        FaceHit {
-            face: 0,
-            dist: r - 1.0,
-            normal: [x[0] / r, x[1] / r, 0.0],
-        },
-        FaceHit {
-            face: 1,
-            dist: x[2] - 1.0,
-            normal: [0.0, 0.0, 1.0],
-        },
-        FaceHit {
-            face: 2,
-            dist: -x[2] - 1.0,
-            normal: [0.0, 0.0, -1.0],
-        },
+        FaceHit { face: 0, dist: r - 1.0, normal: [x[0] / r, x[1] / r, 0.0] },
+        FaceHit { face: 1, dist: x[2] - 1.0, normal: [0.0, 0.0, 1.0] },
+        FaceHit { face: 2, dist: -x[2] - 1.0, normal: [0.0, 0.0, -1.0] },
     ];
     v.retain(|h| h.dist.abs() < 0.5);
     v
@@ -132,78 +83,14 @@ fn cases() -> Vec<Case> {
     let c = ([-1.0; 3], [1.0; 3]);
     let to = ([-1.4, -1.4, -0.4], [1.4, 1.4, 0.4]);
     vec![
-        Case {
-            name: "sphere h0.3",
-            lo: s,
-            hi: t,
-            sdf: sphere,
-            faces: None,
-            h: 0.3,
-            broken_before: true,
-        },
-        Case {
-            name: "sphere h0.2",
-            lo: s,
-            hi: t,
-            sdf: sphere,
-            faces: None,
-            h: 0.2,
-            broken_before: true,
-        },
-        Case {
-            name: "cylinder h0.3",
-            lo: c.0,
-            hi: c.1,
-            sdf: cylinder,
-            faces: Some(cylinder_faces),
-            h: 0.3,
-            broken_before: true,
-        },
-        Case {
-            name: "cylinder h0.2",
-            lo: c.0,
-            hi: c.1,
-            sdf: cylinder,
-            faces: Some(cylinder_faces),
-            h: 0.2,
-            broken_before: true,
-        },
-        Case {
-            name: "torus h0.5",
-            lo: to.0,
-            hi: to.1,
-            sdf: torus,
-            faces: None,
-            h: 0.5,
-            broken_before: true,
-        },
-        Case {
-            name: "torus h0.3",
-            lo: to.0,
-            hi: to.1,
-            sdf: torus,
-            faces: None,
-            h: 0.3,
-            broken_before: true,
-        },
-        Case {
-            name: "torus h0.2",
-            lo: to.0,
-            hi: to.1,
-            sdf: torus,
-            faces: None,
-            h: 0.2,
-            broken_before: true,
-        },
-        Case {
-            name: "sphere h0.5 (already fine)",
-            lo: s,
-            hi: t,
-            sdf: sphere,
-            faces: None,
-            h: 0.5,
-            broken_before: false,
-        },
+        Case { name: "sphere h0.3", lo: s, hi: t, sdf: sphere, faces: None, h: 0.3, broken_before: true },
+        Case { name: "sphere h0.2", lo: s, hi: t, sdf: sphere, faces: None, h: 0.2, broken_before: true },
+        Case { name: "cylinder h0.3", lo: c.0, hi: c.1, sdf: cylinder, faces: Some(cylinder_faces), h: 0.3, broken_before: true },
+        Case { name: "cylinder h0.2", lo: c.0, hi: c.1, sdf: cylinder, faces: Some(cylinder_faces), h: 0.2, broken_before: true },
+        Case { name: "torus h0.5", lo: to.0, hi: to.1, sdf: torus, faces: None, h: 0.5, broken_before: true },
+        Case { name: "torus h0.3", lo: to.0, hi: to.1, sdf: torus, faces: None, h: 0.3, broken_before: true },
+        Case { name: "torus h0.2", lo: to.0, hi: to.1, sdf: torus, faces: None, h: 0.2, broken_before: true },
+        Case { name: "sphere h0.5 (already fine)", lo: s, hi: t, sdf: sphere, faces: None, h: 0.5, broken_before: false },
     ]
 }
 
@@ -215,56 +102,23 @@ fn every_element_of_a_curved_solid_passes_the_gate_after_the_repair() {
         let (on, on_rep) = mesh(c.lo, c.hi, &c.sdf, fd, c.h, false, true);
         let bad_off = below_gate(&off);
         if c.broken_before {
-            assert!(
-                bad_off > 0,
-                "{}: the unrepaired mesh was expected to have elements under the gate",
-                c.name
-            );
+            assert!(bad_off > 0, "{}: the unrepaired mesh was expected to have elements under the gate", c.name);
         }
         let q = on.quality();
         assert_eq!(q.inverted, 0, "{}: inverted elements", c.name);
         assert_eq!(below_gate(&on), 0, "{}: {} of {} elements still under the gate (minimum {:.4}; unrepaired {} of {}, minimum {:.4})", c.name, below_gate(&on), on_rep.tets, q.min_scaled_jacobian, bad_off, off_rep.tets, off.quality().min_scaled_jacobian);
-        assert!(
-            on_rep.tets as f64 <= 1.10 * off_rep.tets as f64,
-            "{}: {} against {} elements",
-            c.name,
-            on_rep.tets,
-            off_rep.tets
-        );
-        assert!(
-            (on_rep.volume - off_rep.volume).abs() <= 0.005 * off_rep.volume,
-            "{}: volume {} against {}",
-            c.name,
-            on_rep.volume,
-            off_rep.volume
-        );
+        assert!(on_rep.tets as f64 <= 1.10 * off_rep.tets as f64, "{}: {} against {} elements", c.name, on_rep.tets, off_rep.tets);
+        assert!((on_rep.volume - off_rep.volume).abs() <= 0.005 * off_rep.volume, "{}: volume {} against {}", c.name, on_rep.volume, off_rep.volume);
         // the surface stays on the solid: no more boundary vertices left off it than before, up to a few
-        assert!(
-            on_rep.refused <= off_rep.refused + 3 + off_rep.refused / 10,
-            "{}: {} boundary vertices off the surface against {}",
-            c.name,
-            on_rep.refused,
-            off_rep.refused
-        );
+        assert!(on_rep.refused <= off_rep.refused + 3 + off_rep.refused / 10, "{}: {} boundary vertices off the surface against {}", c.name, on_rep.refused, off_rep.refused);
         // every node is used
         let used: std::collections::BTreeSet<usize> = on.blocks[0].conn.iter().copied().collect();
         assert_eq!(used.len(), on.nodes.len(), "{}: unused nodes", c.name);
         // face names and their areas
         let (a0, a1) = (areas(&off), areas(&on));
-        assert_eq!(
-            a0.keys().collect::<Vec<_>>(),
-            a1.keys().collect::<Vec<_>>(),
-            "{}: face names",
-            c.name
-        );
+        assert_eq!(a0.keys().collect::<Vec<_>>(), a1.keys().collect::<Vec<_>>(), "{}: face names", c.name);
         for (k, v0) in &a0 {
-            assert!(
-                (a1[k] - v0).abs() <= 0.03 * v0,
-                "{}: area of {k} {} against {}",
-                c.name,
-                a1[k],
-                v0
-            );
+            assert!((a1[k] - v0).abs() <= 0.03 * v0, "{}: area of {k} {} against {}", c.name, a1[k], v0);
         }
     }
 }
@@ -289,14 +143,7 @@ fn diag() {
         let fd = c.faces.as_ref().map(|f| f as &dyn Fn(V3) -> Vec<FaceHit>);
         let t = std::time::Instant::now();
         let (on, rep) = mesh(c.lo, c.hi, &c.sdf, fd, c.h, false, true);
-        eprintln!(
-            "{}: {} tets, {} under the gate, min sJ {:.4}, {:.2}s",
-            c.name,
-            rep.tets,
-            below_gate(&on),
-            on.quality().min_scaled_jacobian,
-            t.elapsed().as_secs_f64()
-        );
+        eprintln!("{}: {} tets, {} under the gate, min sJ {:.4}, {:.2}s", c.name, rep.tets, below_gate(&on), on.quality().min_scaled_jacobian, t.elapsed().as_secs_f64());
     }
 }
 
@@ -306,35 +153,20 @@ fn a_quadratic_mesh_of_the_repaired_boundary_layer_is_valid() {
     let (m, _) = mesh([-1.0; 3], [1.0; 3], &cylinder, Some(fd), 0.3, true, true);
     let q = m.quality();
     assert_eq!(q.inverted, 0);
-    assert!(
-        q.min_scaled_jacobian >= QualityThresholds::default().min_scaled_jacobian,
-        "{}",
-        q.min_scaled_jacobian
-    );
+    assert!(q.min_scaled_jacobian >= QualityThresholds::default().min_scaled_jacobian, "{}", q.min_scaled_jacobian);
 }
 
 fn boss_patches(p: V3) -> [(V3, V3); 8] {
     let r = (p[0] - 6.0).hypot(p[1] - 2.0);
-    let radial = if r > 0.0 {
-        [(p[0] - 6.0) / r, (p[1] - 2.0) / r]
-    } else {
-        [1.0, 0.0]
-    };
+    let radial = if r > 0.0 { [(p[0] - 6.0) / r, (p[1] - 2.0) / r] } else { [1.0, 0.0] };
     let rim = [6.0 + 1.2 * radial[0], 2.0 + 1.2 * radial[1]];
     let xy = [p[0].clamp(0.0, 12.0), p[1].clamp(0.0, 4.0)];
-    let top = if (xy[0] - 6.0).hypot(xy[1] - 2.0) < 1.2 {
-        rim
-    } else {
-        xy
-    };
+    let top = if (xy[0] - 6.0).hypot(xy[1] - 2.0) < 1.2 { rim } else { xy };
     let cap = if r > 1.2 { rim } else { [p[0], p[1]] };
     [
         ([xy[0], xy[1], 0.0], [0.0, 0.0, -1.0]),
         ([top[0], top[1], 1.0], [0.0, 0.0, 1.0]),
-        (
-            [rim[0], rim[1], p[2].clamp(1.0, 4.0)],
-            [radial[0], radial[1], 0.0],
-        ),
+        ([rim[0], rim[1], p[2].clamp(1.0, 4.0)], [radial[0], radial[1], 0.0]),
         ([cap[0], cap[1], 4.0], [0.0, 0.0, 1.0]),
         ([0.0, xy[1], p[2].clamp(0.0, 1.0)], [-1.0, 0.0, 0.0]),
         ([12.0, xy[1], p[2].clamp(0.0, 1.0)], [1.0, 0.0, 0.0]),
@@ -344,53 +176,30 @@ fn boss_patches(p: V3) -> [(V3, V3); 8] {
 }
 
 fn boss_sdf(p: V3) -> f64 {
-    let d = boss_patches(p)
-        .iter()
-        .map(|(q, _)| (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f64>().sqrt())
-        .fold(f64::INFINITY, f64::min);
-    let plate =
-        (0.0..=12.0).contains(&p[0]) && (0.0..=4.0).contains(&p[1]) && (0.0..=1.0).contains(&p[2]);
+    let d = boss_patches(p).iter().map(|(q, _)| (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f64>().sqrt()).fold(f64::INFINITY, f64::min);
+    let plate = (0.0..=12.0).contains(&p[0]) && (0.0..=4.0).contains(&p[1]) && (0.0..=1.0).contains(&p[2]);
     let boss = (p[0] - 6.0).hypot(p[1] - 2.0) <= 1.2 && (1.0..=4.0).contains(&p[2]);
-    if plate || boss {
-        -d
-    } else {
-        d
-    }
+    if plate || boss { -d } else { d }
 }
 
 const BOSS_H: f64 = 0.25;
 
 fn boss_face_hits(p: V3) -> Vec<FaceHit> {
-    boss_patches(p)
-        .into_iter()
-        .enumerate()
-        .map(|(face, (q, outward))| {
-            let off: V3 = std::array::from_fn(|k| p[k] - q[k]);
-            let d = off.iter().map(|x| x * x).sum::<f64>().sqrt();
-            let plane: f64 = (0..3).map(|k| off[k] * outward[k]).sum();
-            let side = if plane < 0.0 { -1.0 } else { 1.0 };
-            if d > 1e-12 {
-                FaceHit {
-                    face,
-                    dist: side * d,
-                    normal: off.map(|x| side * x / d),
-                }
-            } else {
-                FaceHit {
-                    face,
-                    dist: plane,
-                    normal: outward,
-                }
-            }
-        })
-        .collect()
+    boss_patches(p).into_iter().enumerate().map(|(face, (q, outward))| {
+        let off: V3 = std::array::from_fn(|k| p[k] - q[k]);
+        let d = off.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let plane: f64 = (0..3).map(|k| off[k] * outward[k]).sum();
+        let side = if plane < 0.0 { -1.0 } else { 1.0 };
+        if d > 1e-12 {
+            FaceHit { face, dist: side * d, normal: off.map(|x| side * x / d) }
+        } else {
+            FaceHit { face, dist: plane, normal: outward }
+        }
+    }).collect()
 }
 
 fn boss_faces(p: V3) -> Vec<FaceHit> {
-    boss_face_hits(p)
-        .into_iter()
-        .filter(|hit| hit.dist.abs() <= 1.2 * BOSS_H)
-        .collect()
+    boss_face_hits(p).into_iter().filter(|hit| hit.dist.abs() <= 1.2 * BOSS_H).collect()
 }
 
 #[test]
@@ -399,19 +208,12 @@ fn connected_boss_fixture_uses_only_external_trimmed_patches() {
     assert!((boss_sdf([7.2, 2.0, 1.0])).abs() < 1e-12);
     assert!(boss_sdf([7.3, 2.0, 1.1]) > 0.0);
     assert!(boss_sdf([7.1, 2.0, 0.9]) < 0.0);
-    for p in [
-        [7.1, 2.0, 0.9],
-        [7.3, 2.0, 1.1],
-        [6.0, 2.0, 1.0],
-        [-0.1, 2.0, 0.5],
-    ] {
+    for p in [[7.1, 2.0, 0.9], [7.3, 2.0, 1.1], [6.0, 2.0, 1.0], [-0.1, 2.0, 0.5]] {
         let hits = boss_face_hits(p);
         assert_eq!(hits.len(), 8);
         for (hit, (q, _)) in hits.iter().zip(boss_patches(p)) {
             let projected: V3 = std::array::from_fn(|k| p[k] - hit.dist * hit.normal[k]);
-            for k in 0..3 {
-                assert!((projected[k] - q[k]).abs() < 1e-12);
-            }
+            for k in 0..3 { assert!((projected[k] - q[k]).abs() < 1e-12); }
             assert!(boss_sdf(projected).abs() < 1e-12);
         }
     }
@@ -421,13 +223,7 @@ fn connected_boss_fixture_uses_only_external_trimmed_patches() {
     assert!((boss_faces([-0.1, 2.0, 0.5])[0].dist - 0.1).abs() < 1e-12);
     assert!(boss_faces([6.0, 2.0, 1.0]).is_empty());
     for z in [2.0, 2.01] {
-        assert_eq!(
-            boss_faces([7.2, 2.0, z])
-                .iter()
-                .map(|hit| hit.face)
-                .collect::<Vec<_>>(),
-            [2]
-        );
+        assert_eq!(boss_faces([7.2, 2.0, z]).iter().map(|hit| hit.face).collect::<Vec<_>>(), [2]);
     }
 }
 
@@ -435,80 +231,32 @@ fn connected_boss_fixture_uses_only_external_trimmed_patches() {
 #[ignore = "diagnostic: the connected boss rim must pass the default solver gate"]
 fn connected_plate_boss_rim_passes_solver_gate() {
     let size = |_: V3| 10.0;
-    let face = |p: V3| {
-        boss_face_hits(p)
-            .into_iter()
-            .min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))
-            .unwrap()
-            .face
-    };
-    let solid = Solid {
-        lo: [0.0, 0.0, 0.0],
-        hi: [12.0, 4.0, 4.0],
-        sdf: &boss_sdf,
-        size: &size,
-        face_of: &face,
-        face_dists: Some(&boss_faces),
-    };
-    let (mesh, report, _) = mesh_solid_reported(
-        &solid,
-        Elastic::new(1.0, 0.3),
-        TetOptions {
-            base: 0.6,
-            boundary_size: BOSS_H,
-            repair: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let quality = mesh
-        .quality()
-        .with_progression(&fea_core::meshing::adjacency::Adjacency::new(&mesh));
+    let face = |p: V3| boss_face_hits(p).into_iter().min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs())).unwrap().face;
+    let solid = Solid { lo: [0.0, 0.0, 0.0], hi: [12.0, 4.0, 4.0], sdf: &boss_sdf, size: &size, face_of: &face, face_dists: Some(&boss_faces) };
+    let (mesh, report, _) = mesh_solid_reported(&solid, Elastic::new(1.0, 0.3), TetOptions { base: 0.6, boundary_size: BOSS_H, repair: true, ..Default::default() }).unwrap();
+    let quality = mesh.quality().with_progression(&fea_core::meshing::adjacency::Adjacency::new(&mesh));
     quality.require(&QualityThresholds::default()).unwrap();
     assert_eq!(quality.inverted, 0);
-    assert_eq!(
-        below_gate(&mesh),
-        0,
-        "{} of {} below gate, min scaled Jacobian {}",
-        below_gate(&mesh),
-        report.tets,
-        quality.min_scaled_jacobian
-    );
-    let cells = mesh
-        .blocks
-        .iter()
-        .flat_map(|b| b.conn.chunks_exact(4).map(|t| [t[0], t[1], t[2], t[3]]))
-        .collect();
-    let topology =
-        fea_core::meshing::tet_topology::TetTopology::new(mesh.nodes.clone(), cells, report.tets)
-            .unwrap();
+    assert_eq!(below_gate(&mesh), 0, "{} of {} below gate, min scaled Jacobian {}", below_gate(&mesh), report.tets, quality.min_scaled_jacobian);
+    let cells = mesh.blocks.iter().flat_map(|b| b.conn.chunks_exact(4).map(|t| [t[0],t[1],t[2],t[3]])).collect();
+    let topology = fea_core::meshing::tet_topology::TetTopology::new(mesh.nodes.clone(), cells, report.tets).unwrap();
     let mut edges = BTreeMap::<_, usize>::new();
     let mut links = BTreeMap::<_, BTreeMap<usize, Vec<usize>>>::new();
     for f in topology.boundary() {
         for k in 0..3 {
-            let (v, a, b) = (f[k], f[(k + 1) % 3], f[(k + 2) % 3]);
-            *edges.entry((v.min(a), v.max(a))).or_default() += 1;
+            let (v,a,b) = (f[k], f[(k+1)%3], f[(k+2)%3]);
+            *edges.entry((v.min(a),v.max(a))).or_default() += 1;
             let link = links.entry(v).or_default();
             link.entry(a).or_default().push(b);
             link.entry(b).or_default().push(a);
         }
     }
-    assert!(
-        edges.values().all(|&count| count == 2),
-        "nonmanifold boundary edge"
-    );
-    for (v, link) in links {
-        assert!(
-            link.values().all(|ns| ns.len() == 2),
-            "noncyclic boundary link at {v}"
-        );
+    assert!(edges.values().all(|&count| count == 2), "nonmanifold boundary edge");
+    for (v,link) in links {
+        assert!(link.values().all(|ns| ns.len() == 2), "noncyclic boundary link at {v}");
         let mut seen = std::collections::BTreeSet::new();
         let mut queue = vec![*link.keys().next().unwrap()];
-        while let Some(n) = queue.pop() {
-            if seen.insert(n) {
-                queue.extend(&link[&n]);
-            }
-        }
+        while let Some(n) = queue.pop() { if seen.insert(n) { queue.extend(&link[&n]); } }
         assert_eq!(seen.len(), link.len(), "disconnected boundary link at {v}");
     }
 }
@@ -516,34 +264,17 @@ fn connected_plate_boss_rim_passes_solver_gate() {
 /// Boundary facets across a model edge (`docs/issue-46-phase-173.md`): every corner lies on some face (within a hundredth of the
 /// size, the namer's tolerance) but no face holds all three. At a concave edge the snap leaves such facets bridging the crease.
 fn bridges(m: &Mesh, fd: &dyn Fn(V3) -> Vec<FaceHit>, h: f64) -> (usize, f64) {
-    let on = |x: V3| -> Vec<usize> {
-        fd(x)
-            .into_iter()
-            .filter(|hit| hit.dist.abs() <= 0.01 * h)
-            .map(|hit| hit.face)
-            .collect()
-    };
+    let on = |x: V3| -> Vec<usize> { fd(x).into_iter().filter(|hit| hit.dist.abs() <= 0.01 * h).map(|hit| hit.face).collect() };
     let (mut count, mut area) = (0, 0.0);
     for faces in m.surfaces.values() {
         for f in faces {
             let corners = [0, 1, 2].map(|k| on(m.nodes[f[k]]));
-            if corners.iter().any(Vec::is_empty)
-                || corners[0]
-                    .iter()
-                    .any(|face| corners[1].contains(face) && corners[2].contains(face))
-            {
+            if corners.iter().any(Vec::is_empty) || corners[0].iter().any(|face| corners[1].contains(face) && corners[2].contains(face)) {
                 continue;
             }
             let (p, q, r) = (m.nodes[f[0]], m.nodes[f[1]], m.nodes[f[2]]);
-            let (u, v) = (
-                [q[0] - p[0], q[1] - p[1], q[2] - p[2]],
-                [r[0] - p[0], r[1] - p[1], r[2] - p[2]],
-            );
-            let c = [
-                u[1] * v[2] - u[2] * v[1],
-                u[2] * v[0] - u[0] * v[2],
-                u[0] * v[1] - u[1] * v[0],
-            ];
+            let (u, v) = ([q[0] - p[0], q[1] - p[1], q[2] - p[2]], [r[0] - p[0], r[1] - p[1], r[2] - p[2]]);
+            let c = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
             count += 1;
             area += 0.5 * (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
         }
@@ -560,52 +291,15 @@ fn bridges(m: &Mesh, fd: &dyn Fn(V3) -> Vec<FaceHit>, h: f64) -> (usize, f64) {
 #[ignore = "slow: about a minute in release"]
 fn no_boundary_facet_bridges_the_concave_plate_boss_rim() {
     let size = |_: V3| 10.0;
-    let face = |p: V3| {
-        boss_face_hits(p)
-            .into_iter()
-            .min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))
-            .unwrap()
-            .face
-    };
-    let solid = Solid {
-        lo: [0.0, 0.0, 0.0],
-        hi: [12.0, 4.0, 4.0],
-        sdf: &boss_sdf,
-        size: &size,
-        face_of: &face,
-        face_dists: Some(&boss_faces),
-    };
-    let run = |repair: bool| {
-        mesh_solid_reported(
-            &solid,
-            Elastic::new(1.0, 0.3),
-            TetOptions {
-                base: 0.6,
-                boundary_size: BOSS_H,
-                repair,
-                ..Default::default()
-            },
-        )
-        .unwrap()
-    };
+    let face = |p: V3| boss_face_hits(p).into_iter().min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs())).unwrap().face;
+    let solid = Solid { lo: [0.0, 0.0, 0.0], hi: [12.0, 4.0, 4.0], sdf: &boss_sdf, size: &size, face_of: &face, face_dists: Some(&boss_faces) };
+    let run = |repair: bool| mesh_solid_reported(&solid, Elastic::new(1.0, 0.3), TetOptions { base: 0.6, boundary_size: BOSS_H, repair, ..Default::default() }).unwrap();
     let (plain, _, _) = run(false);
     let (repaired, _, report) = run(true);
-    let (before, after) = (
-        bridges(&plain, &boss_faces, BOSS_H),
-        bridges(&repaired, &boss_faces, BOSS_H),
-    );
+    let (before, after) = (bridges(&plain, &boss_faces, BOSS_H), bridges(&repaired, &boss_faces, BOSS_H));
     eprintln!("bridges without repair {before:?}, with repair {after:?}, report {report:?}");
-    assert!(
-        before.0 > 0,
-        "the fixture no longer has a facet across the rim"
-    );
+    assert!(before.0 > 0, "the fixture no longer has a facet across the rim");
     // Phase 173 residual: bridges whose disk holds a boundary vertex sunk inside the solid beside the rim (K lies 0.04 to 0.36
     // of the size in front of that facet) are refused, about 5 % of the area before (docs/issue-46-phase-173.md).
-    assert!(
-        after.1 <= 0.15 * before.1,
-        "{} facets ({:.5}) still bridge the rim, against {:.5} without repair",
-        after.0,
-        after.1,
-        before.1
-    );
+    assert!(after.1 <= 0.15 * before.1, "{} facets ({:.5}) still bridge the rim, against {:.5} without repair", after.0, after.1, before.1);
 }

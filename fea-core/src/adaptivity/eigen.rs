@@ -22,7 +22,7 @@ use super::snapshot::SolverSnapshot;
 use super::transfer::{NodalInterpolation, StateTransferOperator};
 use crate::adapt::{size_field_at_nodes, size_field_at_nodes_3d, AdaptOptions, NodalSize};
 use crate::analysis::Model;
-use crate::dynamics::{ModalOptions, Mode};
+use crate::dynamics::{Mode, ModalOptions};
 use crate::meshing::quality::QualityThresholds;
 use crate::meshing::MeshError;
 
@@ -49,9 +49,7 @@ pub fn clusters(omega2: &[f64], rel_tol: f64) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut start = 0;
     for i in 1..=omega2.len() {
-        let split = i == omega2.len()
-            || (omega2[i] - omega2[i - 1]).abs()
-                > rel_tol * omega2[i - 1].abs().max(f64::MIN_POSITIVE);
+        let split = i == omega2.len() || (omega2[i] - omega2[i - 1]).abs() > rel_tol * omega2[i - 1].abs().max(f64::MIN_POSITIVE);
         if split {
             out.push((start, i - 1));
             start = i;
@@ -61,20 +59,14 @@ pub fn clusters(omega2: &[f64], rel_tol: f64) -> Vec<(usize, usize)> {
 }
 
 /// Estimate the error of modes `first..=last` (a cluster, or a single mode when `first == last`).
-pub fn estimate_modes(
-    model: &Model,
-    modes: &[Mode],
-    first: usize,
-    last: usize,
-) -> Result<ModeEstimate, MeshError> {
+pub fn estimate_modes(model: &Model, modes: &[Mode], first: usize, last: usize) -> Result<ModeEstimate, MeshError> {
     let mut indicator = vec![0.0; model.mesh.n_elems()];
     let (mut value, mut error) = (0.0, 0.0);
     let mut reliability = Reliability::Reliable;
     for (k, m) in modes.iter().enumerate().take(last + 1).skip(first) {
         let zz = model.zz_error(&m.shape, 0.0).map_err(MeshError::Failed)?;
         if zz.eta.iter().any(|v| !v.is_finite()) {
-            reliability =
-                Reliability::Failed(format!("the stress recovery of mode {k} is not finite"));
+            reliability = Reliability::Failed(format!("the stress recovery of mode {k} is not finite"));
         }
         for (acc, e) in indicator.iter_mut().zip(&zz.eta) {
             *acc += e * e;
@@ -85,15 +77,7 @@ pub fn estimate_modes(
     if last > first && reliability == Reliability::Reliable {
         reliability = Reliability::Degraded(format!("modes {first}..={last} form a cluster of repeated eigenvalues: the estimate is for the cluster, not for a single mode"));
     }
-    Ok(ModeEstimate {
-        modes: (first..=last).collect(),
-        value,
-        error,
-        relative_error: error / value.abs().max(f64::MIN_POSITIVE),
-        corrected: value - error,
-        indicator,
-        reliability,
-    })
+    Ok(ModeEstimate { modes: (first..=last).collect(), value, error, relative_error: error / value.abs().max(f64::MIN_POSITIVE), corrected: value - error, indicator, reliability })
 }
 
 /// Modal assurance criterion in the mass inner product `m`: `(a.M.b)^2 / ((a.M.a)(b.M.b))`, 1 for the same shape.
@@ -102,31 +86,14 @@ pub fn mac(mass_times: &dyn Fn(&[f64]) -> Vec<f64>, a: &[f64], b: &[f64]) -> f64
     let ma = mass_times(a);
     let dot = |x: &[f64], y: &[f64]| x.iter().zip(y).map(|(p, q)| p * q).sum::<f64>();
     let (ab, aa, bb) = (dot(a, &mb), dot(a, &ma), dot(b, &mb));
-    if aa <= 0.0 || bb <= 0.0 {
-        0.0
-    } else {
-        ab * ab / (aa * bb)
-    }
+    if aa <= 0.0 || bb <= 0.0 { 0.0 } else { ab * ab / (aa * bb) }
 }
 
 /// The mode of `new` that continues `old_shape` of `old`: the largest MAC and its value.
-pub fn track(
-    old: &Model,
-    old_shape: &[f64],
-    new: &Model,
-    new_modes: &[Mode],
-) -> Result<(usize, f64), MeshError> {
-    let snap = SolverSnapshot::new(&old.mesh, old_shape.to_vec(), 0.0, "mode")
-        .map_err(MeshError::Failed)?;
-    let carried = NodalInterpolation {
-        max_unlocated_fraction: 0.2,
-    }
-    .transfer(old, &snap, &new.mesh)?
-    .snapshot
-    .u;
-    let m = new
-        .assemble_mass(crate::dynamics::MassKind::Consistent)
-        .map_err(MeshError::Failed)?;
+pub fn track(old: &Model, old_shape: &[f64], new: &Model, new_modes: &[Mode]) -> Result<(usize, f64), MeshError> {
+    let snap = SolverSnapshot::new(&old.mesh, old_shape.to_vec(), 0.0, "mode").map_err(MeshError::Failed)?;
+    let carried = NodalInterpolation { max_unlocated_fraction: 0.2 }.transfer(old, &snap, &new.mesh)?.snapshot.u;
+    let m = new.assemble_mass(crate::dynamics::MassKind::Consistent).map_err(MeshError::Failed)?;
     let mass_times = |v: &[f64]| -> Vec<f64> {
         let mut out = vec![0.0; v.len()];
         m.matvec_add(&new.pattern, v, &mut out);
@@ -173,15 +140,7 @@ impl Default for EigenConfig {
             budget: Budget::default(),
             refine_ratio: 0.5,
             max_growth: 3.0,
-            adapt: AdaptOptions {
-                target_rel_error: 0.0,
-                order: 2.0,
-                min_factor: 0.0,
-                max_factor: 1.0,
-                grading: 0.4,
-                h_min: 0.0,
-                h_max: f64::INFINITY,
-            },
+            adapt: AdaptOptions { target_rel_error: 0.0, order: 2.0, min_factor: 0.0, max_factor: 1.0, grading: 0.4, h_min: 0.0, h_max: f64::INFINITY },
             cluster_tol: 1e-3,
             mac_min: 0.8,
             extra_modes: 3,
@@ -226,26 +185,14 @@ pub struct EigenResult {
 }
 
 fn modal(p: &MeshedProblem, n: usize) -> Result<Vec<Mode>, MeshError> {
-    let opt = ModalOptions {
-        n_modes: n,
-        ..ModalOptions::default()
-    };
-    p.model
-        .modal(&p.bc, &opt)
-        .map(|m| m.modes)
-        .map_err(MeshError::Failed)
+    let opt = ModalOptions { n_modes: n, ..ModalOptions::default() };
+    p.model.modal(&p.bc, &opt).map(|m| m.modes).map_err(MeshError::Failed)
 }
 
 /// Adaptive refinement of the natural frequencies in `cfg.modes`.
-pub fn run_eigen_amr(
-    initial: MeshedProblem,
-    mesher: &mut dyn FnMut(&AdaptSize) -> Result<MeshedProblem, String>,
-    cfg: &EigenConfig,
-) -> Result<EigenResult, MeshError> {
+pub fn run_eigen_amr(initial: MeshedProblem, mesher: &mut dyn FnMut(&AdaptSize) -> Result<MeshedProblem, String>, cfg: &EigenConfig) -> Result<EigenResult, MeshError> {
     if cfg.modes.is_empty() {
-        return Err(MeshError::Failed(
-            "at least one mode must be followed".into(),
-        ));
+        return Err(MeshError::Failed("at least one mode must be followed".into()));
     }
     let dim = initial.model.mesh.dim();
     let children = (1.0 / cfg.refine_ratio).powi(dim as i32);
@@ -283,187 +230,65 @@ pub fn run_eigen_amr(
             elements: current.model.mesh.n_elems(),
             tracked: tracked.clone(),
             omega2: tracked.iter().map(|&t| modes[t].omega2).collect(),
-            relative_error: tracked
-                .iter()
-                .map(|&t| {
-                    estimates
-                        .iter()
-                        .find(|e| e.modes.contains(&t))
-                        .map_or(f64::NAN, |e| e.relative_error)
-                })
-                .collect(),
+            relative_error: tracked.iter().map(|&t| estimates.iter().find(|e| e.modes.contains(&t)).map_or(f64::NAN, |e| e.relative_error)).collect(),
             mac: mac_prev.clone(),
             clusters: groups.clone(),
             marked: 0,
-            reliability: estimates
-                .iter()
-                .filter_map(|e| {
-                    if let Reliability::Degraded(w) | Reliability::Failed(w) = &e.reliability {
-                        Some(w.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
+            reliability: estimates.iter().filter_map(|e| if let Reliability::Degraded(w) | Reliability::Failed(w) = &e.reliability { Some(w.clone()) } else { None }).collect(),
         };
-        let result = |history: &mut Vec<EigenCycle>,
-                      rec: EigenCycle,
-                      stop: EigenStop,
-                      current: MeshedProblem,
-                      modes: Vec<Mode>,
-                      tracked: Vec<usize>| {
+        let result = |history: &mut Vec<EigenCycle>, rec: EigenCycle, stop: EigenStop, current: MeshedProblem, modes: Vec<Mode>, tracked: Vec<usize>| {
             history.push(rec);
-            Ok(EigenResult {
-                problem: current,
-                modes,
-                tracked,
-                stop,
-                history: std::mem::take(history),
-            })
+            Ok(EigenResult { problem: current, modes, tracked, stop, history: std::mem::take(history) })
         };
-        if estimates
-            .iter()
-            .any(|e| matches!(e.reliability, Reliability::Failed(_)))
-        {
-            return result(
-                &mut history,
-                rec,
-                EigenStop::RolledBack("an eigen-estimate failed".into()),
-                current,
-                modes,
-                tracked,
-            );
+        if estimates.iter().any(|e| matches!(e.reliability, Reliability::Failed(_))) {
+            return result(&mut history, rec, EigenStop::RolledBack("an eigen-estimate failed".into()), current, modes, tracked);
         }
         if estimates.iter().all(|e| e.relative_error <= cfg.rel_tol) {
-            return result(
-                &mut history,
-                rec,
-                EigenStop::Converged,
-                current,
-                modes,
-                tracked,
-            );
+            return result(&mut history, rec, EigenStop::Converged, current, modes, tracked);
         }
         if cycle == cfg.max_cycles {
-            return result(
-                &mut history,
-                rec,
-                EigenStop::MaxCycles,
-                current,
-                modes,
-                tracked,
-            );
+            return result(&mut history, rec, EigenStop::MaxCycles, current, modes, tracked);
         }
         // mark
         let n = current.model.mesh.n_elems();
         let mandatory = vec![false; n];
         let mut marked = dorfler(&indicator, cfg.theta, &mandatory, false)?;
         let cost = crate::meshing::cost::MeshCost::of(&current.model.mesh)?;
-        let cap = cfg
-            .budget
-            .element_cap(cost.dofs, n)
-            .min((cfg.max_growth.max(1.0) * n as f64) as usize);
+        let cap = cfg.budget.element_cap(cost.dofs, n).min((cfg.max_growth.max(1.0) * n as f64) as usize);
         if !trim_to_budget(&mut marked.marked, &indicator, &mandatory, n, cap, children) {
-            return result(
-                &mut history,
-                rec,
-                EigenStop::BudgetExhausted,
-                current,
-                modes,
-                tracked,
-            );
+            return result(&mut history, rec, EigenStop::BudgetExhausted, current, modes, tracked);
         }
         marked.n_marked = marked.marked.iter().filter(|&&m| m).count();
         rec.marked = marked.n_marked;
         if marked.n_marked == 0 {
-            return result(
-                &mut history,
-                rec,
-                EigenStop::NothingToRefine,
-                current,
-                modes,
-                tracked,
-            );
+            return result(&mut history, rec, EigenStop::NothingToRefine, current, modes, tracked);
         }
         let h_old = element_sizes(&current)?;
-        let h_new: Vec<f64> = (0..n)
-            .map(|e| {
-                (if marked.marked[e] {
-                    h_old[e] * cfg.refine_ratio
-                } else {
-                    h_old[e]
-                })
-                .clamp(cfg.adapt.h_min.max(f64::MIN_POSITIVE), cfg.adapt.h_max)
-            })
-            .collect();
+        let h_new: Vec<f64> = (0..n).map(|e| (if marked.marked[e] { h_old[e] * cfg.refine_ratio } else { h_old[e] }).clamp(cfg.adapt.h_min.max(f64::MIN_POSITIVE), cfg.adapt.h_max)).collect();
         let size = if dim == 2 {
-            size_field_at_nodes(&current.model.mesh, &h_new, &cfg.adapt, NodalSize::Min)
-                .map(AdaptSize::D2)
+            size_field_at_nodes(&current.model.mesh, &h_new, &cfg.adapt, NodalSize::Min).map(AdaptSize::D2)
         } else {
-            size_field_at_nodes_3d(&current.model.mesh, &h_new, &cfg.adapt, NodalSize::Min)
-                .map(AdaptSize::D3)
+            size_field_at_nodes_3d(&current.model.mesh, &h_new, &cfg.adapt, NodalSize::Min).map(AdaptSize::D3)
         };
         let size = match size {
             Ok(s) => s,
-            Err(e) => {
-                return result(
-                    &mut history,
-                    rec,
-                    EigenStop::RolledBack(format!("size field: {e}")),
-                    current,
-                    modes,
-                    tracked,
-                )
-            }
+            Err(e) => return result(&mut history, rec, EigenStop::RolledBack(format!("size field: {e}")), current, modes, tracked),
         };
         let next = match mesher(&size) {
             Ok(p) => p,
-            Err(e) => {
-                return result(
-                    &mut history,
-                    rec,
-                    EigenStop::RolledBack(format!("the mesher failed: {e}")),
-                    current,
-                    modes,
-                    tracked,
-                )
-            }
+            Err(e) => return result(&mut history, rec, EigenStop::RolledBack(format!("the mesher failed: {e}")), current, modes, tracked),
         };
         let checks = (|| -> Result<(), String> {
-            next.model
-                .mesh
-                .quality()
-                .require(&cfg.quality)
-                .map_err(|e| e.to_string())?;
-            next.model
-                .mesh
-                .conformity()
-                .require_conforming()
-                .map_err(|e| e.to_string())?;
+            next.model.mesh.quality().require(&cfg.quality).map_err(|e| e.to_string())?;
+            next.model.mesh.conformity().require_conforming().map_err(|e| e.to_string())?;
             state_check(&current, &next, cfg.state_tolerance)
         })();
         if let Err(why) = checks {
-            return result(
-                &mut history,
-                rec,
-                EigenStop::RolledBack(why),
-                current,
-                modes,
-                tracked,
-            );
+            return result(&mut history, rec, EigenStop::RolledBack(why), current, modes, tracked);
         }
         let next_modes = match modal(&next, n_modes) {
             Ok(m) => m,
-            Err(e) => {
-                return result(
-                    &mut history,
-                    rec,
-                    EigenStop::RolledBack(format!("the new mesh has no modal solution: {e}")),
-                    current,
-                    modes,
-                    tracked,
-                )
-            }
+            Err(e) => return result(&mut history, rec, EigenStop::RolledBack(format!("the new mesh has no modal solution: {e}")), current, modes, tracked),
         };
         // follow every tracked mode; an unrecognisable continuation stops the run
         let mut new_tracked = Vec::new();
@@ -471,18 +296,8 @@ pub fn run_eigen_amr(
         for &t in &tracked {
             let (j, m) = track(&current.model, &modes[t].shape, &next.model, &next_modes)?;
             if m < cfg.mac_min {
-                let why = format!(
-                    "mode {t} has no continuation on the new mesh (best MAC {m:.3} < {})",
-                    cfg.mac_min
-                );
-                return result(
-                    &mut history,
-                    rec,
-                    EigenStop::ModeLost(why),
-                    current,
-                    modes,
-                    tracked,
-                );
+                let why = format!("mode {t} has no continuation on the new mesh (best MAC {m:.3} < {})", cfg.mac_min);
+                return result(&mut history, rec, EigenStop::ModeLost(why), current, modes, tracked);
             }
             new_tracked.push(j);
             new_mac.push(m);

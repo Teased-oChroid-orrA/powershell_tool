@@ -18,9 +18,9 @@
 //! Only the estimators that exist in this crate run; an assignment to one that does not (contact residuals, eigenvalue
 //! estimators) is reported as unmet by [`ZoneMap::unmet`], never silently replaced.
 
-use crate::mesh::Mesh;
 use crate::meshing::adjacency::Adjacency;
 use crate::meshing::MeshError;
+use crate::mesh::Mesh;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -53,9 +53,7 @@ impl Zone {
     pub fn physics(self) -> PhysicsEstimator {
         match self {
             Zone::Smooth => PhysicsEstimator::SprPlus,
-            Zone::Contact | Zone::GeometricDiscontinuity | Zone::Singular => {
-                PhysicsEstimator::Equilibrated
-            }
+            Zone::Contact | Zone::GeometricDiscontinuity | Zone::Singular => PhysicsEstimator::Equilibrated,
             Zone::ContactPerimeter => PhysicsEstimator::ContactResidual,
             Zone::FastenerBearing => PhysicsEstimator::LocalisedPhysics,
             Zone::BucklingSensitive => PhysicsEstimator::Eigenvalue,
@@ -85,27 +83,8 @@ pub struct ZoneSpec {
 
 impl Default for ZoneSpec {
     fn default() -> Self {
-        let beta = [
-            (Zone::Smooth, 1.0),
-            (Zone::Contact, 2.0),
-            (Zone::ContactPerimeter, 3.0),
-            (Zone::FastenerBearing, 2.0),
-            (Zone::GeometricDiscontinuity, 1.5),
-            (Zone::BucklingSensitive, 1.0),
-            (Zone::Singular, 0.5),
-        ]
-        .into_iter()
-        .collect();
-        Self {
-            contact_nodes: Vec::new(),
-            bearing_nodes: Vec::new(),
-            buckling_elements: Vec::new(),
-            reentrant_angle: 200f64.to_radians(),
-            sharp_angle: 160f64.to_radians(),
-            rings: 1,
-            beta,
-            detect_geometry: true,
-        }
+        let beta = [(Zone::Smooth, 1.0), (Zone::Contact, 2.0), (Zone::ContactPerimeter, 3.0), (Zone::FastenerBearing, 2.0), (Zone::GeometricDiscontinuity, 1.5), (Zone::BucklingSensitive, 1.0), (Zone::Singular, 0.5)].into_iter().collect();
+        Self { contact_nodes: Vec::new(), bearing_nodes: Vec::new(), buckling_elements: Vec::new(), reentrant_angle: 200f64.to_radians(), sharp_angle: 160f64.to_radians(), rings: 1, beta, detect_geometry: true }
     }
 }
 
@@ -128,12 +107,7 @@ impl ZoneMap {
         let mut m: HashMap<PhysicsEstimator, usize> = HashMap::new();
         for z in &self.zones {
             let p = z.physics();
-            if matches!(
-                p,
-                PhysicsEstimator::ContactResidual
-                    | PhysicsEstimator::LocalisedPhysics
-                    | PhysicsEstimator::Eigenvalue
-            ) {
+            if matches!(p, PhysicsEstimator::ContactResidual | PhysicsEstimator::LocalisedPhysics | PhysicsEstimator::Eigenvalue) {
                 *m.entry(p).or_default() += 1;
             }
         }
@@ -154,16 +128,9 @@ pub struct DefaultZoneResolver {
 }
 
 fn corner_angle(mesh: &Mesh, elem_nodes: &[usize], node: usize) -> f64 {
-    let c = elem_nodes
-        .iter()
-        .position(|&n| n == node)
-        .expect("the element contains the node");
+    let c = elem_nodes.iter().position(|&n| n == node).expect("the element contains the node");
     let nc = elem_nodes.len();
-    let (p, a, b) = (
-        mesh.nodes[node],
-        mesh.nodes[elem_nodes[(c + 1) % nc]],
-        mesh.nodes[elem_nodes[(c + nc - 1) % nc]],
-    );
+    let (p, a, b) = (mesh.nodes[node], mesh.nodes[elem_nodes[(c + 1) % nc]], mesh.nodes[elem_nodes[(c + nc - 1) % nc]]);
     let (u, v) = ([a[0] - p[0], a[1] - p[1]], [b[0] - p[0], b[1] - p[1]]);
     let cs = (u[0] * v[0] + u[1] * v[1]) / (u[0].hypot(u[1]) * v[0].hypot(v[1]));
     cs.clamp(-1.0, 1.0).acos()
@@ -269,10 +236,7 @@ impl PhysicsZoneResolver for DefaultZoneResolver {
                 n_comp += 1;
             }
             let mut extent = vec![0.0f64; n_comp];
-            let (mut lo, mut hi) = (
-                vec![[f64::INFINITY; 2]; n_comp],
-                vec![[f64::NEG_INFINITY; 2]; n_comp],
-            );
+            let (mut lo, mut hi) = (vec![[f64::INFINITY; 2]; n_comp], vec![[f64::NEG_INFINITY; 2]; n_comp]);
             for &n in &starts {
                 for k in 0..2 {
                     lo[comp[n]][k] = lo[comp[n]][k].min(mesh.nodes[n][k]);
@@ -283,21 +247,9 @@ impl PhysicsZoneResolver for DefaultZoneResolver {
                 extent[c] = (hi[c][0] - lo[c][0]) * (hi[c][1] - lo[c][1]);
             }
             let outer = (0..n_comp).max_by(|&a, &b| extent[a].total_cmp(&extent[b]));
-            let hole_nodes: Vec<usize> = starts
-                .iter()
-                .copied()
-                .filter(|&n| Some(comp[n]) != outer)
-                .collect();
-            set(
-                &mut zones,
-                &ring_elems(&hole_nodes),
-                Zone::GeometricDiscontinuity,
-            );
-            set(
-                &mut zones,
-                &ring_elems(&sharp),
-                Zone::GeometricDiscontinuity,
-            );
+            let hole_nodes: Vec<usize> = starts.iter().copied().filter(|&n| Some(comp[n]) != outer).collect();
+            set(&mut zones, &ring_elems(&hole_nodes), Zone::GeometricDiscontinuity);
+            set(&mut zones, &ring_elems(&sharp), Zone::GeometricDiscontinuity);
             set(&mut zones, &ring_elems(&reentrant), Zone::Singular);
             singular_nodes = reentrant;
             let _ = bedges;
@@ -324,29 +276,15 @@ impl PhysicsZoneResolver for DefaultZoneResolver {
             set(&mut zones, &full, Zone::Contact);
             // the perimeter is the ring of elements around the contact elements that is not itself in contact
             let around = ring_elems(&spec.contact_nodes);
-            let perimeter: Vec<usize> = around
-                .into_iter()
-                .filter(|&e| zones[e] == Zone::Smooth)
-                .collect();
+            let perimeter: Vec<usize> = around.into_iter().filter(|&e| zones[e] == Zone::Smooth).collect();
             set(&mut zones, &perimeter, Zone::ContactPerimeter);
         }
         if !spec.bearing_nodes.is_empty() {
-            set(
-                &mut zones,
-                &ring_elems(&spec.bearing_nodes),
-                Zone::FastenerBearing,
-            );
+            set(&mut zones, &ring_elems(&spec.bearing_nodes), Zone::FastenerBearing);
         }
         set(&mut zones, &spec.buckling_elements, Zone::BucklingSensitive);
-        let beta = zones
-            .iter()
-            .map(|z| spec.beta.get(z).copied().unwrap_or(1.0))
-            .collect();
-        Ok(ZoneMap {
-            zones,
-            beta,
-            singular_nodes,
-        })
+        let beta = zones.iter().map(|z| spec.beta.get(z).copied().unwrap_or(1.0)).collect();
+        Ok(ZoneMap { zones, beta, singular_nodes })
     }
 }
 
@@ -358,28 +296,14 @@ mod tests {
     use crate::mesh::{Elastic, Physics};
 
     fn square(n: usize) -> Mesh {
-        grid(
-            Physics::PlaneStress { thickness: 1.0 },
-            ElementKind::Quad4,
-            Elastic::new(1.0, 0.3),
-            [n, n, 1],
-            &|p| p,
-        )
-        .unwrap()
+        grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad4, Elastic::new(1.0, 0.3), [n, n, 1], &|p| p).unwrap()
     }
 
     #[test]
     fn a_plain_square_is_smooth_except_at_its_sharp_corners() {
         let m = square(8);
         let adj = m.adjacency();
-        let z = DefaultZoneResolver {
-            spec: ZoneSpec {
-                rings: 0,
-                ..Default::default()
-            },
-        }
-        .resolve(&m, &adj)
-        .unwrap();
+        let z = DefaultZoneResolver { spec: ZoneSpec { rings: 0, ..Default::default() } }.resolve(&m, &adj).unwrap();
         // the four 90 degree corners are sharp convex corners: one element each
         assert_eq!(z.count(Zone::GeometricDiscontinuity), 4);
         assert_eq!(z.count(Zone::Singular), 0);
@@ -403,22 +327,11 @@ mod tests {
                 conn.extend_from_slice(c);
             }
         }
-        l.add_block(ElementKind::Quad4, conn, Elastic::new(1.0, 0.3), "l")
-            .unwrap();
+        l.add_block(ElementKind::Quad4, conn, Elastic::new(1.0, 0.3), "l").unwrap();
         // drop unused nodes so the boundary graph is clean
         let adj = l.adjacency();
-        let z = DefaultZoneResolver {
-            spec: ZoneSpec {
-                rings: 0,
-                ..Default::default()
-            },
-        }
-        .resolve(&l, &adj)
-        .unwrap();
-        assert!(
-            z.count(Zone::Singular) >= 1,
-            "the re-entrant corner must be singular"
-        );
+        let z = DefaultZoneResolver { spec: ZoneSpec { rings: 0, ..Default::default() } }.resolve(&l, &adj).unwrap();
+        assert!(z.count(Zone::Singular) >= 1, "the re-entrant corner must be singular");
         assert_eq!(z.singular_nodes.len(), 1);
         let c = z.singular_nodes[0];
         assert!((l.nodes[c][0] - 0.5).abs() < 1e-9 && (l.nodes[c][1] - 0.5).abs() < 1e-9);
@@ -429,62 +342,32 @@ mod tests {
         let mut conn = Vec::new();
         for e in 0..h.blocks[0].n_elems() {
             let c = h.blocks[0].elem(e);
-            let (x, y) = (
-                c.iter().map(|&n| h.nodes[n][0]).sum::<f64>() / 4.0,
-                c.iter().map(|&n| h.nodes[n][1]).sum::<f64>() / 4.0,
-            );
+            let (x, y) = (c.iter().map(|&n| h.nodes[n][0]).sum::<f64>() / 4.0, c.iter().map(|&n| h.nodes[n][1]).sum::<f64>() / 4.0);
             if !((x - 0.5).abs() < 0.13 && (y - 0.5).abs() < 0.13) {
                 conn.extend_from_slice(c);
             }
         }
-        holed
-            .add_block(ElementKind::Quad4, conn, Elastic::new(1.0, 0.3), "h")
-            .unwrap();
+        holed.add_block(ElementKind::Quad4, conn, Elastic::new(1.0, 0.3), "h").unwrap();
         let adj = holed.adjacency();
-        let z = DefaultZoneResolver {
-            spec: ZoneSpec {
-                rings: 0,
-                ..Default::default()
-            },
-        }
-        .resolve(&holed, &adj)
-        .unwrap();
+        let z = DefaultZoneResolver { spec: ZoneSpec { rings: 0, ..Default::default() } }.resolve(&holed, &adj).unwrap();
         // 2 x 2 hole: 12 elements touch its boundary nodes; the 90 degree concave hole corners are re-entrant (270 degrees)
-        assert!(
-            z.count(Zone::GeometricDiscontinuity) + z.count(Zone::Singular) >= 12,
-            "{} {}",
-            z.count(Zone::GeometricDiscontinuity),
-            z.count(Zone::Singular)
-        );
+        assert!(z.count(Zone::GeometricDiscontinuity) + z.count(Zone::Singular) >= 12, "{} {}", z.count(Zone::GeometricDiscontinuity), z.count(Zone::Singular));
     }
 
     #[test]
     fn contact_bearing_and_buckling_lists_set_their_zones_and_unmet_estimators_are_reported() {
         let m = square(6);
         let adj = m.adjacency();
-        let contact: Vec<usize> = (0..m.nodes.len())
-            .filter(|&n| (m.nodes[n][1] - 0.5).abs() < 1e-9 && m.nodes[n][0] <= 0.5 + 1e-9)
-            .collect();
-        let spec = ZoneSpec {
-            contact_nodes: contact,
-            bearing_nodes: vec![0],
-            buckling_elements: vec![35],
-            detect_geometry: false,
-            rings: 1,
-            ..Default::default()
-        };
+        let contact: Vec<usize> = (0..m.nodes.len()).filter(|&n| (m.nodes[n][1] - 0.5).abs() < 1e-9 && m.nodes[n][0] <= 0.5 + 1e-9).collect();
+        let spec = ZoneSpec { contact_nodes: contact, bearing_nodes: vec![0], buckling_elements: vec![35], detect_geometry: false, rings: 1, ..Default::default() };
         let z = DefaultZoneResolver { spec }.resolve(&m, &adj).unwrap();
         assert!(z.count(Zone::ContactPerimeter) > 0);
         assert_eq!(z.zones[35], Zone::BucklingSensitive);
         assert!(z.count(Zone::FastenerBearing) > 0);
         assert!(z.beta.iter().all(|&b| b > 0.0));
         let unmet = z.unmet();
-        assert!(unmet
-            .iter()
-            .any(|u| u.0 == PhysicsEstimator::Eigenvalue && u.1 == 1));
-        assert!(unmet
-            .iter()
-            .any(|u| u.0 == PhysicsEstimator::ContactResidual));
+        assert!(unmet.iter().any(|u| u.0 == PhysicsEstimator::Eigenvalue && u.1 == 1));
+        assert!(unmet.iter().any(|u| u.0 == PhysicsEstimator::ContactResidual));
         assert!(!Zone::Singular.uses_adjoint() && Zone::Smooth.uses_adjoint());
     }
 }

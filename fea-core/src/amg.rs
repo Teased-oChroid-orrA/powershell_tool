@@ -44,25 +44,14 @@ pub struct AmgOptions {
 
 impl Default for AmgOptions {
     fn default() -> Self {
-        Self {
-            coarse_size: 1500,
-            max_levels: 12,
-            strength: 0.0,
-            sweeps: 2,
-        }
+        Self { coarse_size: 1500, max_levels: 12, strength: 0.0, sweeps: 2 }
     }
 }
 
 impl Amg {
     /// Build the hierarchy for SPD `a` whose unknowns are grouped into nodes (`node_ptr`, length
     /// `n_nodes + 1`) with near-null space `b` (`n x nb`, row major).
-    pub fn new(
-        a: Csr,
-        node_ptr: Vec<usize>,
-        b: Vec<f64>,
-        nb: usize,
-        opt: AmgOptions,
-    ) -> Result<Self, SolveError> {
+    pub fn new(a: Csr, node_ptr: Vec<usize>, b: Vec<f64>, nb: usize, opt: AmgOptions) -> Result<Self, SolveError> {
         let (mut a, mut node_ptr, mut b) = (a, node_ptr, b);
         let mut levels = Vec::new();
         loop {
@@ -85,12 +74,7 @@ impl Amg {
         }
         let (cp, ci, cv) = a.to_lower_csc();
         let coarse = CscCholesky::new(a.n_rows, &cp, &ci, &cv)?;
-        Ok(Self {
-            sweeps: opt.sweeps.max(1),
-            levels,
-            coarse_a: a,
-            coarse,
-        })
+        Ok(Self { sweeps: opt.sweeps.max(1), levels, coarse_a: a, coarse })
     }
 
     pub fn n_levels(&self) -> usize {
@@ -99,19 +83,12 @@ impl Amg {
 
     /// Unknowns per level, finest first.
     pub fn sizes(&self) -> Vec<usize> {
-        self.levels
-            .iter()
-            .map(|l| l.a.n_rows)
-            .chain(std::iter::once(self.coarse_a.n_rows))
-            .collect()
+        self.levels.iter().map(|l| l.a.n_rows).chain(std::iter::once(self.coarse_a.n_rows)).collect()
     }
 
     /// Operator complexity: total nonzeros over the fine-level nonzeros.
     pub fn complexity(&self) -> f64 {
-        let fine = self
-            .levels
-            .first()
-            .map_or(self.coarse_a.nnz(), |l| l.a.nnz()) as f64;
+        let fine = self.levels.first().map_or(self.coarse_a.nnz(), |l| l.a.nnz()) as f64;
         (self.levels.iter().map(|l| l.a.nnz()).sum::<usize>() + self.coarse_a.nnz()) as f64 / fine
     }
 
@@ -214,9 +191,7 @@ fn aggregate(nodes: usize, nbrs: &[Vec<u32>]) -> (Vec<u32>, usize) {
 /// Spectral radius estimate of `D^-1 A` by power iteration.
 fn spectral_radius(a: &Csr, diag: &[f64]) -> f64 {
     let n = a.n_rows;
-    let mut v: Vec<f64> = (0..n)
-        .map(|i| 1.0 + ((i * 2654435761) % 1000) as f64 * 1e-3)
-        .collect();
+    let mut v: Vec<f64> = (0..n).map(|i| 1.0 + ((i * 2654435761) % 1000) as f64 * 1e-3).collect();
     let mut w = vec![0.0; n];
     let mut rho = 1.0;
     for _ in 0..20 {
@@ -234,13 +209,7 @@ fn spectral_radius(a: &Csr, diag: &[f64]) -> f64 {
 
 /// Tentative prolongator from per-aggregate QR of the near-null space, smoothed by one damped
 /// Jacobi step. Returns `(P, coarse node_ptr, coarse near-null space)`.
-fn tentative_and_smooth(
-    a: &Csr,
-    node_ptr: &[usize],
-    b: &[f64],
-    nb: usize,
-    strength: f64,
-) -> (Csr, Vec<usize>, Vec<f64>) {
+fn tentative_and_smooth(a: &Csr, node_ptr: &[usize], b: &[f64], nb: usize, strength: f64) -> (Csr, Vec<usize>, Vec<f64>) {
     let n = a.n_rows;
     let nodes = node_ptr.len() - 1;
     let mut node_of = vec![0u32; n];
@@ -252,30 +221,17 @@ fn tentative_and_smooth(
     // Node graph: connections whose block norm is at least `strength` of the geometric mean of the
     // two diagonal block norms.
     let mut nbrs: Vec<Vec<u32>> = vec![Vec::new(); nodes];
-    let mut block_norm: Vec<std::collections::HashMap<u32, f64>> =
-        vec![std::collections::HashMap::new(); nodes];
+    let mut block_norm: Vec<std::collections::HashMap<u32, f64>> = vec![std::collections::HashMap::new(); nodes];
     for i in 0..n {
         let ni = node_of[i] as usize;
         for k in a.ptr[i]..a.ptr[i + 1] {
-            *block_norm[ni]
-                .entry(node_of[a.idx[k] as usize])
-                .or_insert(0.0) += a.val[k] * a.val[k];
+            *block_norm[ni].entry(node_of[a.idx[k] as usize]).or_insert(0.0) += a.val[k] * a.val[k];
         }
     }
-    let diag_norm: Vec<f64> = (0..nodes)
-        .map(|i| {
-            block_norm[i]
-                .get(&(i as u32))
-                .copied()
-                .unwrap_or(0.0)
-                .sqrt()
-        })
-        .collect();
+    let diag_norm: Vec<f64> = (0..nodes).map(|i| block_norm[i].get(&(i as u32)).copied().unwrap_or(0.0).sqrt()).collect();
     for i in 0..nodes {
         for (&j, &sq) in &block_norm[i] {
-            if j as usize != i
-                && sq.sqrt() >= strength * (diag_norm[i] * diag_norm[j as usize]).sqrt()
-            {
+            if j as usize != i && sq.sqrt() >= strength * (diag_norm[i] * diag_norm[j as usize]).sqrt() {
                 nbrs[i].push(j);
             }
         }
@@ -308,19 +264,9 @@ fn tentative_and_smooth(
     let mut b_c: Vec<f64> = Vec::new();
     let mut n_coarse = 0usize;
     for mem in &members {
-        let dofs: Vec<usize> = mem
-            .iter()
-            .flat_map(|&nd| node_ptr[nd]..node_ptr[nd + 1])
-            .collect();
+        let dofs: Vec<usize> = mem.iter().flat_map(|&nd| node_ptr[nd]..node_ptr[nd + 1]).collect();
         let m = dofs.len();
-        let col_norm: Vec<f64> = (0..nb)
-            .map(|c| {
-                dofs.iter()
-                    .map(|&d| b[d * nb + c].powi(2))
-                    .sum::<f64>()
-                    .sqrt()
-            })
-            .collect();
+        let col_norm: Vec<f64> = (0..nb).map(|c| dofs.iter().map(|&d| b[d * nb + c].powi(2)).sum::<f64>().sqrt()).collect();
         // Orthonormal basis of the column space (dependent columns, e.g. a rotation about the axis of
         // collinear nodes, are dropped), then the coarse near-null space is R = Q^T B.
         let mut q: Vec<Vec<f64>> = Vec::new();
@@ -341,14 +287,7 @@ fn tentative_and_smooth(
             }
         }
         let rank = q.len();
-        let r_rows: Vec<Vec<f64>> = q
-            .iter()
-            .map(|qk| {
-                (0..nb)
-                    .map(|c| dofs.iter().zip(qk).map(|(&d, qv)| qv * b[d * nb + c]).sum())
-                    .collect()
-            })
-            .collect();
+        let r_rows: Vec<Vec<f64>> = q.iter().map(|qk| (0..nb).map(|c| dofs.iter().zip(qk).map(|(&d, qv)| qv * b[d * nb + c]).sum()).collect()).collect();
         for k in 0..rank {
             for (i, &d) in dofs.iter().enumerate() {
                 rows[d].push(((n_coarse + k) as u32, q[k][i]));
@@ -363,13 +302,7 @@ fn tentative_and_smooth(
         p_val.extend(r.iter().map(|e| e.1));
         p_ptr.push(p_idx.len());
     }
-    let p_tent = Csr {
-        n_rows: n,
-        n_cols: n_coarse,
-        ptr: p_ptr,
-        idx: p_idx,
-        val: p_val,
-    };
+    let p_tent = Csr { n_rows: n, n_cols: n_coarse, ptr: p_ptr, idx: p_idx, val: p_val };
     // P = (I - omega D^-1 A) P_tent, built as S * P_tent with S = I - omega D^-1 A.
     let diag = a.diagonal();
     let omega = 4.0 / (3.0 * spectral_radius(a, &diag));
@@ -391,23 +324,12 @@ pub struct PcgReport {
 }
 
 /// Preconditioned conjugate gradients for SPD `a`, zero initial guess.
-pub fn pcg(
-    a: &Csr,
-    b: &[f64],
-    x: &mut [f64],
-    precond: &dyn Fn(&[f64], &mut [f64]),
-    tol: f64,
-    max_iter: usize,
-) -> PcgReport {
+pub fn pcg(a: &Csr, b: &[f64], x: &mut [f64], precond: &dyn Fn(&[f64], &mut [f64]), tol: f64, max_iter: usize) -> PcgReport {
     let n = a.n_rows;
     x.iter_mut().for_each(|v| *v = 0.0);
     let bnorm = b.iter().map(|v| v * v).sum::<f64>().sqrt();
     if bnorm == 0.0 {
-        return PcgReport {
-            iterations: 0,
-            rel_residual: 0.0,
-            converged: true,
-        };
+        return PcgReport { iterations: 0, rel_residual: 0.0, converged: true };
     }
     let mut r = b.to_vec();
     let mut z = vec![0.0; n];
@@ -420,11 +342,7 @@ pub fn pcg(
         a.spmv(&p, &mut ap);
         let pap: f64 = p.iter().zip(&ap).map(|(a, b)| a * b).sum();
         if pap <= 0.0 || !pap.is_finite() {
-            return PcgReport {
-                iterations: it,
-                rel_residual: rel,
-                converged: false,
-            };
+            return PcgReport { iterations: it, rel_residual: rel, converged: false };
         }
         let alpha = rz / pap;
         for i in 0..n {
@@ -433,11 +351,7 @@ pub fn pcg(
         }
         rel = r.iter().map(|v| v * v).sum::<f64>().sqrt() / bnorm;
         if rel < tol {
-            return PcgReport {
-                iterations: it,
-                rel_residual: rel,
-                converged: true,
-            };
+            return PcgReport { iterations: it, rel_residual: rel, converged: true };
         }
         precond(&r, &mut z);
         let rz_new: f64 = r.iter().zip(&z).map(|(a, b)| a * b).sum();
@@ -447,9 +361,5 @@ pub fn pcg(
             p[i] = z[i] + beta * p[i];
         }
     }
-    PcgReport {
-        iterations: max_iter,
-        rel_residual: rel,
-        converged: false,
-    }
+    PcgReport { iterations: max_iter, rel_residual: rel, converged: false }
 }

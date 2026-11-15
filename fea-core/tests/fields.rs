@@ -38,9 +38,7 @@ fn generalized_sparse_assembly_solves_a_bar_with_nonzero_prescription() {
     let system = assembly.finish();
     assert_eq!(system.nonzeros(), 5);
     let solution = system.solve(&bc, 1e-12).unwrap();
-    fea_core::report::AcceptanceReport::fields(&solution, 1e-12)
-        .require()
-        .unwrap();
+    fea_core::report::AcceptanceReport::fields(&solution, 1e-12).require().unwrap();
     for (got, want) in solution.values.iter().zip([0.2, 0.7, 1.2]) {
         assert!((got - want).abs() < 1e-12);
     }

@@ -7,7 +7,7 @@ use crate::kernel::{self, Work};
 use crate::linear::Dirichlet;
 use crate::loads::{self, Loads};
 use crate::mesh::Physics;
-use crate::ElementKind;
+use crate::{ElementKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -25,11 +25,7 @@ pub struct Issue {
 }
 
 fn issue(severity: Severity, code: &'static str, message: String) -> Issue {
-    Issue {
-        severity,
-        code,
-        message,
-    }
+    Issue { severity, code, message }
 }
 
 /// Longest over shortest edge of an element's corner polygon / polyhedron bound (a cheap aspect-ratio proxy: it uses the
@@ -60,67 +56,30 @@ impl Model {
         let mesh = &self.mesh;
         let d = mesh.dim();
         if mesh.blocks.is_empty() || mesh.nodes.is_empty() {
-            out.push(issue(
-                Severity::Error,
-                "empty_mesh",
-                "the mesh has no elements".into(),
-            ));
+            out.push(issue(Severity::Error, "empty_mesh", "the mesh has no elements".into()));
             return out;
         }
         if bc.d != d || bc.fixed.len() != mesh.n_dofs() || bc.value.len() != mesh.n_dofs() {
-            out.push(issue(
-                Severity::Error,
-                "bc_size",
-                format!(
-                    "the constraint set is for {} dofs, the mesh has {}",
-                    bc.fixed.len(),
-                    mesh.n_dofs()
-                ),
-            ));
+            out.push(issue(Severity::Error, "bc_size", format!("the constraint set is for {} dofs, the mesh has {}", bc.fixed.len(), mesh.n_dofs())));
             return out;
         }
-        if bc
-            .value
-            .iter()
-            .zip(&bc.fixed)
-            .any(|(v, f)| *f && !v.is_finite())
-        {
-            out.push(issue(
-                Severity::Error,
-                "bc_value",
-                "a prescribed displacement is not finite".into(),
-            ));
+        if bc.value.iter().zip(&bc.fixed).any(|(v, f)| *f && !v.is_finite()) {
+            out.push(issue(Severity::Error, "bc_value", "a prescribed displacement is not finite".into()));
         }
         if mesh.nodes.iter().any(|p| p.iter().any(|v| !v.is_finite())) {
-            out.push(issue(
-                Severity::Error,
-                "node_coordinates",
-                "a node coordinate is not finite".into(),
-            ));
+            out.push(issue(Severity::Error, "node_coordinates", "a node coordinate is not finite".into()));
             return out;
         }
         for (bi, blk) in mesh.blocks.iter().enumerate() {
             if let Err(e) = blk.material.validate() {
-                out.push(issue(
-                    Severity::Error,
-                    "material",
-                    format!("block {bi} ({}): {e}", blk.name),
-                ));
+                out.push(issue(Severity::Error, "material", format!("block {bi} ({}): {e}", blk.name)));
             }
             if matches!(blk.kind, ElementKind::Tri3 | ElementKind::Tet4) {
                 out.push(issue(Severity::Warning, "low_order_element", format!("block {bi} ({}) uses {:?}: constant-strain elements are poor on pressure and bending problems (a library element for meshers, not for results)", blk.name, blk.kind)));
             }
         }
-        if mesh.blocks.iter().any(|b| {
-            b.conn.len() % b.kind.n_nodes() != 0
-                || b.conn.iter().any(|&n| n >= mesh.nodes.len())
-                || b.kind.dim() != d
-        }) {
-            out.push(issue(
-                Severity::Error,
-                "connectivity",
-                "element connectivity or dimension is invalid".into(),
-            ));
+        if mesh.blocks.iter().any(|b| b.conn.len() % b.kind.n_nodes() != 0 || b.conn.iter().any(|&n| n >= mesh.nodes.len()) || b.kind.dim() != d) {
+            out.push(issue(Severity::Error, "connectivity", "element connectivity or dimension is invalid".into()));
             return out;
         }
         // Element geometry.
@@ -144,14 +103,7 @@ impl Model {
             }
         }
         if !inverted.is_empty() {
-            out.push(issue(
-                Severity::Error,
-                "inverted_element",
-                format!(
-                    "inverted or degenerate elements (block, element): {inverted:?}{}",
-                    if inverted.len() == 5 { " ..." } else { "" }
-                ),
-            ));
+            out.push(issue(Severity::Error, "inverted_element", format!("inverted or degenerate elements (block, element): {inverted:?}{}", if inverted.len() == 5 { " ..." } else { "" })));
         }
         if slender > 0 {
             out.push(issue(Severity::Warning, "element_aspect", format!("{slender} elements have an extent ratio above 50 (worst {worst_ratio:.0}): the stiffness matrix is ill-conditioned and results may be inaccurate")));
@@ -163,10 +115,7 @@ impl Model {
                 used[n] = true;
             }
         }
-        let orphans: Vec<usize> = (0..mesh.nodes.len())
-            .filter(|&n| !used[n] && (0..d).any(|c| !bc.fixed[n * d + c]))
-            .take(5)
-            .collect();
+        let orphans: Vec<usize> = (0..mesh.nodes.len()).filter(|&n| !used[n] && (0..d).any(|c| !bc.fixed[n * d + c])).take(5).collect();
         if !orphans.is_empty() {
             out.push(issue(Severity::Error, "orphan_node", format!("nodes {orphans:?} belong to no element and are not fully constrained (singular system)")));
         }
@@ -178,32 +127,14 @@ impl Model {
             Err(e) => out.push(issue(Severity::Error, "loads", e)),
             Ok(f) => {
                 if f.iter().any(|v| !v.is_finite()) {
-                    out.push(issue(
-                        Severity::Error,
-                        "load_value",
-                        "the assembled load vector is not finite".into(),
-                    ));
-                } else if f.iter().all(|v| *v == 0.0)
-                    && !bc
-                        .value
-                        .iter()
-                        .zip(&bc.fixed)
-                        .any(|(v, fx)| *fx && *v != 0.0)
-                {
-                    out.push(issue(
-                        Severity::Warning,
-                        "no_load",
-                        "no load and no prescribed displacement: the solution is zero".into(),
-                    ));
+                    out.push(issue(Severity::Error, "load_value", "the assembled load vector is not finite".into()));
+                } else if f.iter().all(|v| *v == 0.0) && !bc.value.iter().zip(&bc.fixed).any(|(v, fx)| *fx && *v != 0.0) {
+                    out.push(issue(Severity::Warning, "no_load", "no load and no prescribed displacement: the solution is zero".into()));
                 }
             }
         }
         if matches!(mesh.physics, Physics::Axisymmetric) && mesh.nodes.iter().any(|p| p[0] < 0.0) {
-            out.push(issue(
-                Severity::Error,
-                "axisymmetric_radius",
-                "an axisymmetric model has nodes at negative radius".into(),
-            ));
+            out.push(issue(Severity::Error, "axisymmetric_radius", "an axisymmetric model has nodes at negative radius".into()));
         }
         out
     }
@@ -211,11 +142,7 @@ impl Model {
 
 /// `Err` with every error joined when `issues` contains one.
 pub fn errors_of(issues: &[Issue]) -> Result<(), String> {
-    let errs: Vec<String> = issues
-        .iter()
-        .filter(|i| i.severity == Severity::Error)
-        .map(|i| format!("{}: {}", i.code, i.message))
-        .collect();
+    let errs: Vec<String> = issues.iter().filter(|i| i.severity == Severity::Error).map(|i| format!("{}: {}", i.code, i.message)).collect();
     if errs.is_empty() {
         Ok(())
     } else {

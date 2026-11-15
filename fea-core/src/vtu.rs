@@ -13,9 +13,7 @@ pub struct Field<'a> {
 
 /// Pad a displacement-like field of `d` components per node to three (VTK vectors are 3D).
 pub fn pad3(data: &[f64], d: usize) -> Vec<f64> {
-    data.chunks_exact(d)
-        .flat_map(|c| (0..3).map(move |i| if i < d { c[i] } else { 0.0 }))
-        .collect()
+    data.chunks_exact(d).flat_map(|c| (0..3).map(move |i| if i < d { c[i] } else { 0.0 })).collect()
 }
 
 /// ASCII `.vtu` text of the mesh with node (`point`) and per-element (`cell`) fields. Cells are in
@@ -23,30 +21,15 @@ pub fn pad3(data: &[f64], d: usize) -> Vec<f64> {
 pub fn write(mesh: &Mesh, point: &[Field], cell: &[Field]) -> Result<String, String> {
     let n_nodes = mesh.nodes.len();
     let n_cells = mesh.n_elems();
-    for (f, n, what) in point
-        .iter()
-        .map(|f| (f, n_nodes, "node"))
-        .chain(cell.iter().map(|f| (f, n_cells, "element")))
-    {
+    for (f, n, what) in point.iter().map(|f| (f, n_nodes, "node")).chain(cell.iter().map(|f| (f, n_cells, "element"))) {
         if f.ncomp == 0 || f.data.len() != n * f.ncomp {
-            return Err(format!(
-                "field '{}' has {} values, expected {} per {what} x {}",
-                f.name,
-                f.data.len(),
-                n,
-                f.ncomp
-            ));
+            return Err(format!("field '{}' has {} values, expected {} per {what} x {}", f.name, f.data.len(), n, f.ncomp));
         }
     }
     let mut s = String::with_capacity(64 * (n_nodes + n_cells));
     s.push_str("<?xml version=\"1.0\"?>\n<VTKFile type=\"UnstructuredGrid\" version=\"1.0\" byte_order=\"LittleEndian\">\n<UnstructuredGrid>\n");
-    let _ = writeln!(
-        s,
-        "<Piece NumberOfPoints=\"{n_nodes}\" NumberOfCells=\"{n_cells}\">"
-    );
-    s.push_str(
-        "<Points>\n<DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">\n",
-    );
+    let _ = writeln!(s, "<Piece NumberOfPoints=\"{n_nodes}\" NumberOfCells=\"{n_cells}\">");
+    s.push_str("<Points>\n<DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">\n");
     for x in &mesh.nodes {
         let z = if mesh.dim() == 3 { x[2] } else { 0.0 };
         let _ = writeln!(s, "{:e} {:e} {:e}", x[0], x[1], z);
@@ -93,10 +76,7 @@ pub fn write(mesh: &Mesh, point: &[Field], cell: &[Field]) -> Result<String, Str
 }
 
 fn xml_escape(t: &str) -> String {
-    t.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 #[cfg(test)]
@@ -108,72 +88,24 @@ mod tests {
 
     #[test]
     fn document_lists_every_point_cell_offset_and_type() {
-        let m = grid(
-            Physics::Solid,
-            ElementKind::Hex20,
-            Elastic::new(1.0, 0.3),
-            [2, 1, 1],
-            &|p| p,
-        )
-        .unwrap();
+        let m = grid(Physics::Solid, ElementKind::Hex20, Elastic::new(1.0, 0.3), [2, 1, 1], &|p| p).unwrap();
         let u: Vec<f64> = (0..m.n_dofs()).map(|i| i as f64).collect();
-        let s = write(
-            &m,
-            &[Field {
-                name: "u<x>",
-                ncomp: 3,
-                data: &u,
-            }],
-            &[Field {
-                name: "id",
-                ncomp: 1,
-                data: &[0.0, 1.0],
-            }],
-        )
-        .unwrap();
-        assert!(s.contains(&format!(
-            "NumberOfPoints=\"{}\" NumberOfCells=\"2\"",
-            m.nodes.len()
-        )));
+        let s = write(&m, &[Field { name: "u<x>", ncomp: 3, data: &u }], &[Field { name: "id", ncomp: 1, data: &[0.0, 1.0] }]).unwrap();
+        assert!(s.contains(&format!("NumberOfPoints=\"{}\" NumberOfCells=\"2\"", m.nodes.len())));
         assert!(s.contains("Name=\"u&lt;x&gt;\" NumberOfComponents=\"3\""));
         // offsets 20, 40 and two cells of VTK type 25
         assert!(s.contains("\n20\n40\n"));
         assert_eq!(s.lines().filter(|l| *l == "25").count(), 2);
         // Connectivity lines parse back to the original element.
-        let conn_line = s
-            .split("Name=\"connectivity\" format=\"ascii\">\n")
-            .nth(1)
-            .unwrap()
-            .lines()
-            .next()
-            .unwrap();
+        let conn_line = s.split("Name=\"connectivity\" format=\"ascii\">\n").nth(1).unwrap().lines().next().unwrap();
         let got: Vec<usize> = conn_line.split(' ').map(|t| t.parse().unwrap()).collect();
         assert_eq!(got, m.blocks[0].elem(0));
     }
 
     #[test]
     fn a_wrong_length_field_is_rejected_and_2d_vectors_pad_to_three() {
-        let m = grid(
-            Physics::PlaneStress { thickness: 1.0 },
-            ElementKind::Quad4,
-            Elastic::new(1.0, 0.3),
-            [1, 1, 1],
-            &|p| p,
-        )
-        .unwrap();
-        assert!(write(
-            &m,
-            &[Field {
-                name: "bad",
-                ncomp: 3,
-                data: &[0.0; 5]
-            }],
-            &[]
-        )
-        .is_err());
-        assert_eq!(
-            pad3(&[1.0, 2.0, 3.0, 4.0], 2),
-            vec![1.0, 2.0, 0.0, 3.0, 4.0, 0.0]
-        );
+        let m = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad4, Elastic::new(1.0, 0.3), [1, 1, 1], &|p| p).unwrap();
+        assert!(write(&m, &[Field { name: "bad", ncomp: 3, data: &[0.0; 5] }], &[]).is_err());
+        assert_eq!(pad3(&[1.0, 2.0, 3.0, 4.0], 2), vec![1.0, 2.0, 0.0, 3.0, 4.0, 0.0]);
     }
 }

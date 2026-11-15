@@ -18,11 +18,7 @@ impl PatchTopology {
     pub fn new(mesh: &Mesh, adj: &Adjacency) -> Self {
         let n = mesh.nodes.len();
         let mut on_boundary = vec![false; n];
-        let local: Vec<Vec<Vec<usize>>> = mesh
-            .blocks
-            .iter()
-            .map(|b| crate::topology::local_faces(b.kind))
-            .collect();
+        let local: Vec<Vec<Vec<usize>>> = mesh.blocks.iter().map(|b| crate::topology::local_faces(b.kind)).collect();
         for f in adj.boundary_faces() {
             let (g, lf) = f.owners[0];
             let (b, e) = adj.local(g as usize);
@@ -45,11 +41,7 @@ impl PatchTopology {
                 }
             }
         }
-        Self {
-            on_boundary,
-            block_interface,
-            material_interface,
-        }
+        Self { on_boundary, block_interface, material_interface }
     }
 }
 
@@ -62,39 +54,22 @@ mod tests {
 
     #[test]
     fn boundary_and_material_interface_nodes_are_flagged() {
-        let mut m = grid(
-            Physics::PlaneStress { thickness: 1.0 },
-            ElementKind::Quad4,
-            Elastic::new(1.0, 0.3),
-            [4, 2, 1],
-            &|p| [4.0 * p[0], 2.0 * p[1], 0.0],
-        )
-        .unwrap();
+        let mut m = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad4, Elastic::new(1.0, 0.3), [4, 2, 1], &|p| [4.0 * p[0], 2.0 * p[1], 0.0]).unwrap();
         // two materials: split the single block by column
         let blk = m.blocks.remove(0);
         let (mut left, mut right) = (Vec::new(), Vec::new());
         for e in 0..blk.n_elems() {
             let c = blk.elem(e);
-            if m.nodes[c[0]][0] < 2.0 - 1e-9 {
-                left.extend_from_slice(c)
-            } else {
-                right.extend_from_slice(c)
-            }
+            if m.nodes[c[0]][0] < 2.0 - 1e-9 { left.extend_from_slice(c) } else { right.extend_from_slice(c) }
         }
-        m.add_block(ElementKind::Quad4, left, Elastic::new(1.0, 0.3), "soft")
-            .unwrap();
-        m.add_block(ElementKind::Quad4, right, Elastic::new(10.0, 0.3), "stiff")
-            .unwrap();
+        m.add_block(ElementKind::Quad4, left, Elastic::new(1.0, 0.3), "soft").unwrap();
+        m.add_block(ElementKind::Quad4, right, Elastic::new(10.0, 0.3), "stiff").unwrap();
         let adj = Adjacency::new(&m);
         let p = PatchTopology::new(&m, &adj);
         for (i, x) in m.nodes.iter().enumerate() {
             let boundary = x[0] < 1e-9 || x[0] > 4.0 - 1e-9 || x[1] < 1e-9 || x[1] > 2.0 - 1e-9;
             assert_eq!(p.on_boundary[i], boundary, "node {i} {x:?}");
-            assert_eq!(
-                p.material_interface[i],
-                (x[0] - 2.0).abs() < 1e-9,
-                "node {i} {x:?}"
-            );
+            assert_eq!(p.material_interface[i], (x[0] - 2.0).abs() < 1e-9, "node {i} {x:?}");
             assert_eq!(p.block_interface[i], p.material_interface[i]);
         }
     }

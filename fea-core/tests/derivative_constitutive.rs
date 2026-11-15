@@ -10,13 +10,7 @@ const E: f64 = 29.0e6;
 const NU: f64 = 0.3;
 
 fn law() -> Hardening {
-    Hardening::table(&[
-        (0.0, 40_000.0),
-        (0.002, 48_000.0),
-        (0.01, 52_000.0),
-        (0.05, 60_000.0),
-    ])
-    .unwrap()
+    Hardening::table(&[(0.0, 40_000.0), (0.002, 48_000.0), (0.01, 52_000.0), (0.05, 60_000.0)]).unwrap()
 }
 
 fn tensor(v: &[f64; 6]) -> M3 {
@@ -46,22 +40,11 @@ fn closed_form_tangent(strain: &[f64; 6], old: &[f64; 7]) -> (Vec<f64>, [f64; 6]
 }
 
 fn max_diff(a: &[f64], b: &[f64]) -> f64 {
-    let scale = a
-        .iter()
-        .chain(b)
-        .fold(0.0f64, |m, v| m.max(v.abs()))
-        .max(1e-300);
-    a.iter()
-        .zip(b)
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
-        / scale
+    let scale = a.iter().chain(b).fold(0.0f64, |m, v| m.max(v.abs())).max(1e-300);
+    a.iter().zip(b).fold(0.0f64, |m, (x, y)| m.max((x - y).abs())) / scale
 }
 
-fn central_difference_tangent<M: DifferentiableMaterial>(
-    pt: &MaterialPoint<M>,
-    strain: &[f64; 6],
-    h: f64,
-) -> Vec<f64> {
+fn central_difference_tangent<M: DifferentiableMaterial>(pt: &MaterialPoint<M>, strain: &[f64; 6], h: f64) -> Vec<f64> {
     let mut t = vec![0.0; 36];
     for c in 0..6 {
         let (mut sp, mut sm) = (*strain, *strain);
@@ -76,8 +59,7 @@ fn central_difference_tangent<M: DifferentiableMaterial>(
 }
 
 #[test]
-fn the_ad_tangent_of_hookes_law_is_the_constant_analytic_tangent_and_the_parameter_derivatives_are_exact(
-) {
+fn the_ad_tangent_of_hookes_law_is_the_constant_analytic_tangent_and_the_parameter_derivatives_are_exact() {
     let m = Hooke { e: E, nu: NU };
     let pt = MaterialPoint::new(m);
     let strain = [1.2e-3, -4e-4, 2e-4, 3e-4, -5e-4, 1e-4];
@@ -112,33 +94,16 @@ fn the_j2_return_map_and_its_ad_tangent_match_the_closed_form_at_every_stage_of_
         let (want_t, want_s, want_state) = closed_form_tangent(strain, &old);
         let trial = pt.trial(strain).unwrap();
         let sens = pt.sensitivities(strain).unwrap();
-        assert!(
-            max_diff(&trial.stress, &want_s) < 1e-12,
-            "step {step}: stress"
-        );
-        assert!(
-            max_diff(&trial.new_state, &want_state) < 1e-12,
-            "step {step}: state"
-        );
-        assert!(
-            max_diff(&sens.d_stress_d_strain, &want_t) < 1e-9,
-            "step {step}: AD tangent vs closed form {:e}",
-            max_diff(&sens.d_stress_d_strain, &want_t)
-        );
+        assert!(max_diff(&trial.stress, &want_s) < 1e-12, "step {step}: stress");
+        assert!(max_diff(&trial.new_state, &want_state) < 1e-12, "step {step}: state");
+        assert!(max_diff(&sens.d_stress_d_strain, &want_t) < 1e-9, "step {step}: AD tangent vs closed form {:e}", max_diff(&sens.d_stress_d_strain, &want_t));
         // the tangent is that of the algorithm: a difference of the algorithm itself agrees (to the difference quotient's accuracy)
         let fd = central_difference_tangent(&pt, strain, 1e-7);
-        assert!(
-            max_diff(&sens.d_stress_d_strain, &fd) < 1e-5,
-            "step {step}: AD tangent vs finite differences {:e}",
-            max_diff(&sens.d_stress_d_strain, &fd)
-        );
+        assert!(max_diff(&sens.d_stress_d_strain, &fd) < 1e-5, "step {step}: AD tangent vs finite differences {:e}", max_diff(&sens.d_stress_d_strain, &fd));
         yielded += usize::from(sens.branch == Branch::Plastic);
         pt.commit(&trial);
         old = want_state;
-        assert!(
-            max_diff(&pt.committed, &old) < 1e-14,
-            "the committed state follows the closed-form state history"
-        );
+        assert!(max_diff(&pt.committed, &old) < 1e-14, "the committed state follows the closed-form state history");
     }
     assert!(yielded >= 5, "the path must go plastic: {yielded}");
     assert!(pt.committed[6] > 0.0);
@@ -178,18 +143,12 @@ fn the_history_and_parameter_derivatives_of_the_update_match_differences_of_the_
         for r in 0..6 {
             let fd = (up.stress[r] - um.stress[r]) / (2.0 * step);
             let ad = s.d_stress_d_state[r * 7 + c];
-            assert!(
-                (fd - ad).abs() <= 1e-4 * (1.0 + ad.abs().max(fd.abs())),
-                "dsigma_{r}/dstate_{c}: AD {ad} vs FD {fd}"
-            );
+            assert!((fd - ad).abs() <= 1e-4 * (1.0 + ad.abs().max(fd.abs())), "dsigma_{r}/dstate_{c}: AD {ad} vs FD {fd}");
         }
         for r in 0..7 {
             let fd = (up.new_state[r] - um.new_state[r]) / (2.0 * step);
             let ad = s.d_new_state_d_state[r * 7 + c];
-            assert!(
-                (fd - ad).abs() <= 1e-4 * (1.0 + ad.abs().max(fd.abs())),
-                "dstate_{r}/dstate_{c}: AD {ad} vs FD {fd}"
-            );
+            assert!((fd - ad).abs() <= 1e-4 * (1.0 + ad.abs().max(fd.abs())), "dstate_{r}/dstate_{c}: AD {ad} vs FD {fd}");
         }
     }
     // wrt the parameters E, nu, yield scale, hardening scale
@@ -202,10 +161,7 @@ fn the_history_and_parameter_derivatives_of_the_update_match_differences_of_the_
         for r in 0..6 {
             let fd = (up.stress[r] - um.stress[r]) / (2.0 * step);
             let ad = s.d_stress_d_params[r * 4 + c];
-            assert!(
-                (fd - ad).abs() <= 1e-4 * (1.0 + ad.abs().max(fd.abs())),
-                "dsigma_{r}/dp_{c}: AD {ad} vs FD {fd}"
-            );
+            assert!((fd - ad).abs() <= 1e-4 * (1.0 + ad.abs().max(fd.abs())), "dsigma_{r}/dp_{c}: AD {ad} vs FD {fd}");
         }
     }
 }
@@ -219,20 +175,14 @@ fn the_yield_surface_is_detected_and_both_one_sided_tangents_are_reported() {
         let e: [f64; 6] = std::array::from_fn(|i| a * dir[i]);
         let tr = e[0] + e[1] + e[2];
         let dev = [e[0] - tr / 3.0, e[1] - tr / 3.0, e[2] - tr / 3.0];
-        1.5f64.sqrt()
-            * 2.0
-            * (E / (2.0 * (1.0 + NU)))
-            * dev.iter().map(|v| v * v).sum::<f64>().sqrt()
+        1.5f64.sqrt() * 2.0 * (E / (2.0 * (1.0 + NU))) * dev.iter().map(|v| v * v).sum::<f64>().sqrt()
     };
     let a = 40_000.0 / q_of(1.0);
     let strain: [f64; 6] = std::array::from_fn(|i| a * dir[i]);
     let on = pt.sensitivities(&strain).unwrap();
     assert_eq!(on.branch, Branch::Transition);
     let (elastic, plastic) = pt.one_sided(&strain).unwrap().expect("a yield surface");
-    assert_eq!(
-        (elastic.branch, plastic.branch),
-        (Branch::Elastic, Branch::Plastic)
-    );
+    assert_eq!((elastic.branch, plastic.branch), (Branch::Elastic, Branch::Plastic));
     // the elastic side is Hooke, the plastic side is softer in the flow direction: the derivative genuinely jumps
     let hooke = Hooke { e: E, nu: NU }.analytic_tangent();
     assert!(max_diff(&elastic.d_stress_d_strain, &hooke) < 1e-12);
@@ -259,25 +209,13 @@ fn an_implicit_return_map_gets_its_tangent_from_the_converged_local_system() {
     assert_eq!(s.branch, Branch::Plastic);
     // against differences of the converged algorithm
     let fd = central_difference_tangent(&pt, &strain, 1e-7);
-    assert!(
-        max_diff(&s.d_stress_d_strain, &fd) < 1e-5,
-        "implicit tangent vs finite differences {:e}",
-        max_diff(&s.d_stress_d_strain, &fd)
-    );
+    assert!(max_diff(&s.d_stress_d_strain, &fd) < 1e-5, "implicit tangent vs finite differences {:e}", max_diff(&s.d_stress_d_strain, &fd));
     // against differentiating through converged iterations
     let through = voce_tangent_through_iterations(&voce(), &strain, &pt.committed, 60);
-    assert!(
-        max_diff(&s.d_stress_d_strain, &through) < 1e-10,
-        "{:e}",
-        max_diff(&s.d_stress_d_strain, &through)
-    );
+    assert!(max_diff(&s.d_stress_d_strain, &through) < 1e-10, "{:e}", max_diff(&s.d_stress_d_strain, &through));
     // ...which, truncated, is wrong: unconverged iterations are not the constitutive map
     let truncated = voce_tangent_through_iterations(&voce(), &strain, &pt.committed, 1);
-    assert!(
-        max_diff(&s.d_stress_d_strain, &truncated) > 1e-3,
-        "{:e}",
-        max_diff(&s.d_stress_d_strain, &truncated)
-    );
+    assert!(max_diff(&s.d_stress_d_strain, &truncated) > 1e-3, "{:e}", max_diff(&s.d_stress_d_strain, &truncated));
     // parameter and history derivatives through the implicit system
     let np = 6;
     for c in 0..np {
@@ -293,10 +231,7 @@ fn an_implicit_return_map_gets_its_tangent_from_the_converged_local_system() {
         for r in 0..6 {
             let fd = (up.stress[r] - um.stress[r]) / (2.0 * step);
             let ad = s.d_stress_d_params[r * np + c];
-            assert!(
-                (fd - ad).abs() <= 1e-5 * (1.0 + ad.abs().max(fd.abs())),
-                "dsigma_{r}/dp_{c}: {ad} vs {fd}"
-            );
+            assert!((fd - ad).abs() <= 1e-5 * (1.0 + ad.abs().max(fd.abs())), "dsigma_{r}/dp_{c}: {ad} vs {fd}");
         }
     }
     for c in 0..7 {
@@ -312,10 +247,7 @@ fn an_implicit_return_map_gets_its_tangent_from_the_converged_local_system() {
         for r in 0..7 {
             let fd = (up.new_state[r] - um.new_state[r]) / (2.0 * step);
             let ad = s.d_new_state_d_state[r * 7 + c];
-            assert!(
-                (fd - ad).abs() <= 1e-5 * (1.0 + ad.abs().max(fd.abs())),
-                "dstate_{r}/dstate_{c}: {ad} vs {fd}"
-            );
+            assert!((fd - ad).abs() <= 1e-5 * (1.0 + ad.abs().max(fd.abs())), "dstate_{r}/dstate_{c}: {ad} vs {fd}");
         }
     }
 }
@@ -326,13 +258,8 @@ fn a_local_solve_that_did_not_converge_has_no_derivative() {
     m.max_iter = 1;
     // a strain far enough past yield that one Newton step from d = 0 cannot converge
     let pt = MaterialPoint::new(m);
-    let err = pt
-        .sensitivities(&[3e-2, -9e-3, -9e-3, 0.0, 0.0, 0.0])
-        .unwrap_err();
-    assert!(
-        matches!(err, ConstitutiveError::LocalSolveFailed(_)),
-        "{err}"
-    );
+    let err = pt.sensitivities(&[3e-2, -9e-3, -9e-3, 0.0, 0.0, 0.0]).unwrap_err();
+    assert!(matches!(err, ConstitutiveError::LocalSolveFailed(_)), "{err}");
     assert!(err.to_string().contains("derivative does not exist"));
     // an elastic point needs no local solve and differentiates fine whatever the iteration budget
     assert!(pt.sensitivities(&[1e-4, 0.0, 0.0, 0.0, 0.0, 0.0]).is_ok());
@@ -350,22 +277,12 @@ fn the_neo_hookean_ad_tangent_matches_the_closed_form_hyperelastic_tangent() {
     let hd: [Dual<f64, 9>; 9] = std::array::from_fn(|n| Dual::var(h[n / 3][n % 3], n));
     let pk = neo_hookean_pk1(Dual::<f64, 9>::cst(mo.g), Dual::<f64, 9>::cst(lam), &hd);
     let mut worst = 0.0f64;
-    let scale = up
-        .tangent
-        .iter()
-        .flatten()
-        .fold(0.0f64, |m, v| m.max(v.abs()));
+    let scale = up.tangent.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
     for n in 0..9 {
-        assert!(
-            (pk[n].value() - up.stress[n / 3][n % 3]).abs() < 1e-9 * scale,
-            "stress {n}"
-        );
+        assert!((pk[n].value() - up.stress[n / 3][n % 3]).abs() < 1e-9 * scale, "stress {n}");
         for c in 0..9 {
             worst = worst.max((pk[n].d[c] - up.tangent[n][c]).abs() / scale);
         }
     }
-    assert!(
-        worst < 1e-11,
-        "neo-Hookean tangent differs from the closed form by {worst:e}"
-    );
+    assert!(worst < 1e-11, "neo-Hookean tangent differs from the closed form by {worst:e}");
 }

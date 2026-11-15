@@ -37,10 +37,7 @@ impl Sub for Complex {
 impl Mul for Complex {
     type Output = Self;
     fn mul(self, o: Self) -> Self {
-        Self::new(
-            self.re * o.re - self.im * o.im,
-            self.re * o.im + self.im * o.re,
-        )
+        Self::new(self.re * o.re - self.im * o.im, self.re * o.im + self.im * o.re)
     }
 }
 
@@ -91,26 +88,17 @@ impl Scalar for Complex {
         Self::new(self.re.hypot(self.im).ln(), self.im.atan2(self.re))
     }
     fn sin(self) -> Self {
-        Self::new(
-            self.re.sin() * self.im.cosh(),
-            self.re.cos() * self.im.sinh(),
-        )
+        Self::new(self.re.sin() * self.im.cosh(), self.re.cos() * self.im.sinh())
     }
     fn cos(self) -> Self {
-        Self::new(
-            self.re.cos() * self.im.cosh(),
-            -self.re.sin() * self.im.sinh(),
-        )
+        Self::new(self.re.cos() * self.im.cosh(), -self.re.sin() * self.im.sinh())
     }
     fn atan(self) -> Self {
         // atan(a + ib) = 1/2 atan2(2a, 1 - a^2 - b^2) + i/4 ln((a^2 + (b + 1)^2) / (a^2 + (b - 1)^2)); the logarithm is taken
         // with ln_1p so a tiny imaginary part (the complex step) is not lost
         let (a, b) = (self.re, self.im);
         let den = a * a + (b - 1.0) * (b - 1.0);
-        Self::new(
-            0.5 * (2.0 * a).atan2(1.0 - a * a - b * b),
-            0.25 * (4.0 * b / den).ln_1p(),
-        )
+        Self::new(0.5 * (2.0 * a).atan2(1.0 - a * a - b * b), 0.25 * (4.0 * b / den).ln_1p())
     }
     fn tanh(self) -> Self {
         let (e2, one) = ((self + self).exp(), Self::cst(1.0));

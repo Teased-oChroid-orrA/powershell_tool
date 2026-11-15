@@ -29,11 +29,7 @@ pub struct ImportOptions {
 
 impl ImportOptions {
     pub fn new(physics: Physics, material: Elastic) -> Self {
-        Self {
-            physics,
-            material,
-            materials: HashMap::new(),
-        }
+        Self { physics, material, materials: HashMap::new() }
     }
 }
 
@@ -41,13 +37,8 @@ impl ImportOptions {
 fn gmsh_permutation(kind: ElementKind) -> Option<&'static [usize]> {
     match kind {
         ElementKind::Tet10 => Some(&[0, 1, 2, 3, 4, 5, 6, 7, 9, 8]),
-        ElementKind::Hex20 => Some(&[
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 9, 16, 18, 19, 17, 10, 12, 14, 15,
-        ]),
-        ElementKind::Hex27 => Some(&[
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 9, 16, 18, 19, 17, 10, 12, 14, 15, 22, 23, 21, 24,
-            20, 25, 26,
-        ]),
+        ElementKind::Hex20 => Some(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 9, 16, 18, 19, 17, 10, 12, 14, 15]),
+        ElementKind::Hex27 => Some(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 9, 16, 18, 19, 17, 10, 12, 14, 15, 22, 23, 21, 24, 20, 25, 26]),
         _ => None,
     }
 }
@@ -70,14 +61,11 @@ fn gmsh_kind(t: u32) -> Option<ElementKind> {
 }
 
 fn num(tok: &str) -> Result<f64, String> {
-    tok.replace(['d', 'D'], "e")
-        .parse::<f64>()
-        .map_err(|_| format!("'{tok}' is not a number"))
+    tok.replace(['d', 'D'], "e").parse::<f64>().map_err(|_| format!("'{tok}' is not a number"))
 }
 
 fn idx(tok: &str) -> Result<i64, String> {
-    tok.parse::<i64>()
-        .map_err(|_| format!("'{tok}' is not an integer"))
+    tok.parse::<i64>().map_err(|_| format!("'{tok}' is not an integer"))
 }
 
 /// Verify that every non-corner node of every element sits near the position implied by its corners.
@@ -99,23 +87,14 @@ fn check_node_order(mesh: &Mesh, source: &str) -> Result<(), String> {
             let mut size = 0.0f64;
             for a in 0..nc {
                 for b in a + 1..nc {
-                    size = size.max(
-                        (0..3)
-                            .map(|i| (corners[a][i] - corners[b][i]).powi(2))
-                            .sum::<f64>()
-                            .sqrt(),
-                    );
+                    size = size.max((0..3).map(|i| (corners[a][i] - corners[b][i]).powi(2)).sum::<f64>().sqrt());
                 }
             }
             for (k, xi) in kind.node_coords().iter().enumerate().skip(nc) {
                 let (n, _) = lin.shape(*xi);
-                let want: [f64; 3] =
-                    std::array::from_fn(|i| (0..nc).map(|a| n[a] * corners[a][i]).sum());
+                let want: [f64; 3] = std::array::from_fn(|i| (0..nc).map(|a| n[a] * corners[a][i]).sum());
                 let got = mesh.nodes[conn[k]];
-                let dist = (0..3)
-                    .map(|i| (got[i] - want[i]).powi(2))
-                    .sum::<f64>()
-                    .sqrt();
+                let dist = (0..3).map(|i| (got[i] - want[i]).powi(2)).sum::<f64>().sqrt();
                 if dist > 0.3 * size {
                     return Err(format!("{source}: {kind:?} element {e} node {k} is {dist:.3e} from where its corners put it (element size {size:.3e}): node ordering mismatch"));
                 }
@@ -159,10 +138,7 @@ pub fn read_gmsh(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
             }
         }
     }
-    let fmt = sections
-        .get("MeshFormat")
-        .and_then(|b| b.first())
-        .ok_or("no $MeshFormat section")?;
+    let fmt = sections.get("MeshFormat").and_then(|b| b.first()).ok_or("no $MeshFormat section")?;
     let mut ft = fmt.split_whitespace();
     let version = ft.next().ok_or("empty $MeshFormat")?;
     if ft.next() != Some("0") {
@@ -170,20 +146,14 @@ pub fn read_gmsh(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
     }
     let v4 = version.starts_with("4.1");
     if !v4 && !version.starts_with("2.") {
-        return Err(format!(
-            "Gmsh format {version} is not supported (use 4.1 or 2.2 ASCII)"
-        ));
+        return Err(format!("Gmsh format {version} is not supported (use 4.1 or 2.2 ASCII)"));
     }
     // Physical names: (dim, tag) -> name.
     let mut pnames: HashMap<(usize, i64), String> = HashMap::new();
     if let Some(b) = sections.get("PhysicalNames") {
         for l in b.iter().skip(1) {
             let mut it = l.splitn(3, char::is_whitespace);
-            let (d, t, rest) = (
-                idx(it.next().unwrap_or(""))?,
-                idx(it.next().unwrap_or(""))?,
-                it.next().unwrap_or("").trim(),
-            );
+            let (d, t, rest) = (idx(it.next().unwrap_or(""))?, idx(it.next().unwrap_or(""))?, it.next().unwrap_or("").trim());
             pnames.insert((d as usize, t), rest.trim_matches('"').to_string());
         }
     }
@@ -192,31 +162,16 @@ pub fn read_gmsh(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
     if v4 {
         if let Some(b) = sections.get("Entities") {
             let mut it = b[0].split_whitespace();
-            let counts: Vec<usize> = (0..4)
-                .map(|_| {
-                    it.next()
-                        .ok_or("bad $Entities header")
-                        .and_then(|t| t.parse::<usize>().map_err(|_| "bad $Entities header"))
-                })
-                .collect::<Result<_, _>>()?;
+            let counts: Vec<usize> = (0..4).map(|_| it.next().ok_or("bad $Entities header").and_then(|t| t.parse::<usize>().map_err(|_| "bad $Entities header"))).collect::<Result<_, _>>()?;
             let mut li = 1;
             for (dim, &n) in counts.iter().enumerate() {
                 for _ in 0..n {
-                    let t: Vec<&str> = b
-                        .get(li)
-                        .ok_or("truncated $Entities")?
-                        .split_whitespace()
-                        .collect();
+                    let t: Vec<&str> = b.get(li).ok_or("truncated $Entities")?.split_whitespace().collect();
                     li += 1;
                     let tag = idx(t[0])?;
                     let skip = if dim == 0 { 4 } else { 7 }; // tag + (x y z) or (min xyz max xyz)
-                    let nphys = t
-                        .get(skip)
-                        .map(|s| s.parse::<usize>().unwrap_or(0))
-                        .unwrap_or(0);
-                    let phys = (0..nphys)
-                        .map(|k| idx(t[skip + 1 + k]))
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let nphys = t.get(skip).map(|s| s.parse::<usize>().unwrap_or(0)).unwrap_or(0);
+                    let phys = (0..nphys).map(|k| idx(t[skip + 1 + k])).collect::<Result<Vec<_>, _>>()?;
                     entity_phys.insert((dim, tag), phys);
                 }
             }
@@ -231,20 +186,13 @@ pub fn read_gmsh(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
         let blocks = idx(h[0])? as usize;
         let mut li = 1;
         for _ in 0..blocks {
-            let bh: Vec<&str> = nb
-                .get(li)
-                .ok_or("truncated $Nodes")?
-                .split_whitespace()
-                .collect();
+            let bh: Vec<&str> = nb.get(li).ok_or("truncated $Nodes")?.split_whitespace().collect();
             let count = idx(bh.get(3).ok_or("bad node block header")?)? as usize;
             if bh.get(2) == Some(&"1") {
                 return Err("parametric node blocks are not supported".into());
             }
             li += 1;
-            let tags: Vec<i64> = nb[li..li + count]
-                .iter()
-                .map(|l| idx(l.split_whitespace().next().unwrap_or("")))
-                .collect::<Result<_, _>>()?;
+            let tags: Vec<i64> = nb[li..li + count].iter().map(|l| idx(l.split_whitespace().next().unwrap_or(""))).collect::<Result<_, _>>()?;
             li += count;
             for (k, l) in nb[li..li + count].iter().enumerate() {
                 let c: Vec<&str> = l.split_whitespace().collect();
@@ -266,44 +214,18 @@ pub fn read_gmsh(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
     // Elements.
     let eb = sections.get("Elements").ok_or("no $Elements section")?;
     let mut elems: Vec<GmshElement> = Vec::new();
-    let node_ids = |toks: &[&str]| -> Result<Vec<usize>, String> {
-        toks.iter()
-            .map(|t| {
-                idx(t).and_then(|v| {
-                    tag_of
-                        .get(&v)
-                        .copied()
-                        .ok_or(format!("element refers to missing node {v}"))
-                })
-            })
-            .collect()
-    };
+    let node_ids = |toks: &[&str]| -> Result<Vec<usize>, String> { toks.iter().map(|t| idx(t).and_then(|v| tag_of.get(&v).copied().ok_or(format!("element refers to missing node {v}")))).collect() };
     if v4 {
         let h: Vec<&str> = eb[0].split_whitespace().collect();
         let blocks = idx(h[0])? as usize;
         let mut li = 1;
         for _ in 0..blocks {
-            let bh: Vec<&str> = eb
-                .get(li)
-                .ok_or("truncated $Elements")?
-                .split_whitespace()
-                .collect();
-            let (dim, ent, ty, count) = (
-                idx(bh[0])? as usize,
-                idx(bh[1])?,
-                idx(bh[2])? as u32,
-                idx(bh[3])? as usize,
-            );
+            let bh: Vec<&str> = eb.get(li).ok_or("truncated $Elements")?.split_whitespace().collect();
+            let (dim, ent, ty, count) = (idx(bh[0])? as usize, idx(bh[1])?, idx(bh[2])? as u32, idx(bh[3])? as usize);
             li += 1;
             for l in &eb[li..li + count] {
                 let t: Vec<&str> = l.split_whitespace().collect();
-                elems.push(GmshElement {
-                    dim,
-                    entity: ent,
-                    kind: gmsh_kind(ty),
-                    ty,
-                    nodes: node_ids(&t[1..])?,
-                });
+                elems.push(GmshElement { dim, entity: ent, kind: gmsh_kind(ty), ty, nodes: node_ids(&t[1..])? });
             }
             li += count;
         }
@@ -320,48 +242,18 @@ pub fn read_gmsh(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
                 _ => 3,
             };
             // Version 2 carries the physical tag per element; fold it into the entity key.
-            elems.push(GmshElement {
-                dim,
-                entity: phys,
-                kind: gmsh_kind(ty),
-                ty,
-                nodes: node_ids(&t[3 + ntags..])?,
-            });
+            elems.push(GmshElement { dim, entity: phys, kind: gmsh_kind(ty), ty, nodes: node_ids(&t[3 + ntags..])? });
         }
     }
     let name_of = |dim: usize, entity: i64| -> String {
-        let tags = if v4 {
-            entity_phys.get(&(dim, entity)).cloned().unwrap_or_default()
-        } else {
-            vec![entity]
-        };
-        tags.first()
-            .and_then(|t| pnames.get(&(dim, *t)).cloned())
-            .unwrap_or_else(|| {
-                if v4 && !tags.is_empty() {
-                    format!("physical_{dim}_{}", tags[0])
-                } else {
-                    "domain".to_string()
-                }
-            })
+        let tags = if v4 { entity_phys.get(&(dim, entity)).cloned().unwrap_or_default() } else { vec![entity] };
+        tags.first().and_then(|t| pnames.get(&(dim, *t)).cloned()).unwrap_or_else(|| if v4 && !tags.is_empty() { format!("physical_{dim}_{}", tags[0]) } else { "domain".to_string() })
     };
-    let top = elems
-        .iter()
-        .filter(|e| e.dim >= 2)
-        .map(|e| e.dim)
-        .max()
-        .ok_or("the file contains no surface or volume elements")?;
+    let top = elems.iter().filter(|e| e.dim >= 2).map(|e| e.dim).max().ok_or("the file contains no surface or volume elements")?;
     if let Some(e) = elems.iter().find(|e| e.dim == top && e.kind.is_none()) {
-        return Err(format!(
-            "unsupported element type {} (prisms and pyramids have no element in this library)",
-            e.ty
-        ));
+        return Err(format!("unsupported element type {} (prisms and pyramids have no element in this library)", e.ty));
     }
-    let physics = if top == 3 {
-        Physics::Solid
-    } else {
-        opt.physics
-    };
+    let physics = if top == 3 { Physics::Solid } else { opt.physics };
     if top == 2 && physics.dim() != 2 {
         return Err("a surface mesh needs a 2D analysis type".into());
     }
@@ -371,11 +263,7 @@ pub fn read_gmsh(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
     let mut take = |mesh: &mut Mesh, n: usize| -> usize {
         *new_id.entry(n).or_insert_with(|| {
             let c = coords[n];
-            mesh.add_node(if physics.dim() == 2 {
-                [c[0], c[1], 0.0]
-            } else {
-                c
-            })
+            mesh.add_node(if physics.dim() == 2 { [c[0], c[1], 0.0] } else { c })
         })
     };
     // Blocks: (physical name, kind) in first-seen order.
@@ -425,11 +313,7 @@ pub fn read_gmsh(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
             None if matches!(e.ty, 1 | 8) => 2,
             None => continue,
         };
-        let ids: Vec<usize> = e
-            .nodes
-            .iter()
-            .filter_map(|n| new_id.get(n).copied())
-            .collect();
+        let ids: Vec<usize> = e.nodes.iter().filter_map(|n| new_id.get(n).copied()).collect();
         if ids.len() != e.nodes.len() {
             continue; // a boundary element not attached to the retained mesh
         }
@@ -457,38 +341,14 @@ fn abaqus_kind(ty: &str) -> Option<(ElementKind, Option<Physics>)> {
     let t = t.trim_end_matches(['R', 'H', 'I']); // reduced / hybrid / incompatible variants
     let plane = |p| Some(p);
     Some(match t {
-        "CPS3" => (
-            ElementKind::Tri3,
-            plane(Physics::PlaneStress { thickness: 1.0 }),
-        ),
-        "CPS4" => (
-            ElementKind::Quad4,
-            plane(Physics::PlaneStress { thickness: 1.0 }),
-        ),
-        "CPS6" => (
-            ElementKind::Tri6,
-            plane(Physics::PlaneStress { thickness: 1.0 }),
-        ),
-        "CPS8" => (
-            ElementKind::Quad8,
-            plane(Physics::PlaneStress { thickness: 1.0 }),
-        ),
-        "CPE3" => (
-            ElementKind::Tri3,
-            plane(Physics::PlaneStrain { thickness: 1.0 }),
-        ),
-        "CPE4" => (
-            ElementKind::Quad4,
-            plane(Physics::PlaneStrain { thickness: 1.0 }),
-        ),
-        "CPE6" => (
-            ElementKind::Tri6,
-            plane(Physics::PlaneStrain { thickness: 1.0 }),
-        ),
-        "CPE8" => (
-            ElementKind::Quad8,
-            plane(Physics::PlaneStrain { thickness: 1.0 }),
-        ),
+        "CPS3" => (ElementKind::Tri3, plane(Physics::PlaneStress { thickness: 1.0 })),
+        "CPS4" => (ElementKind::Quad4, plane(Physics::PlaneStress { thickness: 1.0 })),
+        "CPS6" => (ElementKind::Tri6, plane(Physics::PlaneStress { thickness: 1.0 })),
+        "CPS8" => (ElementKind::Quad8, plane(Physics::PlaneStress { thickness: 1.0 })),
+        "CPE3" => (ElementKind::Tri3, plane(Physics::PlaneStrain { thickness: 1.0 })),
+        "CPE4" => (ElementKind::Quad4, plane(Physics::PlaneStrain { thickness: 1.0 })),
+        "CPE6" => (ElementKind::Tri6, plane(Physics::PlaneStrain { thickness: 1.0 })),
+        "CPE8" => (ElementKind::Quad8, plane(Physics::PlaneStrain { thickness: 1.0 })),
         "CAX3" => (ElementKind::Tri3, plane(Physics::Axisymmetric)),
         "CAX4" => (ElementKind::Quad4, plane(Physics::Axisymmetric)),
         "CAX6" => (ElementKind::Tri6, plane(Physics::Axisymmetric)),
@@ -534,11 +394,7 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
     let mut elsets: BTreeMap<String, Vec<i64>> = BTreeMap::new();
     let mut materials: HashMap<String, Elastic> = HashMap::new();
     let mut sections: Vec<(String, String, f64)> = Vec::new(); // (elset, material, thickness)
-    let mut lines = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with("**"))
-        .peekable();
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("**")).peekable();
     let (mut cur_mat, mut cur_alpha): (Option<String>, f64) = (None, 0.0);
     while let Some(line) = lines.next() {
         if !line.starts_with('*') {
@@ -549,13 +405,7 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
         while lines.peek().is_some_and(|l| !l.starts_with('*')) {
             data.push(lines.next().unwrap());
         }
-        let tokens = |data: &[&str]| -> Vec<String> {
-            data.iter()
-                .flat_map(|l| l.split(','))
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect()
-        };
+        let tokens = |data: &[&str]| -> Vec<String> { data.iter().flat_map(|l| l.split(',')).map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect() };
         match kw.as_str() {
             "NODE" => {
                 for l in &data {
@@ -563,57 +413,34 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
                     if t.len() < 3 {
                         return Err(format!("bad node line '{l}'"));
                     }
-                    let z = if t.len() > 3 && !t[3].is_empty() {
-                        num(t[3])?
-                    } else {
-                        0.0
-                    };
+                    let z = if t.len() > 3 && !t[3].is_empty() { num(t[3])? } else { 0.0 };
                     nodes.push((idx(t[0])?, [num(t[1])?, num(t[2])?, z]));
                 }
                 if let Some(set) = params.get("NSET") {
-                    nsets
-                        .entry(set.clone())
-                        .or_default()
-                        .extend(nodes.iter().skip(nodes.len() - data.len()).map(|n| n.0));
+                    nsets.entry(set.clone()).or_default().extend(nodes.iter().skip(nodes.len() - data.len()).map(|n| n.0));
                 }
             }
             "ELEMENT" => {
                 let ty = params.get("TYPE").ok_or("*ELEMENT without TYPE")?;
-                let (kind, physics) = abaqus_kind(ty)
-                    .ok_or_else(|| format!("unsupported Abaqus element type {ty}"))?;
+                let (kind, physics) = abaqus_kind(ty).ok_or_else(|| format!("unsupported Abaqus element type {ty}"))?;
                 let toks = tokens(&data);
                 let per = 1 + kind.n_nodes();
                 if toks.len() % per != 0 {
-                    return Err(format!(
-                        "*ELEMENT, TYPE={ty}: {} values is not a multiple of {per}",
-                        toks.len()
-                    ));
+                    return Err(format!("*ELEMENT, TYPE={ty}: {} values is not a multiple of {per}", toks.len()));
                 }
                 for chunk in toks.chunks(per) {
                     let ids: Vec<i64> = chunk.iter().map(|t| idx(t)).collect::<Result<_, _>>()?;
                     if let Some(set) = params.get("ELSET") {
                         elsets.entry(set.clone()).or_default().push(ids[0]);
                     }
-                    elems.push(Elem {
-                        id: ids[0],
-                        kind,
-                        physics,
-                        nodes: ids[1..].to_vec(),
-                    });
+                    elems.push(Elem { id: ids[0], kind, physics, nodes: ids[1..].to_vec() });
                 }
             }
             "NSET" | "ELSET" => {
                 let key = if kw == "NSET" { "NSET" } else { "ELSET" };
-                let name = params
-                    .get(key)
-                    .ok_or_else(|| format!("*{kw} without {key}"))?
-                    .clone();
+                let name = params.get(key).ok_or_else(|| format!("*{kw} without {key}"))?.clone();
                 let toks = tokens(&data);
-                let target = if kw == "NSET" {
-                    &mut nsets
-                } else {
-                    &mut elsets
-                };
+                let target = if kw == "NSET" { &mut nsets } else { &mut elsets };
                 let mut ids: Vec<i64> = Vec::new();
                 if flags.iter().any(|f| f == "GENERATE") {
                     for g in toks.chunks(3) {
@@ -625,9 +452,7 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
                     for t in &toks {
                         match t.parse::<i64>() {
                             Ok(v) => ids.push(v),
-                            Err(_) => {
-                                ids.extend(target.get(t.as_str()).cloned().unwrap_or_default())
-                            }
+                            Err(_) => ids.extend(target.get(t.as_str()).cloned().unwrap_or_default()),
                         }
                     }
                 }
@@ -639,10 +464,7 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
             }
             "ELASTIC" => {
                 let name = cur_mat.clone().ok_or("*ELASTIC outside a *MATERIAL")?;
-                let ty = params
-                    .get("TYPE")
-                    .map(|s| s.to_ascii_uppercase())
-                    .unwrap_or_else(|| "ISOTROPIC".into());
+                let ty = params.get("TYPE").map(|s| s.to_ascii_uppercase()).unwrap_or_else(|| "ISOTROPIC".into());
                 let toks = tokens(&data);
                 let v: Vec<f64> = toks.iter().map(|t| num(t)).collect::<Result<_, _>>()?;
                 let m = match ty.as_str() {
@@ -650,39 +472,19 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
                     "ENGINEERING CONSTANTS" if v.len() >= 9 => Elastic::orthotropic(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[8], v[7])?,
                     _ => return Err(format!("*ELASTIC, TYPE={ty} with {} values is not supported (isotropic or engineering constants)", v.len())),
                 };
-                materials.insert(
-                    name,
-                    Elastic {
-                        alpha: cur_alpha,
-                        ..m
-                    },
-                );
+                materials.insert(name, Elastic { alpha: cur_alpha, ..m });
             }
             "EXPANSION" => {
-                let alpha = tokens(&data)
-                    .first()
-                    .map(|t| num(t))
-                    .transpose()?
-                    .unwrap_or(0.0);
+                let alpha = tokens(&data).first().map(|t| num(t)).transpose()?.unwrap_or(0.0);
                 cur_alpha = alpha;
                 if let Some(m) = cur_mat.as_ref().and_then(|n| materials.get_mut(n)) {
                     m.alpha = alpha;
                 }
             }
             "SOLID SECTION" => {
-                let elset = params
-                    .get("ELSET")
-                    .ok_or("*SOLID SECTION without ELSET")?
-                    .clone();
-                let mat = params
-                    .get("MATERIAL")
-                    .ok_or("*SOLID SECTION without MATERIAL")?
-                    .clone();
-                let thickness = tokens(&data)
-                    .first()
-                    .map(|t| num(t))
-                    .transpose()?
-                    .unwrap_or(1.0);
+                let elset = params.get("ELSET").ok_or("*SOLID SECTION without ELSET")?.clone();
+                let mat = params.get("MATERIAL").ok_or("*SOLID SECTION without MATERIAL")?.clone();
+                let thickness = tokens(&data).first().map(|t| num(t)).transpose()?.unwrap_or(1.0);
                 sections.push((elset, mat, thickness));
             }
             _ => {}
@@ -699,10 +501,7 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
         Physics::Solid
     } else {
         let p = elems[0].physics.unwrap_or(opt.physics);
-        if elems.iter().any(|e| {
-            e.physics.as_ref().map(std::mem::discriminant)
-                != elems[0].physics.as_ref().map(std::mem::discriminant)
-        }) {
+        if elems.iter().any(|e| e.physics.as_ref().map(std::mem::discriminant) != elems[0].physics.as_ref().map(std::mem::discriminant)) {
             return Err("mixed plane stress / plane strain / axisymmetric element types".into());
         }
         // A section overrides the caller's default thickness; an omitted section
@@ -712,12 +511,8 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
             _ => 1.0,
         };
         match p {
-            Physics::PlaneStress { .. } => Physics::PlaneStress {
-                thickness: sections.first().map_or(fallback, |s| s.2),
-            },
-            Physics::PlaneStrain { .. } => Physics::PlaneStrain {
-                thickness: sections.first().map_or(fallback, |s| s.2),
-            },
+            Physics::PlaneStress { .. } => Physics::PlaneStress { thickness: sections.first().map_or(fallback, |s| s.2) },
+            Physics::PlaneStrain { .. } => Physics::PlaneStrain { thickness: sections.first().map_or(fallback, |s| s.2) },
             other => other,
         }
     };
@@ -730,21 +525,13 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
             elem_set_of.entry(i).or_insert(name);
         }
     }
-    let mat_of_set: HashMap<&str, &str> = sections
-        .iter()
-        .map(|s| (s.0.as_str(), s.1.as_str()))
-        .collect();
+    let mat_of_set: HashMap<&str, &str> = sections.iter().map(|s| (s.0.as_str(), s.1.as_str())).collect();
     let mut order: Vec<(String, ElementKind)> = Vec::new();
     let mut conns: HashMap<(String, ElementKind), (Vec<usize>, Elastic)> = HashMap::new();
     for e in &elems {
-        let set = elem_set_of
-            .get(&e.id)
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "domain".to_string());
+        let set = elem_set_of.get(&e.id).map(|s| s.to_string()).unwrap_or_else(|| "domain".to_string());
         let mat = match mat_of_set.get(set.as_str()) {
-            Some(m) => *materials
-                .get(*m)
-                .ok_or_else(|| format!("material '{m}' has no *ELASTIC"))?,
+            Some(m) => *materials.get(*m).ok_or_else(|| format!("material '{m}' has no *ELASTIC"))?,
             None => opt.material,
         };
         let entry = conns.entry((set.clone(), e.kind)).or_insert_with(|| {
@@ -755,9 +542,7 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
             let id = match new_id.get(n) {
                 Some(&i) => i,
                 None => {
-                    let c = coord
-                        .get(n)
-                        .ok_or_else(|| format!("element refers to missing node {n}"))?;
+                    let c = coord.get(n).ok_or_else(|| format!("element refers to missing node {n}"))?;
                     let i = mesh.add_node(if dim == 2 { [c[0], c[1], 0.0] } else { *c });
                     new_id.insert(*n, i);
                     i
@@ -781,6 +566,7 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
     }
     Ok(mesh)
 }
+
 
 /// What [`reorient_inverted`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -810,20 +596,11 @@ pub fn reorient_inverted(mesh: &mut Mesh) -> Reorientation {
         let refs = kind.node_coords();
         let mirror = |c: [f64; 3]| -> [f64; 3] {
             match kind {
-                ElementKind::Tri3
-                | ElementKind::Tri6
-                | ElementKind::Tet4
-                | ElementKind::Tet10
-                | ElementKind::Wedge6
-                | ElementKind::Wedge15 => [c[1], c[0], c[2]],
+                ElementKind::Tri3 | ElementKind::Tri6 | ElementKind::Tet4 | ElementKind::Tet10 | ElementKind::Wedge6 | ElementKind::Wedge15 => [c[1], c[0], c[2]],
                 _ => [-c[0], c[1], c[2]],
             }
         };
-        let perm: Option<Vec<usize>> = (0..nn)
-            .map(|i| {
-                (0..nn).find(|&j| (0..3).all(|k| (refs[j][k] - mirror(refs[i])[k]).abs() < 1e-12))
-            })
-            .collect();
+        let perm: Option<Vec<usize>> = (0..nn).map(|i| (0..nn).find(|&j| (0..3).all(|k| (refs[j][k] - mirror(refs[i])[k]).abs() < 1e-12))).collect();
         let usable = |conn: &[usize], work: &mut Work| -> bool {
             let xyz: Vec<[f64; 3]> = conn.iter().map(|&n| nodes[n]).collect();
             kernel::geometry(kind, physics, &xyz, work).is_ok()

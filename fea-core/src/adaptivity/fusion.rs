@@ -39,10 +39,7 @@ pub struct Normalised {
 /// error (callers pass fields already checked for reliability).
 pub fn normalise(values: &[f64], how: Normalization) -> Result<Normalised, MeshError> {
     if let Some(i) = values.iter().position(|v| !v.is_finite() || *v < 0.0) {
-        return Err(MeshError::Failed(format!(
-            "indicator {i} is {} (indicators must be finite and non-negative)",
-            values[i]
-        )));
+        return Err(MeshError::Failed(format!("indicator {i} is {} (indicators must be finite and non-negative)", values[i])));
     }
     let scale = match how {
         Normalization::Max => values.iter().cloned().fold(0.0f64, f64::max),
@@ -55,9 +52,7 @@ pub fn normalise(values: &[f64], how: Normalization) -> Result<Normalised, MeshE
         }
         Normalization::Percentile(p) => {
             if !(p > 0.0 && p <= 100.0) {
-                return Err(MeshError::Failed(format!(
-                    "percentile {p} is outside (0, 100]"
-                )));
+                return Err(MeshError::Failed(format!("percentile {p} is outside (0, 100]")));
             }
             if values.is_empty() {
                 0.0
@@ -70,15 +65,9 @@ pub fn normalise(values: &[f64], how: Normalization) -> Result<Normalised, MeshE
         }
     };
     if scale <= 0.0 {
-        return Ok(Normalised {
-            scale: 0.0,
-            values: vec![0.0; values.len()],
-        });
+        return Ok(Normalised { scale: 0.0, values: vec![0.0; values.len()] });
     }
-    Ok(Normalised {
-        scale,
-        values: values.iter().map(|v| v / scale).collect(),
-    })
+    Ok(Normalised { scale, values: values.iter().map(|v| v / scale).collect() })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,14 +101,7 @@ pub struct FusionConfig {
 
 impl Default for FusionConfig {
     fn default() -> Self {
-        Self {
-            strategy: FusionStrategy::ConstraintPreserving,
-            alpha: 0.7,
-            normalisation: Normalization::Max,
-            goal_combine: GoalCombine::Max,
-            physics_allowance: None,
-            strict: false,
-        }
+        Self { strategy: FusionStrategy::ConstraintPreserving, alpha: 0.7, normalisation: Normalization::Max, goal_combine: GoalCombine::Max, physics_allowance: None, strict: false }
     }
 }
 
@@ -155,12 +137,7 @@ pub struct Fused {
 
 fn usable(f: &ErrorField, n: usize) -> Result<(), String> {
     if f.values.len() != n {
-        return Err(format!(
-            "{} has {} values for {} elements",
-            f.name,
-            f.values.len(),
-            n
-        ));
+        return Err(format!("{} has {} values for {} elements", f.name, f.values.len(), n));
     }
     match &f.reliability {
         Reliability::Reliable | Reliability::Degraded(_) => Ok(()),
@@ -172,17 +149,9 @@ fn usable(f: &ErrorField, n: usize) -> Result<(), String> {
 /// Fuse the criteria into a ranking.
 pub fn fuse(input: &FusionInput, cfg: &FusionConfig) -> Result<Fused, MeshError> {
     if !(0.0..=1.0).contains(&cfg.alpha) {
-        return Err(MeshError::Failed(format!(
-            "alpha {} is outside [0, 1]",
-            cfg.alpha
-        )));
+        return Err(MeshError::Failed(format!("alpha {} is outside [0, 1]", cfg.alpha)));
     }
-    let n = input
-        .adjoint
-        .first()
-        .map(|f| f.1.values.len())
-        .or_else(|| input.physics.first().map(|f| f.1.values.len()))
-        .ok_or_else(|| MeshError::Failed("no indicator fields to fuse".into()))?;
+    let n = input.adjoint.first().map(|f| f.1.values.len()).or_else(|| input.physics.first().map(|f| f.1.values.len())).ok_or_else(|| MeshError::Failed("no indicator fields to fuse".into()))?;
     let mut notes = Vec::new();
     let mut degraded: Vec<String> = Vec::new();
 
@@ -211,20 +180,13 @@ pub fn fuse(input: &FusionInput, cfg: &FusionConfig) -> Result<Fused, MeshError>
         let wsum: f64 = adj_parts.iter().map(|p| p.0).sum();
         let wmax = adj_parts.iter().map(|p| p.0).fold(0.0f64, f64::max);
         if wsum <= 0.0 || adj_parts.iter().any(|p| p.0 < 0.0) {
-            return Err(MeshError::Failed(
-                "the goal weights must be non-negative and not all zero".into(),
-            ));
+            return Err(MeshError::Failed("the goal weights must be non-negative and not all zero".into()));
         }
         for (e, slot) in adjoint_norm.iter_mut().enumerate() {
             *slot = match cfg.goal_combine {
-                GoalCombine::Sum => {
-                    adj_parts.iter().map(|(w, p)| w * p.values[e]).sum::<f64>() / wsum
-                }
+                GoalCombine::Sum => adj_parts.iter().map(|(w, p)| w * p.values[e]).sum::<f64>() / wsum,
                 // weights relative to the largest, so equal weights give the plain maximum
-                GoalCombine::Max => adj_parts
-                    .iter()
-                    .map(|(w, p)| w / wmax * p.values[e])
-                    .fold(0.0f64, f64::max),
+                GoalCombine::Max => adj_parts.iter().map(|(w, p)| w / wmax * p.values[e]).fold(0.0f64, f64::max),
             };
         }
     }
@@ -237,11 +199,7 @@ pub fn fuse(input: &FusionInput, cfg: &FusionConfig) -> Result<Fused, MeshError>
                 if let Reliability::Degraded(why) = &f.reliability {
                     degraded.push(format!("{}: {why}", f.name));
                 }
-                phys_norms.push((
-                    *kind,
-                    normalise(&f.marking(), cfg.normalisation)?,
-                    f.marking(),
-                ));
+                phys_norms.push((*kind, normalise(&f.marking(), cfg.normalisation)?, f.marking()));
             }
             Err(why) => {
                 if cfg.strict {
@@ -258,15 +216,7 @@ pub fn fuse(input: &FusionInput, cfg: &FusionConfig) -> Result<Fused, MeshError>
     if used_physics {
         for e in 0..n {
             let wanted = input.zones.map(|z| z.zones[e].physics());
-            let pick = phys_norms
-                .iter()
-                .find(|p| Some(p.0) == wanted)
-                .or_else(|| {
-                    phys_norms
-                        .iter()
-                        .find(|p| p.0 == PhysicsEstimator::Equilibrated)
-                })
-                .unwrap_or(&phys_norms[0]);
+            let pick = phys_norms.iter().find(|p| Some(p.0) == wanted).or_else(|| phys_norms.iter().find(|p| p.0 == PhysicsEstimator::Equilibrated)).unwrap_or(&phys_norms[0]);
             let beta = input.zones.map_or(1.0, |z| z.beta[e]);
             physics_norm[e] = beta * pick.1.values[e];
             physics_raw[e] = beta * pick.2[e];
@@ -279,28 +229,15 @@ pub fn fuse(input: &FusionInput, cfg: &FusionConfig) -> Result<Fused, MeshError>
         }
     }
     if !used_adjoint && !used_physics {
-        return Err(MeshError::Failed(format!(
-            "no usable estimator: {}",
-            degraded.join("; ")
-        )));
+        return Err(MeshError::Failed(format!("no usable estimator: {}", degraded.join("; "))));
     }
 
     // fuse
-    let alpha = if !used_adjoint {
-        0.0
-    } else if !used_physics {
-        1.0
-    } else {
-        cfg.alpha
-    };
+    let alpha = if !used_adjoint { 0.0 } else if !used_physics { 1.0 } else { cfg.alpha };
     let mut score: Vec<f64> = (0..n)
         .map(|e| match cfg.strategy {
-            FusionStrategy::WeightedSum => {
-                alpha * adjoint_norm[e] + (1.0 - alpha) * physics_norm[e]
-            }
-            FusionStrategy::WeightedMax => {
-                (alpha * adjoint_norm[e]).max((1.0 - alpha) * physics_norm[e])
-            }
+            FusionStrategy::WeightedSum => alpha * adjoint_norm[e] + (1.0 - alpha) * physics_norm[e],
+            FusionStrategy::WeightedMax => (alpha * adjoint_norm[e]).max((1.0 - alpha) * physics_norm[e]),
             FusionStrategy::ConstraintPreserving => {
                 if used_adjoint {
                     adjoint_norm[e]
@@ -324,11 +261,7 @@ pub fn fuse(input: &FusionInput, cfg: &FusionConfig) -> Result<Fused, MeshError>
     }
     if let Some(prot) = input.protected {
         if prot.len() != n {
-            return Err(MeshError::Failed(format!(
-                "{} protection flags for {} elements",
-                prot.len(),
-                n
-            )));
+            return Err(MeshError::Failed(format!("{} protection flags for {} elements", prot.len(), n)));
         }
         for e in 0..n {
             mandatory[e] |= prot[e];
@@ -336,11 +269,7 @@ pub fn fuse(input: &FusionInput, cfg: &FusionConfig) -> Result<Fused, MeshError>
     }
     if let Some(cap) = input.capped {
         if cap.len() != n {
-            return Err(MeshError::Failed(format!(
-                "{} cap flags for {} elements",
-                cap.len(),
-                n
-            )));
+            return Err(MeshError::Failed(format!("{} cap flags for {} elements", cap.len(), n)));
         }
         for e in 0..n {
             if cap[e] {
@@ -352,34 +281,15 @@ pub fn fuse(input: &FusionInput, cfg: &FusionConfig) -> Result<Fused, MeshError>
     // mandatory elements above everything else, ordered among themselves by their physics indicator
     if mandatory.iter().any(|&m| m) {
         let top = score.iter().cloned().fold(0.0f64, f64::max);
-        let pmax = (0..n)
-            .filter(|&e| mandatory[e])
-            .map(|e| physics_norm[e])
-            .fold(0.0f64, f64::max)
-            .max(1e-300);
+        let pmax = (0..n).filter(|&e| mandatory[e]).map(|e| physics_norm[e]).fold(0.0f64, f64::max).max(1e-300);
         for e in 0..n {
             if mandatory[e] {
                 score[e] = top + 1.0 + physics_norm[e] / pmax;
             }
         }
     }
-    let reliability = if degraded.is_empty() {
-        Reliability::Reliable
-    } else {
-        Reliability::Degraded(degraded.join("; "))
-    };
-    Ok(Fused {
-        score,
-        mandatory,
-        adjoint_norm,
-        physics_norm,
-        adjoint_scale,
-        physics_scale,
-        used_adjoint,
-        used_physics,
-        reliability,
-        notes,
-    })
+    let reliability = if degraded.is_empty() { Reliability::Reliable } else { Reliability::Degraded(degraded.join("; ")) };
+    Ok(Fused { score, mandatory, adjoint_norm, physics_norm, adjoint_scale, physics_scale, used_adjoint, used_physics, reliability, notes })
 }
 
 impl Zone {
@@ -395,14 +305,7 @@ mod tests {
     use crate::adaptivity::estimator::Indicator;
 
     fn field(name: &str, v: &[f64]) -> ErrorField {
-        ErrorField::new(
-            name,
-            Indicator::Marking,
-            v.to_vec(),
-            v.iter().map(|x| x * x).sum::<f64>().sqrt(),
-            Reliability::Reliable,
-            0.0,
-        )
+        ErrorField::new(name, Indicator::Marking, v.to_vec(), v.iter().map(|x| x * x).sum::<f64>().sqrt(), Reliability::Reliable, 0.0)
     }
 
     #[test]
@@ -415,13 +318,7 @@ mod tests {
         let pct = normalise(&v, Normalization::Percentile(80.0)).unwrap();
         assert_eq!(pct.scale, 4.0);
         assert_eq!(pct.values[4], 25.0);
-        assert_eq!(
-            normalise(&[0.0, 0.0], Normalization::Max).unwrap(),
-            Normalised {
-                scale: 0.0,
-                values: vec![0.0, 0.0]
-            }
-        );
+        assert_eq!(normalise(&[0.0, 0.0], Normalization::Max).unwrap(), Normalised { scale: 0.0, values: vec![0.0, 0.0] });
         assert!(normalise(&[1.0, f64::NAN], Normalization::Max).is_err());
         assert!(normalise(&[1.0, -1.0], Normalization::Max).is_err());
         assert!(normalise(&[1.0], Normalization::Percentile(0.0)).is_err());
@@ -432,35 +329,13 @@ mod tests {
     fn weighted_sum_and_max_follow_their_formulas() {
         let adj = field("dwr", &[4.0, 2.0, 0.0, 1.0]);
         let phy = field("zz", &[0.0, 5.0, 10.0, 5.0]);
-        let input = FusionInput {
-            adjoint: &[(1.0, &adj)],
-            physics: &[(PhysicsEstimator::SprPlus, &phy)],
-            zones: None,
-            capped: None,
-            protected: None,
-        };
-        let sum = fuse(
-            &input,
-            &FusionConfig {
-                strategy: FusionStrategy::WeightedSum,
-                alpha: 0.7,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let input = FusionInput { adjoint: &[(1.0, &adj)], physics: &[(PhysicsEstimator::SprPlus, &phy)], zones: None, capped: None, protected: None };
+        let sum = fuse(&input, &FusionConfig { strategy: FusionStrategy::WeightedSum, alpha: 0.7, ..Default::default() }).unwrap();
         let (a, p) = ([1.0, 0.5, 0.0, 0.25], [0.0, 0.5, 1.0, 0.5]);
         for e in 0..4 {
             assert!((sum.score[e] - (0.7 * a[e] + 0.3 * p[e])).abs() < 1e-12);
         }
-        let mx = fuse(
-            &input,
-            &FusionConfig {
-                strategy: FusionStrategy::WeightedMax,
-                alpha: 0.7,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let mx = fuse(&input, &FusionConfig { strategy: FusionStrategy::WeightedMax, alpha: 0.7, ..Default::default() }).unwrap();
         for e in 0..4 {
             assert!((mx.score[e] - (0.7 * a[e]).max(0.3 * p[e])).abs() < 1e-12);
         }
@@ -473,19 +348,9 @@ mod tests {
     fn constraint_preserving_fusion_refines_unresolved_physics_even_where_the_goal_does_not_care() {
         let adj = field("dwr", &[10.0, 5.0, 0.0, 0.0]);
         let phy = field("eq", &[1.0, 1.0, 9.0, 3.0]);
-        let input = FusionInput {
-            adjoint: &[(1.0, &adj)],
-            physics: &[(PhysicsEstimator::Equilibrated, &phy)],
-            zones: None,
-            capped: None,
-            protected: None,
-        };
+        let input = FusionInput { adjoint: &[(1.0, &adj)], physics: &[(PhysicsEstimator::Equilibrated, &phy)], zones: None, capped: None, protected: None };
         // alpha = 1: a pure goal ranking would put element 2 (adjoint 0) last; the physics allowance of 5 makes it mandatory
-        let cfg = FusionConfig {
-            alpha: 1.0,
-            physics_allowance: Some(5.0),
-            ..Default::default()
-        };
+        let cfg = FusionConfig { alpha: 1.0, physics_allowance: Some(5.0), ..Default::default() };
         let f = fuse(&input, &cfg).unwrap();
         assert_eq!(f.mandatory, vec![false, false, true, false]);
         let order: Vec<usize> = {
@@ -496,15 +361,7 @@ mod tests {
         assert_eq!(order[0], 2, "{:?}", f.score);
         assert_eq!(order[1], 0);
         // without the requirement the goal alone ranks and nothing is mandatory
-        let g = fuse(
-            &input,
-            &FusionConfig {
-                alpha: 1.0,
-                physics_allowance: None,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let g = fuse(&input, &FusionConfig { alpha: 1.0, physics_allowance: None, ..Default::default() }).unwrap();
         assert!(g.mandatory.iter().all(|&m| !m));
         assert!(g.notes.iter().any(|n| n.contains("no physics allowance")));
         assert_eq!(g.score[2], 0.0);
@@ -513,76 +370,24 @@ mod tests {
     #[test]
     fn a_failed_estimator_is_never_silently_dropped() {
         let adj = field("dwr", &[4.0, 2.0, 1.0]);
-        let bad = ErrorField::new(
-            "eq",
-            Indicator::Marking,
-            vec![1.0, f64::NAN, 1.0],
-            0.0,
-            Reliability::Reliable,
-            0.0,
-        );
+        let bad = ErrorField::new("eq", Indicator::Marking, vec![1.0, f64::NAN, 1.0], 0.0, Reliability::Reliable, 0.0);
         assert!(matches!(bad.reliability, Reliability::Failed(_)));
-        let input = FusionInput {
-            adjoint: &[(1.0, &adj)],
-            physics: &[(PhysicsEstimator::Equilibrated, &bad)],
-            zones: None,
-            capped: None,
-            protected: None,
-        };
+        let input = FusionInput { adjoint: &[(1.0, &adj)], physics: &[(PhysicsEstimator::Equilibrated, &bad)], zones: None, capped: None, protected: None };
         let f = fuse(&input, &FusionConfig::default()).unwrap();
         assert!(!f.used_physics && f.used_adjoint);
-        assert!(
-            matches!(&f.reliability, Reliability::Degraded(w) if w.contains("eq failed")),
-            "{:?}",
-            f.reliability
-        );
-        assert!(fuse(
-            &input,
-            &FusionConfig {
-                strict: true,
-                ..Default::default()
-            }
-        )
-        .is_err());
+        assert!(matches!(&f.reliability, Reliability::Degraded(w) if w.contains("eq failed")), "{:?}", f.reliability);
+        assert!(fuse(&input, &FusionConfig { strict: true, ..Default::default() }).is_err());
         // an unmet physics requirement is reported, not ignored
-        let f = fuse(
-            &input,
-            &FusionConfig {
-                physics_allowance: Some(1.0),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(
-            matches!(&f.reliability, Reliability::Degraded(w) if w.contains("cannot be enforced"))
-        );
+        let f = fuse(&input, &FusionConfig { physics_allowance: Some(1.0), ..Default::default() }).unwrap();
+        assert!(matches!(&f.reliability, Reliability::Degraded(w) if w.contains("cannot be enforced")));
         // nothing usable at all
         let unsupported = ErrorField::unsupported("dwr", "plastic", 3);
-        let none = FusionInput {
-            adjoint: &[(1.0, &unsupported)],
-            physics: &[(PhysicsEstimator::Equilibrated, &bad)],
-            zones: None,
-            capped: None,
-            protected: None,
-        };
+        let none = FusionInput { adjoint: &[(1.0, &unsupported)], physics: &[(PhysicsEstimator::Equilibrated, &bad)], zones: None, capped: None, protected: None };
         assert!(fuse(&none, &FusionConfig::default()).is_err());
         // a field of the wrong length is refused
         let short = field("zz", &[1.0, 2.0]);
-        let mismatched = FusionInput {
-            adjoint: &[(1.0, &adj)],
-            physics: &[(PhysicsEstimator::SprPlus, &short)],
-            zones: None,
-            capped: None,
-            protected: None,
-        };
-        assert!(fuse(
-            &mismatched,
-            &FusionConfig {
-                strict: true,
-                ..Default::default()
-            }
-        )
-        .is_err());
+        let mismatched = FusionInput { adjoint: &[(1.0, &adj)], physics: &[(PhysicsEstimator::SprPlus, &short)], zones: None, capped: None, protected: None };
+        assert!(fuse(&mismatched, &FusionConfig { strict: true, ..Default::default() }).is_err());
     }
 
     #[test]
@@ -590,32 +395,12 @@ mod tests {
         let adj = field("dwr", &[1.0, 9.0, 3.0]);
         let phy = field("eq", &[1.0, 100.0, 1.0]);
         let capped = [false, true, false];
-        let input = FusionInput {
-            adjoint: &[(1.0, &adj)],
-            physics: &[(PhysicsEstimator::Equilibrated, &phy)],
-            zones: None,
-            capped: Some(&capped),
-            protected: None,
-        };
-        let f = fuse(
-            &input,
-            &FusionConfig {
-                physics_allowance: Some(2.0),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let input = FusionInput { adjoint: &[(1.0, &adj)], physics: &[(PhysicsEstimator::Equilibrated, &phy)], zones: None, capped: Some(&capped), protected: None };
+        let f = fuse(&input, &FusionConfig { physics_allowance: Some(2.0), ..Default::default() }).unwrap();
         assert_eq!(f.score[1], 0.0);
         assert!(!f.mandatory[1]);
         assert!(f.score[2] > f.score[0]);
-        assert!(fuse(
-            &FusionInput {
-                capped: Some(&[true]),
-                ..input
-            },
-            &FusionConfig::default()
-        )
-        .is_err());
+        assert!(fuse(&FusionInput { capped: Some(&[true]), ..input }, &FusionConfig::default()).is_err());
     }
 
     #[test]
@@ -624,59 +409,14 @@ mod tests {
         let g2 = field("g2", &[0.0, 4.0, 0.0]);
         let phy = field("eq", &[0.0, 0.0, 1.0]);
         let adj = [(1.0, &g1), (1.0, &g2)];
-        let sum = fuse(
-            &FusionInput {
-                adjoint: &adj,
-                physics: &[],
-                zones: None,
-                capped: None,
-                protected: None,
-            },
-            &FusionConfig {
-                strategy: FusionStrategy::WeightedSum,
-                goal_combine: GoalCombine::Sum,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let sum = fuse(&FusionInput { adjoint: &adj, physics: &[], zones: None, capped: None, protected: None }, &FusionConfig { strategy: FusionStrategy::WeightedSum, goal_combine: GoalCombine::Sum, ..Default::default() }).unwrap();
         // each goal normalised by its own maximum, then averaged
         assert_eq!(sum.adjoint_norm, vec![0.5, 0.5, 0.0]);
-        let mx = fuse(
-            &FusionInput {
-                adjoint: &adj,
-                physics: &[],
-                zones: None,
-                capped: None,
-                protected: None,
-            },
-            &FusionConfig {
-                strategy: FusionStrategy::WeightedSum,
-                goal_combine: GoalCombine::Max,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let mx = fuse(&FusionInput { adjoint: &adj, physics: &[], zones: None, capped: None, protected: None }, &FusionConfig { strategy: FusionStrategy::WeightedSum, goal_combine: GoalCombine::Max, ..Default::default() }).unwrap();
         assert_eq!(mx.adjoint_norm, vec![1.0, 1.0, 0.0]);
         // zone weights: a contact zone doubles the physics weight at element 2
-        let zones = ZoneMap {
-            zones: vec![Zone::Smooth, Zone::Smooth, Zone::Contact],
-            beta: vec![1.0, 1.0, 2.0],
-            singular_nodes: vec![],
-        };
-        let f = fuse(
-            &FusionInput {
-                adjoint: &[],
-                physics: &[(PhysicsEstimator::Equilibrated, &phy)],
-                zones: Some(&zones),
-                capped: None,
-                protected: None,
-            },
-            &FusionConfig {
-                strategy: FusionStrategy::WeightedSum,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let zones = ZoneMap { zones: vec![Zone::Smooth, Zone::Smooth, Zone::Contact], beta: vec![1.0, 1.0, 2.0], singular_nodes: vec![] };
+        let f = fuse(&FusionInput { adjoint: &[], physics: &[(PhysicsEstimator::Equilibrated, &phy)], zones: Some(&zones), capped: None, protected: None }, &FusionConfig { strategy: FusionStrategy::WeightedSum, ..Default::default() }).unwrap();
         assert_eq!(f.physics_norm[2], 2.0);
         assert!(!f.used_adjoint);
         assert!(Zone::Singular.is_singular());
@@ -686,44 +426,13 @@ mod tests {
     fn protected_elements_are_mandatory_under_every_strategy_unless_capped() {
         let adj = field("dwr", &[5.0, 1.0, 0.0]);
         let prot = [false, false, true];
-        for strategy in [
-            FusionStrategy::WeightedSum,
-            FusionStrategy::WeightedMax,
-            FusionStrategy::ConstraintPreserving,
-        ] {
-            let input = FusionInput {
-                adjoint: &[(1.0, &adj)],
-                physics: &[],
-                zones: None,
-                capped: None,
-                protected: Some(&prot),
-            };
-            let f = fuse(
-                &input,
-                &FusionConfig {
-                    strategy,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            assert!(
-                f.mandatory[2] && f.score[2] > f.score[0],
-                "{strategy:?}: {:?}",
-                f.score
-            );
+        for strategy in [FusionStrategy::WeightedSum, FusionStrategy::WeightedMax, FusionStrategy::ConstraintPreserving] {
+            let input = FusionInput { adjoint: &[(1.0, &adj)], physics: &[], zones: None, capped: None, protected: Some(&prot) };
+            let f = fuse(&input, &FusionConfig { strategy, ..Default::default() }).unwrap();
+            assert!(f.mandatory[2] && f.score[2] > f.score[0], "{strategy:?}: {:?}", f.score);
         }
         let capped = [false, false, true];
-        let f = fuse(
-            &FusionInput {
-                adjoint: &[(1.0, &adj)],
-                physics: &[],
-                zones: None,
-                capped: Some(&capped),
-                protected: Some(&prot),
-            },
-            &FusionConfig::default(),
-        )
-        .unwrap();
+        let f = fuse(&FusionInput { adjoint: &[(1.0, &adj)], physics: &[], zones: None, capped: Some(&capped), protected: Some(&prot) }, &FusionConfig::default()).unwrap();
         assert!(!f.mandatory[2] && f.score[2] == 0.0);
     }
 }

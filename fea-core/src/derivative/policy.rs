@@ -30,16 +30,7 @@ pub enum DerivativeMethod {
 }
 
 impl DerivativeMethod {
-    pub const ALL: [DerivativeMethod; 8] = [
-        Self::Analytic,
-        Self::ForwardAd,
-        Self::ReverseAd,
-        Self::ComplexStep,
-        Self::HyperDual,
-        Self::Implicit,
-        Self::Generalized,
-        Self::FiniteDifferenceVerification,
-    ];
+    pub const ALL: [DerivativeMethod; 8] = [Self::Analytic, Self::ForwardAd, Self::ReverseAd, Self::ComplexStep, Self::HyperDual, Self::Implicit, Self::Generalized, Self::FiniteDifferenceVerification];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -145,20 +136,7 @@ pub struct DerivativeCapabilities {
 
 impl DerivativeCapabilities {
     pub fn new(kernel: &str, method: DerivativeMethod) -> Self {
-        Self {
-            kernel: kernel.to_string(),
-            method,
-            requests: vec![DerivativeRequest::Jacobian],
-            max_order: 1,
-            smoothness: vec![Smoothness::Smooth],
-            scalars: vec![ScalarKind::F64],
-            thread_safe: true,
-            deterministic: true,
-            devices: vec![Device::Cpu],
-            verification_only: false,
-            exact: true,
-            analytic_cost: None,
-        }
+        Self { kernel: kernel.to_string(), method, requests: vec![DerivativeRequest::Jacobian], max_order: 1, smoothness: vec![Smoothness::Smooth], scalars: vec![ScalarKind::F64], thread_safe: true, deterministic: true, devices: vec![Device::Cpu], verification_only: false, exact: true, analytic_cost: None }
     }
 }
 
@@ -186,27 +164,8 @@ pub struct DerivativeContext {
 }
 
 impl DerivativeContext {
-    pub fn new(
-        requested: DerivativeRequest,
-        input_dimension: usize,
-        output_dimension: usize,
-    ) -> Self {
-        Self {
-            smoothness: Smoothness::Smooth,
-            input_dimension,
-            output_dimension,
-            requested,
-            memory_budget_bytes: 64 << 20,
-            purpose: Purpose::Production,
-            contact: ContactStatus::None,
-            function_ops: 100,
-            function_cost: 100.0,
-            parallel: false,
-            deterministic_required: true,
-            override_method: None,
-            verify_against: Vec::new(),
-            allow_difference_fallback: false,
-        }
+    pub fn new(requested: DerivativeRequest, input_dimension: usize, output_dimension: usize) -> Self {
+        Self { smoothness: Smoothness::Smooth, input_dimension, output_dimension, requested, memory_budget_bytes: 64 << 20, purpose: Purpose::Production, contact: ContactStatus::None, function_ops: 100, function_cost: 100.0, parallel: false, deterministic_required: true, override_method: None, verify_against: Vec::new(), allow_difference_fallback: false }
     }
 }
 
@@ -234,23 +193,12 @@ pub struct DerivativePlan {
 impl DerivativePlan {
     /// A readable account of the decision.
     pub fn report(&self) -> String {
-        let mut s = format!(
-            "{:?} for {:?} of '{}' ({:?}); cost {:.3e}, memory {} B\n",
-            self.method,
-            self.request,
-            self.kernel,
-            self.semantics,
-            self.estimated_cost,
-            self.estimated_memory_bytes
-        );
+        let mut s = format!("{:?} for {:?} of '{}' ({:?}); cost {:.3e}, memory {} B\n", self.method, self.request, self.kernel, self.semantics, self.estimated_cost, self.estimated_memory_bytes);
         for r in &self.reasons {
             s.push_str(&format!("  because {r}\n"));
         }
         for r in &self.rejected {
-            s.push_str(&format!(
-                "  not {:?} ({}): {}\n",
-                r.method, r.kernel, r.reason
-            ));
+            s.push_str(&format!("  not {:?} ({}): {}\n", r.method, r.kernel, r.reason));
         }
         s
     }
@@ -260,16 +208,9 @@ impl DerivativePlan {
 pub enum DerivativeError {
     UnknownKernel(String),
     /// Nothing registered can give a valid derivative for the request.
-    NoCandidate {
-        kernel: String,
-        request: DerivativeRequest,
-        rejected: Vec<Rejection>,
-    },
+    NoCandidate { kernel: String, request: DerivativeRequest, rejected: Vec<Rejection> },
     /// An explicit override that is mathematically incompatible with the context.
-    Incompatible {
-        method: DerivativeMethod,
-        reason: String,
-    },
+    Incompatible { method: DerivativeMethod, reason: String },
     Unsupported(String),
     Numerical(String),
 }
@@ -277,26 +218,15 @@ pub enum DerivativeError {
 impl std::fmt::Display for DerivativeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnknownKernel(k) => {
-                write!(f, "no derivative capabilities are registered for '{k}'")
-            }
-            Self::NoCandidate {
-                kernel,
-                request,
-                rejected,
-            } => {
-                write!(
-                    f,
-                    "no derivative method can serve {request:?} of '{kernel}':"
-                )?;
+            Self::UnknownKernel(k) => write!(f, "no derivative capabilities are registered for '{k}'"),
+            Self::NoCandidate { kernel, request, rejected } => {
+                write!(f, "no derivative method can serve {request:?} of '{kernel}':")?;
                 for r in rejected {
                     write!(f, " [{:?}: {}]", r.method, r.reason)?;
                 }
                 Ok(())
             }
-            Self::Incompatible { method, reason } => {
-                write!(f, "{method:?} is not valid here: {reason}")
-            }
+            Self::Incompatible { method, reason } => write!(f, "{method:?} is not valid here: {reason}"),
             Self::Unsupported(s) | Self::Numerical(s) => f.write_str(s),
         }
     }
@@ -306,11 +236,7 @@ impl std::error::Error for DerivativeError {}
 
 /// The decision rule. Implementations must be pure functions of their arguments.
 pub trait DerivativePolicy {
-    fn select(
-        &self,
-        context: &DerivativeContext,
-        candidates: &[DerivativeCapabilities],
-    ) -> Result<DerivativePlan, DerivativeError>;
+    fn select(&self, context: &DerivativeContext, candidates: &[DerivativeCapabilities]) -> Result<DerivativePlan, DerivativeError>;
 }
 
 /// Relative costs of the AD modes, in units of one kernel evaluation. The defaults are measured on the Quad8 element stiffness by
@@ -329,15 +255,7 @@ pub struct CostCalibration {
 
 impl Default for CostCalibration {
     fn default() -> Self {
-        Self {
-            dual_lane: 0.33,
-            tape_record: 13.0,
-            tape_sweep: 11.5,
-            complex: 1.75,
-            hyperdual: 3.3,
-            tape_node_bytes: 24.0,
-            dual_lane_bytes: 8.0,
-        }
+        Self { dual_lane: 0.33, tape_record: 13.0, tape_sweep: 11.5, complex: 1.75, hyperdual: 3.3, tape_node_bytes: 24.0, dual_lane_bytes: 8.0 }
     }
 }
 
@@ -352,17 +270,9 @@ fn why_not(c: &DerivativeCapabilities, ctx: &DerivativeContext) -> Option<String
     }
     let order = ctx.requested.order();
     if c.max_order < order {
-        return Some(format!(
-            "provides derivatives to order {} but order {order} is requested",
-            c.max_order
-        ));
+        return Some(format!("provides derivatives to order {} but order {order} is requested", c.max_order));
     }
-    if c.verification_only
-        && ctx.purpose != Purpose::Verification
-        && !(ctx.allow_difference_fallback
-            && c.method == DerivativeMethod::FiniteDifferenceVerification)
-        && ctx.override_method != Some(c.method)
-    {
+    if c.verification_only && ctx.purpose != Purpose::Verification && !(ctx.allow_difference_fallback && c.method == DerivativeMethod::FiniteDifferenceVerification) && ctx.override_method != Some(c.method) {
         return Some("is a verification method (not eligible for production derivatives)".into());
     }
     if ctx.verify_against.contains(&c.method) {
@@ -390,24 +300,15 @@ fn why_not(c: &DerivativeCapabilities, ctx: &DerivativeContext) -> Option<String
         _ => {}
     }
     // contact: a changing active set needs a generalized derivative; a fixed one is smooth on its branch
-    if ctx.contact == ContactStatus::Transition
-        && c.method != DerivativeMethod::Generalized
-        && c.method != DerivativeMethod::FiniteDifferenceVerification
-    {
-        return Some(
-            "the contact active set changes here: only a generalized derivative is meaningful"
-                .into(),
-        );
+    if ctx.contact == ContactStatus::Transition && c.method != DerivativeMethod::Generalized && c.method != DerivativeMethod::FiniteDifferenceVerification {
+        return Some("the contact active set changes here: only a generalized derivative is meaningful".into());
     }
     None
 }
 
 impl DefaultPolicy {
     fn cost(&self, c: &DerivativeCapabilities, ctx: &DerivativeContext) -> (f64, usize) {
-        let (n, m) = (
-            ctx.input_dimension.max(1) as f64,
-            ctx.output_dimension.max(1) as f64,
-        );
+        let (n, m) = (ctx.input_dimension.max(1) as f64, ctx.output_dimension.max(1) as f64);
         let (f, ops) = (ctx.function_cost.max(1.0), ctx.function_ops.max(1) as f64);
         let cal = &self.calibration;
         let req = ctx.requested;
@@ -417,53 +318,28 @@ impl DefaultPolicy {
                 let rel = c.analytic_cost.unwrap_or(0.3);
                 let times = match req {
                     DerivativeRequest::Jacobian => 1.0,
-                    DerivativeRequest::JacobianVectorProduct
-                    | DerivativeRequest::VectorJacobianProduct => 0.5,
+                    DerivativeRequest::JacobianVectorProduct | DerivativeRequest::VectorJacobianProduct => 0.5,
                     DerivativeRequest::HessianVectorProduct => 2.0,
                     DerivativeRequest::ParameterGradient => 1.0,
                 };
-                (
-                    f * rel
-                        * times
-                        * if c.method == DerivativeMethod::Implicit {
-                            2.0
-                        } else {
-                            1.0
-                        },
-                    (ops * 8.0) as usize,
-                )
+                (f * rel * times * if c.method == DerivativeMethod::Implicit { 2.0 } else { 1.0 }, (ops * 8.0) as usize)
             }
             DerivativeMethod::ForwardAd => match req {
-                DerivativeRequest::JacobianVectorProduct => (
-                    f * (1.0 + cal.dual_lane),
-                    (ops * cal.dual_lane_bytes) as usize,
-                ),
-                DerivativeRequest::HessianVectorProduct => (
-                    f * (1.0 + cal.dual_lane) * (1.0 + cal.dual_lane),
-                    (ops * cal.dual_lane_bytes * 2.0) as usize,
-                ),
-                _ => (
-                    (n / w).ceil() * f * (1.0 + w * cal.dual_lane),
-                    (ops * w * cal.dual_lane_bytes) as usize,
-                ),
+                DerivativeRequest::JacobianVectorProduct => (f * (1.0 + cal.dual_lane), (ops * cal.dual_lane_bytes) as usize),
+                DerivativeRequest::HessianVectorProduct => (f * (1.0 + cal.dual_lane) * (1.0 + cal.dual_lane), (ops * cal.dual_lane_bytes * 2.0) as usize),
+                _ => ((n / w).ceil() * f * (1.0 + w * cal.dual_lane), (ops * w * cal.dual_lane_bytes) as usize),
             },
             DerivativeMethod::ReverseAd => {
                 let record = f * cal.tape_record;
                 let mem = (ops * cal.tape_node_bytes) as usize;
                 match req {
-                    DerivativeRequest::VectorJacobianProduct
-                    | DerivativeRequest::ParameterGradient => (record + f * cal.tape_sweep, mem),
-                    DerivativeRequest::HessianVectorProduct => {
-                        (3.0 * (record + f * cal.tape_sweep), mem * 3)
-                    }
+                    DerivativeRequest::VectorJacobianProduct | DerivativeRequest::ParameterGradient => (record + f * cal.tape_sweep, mem),
+                    DerivativeRequest::HessianVectorProduct => (3.0 * (record + f * cal.tape_sweep), mem * 3),
                     _ => (record + m * f * cal.tape_sweep, mem),
                 }
             }
             DerivativeMethod::ComplexStep => (n * f * cal.complex, (ops * 16.0) as usize),
-            DerivativeMethod::HyperDual => (
-                n * (n + 1.0) / 2.0 * f * cal.hyperdual,
-                (ops * 32.0) as usize,
-            ),
+            DerivativeMethod::HyperDual => (n * (n + 1.0) / 2.0 * f * cal.hyperdual, (ops * 32.0) as usize),
             DerivativeMethod::Generalized => (f * 2.0, (ops * 8.0) as usize),
             DerivativeMethod::FiniteDifferenceVerification => (2.0 * n * f, (ops * 8.0) as usize),
         }
@@ -471,124 +347,58 @@ impl DefaultPolicy {
 }
 
 impl DerivativePolicy for DefaultPolicy {
-    fn select(
-        &self,
-        ctx: &DerivativeContext,
-        candidates: &[DerivativeCapabilities],
-    ) -> Result<DerivativePlan, DerivativeError> {
-        let kernel = candidates
-            .first()
-            .map(|c| c.kernel.clone())
-            .unwrap_or_default();
+    fn select(&self, ctx: &DerivativeContext, candidates: &[DerivativeCapabilities]) -> Result<DerivativePlan, DerivativeError> {
+        let kernel = candidates.first().map(|c| c.kernel.clone()).unwrap_or_default();
         let mut rejected: Vec<Rejection> = Vec::new();
         let mut viable: Vec<(&DerivativeCapabilities, f64, usize)> = Vec::new();
         for c in candidates {
             if let Some(why) = why_not(c, ctx) {
-                rejected.push(Rejection {
-                    method: c.method,
-                    kernel: c.kernel.clone(),
-                    reason: why,
-                });
+                rejected.push(Rejection { method: c.method, kernel: c.kernel.clone(), reason: why });
                 continue;
             }
             let (cost, mem) = self.cost(c, ctx);
             if mem > ctx.memory_budget_bytes {
-                rejected.push(Rejection {
-                    method: c.method,
-                    kernel: c.kernel.clone(),
-                    reason: format!(
-                        "needs about {mem} B, over the budget of {} B",
-                        ctx.memory_budget_bytes
-                    ),
-                });
+                rejected.push(Rejection { method: c.method, kernel: c.kernel.clone(), reason: format!("needs about {mem} B, over the budget of {} B", ctx.memory_budget_bytes) });
                 continue;
             }
             viable.push((c, cost, mem));
         }
         if let Some(want) = ctx.override_method {
             return match viable.iter().find(|(c, ..)| c.method == want) {
-                Some((c, cost, mem)) => Ok(self.plan(
-                    c,
-                    *cost,
-                    *mem,
-                    ctx,
-                    vec![format!(
-                        "{want:?} was requested explicitly and is compatible"
-                    )],
-                    rejected,
-                )),
+                Some((c, cost, mem)) => Ok(self.plan(c, *cost, *mem, ctx, vec![format!("{want:?} was requested explicitly and is compatible")], rejected)),
                 None => {
-                    let reason = rejected
-                        .iter()
-                        .find(|r| r.method == want)
-                        .map(|r| r.reason.clone())
-                        .unwrap_or_else(|| "no registered kernel offers it".into());
-                    Err(DerivativeError::Incompatible {
-                        method: want,
-                        reason,
-                    })
+                    let reason = rejected.iter().find(|r| r.method == want).map(|r| r.reason.clone()).unwrap_or_else(|| "no registered kernel offers it".into());
+                    Err(DerivativeError::Incompatible { method: want, reason })
                 }
             };
         }
         // exact methods first; a difference fallback only when nothing exact is viable
         let exact: Vec<_> = viable.iter().filter(|(c, ..)| c.exact).copied().collect();
-        let pool = if exact.is_empty() {
-            viable.clone()
-        } else {
-            exact
-        };
+        let pool = if exact.is_empty() { viable.clone() } else { exact };
         // cheapest; ties go to the earlier (more specific) registration
         let best = pool.iter().min_by(|a, b| a.1.total_cmp(&b.1));
         match best {
             Some((c, cost, mem)) => {
-                let mut reasons = vec![format!(
-                    "the cheapest of {} viable method(s) by estimated cost",
-                    pool.len()
-                )];
+                let mut reasons = vec![format!("the cheapest of {} viable method(s) by estimated cost", pool.len())];
                 if !c.exact {
                     reasons.push("no exact method is viable: this is a labelled difference fallback, not a derivative of the algorithm".into());
                 }
                 Ok(self.plan(c, *cost, *mem, ctx, reasons, rejected))
             }
-            None => Err(DerivativeError::NoCandidate {
-                kernel,
-                request: ctx.requested,
-                rejected,
-            }),
+            None => Err(DerivativeError::NoCandidate { kernel, request: ctx.requested, rejected }),
         }
     }
 }
 
 impl DefaultPolicy {
-    fn plan(
-        &self,
-        c: &DerivativeCapabilities,
-        cost: f64,
-        mem: usize,
-        ctx: &DerivativeContext,
-        reasons: Vec<String>,
-        rejected: Vec<Rejection>,
-    ) -> DerivativePlan {
+    fn plan(&self, c: &DerivativeCapabilities, cost: f64, mem: usize, ctx: &DerivativeContext, reasons: Vec<String>, rejected: Vec<Rejection>) -> DerivativePlan {
         let semantics = match (c.method, ctx.smoothness, ctx.contact) {
-            (DerivativeMethod::FiniteDifferenceVerification, ..) => {
-                DerivativeSemantics::Approximate
-            }
+            (DerivativeMethod::FiniteDifferenceVerification, ..) => DerivativeSemantics::Approximate,
             (DerivativeMethod::Generalized, ..) => DerivativeSemantics::Generalized,
-            (_, Smoothness::PiecewiseSmooth, _) | (_, _, ContactStatus::FixedActiveSet) => {
-                DerivativeSemantics::ActiveBranch
-            }
+            (_, Smoothness::PiecewiseSmooth, _) | (_, _, ContactStatus::FixedActiveSet) => DerivativeSemantics::ActiveBranch,
             _ => DerivativeSemantics::Classical,
         };
-        DerivativePlan {
-            kernel: c.kernel.clone(),
-            method: c.method,
-            request: ctx.requested,
-            semantics,
-            estimated_cost: cost,
-            estimated_memory_bytes: mem,
-            reasons,
-            rejected,
-        }
+        DerivativePlan { kernel: c.kernel.clone(), method: c.method, request: ctx.requested, semantics, estimated_cost: cost, estimated_memory_bytes: mem, reasons, rejected }
     }
 }
 
@@ -621,20 +431,11 @@ fn key_of(kernel: &str, c: &DerivativeContext) -> CacheKey {
         kernel: kernel.to_string(),
         request: c.requested,
         smoothness: c.smoothness,
-        dims: (
-            c.input_dimension,
-            c.output_dimension,
-            c.memory_budget_bytes,
-            c.function_ops,
-        ),
+        dims: (c.input_dimension, c.output_dimension, c.memory_budget_bytes, c.function_ops),
         purpose: c.purpose,
         contact: c.contact,
         cost_bits: c.function_cost.to_bits(),
-        flags: (
-            c.parallel,
-            c.deterministic_required,
-            c.allow_difference_fallback,
-        ),
+        flags: (c.parallel, c.deterministic_required, c.allow_difference_fallback),
         override_method: c.override_method,
         verify_against: c.verify_against.clone(),
     }
@@ -656,12 +457,7 @@ impl Default for DerivativePolicyEngine {
 
 impl DerivativePolicyEngine {
     pub fn new(policy: Box<dyn DerivativePolicy + Send + Sync>) -> Self {
-        Self {
-            registry: Vec::new(),
-            policy,
-            cache: Mutex::new(HashMap::new()),
-            trace: Mutex::new(Vec::new()),
-        }
+        Self { registry: Vec::new(), policy, cache: Mutex::new(HashMap::new()), trace: Mutex::new(Vec::new()) }
     }
 
     /// Register one capability. Earlier registrations win cost ties, so register the specific (analytic) ones first.
@@ -677,36 +473,20 @@ impl DerivativePolicyEngine {
         use DerivativeRequest::*;
         if let Some(cost) = analytic_cost {
             let mut a = DerivativeCapabilities::new(kernel, Analytic);
-            a.requests = vec![
-                Jacobian,
-                JacobianVectorProduct,
-                VectorJacobianProduct,
-                HessianVectorProduct,
-                ParameterGradient,
-            ];
+            a.requests = vec![Jacobian, JacobianVectorProduct, VectorJacobianProduct, HessianVectorProduct, ParameterGradient];
             a.max_order = 2;
             a.smoothness = vec![Smoothness::Smooth, Smoothness::PiecewiseSmooth];
             a.analytic_cost = Some(cost);
             self.register(a);
         }
         let mut fwd = DerivativeCapabilities::new(kernel, ForwardAd);
-        fwd.requests = vec![
-            Jacobian,
-            JacobianVectorProduct,
-            ParameterGradient,
-            HessianVectorProduct,
-        ];
+        fwd.requests = vec![Jacobian, JacobianVectorProduct, ParameterGradient, HessianVectorProduct];
         fwd.max_order = 2;
         fwd.smoothness = vec![Smoothness::Smooth, Smoothness::PiecewiseSmooth];
         fwd.scalars = vec![ScalarKind::F64, ScalarKind::Dual];
         self.register(fwd);
         let mut rev = DerivativeCapabilities::new(kernel, ReverseAd);
-        rev.requests = vec![
-            Jacobian,
-            VectorJacobianProduct,
-            ParameterGradient,
-            HessianVectorProduct,
-        ];
+        rev.requests = vec![Jacobian, VectorJacobianProduct, ParameterGradient, HessianVectorProduct];
         rev.max_order = 2;
         rev.smoothness = vec![Smoothness::Smooth, Smoothness::PiecewiseSmooth];
         rev.scalars = vec![ScalarKind::F64, ScalarKind::Reverse, ScalarKind::Dual];
@@ -722,12 +502,7 @@ impl DerivativePolicyEngine {
         cs.verification_only = true;
         self.register(cs);
         let mut fd = DerivativeCapabilities::new(kernel, FiniteDifferenceVerification);
-        fd.requests = vec![
-            Jacobian,
-            JacobianVectorProduct,
-            ParameterGradient,
-            VectorJacobianProduct,
-        ];
+        fd.requests = vec![Jacobian, JacobianVectorProduct, ParameterGradient, VectorJacobianProduct];
         fd.smoothness = vec![Smoothness::Smooth, Smoothness::PiecewiseSmooth];
         fd.verification_only = true;
         fd.exact = false;
@@ -737,17 +512,8 @@ impl DerivativePolicyEngine {
     /// Register a generalized-derivative provider for a nonsmooth kernel.
     pub fn register_generalized(&mut self, kernel: &str) {
         let mut g = DerivativeCapabilities::new(kernel, DerivativeMethod::Generalized);
-        g.requests = vec![
-            DerivativeRequest::Jacobian,
-            DerivativeRequest::JacobianVectorProduct,
-            DerivativeRequest::VectorJacobianProduct,
-            DerivativeRequest::ParameterGradient,
-        ];
-        g.smoothness = vec![
-            Smoothness::Smooth,
-            Smoothness::PiecewiseSmooth,
-            Smoothness::Semismooth,
-        ];
+        g.requests = vec![DerivativeRequest::Jacobian, DerivativeRequest::JacobianVectorProduct, DerivativeRequest::VectorJacobianProduct, DerivativeRequest::ParameterGradient];
+        g.smoothness = vec![Smoothness::Smooth, Smoothness::PiecewiseSmooth, Smoothness::Semismooth];
         self.register(g);
     }
 
@@ -759,73 +525,29 @@ impl DerivativePolicyEngine {
     }
 
     pub fn capabilities_of(&self, kernel: &str) -> Vec<&DerivativeCapabilities> {
-        self.registry
-            .iter()
-            .filter(|c| c.kernel == kernel)
-            .collect()
+        self.registry.iter().filter(|c| c.kernel == kernel).collect()
     }
 
     /// Choose a method for `kernel` in `context`. Identical contexts return the cached decision.
-    pub fn select(
-        &self,
-        kernel: &str,
-        context: &DerivativeContext,
-    ) -> Result<DerivativePlan, DerivativeError> {
+    pub fn select(&self, kernel: &str, context: &DerivativeContext) -> Result<DerivativePlan, DerivativeError> {
         let key = key_of(kernel, context);
         if let Some(hit) = self.cache.lock().expect("cache").get(&key).cloned() {
-            self.note(
-                kernel,
-                context,
-                hit.as_ref().ok().map(|p| p.method),
-                true,
-                "cached decision".into(),
-            );
+            self.note(kernel, context, hit.as_ref().ok().map(|p| p.method), true, "cached decision".into());
             return hit;
         }
-        let candidates: Vec<DerivativeCapabilities> = self
-            .registry
-            .iter()
-            .filter(|c| c.kernel == kernel)
-            .cloned()
-            .collect();
-        let result = if candidates.is_empty() {
-            Err(DerivativeError::UnknownKernel(kernel.to_string()))
-        } else {
-            self.policy.select(context, &candidates)
-        };
+        let candidates: Vec<DerivativeCapabilities> = self.registry.iter().filter(|c| c.kernel == kernel).cloned().collect();
+        let result = if candidates.is_empty() { Err(DerivativeError::UnknownKernel(kernel.to_string())) } else { self.policy.select(context, &candidates) };
         let message = match &result {
             Ok(p) => p.report(),
             Err(e) => e.to_string(),
         };
-        self.note(
-            kernel,
-            context,
-            result.as_ref().ok().map(|p| p.method),
-            false,
-            message,
-        );
-        self.cache
-            .lock()
-            .expect("cache")
-            .insert(key, result.clone());
+        self.note(kernel, context, result.as_ref().ok().map(|p| p.method), false, message);
+        self.cache.lock().expect("cache").insert(key, result.clone());
         result
     }
 
-    fn note(
-        &self,
-        kernel: &str,
-        c: &DerivativeContext,
-        method: Option<DerivativeMethod>,
-        cached: bool,
-        message: String,
-    ) {
-        self.trace.lock().expect("trace").push(TraceEvent {
-            kernel: kernel.to_string(),
-            request: c.requested,
-            method,
-            cached,
-            message,
-        });
+    fn note(&self, kernel: &str, c: &DerivativeContext, method: Option<DerivativeMethod>, cached: bool, message: String) {
+        self.trace.lock().expect("trace").push(TraceEvent { kernel: kernel.to_string(), request: c.requested, method, cached, message });
     }
 
     /// The recorded decisions since the last call.
@@ -862,21 +584,7 @@ pub struct SensitivityContext {
 impl SensitivityContext {
     pub fn static_linear(n_dofs: usize, n_parameters: usize, n_outputs: usize) -> Self {
         let n = n_dofs as f64;
-        Self {
-            n_dofs,
-            n_parameters,
-            n_outputs,
-            solve_cost: 4.0 * n.powf(1.2),
-            factor_cost: 20.0 * n.powf(1.5),
-            factorization_available: false,
-            residual_derivative_cost: 6.0 * n,
-            matrix_free_available: true,
-            assembled_available: true,
-            matvec_cost: 20.0 * n,
-            krylov_iterations: 300.0,
-            steps: 1,
-            symmetric_tangent: true,
-        }
+        Self { n_dofs, n_parameters, n_outputs, solve_cost: 4.0 * n.powf(1.2), factor_cost: 20.0 * n.powf(1.5), factorization_available: false, residual_derivative_cost: 6.0 * n, matrix_free_available: true, assembled_available: true, matvec_cost: 20.0 * n, krylov_iterations: 300.0, steps: 1, symmetric_tangent: true }
     }
 }
 
@@ -894,60 +602,32 @@ pub struct SensitivityPlan {
 /// all when one exists and can be reused). Matrix-free replaces factorization by Krylov iterations and needs a matrix-free operator.
 pub fn select_sensitivity(c: &SensitivityContext) -> Result<SensitivityPlan, DerivativeError> {
     if c.n_parameters == 0 || c.n_outputs == 0 {
-        return Err(DerivativeError::Unsupported(
-            "a sensitivity analysis needs at least one parameter and one output".into(),
-        ));
+        return Err(DerivativeError::Unsupported("a sensitivity analysis needs at least one parameter and one output".into()));
     }
     let steps = c.steps.max(1) as f64;
     let (np, no) = (c.n_parameters as f64, c.n_outputs as f64);
-    let factor = if c.factorization_available {
-        0.0
-    } else {
-        c.factor_cost
-    } * steps;
+    let factor = if c.factorization_available { 0.0 } else { c.factor_cost } * steps;
     let rp = np * c.residual_derivative_cost * steps;
     let mut alt: Vec<(SensitivityMethod, f64)> = Vec::new();
     if c.assembled_available {
-        alt.push((
-            SensitivityMethod::Direct,
-            factor + np * c.solve_cost * steps + rp,
-        ));
-        alt.push((
-            SensitivityMethod::DiscreteAdjoint,
-            factor + no * c.solve_cost * steps + rp,
-        ));
+        alt.push((SensitivityMethod::Direct, factor + np * c.solve_cost * steps + rp));
+        alt.push((SensitivityMethod::DiscreteAdjoint, factor + no * c.solve_cost * steps + rp));
     }
     if c.matrix_free_available {
         let per_solve = c.krylov_iterations * c.matvec_cost;
         // a matrix-free adjoint needs the transposed operator; the same count of solves as the assembled adjoint
-        alt.push((
-            SensitivityMethod::MatrixFree,
-            np.min(no) * per_solve * steps + rp,
-        ));
+        alt.push((SensitivityMethod::MatrixFree, np.min(no) * per_solve * steps + rp));
     }
     if alt.is_empty() {
-        return Err(DerivativeError::Unsupported(
-            "neither an assembled nor a matrix-free tangent is available".into(),
-        ));
+        return Err(DerivativeError::Unsupported("neither an assembled nor a matrix-free tangent is available".into()));
     }
-    let (method, cost) = *alt
-        .iter()
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .expect("non-empty");
-    let mut reasons = vec![format!(
-        "{} parameter(s), {} output(s): {:?} is the cheapest admissible",
-        c.n_parameters, c.n_outputs, method
-    )];
+    let (method, cost) = *alt.iter().min_by(|a, b| a.1.total_cmp(&b.1)).expect("non-empty");
+    let mut reasons = vec![format!("{} parameter(s), {} output(s): {:?} is the cheapest admissible", c.n_parameters, c.n_outputs, method)];
     if c.factorization_available {
         reasons.push("an existing factorization is reused".into());
     }
     if !c.symmetric_tangent && method != SensitivityMethod::MatrixFree {
         reasons.push("the tangent is nonsymmetric: the adjoint solve uses the transpose".into());
     }
-    Ok(SensitivityPlan {
-        method,
-        cost,
-        alternatives: alt,
-        reasons,
-    })
+    Ok(SensitivityPlan { method, cost, alternatives: alt, reasons })
 }

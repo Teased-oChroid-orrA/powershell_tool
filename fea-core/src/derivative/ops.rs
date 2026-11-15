@@ -26,40 +26,23 @@ pub struct Jacobian {
 
 impl Jacobian {
     pub fn zeros(m: usize, n: usize) -> Self {
-        Self {
-            m,
-            n,
-            data: vec![0.0; m * n],
-        }
+        Self { m, n, data: vec![0.0; m * n] }
     }
     pub fn at(&self, i: usize, j: usize) -> f64 {
         self.data[i * self.n + j]
     }
     /// `J v`.
     pub fn apply(&self, v: &[f64]) -> Vec<f64> {
-        (0..self.m)
-            .map(|i| (0..self.n).map(|j| self.at(i, j) * v[j]).sum())
-            .collect()
+        (0..self.m).map(|i| (0..self.n).map(|j| self.at(i, j) * v[j]).sum()).collect()
     }
     /// `J^T w`.
     pub fn apply_transpose(&self, w: &[f64]) -> Vec<f64> {
-        (0..self.n)
-            .map(|j| (0..self.m).map(|i| self.at(i, j) * w[i]).sum())
-            .collect()
+        (0..self.n).map(|j| (0..self.m).map(|i| self.at(i, j) * w[i]).sum()).collect()
     }
     /// Largest absolute entry difference to `o`, relative to the larger of the two largest entries (and 1e-300).
     pub fn relative_difference(&self, o: &Jacobian) -> f64 {
-        let scale = self
-            .data
-            .iter()
-            .chain(&o.data)
-            .fold(0.0f64, |m, v| m.max(v.abs()))
-            .max(1e-300);
-        self.data
-            .iter()
-            .zip(&o.data)
-            .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()))
-            / scale
+        let scale = self.data.iter().chain(&o.data).fold(0.0f64, |m, v| m.max(v.abs())).max(1e-300);
+        self.data.iter().zip(&o.data).fold(0.0f64, |m, (a, b)| m.max((a - b).abs())) / scale
     }
 }
 
@@ -135,9 +118,7 @@ pub struct DerivativeWorkspace {
 impl DerivativeWorkspace {
     /// A workspace whose tape holds at most `max_ops` recorded operations.
     pub fn new(max_ops: usize) -> Self {
-        Self {
-            tape: Tape::with_limit(max_ops),
-        }
+        Self { tape: Tape::with_limit(max_ops) }
     }
 }
 
@@ -149,11 +130,7 @@ pub struct TapeUse {
 }
 
 /// Jacobian by reverse mode: one recording of the kernel, `m` sweeps.
-pub fn jacobian_reverse<K: SmoothKernel>(
-    k: &K,
-    x: &[f64],
-    ws: &mut DerivativeWorkspace,
-) -> Result<(Jacobian, TapeUse), TapeError> {
+pub fn jacobian_reverse<K: SmoothKernel>(k: &K, x: &[f64], ws: &mut DerivativeWorkspace) -> Result<(Jacobian, TapeUse), TapeError> {
     ws.tape.reset();
     let (n, m) = (k.n_in(), k.n_out());
     let vars: Vec<Rev<f64>> = x.iter().map(|&v| ws.tape.var(v)).collect();
@@ -167,22 +144,11 @@ pub fn jacobian_reverse<K: SmoothKernel>(
             jac.data[r * n + j] = v.index().map_or(0.0, |i| adj[i]);
         }
     }
-    Ok((
-        jac,
-        TapeUse {
-            ops: ws.tape.len(),
-            bytes: ws.tape.bytes(),
-        },
-    ))
+    Ok((jac, TapeUse { ops: ws.tape.len(), bytes: ws.tape.bytes() }))
 }
 
 /// Vector-Jacobian product `J^T w` in one recording and one sweep.
-pub fn vjp<K: SmoothKernel>(
-    k: &K,
-    x: &[f64],
-    w: &[f64],
-    ws: &mut DerivativeWorkspace,
-) -> Result<(Vec<f64>, TapeUse), TapeError> {
+pub fn vjp<K: SmoothKernel>(k: &K, x: &[f64], w: &[f64], ws: &mut DerivativeWorkspace) -> Result<(Vec<f64>, TapeUse), TapeError> {
     ws.tape.reset();
     let vars: Vec<Rev<f64>> = x.iter().map(|&v| ws.tape.var(v)).collect();
     let mut out = vec![Rev::<f64>::cst(0.0); k.n_out()];
@@ -193,34 +159,16 @@ pub fn vjp<K: SmoothKernel>(
     }
     ws.tape.check()?;
     let adj = ws.tape.sweep(&s, 1.0);
-    Ok((
-        vars.iter()
-            .map(|v| v.index().map_or(0.0, |i| adj[i]))
-            .collect(),
-        TapeUse {
-            ops: ws.tape.len(),
-            bytes: ws.tape.bytes(),
-        },
-    ))
+    Ok((vars.iter().map(|v| v.index().map_or(0.0, |i| adj[i])).collect(), TapeUse { ops: ws.tape.len(), bytes: ws.tape.bytes() }))
 }
 
 // ------------------------------------------------------------------------------------------- second order
 
 /// Hessian-vector product of `w^T f` by forward-over-reverse: a tape of dual values, swept once. `H v` for `f` scalar and `w = 1`.
-pub fn hvp_forward_over_reverse<K: SmoothKernel>(
-    k: &K,
-    x: &[f64],
-    w: &[f64],
-    v: &[f64],
-    max_ops: usize,
-) -> Result<Vec<f64>, TapeError> {
+pub fn hvp_forward_over_reverse<K: SmoothKernel>(k: &K, x: &[f64], w: &[f64], v: &[f64], max_ops: usize) -> Result<Vec<f64>, TapeError> {
     type D = Dual<f64, 1>;
     let tape: Tape<D> = Tape::with_limit(max_ops);
-    let vars: Vec<Rev<D>> = x
-        .iter()
-        .zip(v)
-        .map(|(&a, &b)| tape.var(D::with(a, [b])))
-        .collect();
+    let vars: Vec<Rev<D>> = x.iter().zip(v).map(|(&a, &b)| tape.var(D::with(a, [b]))).collect();
     let mut out = vec![Rev::<D>::cst(0.0); k.n_out()];
     k.eval(&vars, &mut out);
     let mut s = Rev::<D>::cst(0.0);
@@ -229,29 +177,16 @@ pub fn hvp_forward_over_reverse<K: SmoothKernel>(
     }
     tape.check()?;
     let adj = tape.sweep(&s, D::cst(1.0));
-    Ok(vars
-        .iter()
-        .map(|q| q.index().map_or(0.0, |i| adj[i].d[0]))
-        .collect())
+    Ok(vars.iter().map(|q| q.index().map_or(0.0, |i| adj[i].d[0])).collect())
 }
 
 /// Hessian-vector product of `w^T f` by reverse-over-forward: the directional derivative `w^T J v` is itself recorded on a tape and
 /// swept. Same result as [`hvp_forward_over_reverse`]; the cost trade is memory (the tape holds the dual arithmetic).
-pub fn hvp_reverse_over_forward<K: SmoothKernel>(
-    k: &K,
-    x: &[f64],
-    w: &[f64],
-    v: &[f64],
-    max_ops: usize,
-) -> Result<Vec<f64>, TapeError> {
+pub fn hvp_reverse_over_forward<K: SmoothKernel>(k: &K, x: &[f64], w: &[f64], v: &[f64], max_ops: usize) -> Result<Vec<f64>, TapeError> {
     let tape: Tape<f64> = Tape::with_limit(max_ops);
     type D<'t> = Dual<Rev<'t, f64>, 1>;
     let vars: Vec<Rev<f64>> = x.iter().map(|&a| tape.var(a)).collect();
-    let xs: Vec<D> = vars
-        .iter()
-        .zip(v)
-        .map(|(&a, &b)| Dual::with(a, [Rev::cst(b)]))
-        .collect();
+    let xs: Vec<D> = vars.iter().zip(v).map(|(&a, &b)| Dual::with(a, [Rev::cst(b)])).collect();
     let mut out = vec![D::cst(0.0); k.n_out()];
     k.eval(&xs, &mut out);
     let mut s = Rev::<f64>::cst(0.0);
@@ -260,19 +195,12 @@ pub fn hvp_reverse_over_forward<K: SmoothKernel>(
     }
     tape.check()?;
     let adj = tape.sweep(&s, 1.0);
-    Ok(vars
-        .iter()
-        .map(|q| q.index().map_or(0.0, |i| adj[i]))
-        .collect())
+    Ok(vars.iter().map(|q| q.index().map_or(0.0, |i| adj[i])).collect())
 }
 
 /// Mixed second derivative `d^2 f_r / dx_i dx_j` of every output by hyper-dual numbers (one evaluation, exact).
 pub fn mixed_second_hyperdual<K: SmoothKernel>(k: &K, x: &[f64], i: usize, j: usize) -> Vec<f64> {
-    let xs: Vec<HyperDual> = x
-        .iter()
-        .enumerate()
-        .map(|(a, &v)| HyperDual::seeded(v, a == i, a == j))
-        .collect();
+    let xs: Vec<HyperDual> = x.iter().enumerate().map(|(a, &v)| HyperDual::seeded(v, a == i, a == j)).collect();
     let mut out = vec![HyperDual::cst(0.0); k.n_out()];
     k.eval(&xs, &mut out);
     out.iter().map(|o| o.f12).collect()

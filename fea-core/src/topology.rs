@@ -19,14 +19,7 @@ pub struct BoundaryFace {
     pub elem: usize,
 }
 
-const HEX_FACES: [[usize; 4]; 6] = [
-    [0, 3, 2, 1],
-    [4, 5, 6, 7],
-    [0, 1, 5, 4],
-    [3, 7, 6, 2],
-    [0, 4, 7, 3],
-    [1, 2, 6, 5],
-];
+const HEX_FACES: [[usize; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]];
 const TET_FACES: [[usize; 3]; 4] = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]];
 
 /// Corner-node faces of an element, oriented outward (counter-clockwise from outside).
@@ -37,29 +30,15 @@ pub(crate) fn corner_faces(kind: ElementKind) -> Vec<Vec<usize>> {
         Quad4 | Quad8 | Quad9 => vec![vec![0, 1], vec![1, 2], vec![2, 3], vec![3, 0]],
         Tet4 | Tet10 => TET_FACES.iter().map(|f| f.to_vec()).collect(),
         Hex8 | Hex20 | Hex27 => HEX_FACES.iter().map(|f| f.to_vec()).collect(),
-        Wedge6 | Wedge15 => vec![
-            vec![0, 2, 1],
-            vec![3, 4, 5],
-            vec![0, 1, 4, 3],
-            vec![1, 2, 5, 4],
-            vec![2, 0, 3, 5],
-        ],
+        Wedge6 | Wedge15 => vec![vec![0, 2, 1], vec![3, 4, 5], vec![0, 1, 4, 3], vec![1, 2, 5, 4], vec![2, 0, 3, 5]],
         // base (outward: away from the apex) and four sides
-        Pyramid5 => vec![
-            vec![0, 3, 2, 1],
-            vec![0, 1, 4],
-            vec![1, 2, 4],
-            vec![2, 3, 4],
-            vec![3, 0, 4],
-        ],
+        Pyramid5 => vec![vec![0, 3, 2, 1], vec![0, 1, 4], vec![1, 2, 4], vec![2, 3, 4], vec![3, 0, 4]],
     }
 }
 
 /// Local index of the node of `kind` located at natural coordinates `x` (within tolerance).
 fn node_at(kind: ElementKind, x: [f64; 3]) -> Option<usize> {
-    kind.node_coords()
-        .iter()
-        .position(|c| (0..3).all(|i| (c[i] - x[i]).abs() < 1e-12))
+    kind.node_coords().iter().position(|c| (0..3).all(|i| (c[i] - x[i]).abs() < 1e-12))
 }
 
 /// Local node lists of every face of `kind` (corners, then midsides of consecutive corner pairs,
@@ -82,9 +61,7 @@ pub(crate) fn local_faces(kind: ElementKind) -> Vec<Vec<usize>> {
                     nodes.push(node_at(kind, mid).expect("midside node"));
                 }
                 if kind == ElementKind::Hex27 {
-                    let mid = std::array::from_fn(|c| {
-                        corners.iter().map(|&q| nc[q][c]).sum::<f64>() / 4.0
-                    });
+                    let mid = std::array::from_fn(|c| corners.iter().map(|&q| nc[q][c]).sum::<f64>() / 4.0);
                     nodes.push(node_at(kind, mid).expect("face centre node"));
                 }
             }
@@ -100,11 +77,7 @@ impl Mesh {
         // A face is identified by its sorted corner nodes (at most four). Sorting all (key, owner) pairs puts the
         // copies of a face side by side; a face that appears once is on the boundary. No hashing, no per-face
         // allocation until the boundary faces themselves are built, and the output keeps the element order.
-        let n_faces: usize = self
-            .blocks
-            .iter()
-            .map(|b| b.n_elems() * local_faces(b.kind).len())
-            .sum();
+        let n_faces: usize = self.blocks.iter().map(|b| b.n_elems() * local_faces(b.kind).len()).sum();
         let mut all: Vec<([usize; 4], (usize, usize, usize))> = Vec::with_capacity(n_faces);
         let local: Vec<Vec<Vec<usize>>> = self.blocks.iter().map(|b| local_faces(b.kind)).collect();
         for (bi, blk) in self.blocks.iter().enumerate() {
@@ -139,11 +112,7 @@ impl Mesh {
         once.into_iter()
             .map(|(bi, e, fi)| {
                 let conn = self.blocks[bi].elem(e);
-                BoundaryFace {
-                    nodes: local[bi][fi].iter().map(|&l| conn[l]).collect(),
-                    block: bi,
-                    elem: e,
-                }
+                BoundaryFace { nodes: local[bi][fi].iter().map(|&l| conn[l]).collect(), block: bi, elem: e }
             })
             .collect()
     }
@@ -156,11 +125,7 @@ impl Mesh {
             .into_iter()
             .filter(|f| {
                 let k = f.nodes.len().min(if self.dim() == 2 { 2 } else { 4 });
-                let k = if self.dim() == 3 && matches!(f.nodes.len(), 3 | 6) {
-                    3
-                } else {
-                    k
-                };
+                let k = if self.dim() == 3 && matches!(f.nodes.len(), 3 | 6) { 3 } else { k };
                 let mut c = [0.0; 3];
                 for &n in &f.nodes[..k] {
                     for i in 0..3 {
@@ -179,25 +144,14 @@ impl Mesh {
 impl Mesh {
     /// Register as surface `name` the boundary faces whose corner nodes all belong to the node set
     /// `set` (a way to build loadable surfaces from imported node sets).
-    pub fn select_faces_by_nodes(
-        &mut self,
-        name: &str,
-        set: &str,
-    ) -> Result<&[Vec<usize>], String> {
-        let members: std::collections::HashSet<usize> =
-            self.node_set(set)?.iter().copied().collect();
+    pub fn select_faces_by_nodes(&mut self, name: &str, set: &str) -> Result<&[Vec<usize>], String> {
+        let members: std::collections::HashSet<usize> = self.node_set(set)?.iter().copied().collect();
         let dim = self.dim();
         let faces: Vec<Vec<usize>> = self
             .boundary_faces()
             .into_iter()
             .filter(|f| {
-                let k = if dim == 2 {
-                    2
-                } else if matches!(f.nodes.len(), 3 | 6) {
-                    3
-                } else {
-                    4
-                };
+                let k = if dim == 2 { 2 } else if matches!(f.nodes.len(), 3 | 6) { 3 } else { 4 };
                 f.nodes[..k].iter().all(|n| members.contains(n))
             })
             .map(|f| f.nodes)
@@ -215,11 +169,7 @@ mod tests {
     use crate::mesh::{Elastic, Physics};
 
     fn unit(kind: ElementKind, div: usize) -> Mesh {
-        let phys = if kind.dim() == 3 {
-            Physics::Solid
-        } else {
-            Physics::PlaneStrain { thickness: 1.0 }
-        };
+        let phys = if kind.dim() == 3 { Physics::Solid } else { Physics::PlaneStrain { thickness: 1.0 } };
         grid(phys, kind, Elastic::new(1.0, 0.3), [div, div, div], &|p| p).unwrap()
     }
 
@@ -237,43 +187,21 @@ mod tests {
                     let nodes: Vec<usize> = lf.iter().map(|&l| blk.elem(e)[l]).collect();
                     let mut key = nodes[..ncorner].to_vec();
                     key.sort_unstable();
-                    count
-                        .entry(key.clone())
-                        .and_modify(|c| c.0 += 1)
-                        .or_insert_with(|| {
-                            order.push(key);
-                            (
-                                1,
-                                BoundaryFace {
-                                    nodes,
-                                    block: bi,
-                                    elem: e,
-                                },
-                            )
-                        });
+                    count.entry(key.clone()).and_modify(|c| c.0 += 1).or_insert_with(|| {
+                        order.push(key);
+                        (1, BoundaryFace { nodes, block: bi, elem: e })
+                    });
                 }
             }
         }
-        order
-            .into_iter()
-            .map(|k| count.remove(&k).unwrap())
-            .filter(|c| c.0 == 1)
-            .map(|c| c.1)
-            .collect()
+        order.into_iter().map(|k| count.remove(&k).unwrap()).filter(|c| c.0 == 1).map(|c| c.1).collect()
     }
 
     #[test]
     fn the_sorted_face_search_equals_counting_every_face() {
-        for kind in ALL_KINDS
-            .into_iter()
-            .filter(|k| *k != ElementKind::Pyramid5)
-        {
+        for kind in ALL_KINDS.into_iter().filter(|k| *k != ElementKind::Pyramid5) {
             let m = unit(kind, 3);
-            assert_eq!(
-                m.boundary_faces(),
-                boundary_faces_by_counting(&m),
-                "{kind:?}"
-            );
+            assert_eq!(m.boundary_faces(), boundary_faces_by_counting(&m), "{kind:?}");
         }
     }
 
@@ -298,10 +226,7 @@ mod tests {
 
     #[test]
     fn boundary_of_a_unit_block_has_the_right_count_area_and_outward_normals() {
-        for kind in ALL_KINDS
-            .into_iter()
-            .filter(|k| *k != ElementKind::Pyramid5)
-        {
+        for kind in ALL_KINDS.into_iter().filter(|k| *k != ElementKind::Pyramid5) {
             let m = unit(kind, 2);
             let faces = m.boundary_faces();
             let d = kind.dim();
@@ -326,14 +251,8 @@ mod tests {
                 assert!(out > 0.0, "{kind:?}: face {:?} points inward", f.nodes);
             }
             let want = if d == 2 { 4.0 } else { 6.0 };
-            assert!(
-                (total - want).abs() < 1e-12,
-                "{kind:?}: boundary measure {total}"
-            );
-            assert!(
-                sum.iter().all(|x| x.abs() < 1e-12),
-                "{kind:?}: faces do not close {sum:?}"
-            );
+            assert!((total - want).abs() < 1e-12, "{kind:?}: boundary measure {total}");
+            assert!(sum.iter().all(|x| x.abs() < 1e-12), "{kind:?}: faces do not close {sum:?}");
         }
     }
 
@@ -343,18 +262,9 @@ mod tests {
         for x in ElementKind::Pyramid5.node_coords() {
             m.add_node(*x);
         }
-        m.add_block(
-            ElementKind::Pyramid5,
-            (0..5).collect(),
-            Elastic::new(1.0, 0.3),
-            "p",
-        )
-        .unwrap();
+        m.add_block(ElementKind::Pyramid5, (0..5).collect(), Elastic::new(1.0, 0.3), "p").unwrap();
         let faces = m.boundary_faces();
-        assert_eq!(
-            faces.iter().map(|f| f.nodes.len()).collect::<Vec<_>>(),
-            vec![4, 3, 3, 3, 3]
-        );
+        assert_eq!(faces.iter().map(|f| f.nodes.len()).collect::<Vec<_>>(), vec![4, 3, 3, 3, 3]);
         let mut sum = [0.0; 3];
         for f in &faces {
             let an = area_normal(&m, &f.nodes);
@@ -362,9 +272,7 @@ mod tests {
                 sum[i] += an[i];
             }
             // outward from the centroid of the pyramid (0, 0, 1/4)
-            let c: [f64; 3] = std::array::from_fn(|i| {
-                f.nodes.iter().map(|&n| m.nodes[n][i]).sum::<f64>() / f.nodes.len() as f64
-            });
+            let c: [f64; 3] = std::array::from_fn(|i| f.nodes.iter().map(|&n| m.nodes[n][i]).sum::<f64>() / f.nodes.len() as f64);
             let out = an[0] * c[0] + an[1] * c[1] + an[2] * (c[2] - 0.25);
             assert!(out > 0.0, "face {:?} points inward", f.nodes);
         }
@@ -384,35 +292,18 @@ mod tests {
             (ElementKind::Tet10, 6),
         ] {
             let m = unit(kind, 1);
-            assert!(
-                m.boundary_faces().iter().all(|f| f.nodes.len() == want),
-                "{kind:?}"
-            );
+            assert!(m.boundary_faces().iter().all(|f| f.nodes.len() == want), "{kind:?}");
         }
     }
 
     #[test]
     fn a_selected_pressure_face_integrates_to_pressure_times_area_on_every_3d_kind() {
         use crate::loads::{assemble, Loads, SurfaceLoad};
-        for kind in [
-            ElementKind::Tet4,
-            ElementKind::Tet10,
-            ElementKind::Hex8,
-            ElementKind::Hex20,
-            ElementKind::Hex27,
-        ] {
+        for kind in [ElementKind::Tet4, ElementKind::Tet10, ElementKind::Hex8, ElementKind::Hex20, ElementKind::Hex27] {
             let mut m = unit(kind, 2);
-            let faces = m
-                .select_faces("top", |c| (c[2] - 1.0).abs() < 1e-9)
-                .to_vec();
+            let faces = m.select_faces("top", |c| (c[2] - 1.0).abs() < 1e-9).to_vec();
             assert!(!faces.is_empty(), "{kind:?}");
-            let loads = Loads {
-                faces: faces
-                    .into_iter()
-                    .map(|f| (f, SurfaceLoad::Pressure(3.0)))
-                    .collect(),
-                ..Default::default()
-            };
+            let loads = Loads { faces: faces.into_iter().map(|f| (f, SurfaceLoad::Pressure(3.0))).collect(), ..Default::default() };
             let f = assemble(&m, &loads).unwrap();
             let fz: f64 = (0..m.nodes.len()).map(|n| f[n * 3 + 2]).sum();
             // Pressure pushes into the body: top face (normal +z) gets force -p * area.

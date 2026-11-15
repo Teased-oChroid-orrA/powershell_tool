@@ -51,52 +51,16 @@ fn run(c: &Case) -> Result<Cost, String> {
 
 fn run_with(c: &Case, tune: Tuning) -> Result<Cost, String> {
     let side = 1.5;
-    let (kind, physics, e3) = if c.dim == 2 {
-        (
-            ElementKind::Quad9,
-            Physics::PlaneStrain { thickness: 1.0 },
-            1usize,
-        )
-    } else {
-        (ElementKind::Hex27, Physics::Solid, 2usize)
-    };
-    let block = |n: usize, z0: f64, e: f64| {
-        grid(
-            physics,
-            kind,
-            Elastic::new(e, c.nu),
-            [n, if c.dim == 2 { 2 } else { n.min(2) }, e3],
-            &move |p| {
-                if c.dim == 2 {
-                    [side * p[0], z0 + p[1], 0.0]
-                } else {
-                    [side * p[0], side * p[1], z0 + 0.6 * p[2]]
-                }
-            },
-        )
-    };
+    let (kind, physics, e3) = if c.dim == 2 { (ElementKind::Quad9, Physics::PlaneStrain { thickness: 1.0 }, 1usize) } else { (ElementKind::Hex27, Physics::Solid, 2usize) };
+    let block = |n: usize, z0: f64, e: f64| grid(physics, kind, Elastic::new(e, c.nu), [n, if c.dim == 2 { 2 } else { n.min(2) }, e3], &move |p| if c.dim == 2 { [side * p[0], z0 + p[1], 0.0] } else { [side * p[0], side * p[1], z0 + 0.6 * p[2]] });
     let mut mesh = block(c.div[0], 0.0, c.e[0])?;
     let n_bottom = mesh.nodes.len();
-    mesh.append(
-        &block(c.div[1], if c.dim == 2 { 1.0 } else { 0.6 }, c.e[1])?,
-        "top_",
-    )?;
+    mesh.append(&block(c.div[1], if c.dim == 2 { 1.0 } else { 0.6 }, c.e[1])?, "top_")?;
     let model = Model::new(mesh)?;
-    let (bottom, top, face_lo, face_hi) = if c.dim == 2 {
-        ("v0", "top_v1", "v1", "top_v0")
-    } else {
-        ("w0", "top_w1", "w1", "top_w0")
-    };
+    let (bottom, top, face_lo, face_hi) = if c.dim == 2 { ("v0", "top_v1", "v1", "top_v0") } else { ("w0", "top_w1", "w1", "top_w0") };
     let mut bc = model.dirichlet();
     let nodes = &model.mesh.nodes;
-    let find = |x: f64, y: f64| {
-        (0..nodes.len()).find(|&n| {
-            (nodes[n][0] - x).abs() < 1e-12
-                && (nodes[n][1] - y).abs() < 1e-12
-                && nodes[n][2] < 1e-12
-                && model.mesh.node_set(bottom).is_ok_and(|s| s.contains(&n))
-        })
-    };
+    let find = |x: f64, y: f64| (0..nodes.len()).find(|&n| (nodes[n][0] - x).abs() < 1e-12 && (nodes[n][1] - y).abs() < 1e-12 && nodes[n][2] < 1e-12 && model.mesh.node_set(bottom).is_ok_and(|s| s.contains(&n)));
     for &n in model.mesh.node_set(bottom)? {
         bc.fix(n, c.dim - 1, 0.0);
     }
@@ -113,54 +77,21 @@ fn run_with(c: &Case, tune: Tuning) -> Result<Cost, String> {
     let mut traction = [c.shear * c.mu * c.q, 0.0, 0.0];
     let loads = if c.dim == 2 {
         traction[1] = -c.q;
-        Loads {
-            faces: model.mesh.surfaces[top]
-                .iter()
-                .map(|f| (f.clone(), SurfaceLoad::Traction(traction)))
-                .collect(),
-            ..Loads::default()
-        }
+        Loads { faces: model.mesh.surfaces[top].iter().map(|f| (f.clone(), SurfaceLoad::Traction(traction))).collect(), ..Loads::default() }
     } else {
         traction[2] = -c.q;
-        Loads {
-            faces: model.mesh.surfaces[top]
-                .iter()
-                .map(|f| (f.clone(), SurfaceLoad::Traction(traction)))
-                .collect(),
-            ..Loads::default()
-        }
+        Loads { faces: model.mesh.surfaces[top].iter().map(|f| (f.clone(), SurfaceLoad::Traction(traction))).collect(), ..Loads::default() }
     };
     // The top block is held only by the contact: weak springs on the sliding directions keep the first tangent (before friction engages) regular; the pressure direction is held by the contact's own stabiliser, as in the frictionless patch test.
     let k = 1e-9 * c.e[1];
-    let ground: Vec<(usize, f64)> = (n_bottom..model.mesh.nodes.len())
-        .flat_map(|n| (0..c.dim - 1).map(move |i| (n * c.dim + i, k)))
-        .collect();
+    let ground: Vec<(usize, f64)> = (n_bottom..model.mesh.nodes.len()).flat_map(|n| (0..c.dim - 1).map(move |i| (n * c.dim + i, k))).collect();
     let loads = Loads { ground, ..loads };
-    let (lo, hi) = (
-        model.mesh.surfaces[face_lo].clone(),
-        model.mesh.surfaces[face_hi].clone(),
-    );
+    let (lo, hi) = (model.mesh.surfaces[face_lo].clone(), model.mesh.surfaces[face_hi].clone());
     let eps_n = tune.eps_n(c.e[0].min(c.e[1]), 0.5);
-    let spec = if c.slave_is_bottom {
-        ContactSpec::deformable("interface", lo, hi, eps_n)
-    } else {
-        ContactSpec::deformable("interface", hi, lo, eps_n)
-    };
+    let spec = if c.slave_is_bottom { ContactSpec::deformable("interface", lo, hi, eps_n) } else { ContactSpec::deformable("interface", hi, lo, eps_n) };
     // Start engaged, as an interference fit does (a zero-gap start leaves the shear direction held by weak springs alone).
-    let spec = spec
-        .with_friction(c.mu, tune.eps_t(eps_n))
-        .with_overlap(2e-4);
-    let sol = model
-        .solve_nonlinear_contact(
-            &loads,
-            &bc,
-            vec![spec],
-            &NlOptions {
-                steps: 2,
-                ..tune.options(2)
-            },
-        )
-        .map_err(|e| e.to_string())?;
+    let spec = spec.with_friction(c.mu, tune.eps_t(eps_n)).with_overlap(2e-4);
+    let sol = model.solve_nonlinear_contact(&loads, &bc, vec![spec], &NlOptions { steps: 2, ..tune.options(2) }).map_err(|e| e.to_string())?;
     if !sol.complete() {
         return Err(format!("stopped: {:?}", sol.stop));
     }
@@ -173,11 +104,7 @@ fn run_with(c: &Case, tune: Tuning) -> Result<Cost, String> {
     if (tang - want_t).abs() > 2e-2 * want_n * c.mu {
         return Err(format!("shear carried {tang} vs {want_t}"));
     }
-    Ok(Cost {
-        dofs: model.mesh.n_dofs(),
-        factorisations: sol.factorisations,
-        ms: sol.elapsed_ms,
-    })
+    Ok(Cost { dofs: model.mesh.n_dofs(), factorisations: sol.factorisations, ms: sol.elapsed_ms })
 }
 
 /// `max_shear_3d` bounds the share of the friction limit the applied shear takes in 3D (2D takes up to 0.8 everywhere). Above
@@ -190,16 +117,7 @@ fn sweep(seed: u64, n: usize, max_shear_3d: f64) {
         let dim = if rng.next() < 0.6 { 2 } else { 3 };
         let m = if dim == 2 { 6 } else { 3 };
         let div = [rng.int(1, m), rng.int(1, m)];
-        let c = Case {
-            dim,
-            div,
-            slave_is_bottom: rng.next() < 0.5,
-            mu: rng.range(0.1, 0.5),
-            q: rng.range(1e3, 5e4),
-            shear: rng.range(0.0, if dim == 3 { max_shear_3d } else { 0.8 }),
-            e: [rng.range(5e6, 3e7), rng.range(5e6, 3e7)],
-            nu: rng.range(0.2, 0.4),
-        };
+        let c = Case { dim, div, slave_is_bottom: rng.next() < 0.5, mu: rng.range(0.1, 0.5), q: rng.range(1e3, 5e4), shear: rng.range(0.0, if dim == 3 { max_shear_3d } else { 0.8 }), e: [rng.range(5e6, 3e7), rng.range(5e6, 3e7)], nu: rng.range(0.2, 0.4) };
         if std::env::var("SWEEP_ONLY").is_ok_and(|v| v != k.to_string()) {
             continue;
         }
@@ -207,12 +125,7 @@ fn sweep(seed: u64, n: usize, max_shear_3d: f64) {
             failures.push(format!("#{k} {c:?}: {e}"));
         }
     }
-    assert!(
-        failures.is_empty(),
-        "{} of {n} failed:\n{}",
-        failures.len(),
-        failures.join("\n")
-    );
+    assert!(failures.is_empty(), "{} of {n} failed:\n{}", failures.len(), failures.join("\n"));
 }
 
 #[test]
@@ -226,6 +139,10 @@ fn random_stacked_blocks_stick_under_shear_soak() {
     sweep(99, 60, 0.8);
 }
 
+
+
+
+
 /// The 3D partial-slip regression: random cases sheared to 0.4-0.8 of the friction limit must all converge (8 of 24 failed
 /// before the preconditioned-GMRES step; `--ignored` because of its 1 minute cost).
 #[test]
@@ -234,16 +151,7 @@ fn partial_slip_3d_measurement() {
     let mut rng = Rng(7);
     let (mut failed, mut total) = (0, 0);
     while total < 24 {
-        let c = Case {
-            dim: 3,
-            div: [rng.int(1, 3), rng.int(1, 3)],
-            slave_is_bottom: rng.next() < 0.5,
-            mu: rng.range(0.1, 0.5),
-            q: rng.range(1e3, 5e4),
-            shear: rng.range(0.4, 0.8),
-            e: [rng.range(5e6, 3e7), rng.range(5e6, 3e7)],
-            nu: rng.range(0.2, 0.4),
-        };
+        let c = Case { dim: 3, div: [rng.int(1, 3), rng.int(1, 3)], slave_is_bottom: rng.next() < 0.5, mu: rng.range(0.1, 0.5), q: rng.range(1e3, 5e4), shear: rng.range(0.4, 0.8), e: [rng.range(5e6, 3e7), rng.range(5e6, 3e7)], nu: rng.range(0.2, 0.4) };
         total += 1;
         if let Err(e) = run(&c) {
             failed += 1;
@@ -261,56 +169,14 @@ fn partial_slip_3d_measurement() {
 #[ignore = "measurement: run with --ignored --nocapture"]
 fn contact_speed_baseline() {
     let cases = [
-        Case {
-            dim: 2,
-            div: [6, 6],
-            slave_is_bottom: true,
-            mu: 0.3,
-            q: 2e4,
-            shear: 0.5,
-            e: [1e7, 2e7],
-            nu: 0.3,
-        },
-        Case {
-            dim: 2,
-            div: [6, 5],
-            slave_is_bottom: false,
-            mu: 0.3,
-            q: 2e4,
-            shear: 0.5,
-            e: [1e7, 2e7],
-            nu: 0.3,
-        },
-        Case {
-            dim: 3,
-            div: [3, 3],
-            slave_is_bottom: true,
-            mu: 0.3,
-            q: 2e4,
-            shear: 0.3,
-            e: [1e7, 2e7],
-            nu: 0.3,
-        },
-        Case {
-            dim: 3,
-            div: [3, 2],
-            slave_is_bottom: false,
-            mu: 0.3,
-            q: 2e4,
-            shear: 0.3,
-            e: [1e7, 2e7],
-            nu: 0.3,
-        },
+        Case { dim: 2, div: [6, 6], slave_is_bottom: true, mu: 0.3, q: 2e4, shear: 0.5, e: [1e7, 2e7], nu: 0.3 },
+        Case { dim: 2, div: [6, 5], slave_is_bottom: false, mu: 0.3, q: 2e4, shear: 0.5, e: [1e7, 2e7], nu: 0.3 },
+        Case { dim: 3, div: [3, 3], slave_is_bottom: true, mu: 0.3, q: 2e4, shear: 0.3, e: [1e7, 2e7], nu: 0.3 },
+        Case { dim: 3, div: [3, 2], slave_is_bottom: false, mu: 0.3, q: 2e4, shear: 0.3, e: [1e7, 2e7], nu: 0.3 },
     ];
     for c in &cases {
-        let best = (0..3)
-            .map(|_| run(c).unwrap())
-            .min_by(|a, b| a.ms.total_cmp(&b.ms))
-            .unwrap();
-        eprintln!(
-            "BENCH contact {}D div {:?} {:>6} dofs {:>3} factorisations {:>8.1} ms",
-            c.dim, c.div, best.dofs, best.factorisations, best.ms
-        );
+        let best = (0..3).map(|_| run(c).unwrap()).min_by(|a, b| a.ms.total_cmp(&b.ms)).unwrap();
+        eprintln!("BENCH contact {}D div {:?} {:>6} dofs {:>3} factorisations {:>8.1} ms", c.dim, c.div, best.dofs, best.factorisations, best.ms);
     }
 }
 
@@ -324,22 +190,10 @@ fn tuning_preset_measurement() {
         .map(|_| {
             let dim = if rng.next() < 0.5 { 2 } else { 3 };
             let m = if dim == 2 { 6 } else { 3 };
-            Case {
-                dim,
-                div: [rng.int(1, m), rng.int(1, m)],
-                slave_is_bottom: rng.next() < 0.5,
-                mu: rng.range(0.1, 0.5),
-                q: rng.range(1e3, 5e4),
-                shear: rng.range(0.0, 0.8),
-                e: [rng.range(5e6, 3e7), rng.range(5e6, 3e7)],
-                nu: rng.range(0.2, 0.4),
-            }
+            Case { dim, div: [rng.int(1, m), rng.int(1, m)], slave_is_bottom: rng.next() < 0.5, mu: rng.range(0.1, 0.5), q: rng.range(1e3, 5e4), shear: rng.range(0.0, 0.8), e: [rng.range(5e6, 3e7), rng.range(5e6, 3e7)], nu: rng.range(0.2, 0.4) }
         })
         .collect();
-    let presets = [
-        ("frictionless", Tuning::frictionless()),
-        ("friction", Tuning::friction()),
-    ]; // (`reference` tightens the Newton tolerance to 1e-9, which frictional chatter cannot reach: it burns every step cut)
+    let presets = [("frictionless", Tuning::frictionless()), ("friction", Tuning::friction())]; // (`reference` tightens the Newton tolerance to 1e-9, which frictional chatter cannot reach: it burns every step cut)
     for (name, t) in presets {
         let (mut ok, mut ms, mut fac) = (0, 0.0, 0);
         for c in &cases {
@@ -352,10 +206,7 @@ fn tuning_preset_measurement() {
                 Err(e) => eprintln!("  {name} fails on {c:?}: {e}"),
             }
         }
-        eprintln!(
-            "PRESET {name:<13} {ok:>2} of {} pass, {ms:>8.0} ms, {fac:>5} factorisations",
-            cases.len()
-        );
+        eprintln!("PRESET {name:<13} {ok:>2} of {} pass, {ms:>8.0} ms, {fac:>5} factorisations", cases.len());
     }
 }
 
@@ -364,16 +215,7 @@ fn tuning_preset_measurement() {
 #[test]
 #[ignore = "manual replay: run with --ignored --nocapture and NL_TRACE / NL_DEBUG"]
 fn replay_stagnating_friction_case() {
-    let c = Case {
-        dim: 2,
-        div: [3, 3],
-        slave_is_bottom: false,
-        mu: 0.3757327117221081,
-        q: 7146.738229386764,
-        shear: 0.6124697478944268,
-        e: [18553878.881065063, 27766769.826461133],
-        nu: 0.3658527796499168,
-    };
+    let c = Case { dim: 2, div: [3, 3], slave_is_bottom: false, mu: 0.3757327117221081, q: 7146.738229386764, shear: 0.6124697478944268, e: [18553878.881065063, 27766769.826461133], nu: 0.3658527796499168 };
     run(&c).unwrap();
 }
 
@@ -381,15 +223,7 @@ fn replay_stagnating_friction_case() {
 fn nonmatching_3d_partial_slip_carries_the_prescribed_resultants() {
     // Fixed nonmatching, dissimilar-material case at 75% of Coulomb capacity.
     // run() independently integrates applied area loads and checks normal/shear resultants.
-    let c = Case {
-        dim: 3,
-        div: [2, 3],
-        slave_is_bottom: false,
-        mu: 0.3,
-        q: 2e4,
-        shear: 0.75,
-        e: [1e7, 2e7],
-        nu: 0.3,
-    };
+    let c = Case { dim: 3, div: [2, 3], slave_is_bottom: false, mu: 0.3, q: 2e4,
+        shear: 0.75, e: [1e7, 2e7], nu: 0.3 };
     run(&c).unwrap();
 }

@@ -86,12 +86,7 @@ pub struct LearnedCost {
 }
 
 fn features(c: &MeshCost) -> [f64; FEATURES] {
-    [
-        1.0,
-        (c.dofs as f64).max(1.0).ln(),
-        (c.factor_nnz as f64).max(1.0).ln(),
-        c.assembly_units.max(1.0).ln(),
-    ]
+    [1.0, (c.dofs as f64).max(1.0).ln(), (c.factor_nnz as f64).max(1.0).ln(), c.assembly_units.max(1.0).ln()]
 }
 
 /// Solve `a x = b` (small, symmetric positive definite) by Gaussian elimination with partial pivoting.
@@ -167,13 +162,7 @@ impl LearnedCost {
         for dim in [2usize, 3] {
             let rows_of: Vec<&Sample> = samples
                 .iter()
-                .filter(|s| {
-                    s.dim == dim
-                        && !s.cost.iterative
-                        && [s.assemble_s, s.factor_s, s.solve_s]
-                            .iter()
-                            .all(|t| t.is_finite() && *t > 0.0)
-                })
+                .filter(|s| s.dim == dim && !s.cost.iterative && [s.assemble_s, s.factor_s, s.solve_s].iter().all(|t| t.is_finite() && *t > 0.0))
                 .collect();
             if rows_of.len() < MIN_SAMPLES {
                 continue;
@@ -181,15 +170,7 @@ impl LearnedCost {
             let rows: Vec<[f64; FEATURES]> = rows_of.iter().map(|s| features(&s.cost)).collect();
             let a = normal_matrix(&rows, ridge);
             let inverse = invert(a)?;
-            let leverage = |x: &[f64; FEATURES]| -> f64 {
-                (0..FEATURES)
-                    .map(|i| {
-                        (0..FEATURES)
-                            .map(|j| x[i] * inverse[i][j] * x[j])
-                            .sum::<f64>()
-                    })
-                    .sum()
-            };
+            let leverage = |x: &[f64; FEATURES]| -> f64 { (0..FEATURES).map(|i| (0..FEATURES).map(|j| x[i] * inverse[i][j] * x[j]).sum::<f64>()).sum() };
             let max_leverage = rows.iter().map(leverage).fold(0.0, f64::max);
             let mut low = [f64::INFINITY; FEATURES];
             let mut high = [f64::NEG_INFINITY; FEATURES];
@@ -201,72 +182,33 @@ impl LearnedCost {
             }
             let mut stages: Vec<StageFit> = Vec::new();
             for stage in 0..3 {
-                let y: Vec<f64> = rows_of
-                    .iter()
-                    .map(|s| [s.assemble_s, s.factor_s, s.solve_s][stage].ln())
-                    .collect();
+                let y: Vec<f64> = rows_of.iter().map(|s| [s.assemble_s, s.factor_s, s.solve_s][stage].ln()).collect();
                 let w = fit_weights(&rows, &y, ridge)?;
                 // Leave-one-out residuals: refit without each sample.
                 let mut residuals = Vec::new();
                 for i in 0..rows.len() {
-                    let sub_rows: Vec<[f64; FEATURES]> = rows
-                        .iter()
-                        .enumerate()
-                        .filter(|(j, _)| *j != i)
-                        .map(|(_, r)| *r)
-                        .collect();
-                    let sub_y: Vec<f64> = y
-                        .iter()
-                        .enumerate()
-                        .filter(|(j, _)| *j != i)
-                        .map(|(_, v)| *v)
-                        .collect();
+                    let sub_rows: Vec<[f64; FEATURES]> = rows.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, r)| *r).collect();
+                    let sub_y: Vec<f64> = y.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, v)| *v).collect();
                     if let Some(wi) = fit_weights(&sub_rows, &sub_y, ridge) {
                         let p: f64 = (0..FEATURES).map(|k| wi[k] * rows[i][k]).sum();
                         residuals.push((y[i] - p).abs());
                     }
                 }
                 residuals.sort_by(f64::total_cmp);
-                let q = residuals
-                    .get(((residuals.len() as f64 * 0.9).ceil() as usize).saturating_sub(1))
-                    .copied()
-                    .unwrap_or(f64::INFINITY);
-                stages.push(StageFit {
-                    w,
-                    log_half_width: q,
-                });
+                let q = residuals.get(((residuals.len() as f64 * 0.9).ceil() as usize).saturating_sub(1)).copied().unwrap_or(f64::INFINITY);
+                stages.push(StageFit { w, log_half_width: q });
             }
-            fits.push(DimFit {
-                dim,
-                stages: stages.try_into().ok()?,
-                inverse,
-                max_leverage,
-                low,
-                high,
-                samples: rows.len(),
-            });
+            fits.push(DimFit { dim, stages: stages.try_into().ok()?, inverse, max_leverage, low, high, samples: rows.len() });
         }
         (!fits.is_empty()).then_some(Self { fits })
     }
 
     /// Predicted seconds for `workload` on a mesh of cost `cost` and dimension `dim`. The deterministic `fallback` answers (with
     /// the reason) whenever the learned model should not be trusted.
-    pub fn predict(
-        &self,
-        cost: &MeshCost,
-        dim: usize,
-        workload: &Workload,
-        generation_seconds: f64,
-        fallback: &CostModel,
-    ) -> Prediction {
+    pub fn predict(&self, cost: &MeshCost, dim: usize, workload: &Workload, generation_seconds: f64, fallback: &CostModel) -> Prediction {
         let deterministic = |reason: Reason| {
             let s = fallback.predict(cost, workload, generation_seconds);
-            Prediction {
-                seconds: s,
-                low: s,
-                high: s,
-                source: Source::Fallback(reason),
-            }
+            Prediction { seconds: s, low: s, high: s, source: Source::Fallback(reason) }
         };
         if cost.iterative {
             return deterministic(Reason::IterativeRegime);
@@ -278,21 +220,11 @@ impl LearnedCost {
         if (1..FEATURES).any(|i| x[i] < fit.low[i] - 0.5 || x[i] > fit.high[i] + 0.5) {
             return deterministic(Reason::OutsideTrainingRange);
         }
-        let leverage: f64 = (0..FEATURES)
-            .map(|i| {
-                (0..FEATURES)
-                    .map(|j| x[i] * fit.inverse[i][j] * x[j])
-                    .sum::<f64>()
-            })
-            .sum();
+        let leverage: f64 = (0..FEATURES).map(|i| (0..FEATURES).map(|j| x[i] * fit.inverse[i][j] * x[j]).sum::<f64>()).sum();
         if leverage > 2.0 * fit.max_leverage.max(FEATURES as f64 / fit.samples as f64) {
             return deterministic(Reason::HighLeverage);
         }
-        let counts = [
-            workload.assemblies,
-            workload.factorisations,
-            workload.solves,
-        ];
+        let counts = [workload.assemblies, workload.factorisations, workload.solves];
         let (mut mid, mut lo, mut hi) = (0.0, 0.0, 0.0);
         for (stage, n) in fit.stages.iter().zip(counts) {
             let log_t: f64 = (0..FEATURES).map(|k| stage.w[k] * x[k]).sum();
@@ -301,28 +233,16 @@ impl LearnedCost {
             hi += n * (log_t + stage.log_half_width).exp();
         }
         let once = fallback.one_time_seconds(workload, generation_seconds);
-        let (mid, lo, hi) = (
-            once + workload.analyses * mid,
-            once + workload.analyses * lo,
-            once + workload.analyses * hi,
-        );
+        let (mid, lo, hi) = (once + workload.analyses * mid, once + workload.analyses * lo, once + workload.analyses * hi);
         if !(mid.is_finite() && mid > 0.0 && lo.is_finite() && hi.is_finite()) {
             return deterministic(Reason::NotFinite);
         }
-        Prediction {
-            seconds: mid,
-            low: lo,
-            high: hi,
-            source: Source::Learned,
-        }
+        Prediction { seconds: mid, low: lo, high: hi, source: Source::Learned }
     }
 
     /// Samples the fit for `dim` was trained on.
     pub fn samples(&self, dim: usize) -> usize {
-        self.fits
-            .iter()
-            .find(|f| f.dim == dim)
-            .map_or(0, |f| f.samples)
+        self.fits.iter().find(|f| f.dim == dim).map_or(0, |f| f.samples)
     }
 }
 
@@ -331,15 +251,7 @@ mod tests {
     use super::*;
 
     fn cost(dofs: usize, nnz: usize, units: f64) -> MeshCost {
-        MeshCost {
-            dofs,
-            elements: dofs / 3,
-            matrix_nnz: dofs * 20,
-            factor_nnz: nnz,
-            assembly_units: units,
-            factor_units: (nnz as f64).powf(1.5),
-            iterative: false,
-        }
+        MeshCost { dofs, elements: dofs / 3, matrix_nnz: dofs * 20, factor_nnz: nnz, assembly_units: units, factor_units: (nnz as f64).powf(1.5), iterative: false }
     }
 
     /// Exact power laws in the three features, so a log-linear fit must recover them.
@@ -361,11 +273,7 @@ mod tests {
     }
 
     fn model() -> CostModel {
-        CostModel {
-            assembly_s_per_unit: 1e-9,
-            factor_s_per_unit: 1e-9,
-            solve_s_per_factor_nnz: 1e-9,
-        }
+        CostModel { assembly_s_per_unit: 1e-9, factor_s_per_unit: 1e-9, solve_s_per_factor_nnz: 1e-9 }
     }
 
     #[test]
@@ -381,16 +289,9 @@ mod tests {
             let s = &synthetic(3, 16)[7];
             s.assemble_s + s.factor_s + s.solve_s
         };
-        assert!(
-            (p.seconds / truth - 1.0).abs() < 1e-3,
-            "{} vs {truth}",
-            p.seconds
-        );
+        assert!((p.seconds / truth - 1.0).abs() < 1e-3, "{} vs {truth}", p.seconds);
         assert!(p.low <= p.seconds && p.seconds <= p.high);
-        assert!(
-            p.high / p.low < 1.05,
-            "noise-free data gives a tight interval: {p:?}"
-        );
+        assert!(p.high / p.low < 1.05, "noise-free data gives a tight interval: {p:?}");
     }
 
     #[test]
@@ -402,23 +303,13 @@ mod tests {
         assert!(LearnedCost::fit(&synthetic(3, MIN_SAMPLES - 1), 1e-6).is_none());
         // Far beyond the training range.
         let big = cost(5_000_000, 5_000_000 * 60, 1e10);
-        assert_eq!(
-            m.predict(&big, 3, &w, 0.0, &det).source,
-            Source::Fallback(Reason::OutsideTrainingRange)
-        );
+        assert_eq!(m.predict(&big, 3, &w, 0.0, &det).source, Source::Fallback(Reason::OutsideTrainingRange));
         // Unseen dimension.
-        assert_eq!(
-            m.predict(&synthetic(3, 16)[4].cost, 2, &w, 0.0, &det)
-                .source,
-            Source::Fallback(Reason::UnseenDimension)
-        );
+        assert_eq!(m.predict(&synthetic(3, 16)[4].cost, 2, &w, 0.0, &det).source, Source::Fallback(Reason::UnseenDimension));
         // Iterative regime.
         let mut it = synthetic(3, 16)[4].cost;
         it.iterative = true;
-        assert_eq!(
-            m.predict(&it, 3, &w, 0.0, &det).source,
-            Source::Fallback(Reason::IterativeRegime)
-        );
+        assert_eq!(m.predict(&it, 3, &w, 0.0, &det).source, Source::Fallback(Reason::IterativeRegime));
         // A fallback answer is exactly the deterministic one, with no interval.
         let p = m.predict(&it, 3, &w, 2.0, &det);
         assert_eq!(p.seconds, det.predict(&it, &w, 2.0));
@@ -444,15 +335,9 @@ mod tests {
         let one = Workload::linear_static();
         let many = one.repeated(10.0);
         let det = model();
-        let (a, b) = (
-            m.predict(&probe, 2, &one, 0.0, &det),
-            m.predict(&probe, 2, &many, 0.0, &det),
-        );
+        let (a, b) = (m.predict(&probe, 2, &one, 0.0, &det), m.predict(&probe, 2, &many, 0.0, &det));
         assert!((b.seconds / a.seconds - 10.0).abs() < 1e-9);
-        let with_cad = Workload {
-            cad_seconds: 5.0,
-            ..one
-        };
+        let with_cad = Workload { cad_seconds: 5.0, ..one };
         let c = m.predict(&probe, 2, &with_cad, 1.0, &det);
         assert!((c.seconds - a.seconds - 6.0).abs() < 1e-9);
     }

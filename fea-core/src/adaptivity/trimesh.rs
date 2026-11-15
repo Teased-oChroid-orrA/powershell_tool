@@ -39,10 +39,7 @@ impl TriEdge {
     /// Point at parameter `t` in `[-1, 1]` from `a` towards `b`.
     pub fn point(&self, t: f64) -> [f64; 2] {
         let s = 0.5 * (t + 1.0);
-        [
-            self.pa[0] + s * (self.pb[0] - self.pa[0]),
-            self.pa[1] + s * (self.pb[1] - self.pa[1]),
-        ]
+        [self.pa[0] + s * (self.pb[0] - self.pa[0]), self.pa[1] + s * (self.pb[1] - self.pa[1])]
     }
 }
 
@@ -74,21 +71,14 @@ fn unsupported(why: impl Into<String>) -> MeshError {
 impl TriMesh {
     pub fn build(ctx: &EstimatorContext) -> Result<Self, MeshError> {
         let mesh = &ctx.model.mesh;
-        if !matches!(
-            mesh.physics,
-            Physics::PlaneStress { .. } | Physics::PlaneStrain { .. }
-        ) {
-            return Err(unsupported(
-                "the 2D estimators are for plane stress and plane strain",
-            ));
+        if !matches!(mesh.physics, Physics::PlaneStress { .. } | Physics::PlaneStrain { .. }) {
+            return Err(unsupported("the 2D estimators are for plane stress and plane strain"));
         }
         if ctx.loads.temperature.is_some() {
             return Err(unsupported("nodal temperature fields"));
         }
         if !ctx.loads.nodal.is_empty() {
-            return Err(unsupported(
-                "nodal point loads (a point force is not in H(div) and has no pointwise residual)",
-            ));
+            return Err(unsupported("nodal point loads (a point force is not in H(div) and has no pointwise residual)"));
         }
         if !ctx.loads.field_faces.is_empty() {
             return Err(unsupported("position-dependent boundary force fields"));
@@ -124,47 +114,27 @@ impl TriMesh {
             for e in 0..blk.n_elems() {
                 let conn = blk.elem(e);
                 let corners = [conn[0], conn[1], conn[2]];
-                let p: [[f64; 2]; 3] =
-                    std::array::from_fn(|a| [mesh.nodes[corners[a]][0], mesh.nodes[corners[a]][1]]);
-                let area = 0.5
-                    * ((p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
-                        - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]));
+                let p: [[f64; 2]; 3] = std::array::from_fn(|a| [mesh.nodes[corners[a]][0], mesh.nodes[corners[a]][1]]);
+                let area = 0.5 * ((p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]));
                 if area <= 0.0 {
-                    return Err(MeshError::InvalidElements {
-                        count: 1,
-                        first: (bi, e),
-                    });
+                    return Err(MeshError::InvalidElements { count: 1, first: (bi, e) });
                 }
                 let h = (p[1][0] - p[0][0]).hypot(p[1][1] - p[0][1]);
                 if nn == 6 {
                     for m in 0..3 {
                         let (q0, q1) = (p[m], p[(m + 1) % 3]);
                         let mid = mesh.nodes[conn[3 + m]];
-                        if (mid[0] - 0.5 * (q0[0] + q1[0])).hypot(mid[1] - 0.5 * (q0[1] + q1[1]))
-                            > 1e-9 * h
-                        {
+                        if (mid[0] - 0.5 * (q0[0] + q1[0])).hypot(mid[1] - 0.5 * (q0[1] + q1[1])) > 1e-9 * h {
                             affine = false;
                         }
                     }
                 }
-                let c = [
-                    (p[0][0] + p[1][0] + p[2][0]) / 3.0,
-                    (p[0][1] + p[1][1] + p[2][1]) / 3.0,
-                ];
+                let c = [(p[0][0] + p[1][0] + p[2][0]) / 3.0, (p[0][1] + p[1][1] + p[2][1]) / 3.0];
                 let grad: [[f64; 2]; 3] = std::array::from_fn(|a| {
                     let (b, cc) = (p[(a + 1) % 3], p[(a + 2) % 3]);
                     [(b[1] - cc[1]) / (2.0 * area), (cc[0] - b[0]) / (2.0 * area)]
                 });
-                elems.push(TriElem {
-                    block: bi,
-                    local: e,
-                    corners,
-                    p,
-                    c,
-                    s: (2.0 * area).sqrt(),
-                    area,
-                    grad,
-                });
+                elems.push(TriElem { block: bi, local: e, corners, p, c, s: (2.0 * area).sqrt(), area, grad });
             }
         }
         let mut edge_ids: HashMap<(usize, usize), usize> = HashMap::new();
@@ -176,19 +146,8 @@ impl TriMesh {
                 let (n0, n1) = (el.corners[kk], el.corners[(kk + 1) % 3]);
                 let key = (n0.min(n1), n0.max(n1));
                 let id = *edge_ids.entry(key).or_insert_with(|| {
-                    let (pa, pb) = if n0 < n1 {
-                        (el.p[kk], el.p[(kk + 1) % 3])
-                    } else {
-                        (el.p[(kk + 1) % 3], el.p[kk])
-                    };
-                    edges.push(TriEdge {
-                        a: key.0,
-                        b: key.1,
-                        pa,
-                        pb,
-                        len: (pb[0] - pa[0]).hypot(pb[1] - pa[1]),
-                        owners: Vec::new(),
-                    });
+                    let (pa, pb) = if n0 < n1 { (el.p[kk], el.p[(kk + 1) % 3]) } else { (el.p[(kk + 1) % 3], el.p[kk]) };
+                    edges.push(TriEdge { a: key.0, b: key.1, pa, pb, len: (pb[0] - pa[0]).hypot(pb[1] - pa[1]), owners: Vec::new() });
                     edges.len() - 1
                 });
                 edges[id].owners.push((ei, kk));
@@ -197,16 +156,12 @@ impl TriMesh {
             elem_edges.push(ids);
         }
         if edges.iter().any(|e| e.owners.len() > 2) {
-            return Err(MeshError::NonConforming(
-                "an edge is shared by more than two elements".into(),
-            ));
+            return Err(MeshError::NonConforming("an edge is shared by more than two elements".into()));
         }
         let mut traction: HashMap<usize, [f64; 2]> = HashMap::new();
         let mut add_load = |nodes: &[usize], load: SurfaceLoad| -> Result<(), MeshError> {
             let key = (nodes[0].min(nodes[1]), nodes[0].max(nodes[1]));
-            let id = *edge_ids.get(&key).ok_or_else(|| {
-                MeshError::Failed("a loaded face is not an edge of the mesh".into())
-            })?;
+            let id = *edge_ids.get(&key).ok_or_else(|| MeshError::Failed("a loaded face is not an edge of the mesh".into()))?;
             let t = match load {
                 SurfaceLoad::Traction(t) => [t[0], t[1]],
                 SurfaceLoad::Pressure(p) => {
@@ -226,14 +181,6 @@ impl TriMesh {
         for (nodes, p) in &ctx.loads.followers {
             add_load(nodes, SurfaceLoad::Pressure(*p))?;
         }
-        Ok(Self {
-            elems,
-            edges,
-            elem_edges,
-            traction,
-            body,
-            affine,
-            degree,
-        })
+        Ok(Self { elems, edges, elem_edges, traction, body, affine, degree })
     }
 }

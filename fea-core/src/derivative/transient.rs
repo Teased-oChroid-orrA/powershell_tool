@@ -68,13 +68,7 @@ impl TransientQoi {
     pub fn displacement(step: usize, dof: usize, n: usize) -> Self {
         let mut gu = vec![0.0; n];
         gu[dof] = 1.0;
-        Self {
-            samples: vec![Sample {
-                step,
-                gu,
-                gv: vec![0.0; n],
-            }],
-        }
+        Self { samples: vec![Sample { step, gu, gv: vec![0.0; n] }] }
     }
     /// The time integral of one displacement by the trapezoid rule over all steps.
     pub fn displacement_integral(dof: usize, steps: usize, dt: f64, n: usize) -> Self {
@@ -82,11 +76,7 @@ impl TransientQoi {
             .map(|s| {
                 let mut gu = vec![0.0; n];
                 gu[dof] = dt * if s == 0 || s == steps { 0.5 } else { 1.0 };
-                Sample {
-                    step: s,
-                    gu,
-                    gv: vec![0.0; n],
-                }
+                Sample { step: s, gu, gv: vec![0.0; n] }
             })
             .collect();
         Self { samples }
@@ -130,22 +120,8 @@ struct Ops<'a> {
 }
 
 impl<'m> TransientSensitivity<'m> {
-    pub fn new(
-        model: &'m Model,
-        loads: &'m Loads,
-        g: &'m dyn Fn(f64) -> f64,
-        bc: &'m Dirichlet,
-        init: Option<(&'m [f64], &'m [f64])>,
-        opt: &'m TransientOptions,
-    ) -> Self {
-        Self {
-            model,
-            loads,
-            bc,
-            g,
-            opt,
-            init,
-        }
+    pub fn new(model: &'m Model, loads: &'m Loads, g: &'m dyn Fn(f64) -> f64, bc: &'m Dirichlet, init: Option<(&'m [f64], &'m [f64])>, opt: &'m TransientOptions) -> Self {
+        Self { model, loads, bc, g, opt, init }
     }
 
     fn thickness(&self) -> f64 {
@@ -157,25 +133,11 @@ impl<'m> TransientSensitivity<'m> {
 
     fn ops(&'m self) -> Result<Ops<'m>, String> {
         let (m, opt) = (self.model, self.opt);
-        if !opt.dt.is_finite()
-            || opt.dt <= 0.0
-            || !(-1.0 / 3.0 - 1e-12..=1e-12).contains(&opt.alpha)
-        {
-            return Err(
-                "transient sensitivities: dt must be positive and alpha within [-1/3, 0]".into(),
-            );
+        if !opt.dt.is_finite() || opt.dt <= 0.0 || !(-1.0 / 3.0 - 1e-12..=1e-12).contains(&opt.alpha) {
+            return Err("transient sensitivities: dt must be positive and alpha within [-1/3, 0]".into());
         }
-        if self
-            .bc
-            .fixed
-            .iter()
-            .zip(&self.bc.value)
-            .any(|(f, v)| *f && *v != 0.0)
-        {
-            return Err(
-                "transient sensitivities: prescribed non-zero displacements are not supported"
-                    .into(),
-            );
+        if self.bc.fixed.iter().zip(&self.bc.value).any(|(f, v)| *f && *v != 0.0) {
+            return Err("transient sensitivities: prescribed non-zero displacements are not supported".into());
         }
         m.check_constrained(self.bc)?;
         if self.loads.delta_t != 0.0 || self.loads.temperature.is_some() {
@@ -183,20 +145,11 @@ impl<'m> TransientSensitivity<'m> {
         }
         let k = m.assemble()?;
         let mass = m.assemble_mass(opt.mass)?;
-        let red = Reduced::with_ordering(&m.pattern, self.bc, Some(&m.mesh.nodes), Ordering::Auto)
-            .map_err(|e| e.to_string())?;
+        let red = Reduced::with_ordering(&m.pattern, self.bc, Some(&m.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
         let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
         let f_ref = loads::assemble(&m.mesh, self.loads)?;
         let alpha = opt.alpha;
-        Ok(Ops {
-            e: self,
-            k,
-            mass,
-            free,
-            f_ref,
-            beta: (1.0 - alpha) * (1.0 - alpha) / 4.0,
-            gamma: 0.5 - alpha,
-        })
+        Ok(Ops { e: self, k, mass, free, f_ref, beta: (1.0 - alpha) * (1.0 - alpha) / 4.0, gamma: 0.5 - alpha })
     }
 
     /// `(dM/dp) x` with exact element derivatives; the Rayleigh scalars have no mass derivative.
@@ -206,17 +159,10 @@ impl<'m> TransientSensitivity<'m> {
         let mut out = vec![0.0; m.mesh.n_dofs()];
         let (density_block, st) = match p {
             TransientParam::DensityScale(b) => (Some(b), None),
-            TransientParam::Static(s @ (LinearParam::Thickness | LinearParam::Coord { .. })) => {
-                (None, Some(s))
-            }
+            TransientParam::Static(s @ (LinearParam::Thickness | LinearParam::Coord { .. })) => (None, Some(s)),
             _ => return Ok(out),
         };
-        if matches!(st, Some(LinearParam::Thickness))
-            && !matches!(
-                m.mesh.physics,
-                Physics::PlaneStress { .. } | Physics::PlaneStrain { .. }
-            )
-        {
+        if matches!(st, Some(LinearParam::Thickness)) && !matches!(m.mesh.physics, Physics::PlaneStress { .. } | Physics::PlaneStrain { .. }) {
             return Err("the thickness is a parameter of plane analyses only".into());
         }
         for (bi, blk) in m.mesh.blocks.iter().enumerate() {
@@ -226,8 +172,7 @@ impl<'m> TransientSensitivity<'m> {
             let nn = blk.kind.n_nodes();
             for e in 0..blk.n_elems() {
                 let conn = blk.elem(e);
-                let mut coords: Vec<[D1; 3]> =
-                    conn.iter().map(|&n| m.mesh.nodes[n].map(D1::cst)).collect();
+                let mut coords: Vec<[D1; 3]> = conn.iter().map(|&n| m.mesh.nodes[n].map(D1::cst)).collect();
                 let mut rho = D1::cst(blk.density);
                 let mut t = D1::cst(self.thickness());
                 if density_block.is_some() {
@@ -235,27 +180,20 @@ impl<'m> TransientSensitivity<'m> {
                 }
                 match st {
                     Some(LinearParam::Thickness) => t = D1::var(self.thickness(), 0),
-                    Some(LinearParam::Coord { node, axis }) => {
-                        match conn.iter().position(|&n| n == node) {
-                            Some(l) => coords[l][axis] = D1::var(m.mesh.nodes[node][axis], 0),
-                            None => continue,
-                        }
-                    }
+                    Some(LinearParam::Coord { node, axis }) => match conn.iter().position(|&n| n == node) {
+                        Some(l) => coords[l][axis] = D1::var(m.mesh.nodes[node][axis], 0),
+                        None => continue,
+                    },
                     _ => {}
                 }
-                let mut me = element::mass(blk.kind, m.mesh.physics, &coords, rho, t)
-                    .map_err(|er| er.to_string())?;
+                let mut me = element::mass(blk.kind, m.mesh.physics, &coords, rho, t).map_err(|er| er.to_string())?;
                 if self.opt.mass == MassKind::Lumped {
                     let total = me.iter().fold(D1::cst(0.0), |s, v| s + *v);
                     let diag = (0..nn).fold(D1::cst(0.0), |s, a| s + me[a * nn + a]);
                     let scale = total / diag;
                     for a in 0..nn {
                         for b in 0..nn {
-                            me[a * nn + b] = if a == b {
-                                me[a * nn + a] * scale
-                            } else {
-                                D1::cst(0.0)
-                            };
+                            me[a * nn + b] = if a == b { me[a * nn + a] * scale } else { D1::cst(0.0) };
                         }
                     }
                 }
@@ -333,36 +271,18 @@ impl<'m> Ops<'m> {
     }
     fn predictors(&self, x: &State) -> (Vec<f64>, Vec<f64>) {
         let (dt, beta, gamma) = (self.e.opt.dt, self.beta, self.gamma);
-        let up = (0..x.u.len())
-            .map(|i| x.u[i] + dt * x.v[i] + dt * dt * (0.5 - beta) * x.a[i])
-            .collect();
-        let vp = (0..x.u.len())
-            .map(|i| x.v[i] + dt * (1.0 - gamma) * x.a[i])
-            .collect();
+        let up = (0..x.u.len()).map(|i| x.u[i] + dt * x.v[i] + dt * dt * (0.5 - beta) * x.a[i]).collect();
+        let vp = (0..x.u.len()).map(|i| x.v[i] + dt * (1.0 - gamma) * x.a[i]).collect();
         (up, vp)
     }
     /// One forward step from `x` at `step` to `step + 1`.
     fn advance(&self, fac_eff: &crate::linear::Factor<'_>, x: &State, step: usize) -> State {
         let (alpha, dt, beta, gamma) = (self.e.opt.alpha, self.e.opt.dt, self.beta, self.gamma);
         let n = self.n();
-        let (f_new, f_old) = (
-            self.load((step + 1) as f64 * dt),
-            self.load(step as f64 * dt),
-        );
+        let (f_new, f_old) = (self.load((step + 1) as f64 * dt), self.load(step as f64 * dt));
         let (up, vp) = self.predictors(x);
-        let (cvp, cv, kup, ku) = (
-            self.mulc(&vp),
-            self.mulc(&x.v),
-            self.mulk(&up),
-            self.mulk(&x.u),
-        );
-        let b: Vec<f64> = (0..n)
-            .map(|i| {
-                (1.0 + alpha) * f_new[i] - alpha * f_old[i] - (1.0 + alpha) * cvp[i] + alpha * cv[i]
-                    - (1.0 + alpha) * kup[i]
-                    + alpha * ku[i]
-            })
-            .collect();
+        let (cvp, cv, kup, ku) = (self.mulc(&vp), self.mulc(&x.v), self.mulk(&up), self.mulk(&x.u));
+        let b: Vec<f64> = (0..n).map(|i| (1.0 + alpha) * f_new[i] - alpha * f_old[i] - (1.0 + alpha) * cvp[i] + alpha * cv[i] - (1.0 + alpha) * kup[i] + alpha * ku[i]).collect();
         let a = self.solve_eff(fac_eff, &b);
         let u = (0..n).map(|i| up[i] + beta * dt * dt * a[i]).collect();
         let v = (0..n).map(|i| vp[i] + gamma * dt * a[i]).collect();
@@ -371,79 +291,43 @@ impl<'m> Ops<'m> {
     fn eff(&self) -> BlockMatrix {
         let (alpha, dt) = (self.e.opt.alpha, self.e.opt.dt);
         let (a0, a1) = self.e.opt.rayleigh;
-        let (c0, c1) = (
-            (1.0 + alpha) * self.gamma * dt,
-            (1.0 + alpha) * self.beta * dt * dt,
-        );
-        BlockMatrix {
-            d: self.k.d,
-            vals: (0..self.k.vals.len())
-                .map(|i| self.mass.vals[i] * (1.0 + c0 * a0) + self.k.vals[i] * (c0 * a1 + c1))
-                .collect(),
-        }
+        let (c0, c1) = ((1.0 + alpha) * self.gamma * dt, (1.0 + alpha) * self.beta * dt * dt);
+        BlockMatrix { d: self.k.d, vals: (0..self.k.vals.len()).map(|i| self.mass.vals[i] * (1.0 + c0 * a0) + self.k.vals[i] * (c0 * a1 + c1)).collect() }
     }
 
     /// Everything the parameter does to one step: `(dK x, dM x)` products through the static engine and the mass derivative,
     /// plus the Rayleigh scalars' own terms. Returned as closures' values for the vectors asked for.
-    fn dk(
-        &self,
-        lin: &LinearSensitivityEngine<'_>,
-        p: TransientParam,
-        x: &[f64],
-    ) -> Result<Vec<f64>, String> {
+    fn dk(&self, lin: &LinearSensitivityEngine<'_>, p: TransientParam, x: &[f64]) -> Result<Vec<f64>, String> {
         match p {
             TransientParam::Static(s) => lin.dk_u(s, x),
             _ => Ok(vec![0.0; x.len()]),
         }
     }
     /// `(dC/dp) x`.
-    fn dc(
-        &self,
-        lin: &LinearSensitivityEngine<'_>,
-        p: TransientParam,
-        x: &[f64],
-    ) -> Result<Vec<f64>, String> {
+    fn dc(&self, lin: &LinearSensitivityEngine<'_>, p: TransientParam, x: &[f64]) -> Result<Vec<f64>, String> {
         let (a0, a1) = self.e.opt.rayleigh;
         let (dmx, dkx) = (self.e.dm_x(p, x)?, self.dk(lin, p, x)?);
         let mut out: Vec<f64> = dmx.iter().zip(&dkx).map(|(m, k)| a0 * m + a1 * k).collect();
         match p {
-            TransientParam::RayleighMass => {
-                out.iter_mut().zip(self.mulm(x)).for_each(|(o, v)| *o += v)
-            }
-            TransientParam::RayleighStiffness => {
-                out.iter_mut().zip(self.mulk(x)).for_each(|(o, v)| *o += v)
-            }
+            TransientParam::RayleighMass => out.iter_mut().zip(self.mulm(x)).for_each(|(o, v)| *o += v),
+            TransientParam::RayleighStiffness => out.iter_mut().zip(self.mulk(x)).for_each(|(o, v)| *o += v),
             _ => {}
         }
         Ok(out)
     }
     /// `(d eff/dp) x`.
-    fn deff(
-        &self,
-        lin: &LinearSensitivityEngine<'_>,
-        p: TransientParam,
-        x: &[f64],
-    ) -> Result<Vec<f64>, String> {
+    fn deff(&self, lin: &LinearSensitivityEngine<'_>, p: TransientParam, x: &[f64]) -> Result<Vec<f64>, String> {
         let (alpha, dt) = (self.e.opt.alpha, self.e.opt.dt);
-        let (c0, c1) = (
-            (1.0 + alpha) * self.gamma * dt,
-            (1.0 + alpha) * self.beta * dt * dt,
-        );
+        let (c0, c1) = ((1.0 + alpha) * self.gamma * dt, (1.0 + alpha) * self.beta * dt * dt);
         let (dmx, dcx, dkx) = (self.e.dm_x(p, x)?, self.dc(lin, p, x)?, self.dk(lin, p, x)?);
-        Ok((0..x.len())
-            .map(|i| dmx[i] + c0 * dcx[i] + c1 * dkx[i])
-            .collect())
+        Ok((0..x.len()).map(|i| dmx[i] + c0 * dcx[i] + c1 * dkx[i]).collect())
     }
     /// `df/dp` at time `t`.
     fn df(&self, p: TransientParam, t: f64) -> Result<Vec<f64>, String> {
         let m = self.e.model;
         let raw = match p {
-            TransientParam::Static(LinearParam::Thickness) => {
-                m.df_dp(self.e.loads, Param::Thickness)?
-            }
-            TransientParam::Static(LinearParam::Coord { node, axis }) => {
-                m.df_dp(self.e.loads, Param::Coord { node, axis })?
-            }
+            TransientParam::Static(LinearParam::Thickness) => m.df_dp(self.e.loads, Param::Thickness)?,
+            TransientParam::Static(LinearParam::Coord { node, axis }) => m.df_dp(self.e.loads, Param::Coord { node, axis })?,
             _ => vec![0.0; self.n()],
         };
         let s = (self.e.g)(t);
@@ -455,17 +339,8 @@ impl<'m> TransientSensitivity<'m> {
     /// The response at every step (the integrator of `Model::transient`, with the accelerations).
     pub fn response(&'m self) -> Result<Vec<State>, String> {
         let ops = self.ops()?;
-        let red = Reduced::with_ordering(
-            &self.model.pattern,
-            self.bc,
-            Some(&self.model.mesh.nodes),
-            Ordering::Auto,
-        )
-        .map_err(|e| e.to_string())?;
-        let (fac_eff, fac_m) = (
-            red.factor(&ops.eff()).map_err(|e| e.to_string())?,
-            red.factor(&ops.mass).map_err(|e| e.to_string())?,
-        );
+        let red = Reduced::with_ordering(&self.model.pattern, self.bc, Some(&self.model.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+        let (fac_eff, fac_m) = (red.factor(&ops.eff()).map_err(|e| e.to_string())?, red.factor(&ops.mass).map_err(|e| e.to_string())?);
         let mut states = vec![ops.initial(&fac_m)];
         for s in 0..self.opt.steps {
             let next = ops.advance(&fac_eff, &states[s], s);
@@ -475,24 +350,11 @@ impl<'m> TransientSensitivity<'m> {
     }
 
     /// Direct sensitivities `result[q][p]` of the quantities to the parameters.
-    pub fn direct(
-        &'m self,
-        params: &[TransientParam],
-        qois: &[TransientQoi],
-    ) -> Result<(Vec<Vec<f64>>, TransientReport), String> {
+    pub fn direct(&'m self, params: &[TransientParam], qois: &[TransientQoi]) -> Result<(Vec<Vec<f64>>, TransientReport), String> {
         let ops = self.ops()?;
         let lin = LinearSensitivityEngine::new(self.model, self.loads, self.bc);
-        let red = Reduced::with_ordering(
-            &self.model.pattern,
-            self.bc,
-            Some(&self.model.mesh.nodes),
-            Ordering::Auto,
-        )
-        .map_err(|e| e.to_string())?;
-        let (fac_eff, fac_m) = (
-            red.factor(&ops.eff()).map_err(|e| e.to_string())?,
-            red.factor(&ops.mass).map_err(|e| e.to_string())?,
-        );
+        let red = Reduced::with_ordering(&self.model.pattern, self.bc, Some(&self.model.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+        let (fac_eff, fac_m) = (red.factor(&ops.eff()).map_err(|e| e.to_string())?, red.factor(&ops.mass).map_err(|e| e.to_string())?);
         let (alpha, dt, beta, gamma) = (self.opt.alpha, self.opt.dt, ops.beta, ops.gamma);
         let n = ops.n();
         let mut out = vec![vec![0.0; params.len()]; qois.len()];
@@ -501,24 +363,14 @@ impl<'m> TransientSensitivity<'m> {
         for (pi, &p) in params.iter().enumerate() {
             let mut x = x0.clone();
             // d a0 = M^-1 (df0 - dC v0 - dK u0 - dM a0)
-            let (dcv, dku, dma, df0) = (
-                ops.dc(&lin, p, &x.v)?,
-                ops.dk(&lin, p, &x.u)?,
-                self.dm_x(p, &x.a)?,
-                ops.df(p, 0.0)?,
-            );
+            let (dcv, dku, dma, df0) = (ops.dc(&lin, p, &x.v)?, ops.dk(&lin, p, &x.u)?, self.dm_x(p, &x.a)?, ops.df(p, 0.0)?);
             let r: Vec<f64> = (0..n).map(|i| df0[i] - dcv[i] - dku[i] - dma[i]).collect();
-            let mut dx = State {
-                u: vec![0.0; n],
-                v: vec![0.0; n],
-                a: ops.solve_eff(&fac_m, &r),
-            };
+            let mut dx = State { u: vec![0.0; n], v: vec![0.0; n], a: ops.solve_eff(&fac_m, &r) };
             solves += 1;
             let accumulate = |out: &mut Vec<Vec<f64>>, step: usize, dx: &State| {
                 for (qi, q) in qois.iter().enumerate() {
                     for sm in q.at(step) {
-                        out[qi][pi] += sm.gu.iter().zip(&dx.u).map(|(a, b)| a * b).sum::<f64>()
-                            + sm.gv.iter().zip(&dx.v).map(|(a, b)| a * b).sum::<f64>();
+                        out[qi][pi] += sm.gu.iter().zip(&dx.u).map(|(a, b)| a * b).sum::<f64>() + sm.gv.iter().zip(&dx.v).map(|(a, b)| a * b).sum::<f64>();
                     }
                 }
             };
@@ -529,73 +381,34 @@ impl<'m> TransientSensitivity<'m> {
                 let (dup, dvp) = ops.predictors(&dx);
                 let next = ops.advance(&fac_eff, &x, s);
                 let (df_new, df_old) = (ops.df(p, t_new)?, ops.df(p, s as f64 * dt)?);
-                let (cdvp, dcvp, cdv, dcv) = (
-                    ops.mulc(&dvp),
-                    ops.dc(&lin, p, &vp)?,
-                    ops.mulc(&dx.v),
-                    ops.dc(&lin, p, &x.v)?,
-                );
-                let (kdup, dkup, kdu, dku) = (
-                    ops.mulk(&dup),
-                    ops.dk(&lin, p, &up)?,
-                    ops.mulk(&dx.u),
-                    ops.dk(&lin, p, &x.u)?,
-                );
+                let (cdvp, dcvp, cdv, dcv) = (ops.mulc(&dvp), ops.dc(&lin, p, &vp)?, ops.mulc(&dx.v), ops.dc(&lin, p, &x.v)?);
+                let (kdup, dkup, kdu, dku) = (ops.mulk(&dup), ops.dk(&lin, p, &up)?, ops.mulk(&dx.u), ops.dk(&lin, p, &x.u)?);
                 let deff_a = ops.deff(&lin, p, &next.a)?;
                 let b: Vec<f64> = (0..n)
                     .map(|i| {
-                        (1.0 + alpha) * df_new[i]
-                            - alpha * df_old[i]
-                            - (1.0 + alpha) * (cdvp[i] + dcvp[i])
-                            + alpha * (cdv[i] + dcv[i])
-                            - (1.0 + alpha) * (kdup[i] + dkup[i])
-                            + alpha * (kdu[i] + dku[i])
+                        (1.0 + alpha) * df_new[i] - alpha * df_old[i] - (1.0 + alpha) * (cdvp[i] + dcvp[i]) + alpha * (cdv[i] + dcv[i]) - (1.0 + alpha) * (kdup[i] + dkup[i]) + alpha * (kdu[i] + dku[i])
                             - deff_a[i]
                     })
                     .collect();
                 let da = ops.solve_eff(&fac_eff, &b);
                 solves += 1;
-                dx = State {
-                    u: (0..n).map(|i| dup[i] + beta * dt * dt * da[i]).collect(),
-                    v: (0..n).map(|i| dvp[i] + gamma * dt * da[i]).collect(),
-                    a: da,
-                };
+                dx = State { u: (0..n).map(|i| dup[i] + beta * dt * dt * da[i]).collect(), v: (0..n).map(|i| dvp[i] + gamma * dt * da[i]).collect(), a: da };
                 x = next;
                 accumulate(&mut out, s + 1, &dx);
             }
         }
-        Ok((
-            out,
-            TransientReport {
-                effective_solves: solves,
-                peak_states: 2,
-            },
-        ))
+        Ok((out, TransientReport { effective_solves: solves, peak_states: 2 }))
     }
 
     /// Discrete-adjoint sensitivities `result[q][p]`.
-    pub fn adjoint(
-        &'m self,
-        params: &[TransientParam],
-        qois: &[TransientQoi],
-        storage: Storage,
-    ) -> Result<(Vec<Vec<f64>>, TransientReport), String> {
+    pub fn adjoint(&'m self, params: &[TransientParam], qois: &[TransientQoi], storage: Storage) -> Result<(Vec<Vec<f64>>, TransientReport), String> {
         if matches!(storage, Storage::Checkpoint(0)) {
             return Err("a checkpoint interval must be positive".into());
         }
         let ops = self.ops()?;
         let lin = LinearSensitivityEngine::new(self.model, self.loads, self.bc);
-        let red = Reduced::with_ordering(
-            &self.model.pattern,
-            self.bc,
-            Some(&self.model.mesh.nodes),
-            Ordering::Auto,
-        )
-        .map_err(|e| e.to_string())?;
-        let (fac_eff, fac_m) = (
-            red.factor(&ops.eff()).map_err(|e| e.to_string())?,
-            red.factor(&ops.mass).map_err(|e| e.to_string())?,
-        );
+        let red = Reduced::with_ordering(&self.model.pattern, self.bc, Some(&self.model.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+        let (fac_eff, fac_m) = (red.factor(&ops.eff()).map_err(|e| e.to_string())?, red.factor(&ops.mass).map_err(|e| e.to_string())?);
         let (alpha, dt, beta, gamma) = (self.opt.alpha, self.opt.dt, ops.beta, ops.gamma);
         let (n, steps) = (ops.n(), self.opt.steps);
         // forward states: all of them, or checkpoints at multiples of the interval
@@ -617,11 +430,7 @@ impl<'m> TransientSensitivity<'m> {
         let mut out = vec![vec![0.0; params.len()]; qois.len()];
         let mut solves = 0;
         for (qi, q) in qois.iter().enumerate() {
-            let mut lam = State {
-                u: vec![0.0; n],
-                v: vec![0.0; n],
-                a: vec![0.0; n],
-            };
+            let mut lam = State { u: vec![0.0; n], v: vec![0.0; n], a: vec![0.0; n] };
             let seed = |lam: &mut State, step: usize| {
                 for sm in q.at(step) {
                     for i in 0..n {
@@ -659,38 +468,20 @@ impl<'m> TransientSensitivity<'m> {
                     let t_new = (s + 1) as f64 * dt;
                     for (pi, &p) in params.iter().enumerate() {
                         let (df_new, df_old) = (ops.df(p, t_new)?, ops.df(p, s as f64 * dt)?);
-                        let (dcvp, dcv, dkup, dku) = (
-                            ops.dc(&lin, p, &vp)?,
-                            ops.dc(&lin, p, &x.v)?,
-                            ops.dk(&lin, p, &up)?,
-                            ops.dk(&lin, p, &x.u)?,
-                        );
+                        let (dcvp, dcv, dkup, dku) = (ops.dc(&lin, p, &vp)?, ops.dc(&lin, p, &x.v)?, ops.dk(&lin, p, &up)?, ops.dk(&lin, p, &x.u)?);
                         let deff_a = ops.deff(&lin, p, &next.a)?;
                         let mut acc = 0.0;
                         for i in 0..n {
-                            acc += w[i]
-                                * ((1.0 + alpha) * df_new[i]
-                                    - alpha * df_old[i]
-                                    - (1.0 + alpha) * dcvp[i]
-                                    + alpha * dcv[i]
-                                    - (1.0 + alpha) * dkup[i]
-                                    + alpha * dku[i]
-                                    - deff_a[i]);
+                            acc += w[i] * ((1.0 + alpha) * df_new[i] - alpha * df_old[i] - (1.0 + alpha) * dcvp[i] + alpha * dcv[i] - (1.0 + alpha) * dkup[i] + alpha * dku[i] - deff_a[i]);
                         }
                         out[qi][pi] += acc;
                     }
                     // state adjoints
-                    let mut lup: Vec<f64> =
-                        (0..n).map(|i| lam.u[i] - (1.0 + alpha) * kw[i]).collect();
-                    let mut lvp: Vec<f64> =
-                        (0..n).map(|i| lam.v[i] - (1.0 + alpha) * cw[i]).collect();
+                    let mut lup: Vec<f64> = (0..n).map(|i| lam.u[i] - (1.0 + alpha) * kw[i]).collect();
+                    let mut lvp: Vec<f64> = (0..n).map(|i| lam.v[i] - (1.0 + alpha) * cw[i]).collect();
                     ops.restrict_free(&mut lup);
                     ops.restrict_free(&mut lvp);
-                    let mut prev = State {
-                        u: vec![0.0; n],
-                        v: vec![0.0; n],
-                        a: vec![0.0; n],
-                    };
+                    let mut prev = State { u: vec![0.0; n], v: vec![0.0; n], a: vec![0.0; n] };
                     for i in 0..n {
                         prev.u[i] = lup[i] + alpha * kw[i];
                         prev.v[i] = lvp[i] + dt * lup[i] + alpha * cw[i];
@@ -707,23 +498,10 @@ impl<'m> TransientSensitivity<'m> {
             solves += 1;
             let x0 = &checkpoints[0];
             for (pi, &p) in params.iter().enumerate() {
-                let (df0, dcv, dku, dma) = (
-                    ops.df(p, 0.0)?,
-                    ops.dc(&lin, p, &x0.v)?,
-                    ops.dk(&lin, p, &x0.u)?,
-                    self.dm_x(p, &x0.a)?,
-                );
-                out[qi][pi] += (0..n)
-                    .map(|i| w0[i] * (df0[i] - dcv[i] - dku[i] - dma[i]))
-                    .sum::<f64>();
+                let (df0, dcv, dku, dma) = (ops.df(p, 0.0)?, ops.dc(&lin, p, &x0.v)?, ops.dk(&lin, p, &x0.u)?, self.dm_x(p, &x0.a)?);
+                out[qi][pi] += (0..n).map(|i| w0[i] * (df0[i] - dcv[i] - dku[i] - dma[i])).sum::<f64>();
             }
         }
-        Ok((
-            out,
-            TransientReport {
-                effective_solves: solves,
-                peak_states: peak,
-            },
-        ))
+        Ok((out, TransientReport { effective_solves: solves, peak_states: peak }))
     }
 }

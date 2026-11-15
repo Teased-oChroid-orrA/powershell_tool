@@ -51,11 +51,7 @@ pub(crate) const GL6: [(f64, f64); 6] = [
 ];
 
 /// 3-point rule on `[-1, 1]`: exact to degree 5, enough for the edge moments (RT trace of degree 3 against `P_2`).
-const GL3: [(f64, f64); 3] = [
-    (-0.774_596_669_241_483_4, 5.0 / 9.0),
-    (0.0, 8.0 / 9.0),
-    (0.774_596_669_241_483_4, 5.0 / 9.0),
-];
+const GL3: [(f64, f64); 3] = [(-0.774_596_669_241_483_4, 5.0 / 9.0), (0.0, 8.0 / 9.0), (0.774_596_669_241_483_4, 5.0 / 9.0)];
 
 /// Collapsed Gauss rule on the reference triangle `(0,0), (1,0), (0,1)`: points `(xi, eta)` and weights (sum 1/2).
 pub(crate) fn tri_rule() -> Vec<([f64; 2], f64)> {
@@ -113,11 +109,7 @@ struct RtBasis {
 
 impl Default for RtBasis {
     fn default() -> Self {
-        Self {
-            n: 0,
-            val: [[0.0; 2]; MAX_RT],
-            div: [0.0; MAX_RT],
-        }
+        Self { n: 0, val: [[0.0; 2]; MAX_RT], div: [0.0; MAX_RT] }
     }
 }
 
@@ -129,16 +121,8 @@ impl RtBasis {
             for a in 0..=deg {
                 let b = deg - a;
                 let m = mono(a, b, x, y);
-                let dx = if a > 0 {
-                    a as f64 * mono(a - 1, b, x, y)
-                } else {
-                    0.0
-                };
-                let dy = if b > 0 {
-                    b as f64 * mono(a, b - 1, x, y)
-                } else {
-                    0.0
-                };
+                let dx = if a > 0 { a as f64 * mono(a - 1, b, x, y) } else { 0.0 };
+                let dy = if b > 0 { b as f64 * mono(a, b - 1, x, y) } else { 0.0 };
                 self.val[n] = [m, 0.0];
                 self.div[n] = dx;
                 self.val[n + 1] = [0.0, m];
@@ -207,14 +191,7 @@ fn chol_solve(l: &[f64], n: usize, b: &mut [f64]) {
 /// compatible (the component along the null space cancels), two steps of iterative refinement drive the constraint residual to
 /// round-off, and the returned defect is the largest remaining `|C a - d|` relative to `scale`, the compatibility defect.
 #[allow(clippy::type_complexity)]
-fn schur_solve(
-    c: &[&Vec<f64>],
-    blocks: &[&[f64]],
-    nb: usize,
-    rs: &[Vec<f64>],
-    ds: &[Vec<f64>],
-    scale: f64,
-) -> Option<(Vec<Vec<f64>>, f64)> {
+fn schur_solve(c: &[&Vec<f64>], blocks: &[&[f64]], nb: usize, rs: &[Vec<f64>], ds: &[Vec<f64>], scale: f64) -> Option<(Vec<Vec<f64>>, f64)> {
     let (nc, n_el) = (c.len(), blocks.len());
     // Z = M^-1 C^T, one vector per (element, row)
     let mut z = vec![0.0; n_el * nc * nb];
@@ -231,11 +208,7 @@ fn schur_solve(
             let mut v = 0.0;
             for m in 0..n_el {
                 let zj = &z[(m * nc + j) * nb..(m * nc + j + 1) * nb];
-                v += c[i][m * nb..(m + 1) * nb]
-                    .iter()
-                    .zip(zj)
-                    .map(|(a, b)| a * b)
-                    .sum::<f64>();
+                v += c[i][m * nb..(m + 1) * nb].iter().zip(zj).map(|(a, b)| a * b).sum::<f64>();
             }
             s[i * nc + j] = v;
             s[j * nc + i] = v;
@@ -247,11 +220,7 @@ fn schur_solve(
         s[i * nc + i] += shift;
     }
     let l = chol_factor(nc, &s)?;
-    let apply_c = |a: &[f64]| -> Vec<f64> {
-        c.iter()
-            .map(|ci| ci.iter().zip(a).map(|(x, y)| x * y).sum())
-            .collect()
-    };
+    let apply_c = |a: &[f64]| -> Vec<f64> { c.iter().map(|ci| ci.iter().zip(a).map(|(x, y)| x * y).sum()).collect() };
     let mut out = Vec::new();
     let mut defect = 0.0f64;
     for (r, d) in rs.iter().zip(ds) {
@@ -280,8 +249,7 @@ fn schur_solve(
             }
             resid = apply_c(&a).iter().zip(d).map(|(x, y)| x - y).collect();
         }
-        defect = defect
-            .max(resid.iter().fold(0.0f64, |m, v| m.max(v.abs())) / scale.max(f64::MIN_POSITIVE));
+        defect = defect.max(resid.iter().fold(0.0f64, |m, v| m.max(v.abs())) / scale.max(f64::MIN_POSITIVE));
         out.push(a);
     }
     Some((out, defect))
@@ -343,9 +311,7 @@ pub struct EquilibrationReport {
 impl EquilibrationReport {
     /// The field is equilibrated to round-off (a sound basis for the estimate).
     pub fn equilibrated(&self) -> bool {
-        self.max_div_residual < 1e-8
-            && self.max_normal_jump < 1e-8
-            && self.max_neumann_residual < 1e-8
+        self.max_div_residual < 1e-8 && self.max_normal_jump < 1e-8 && self.max_neumann_residual < 1e-8
     }
 }
 
@@ -371,44 +337,18 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
         let conn = blk.elem(te.local);
         let (p, c, s, area, grad) = (te.p, te.c, te.s, te.area, te.grad);
         let xyz: Vec<[f64; 3]> = conn.iter().map(|&n| mesh.nodes[n]).collect();
-        let ue: Vec<f64> = conn
-            .iter()
-            .flat_map(|&n| [ctx.u[2 * n], ctx.u[2 * n + 1]])
-            .collect();
-        let (mut q_x, mut q_w, mut q_v, mut q_div, mut q_test, mut q_sigma, mut q_lambda) = (
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let ue: Vec<f64> = conn.iter().flat_map(|&n| [ctx.u[2 * n], ctx.u[2 * n + 1]]).collect();
+        let (mut q_x, mut q_w, mut q_v, mut q_div, mut q_test, mut q_sigma, mut q_lambda) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut mass = vec![0.0; nb * nb];
         for &(r, wref) in &rule {
-            let x = [
-                p[0][0] + (p[1][0] - p[0][0]) * r[0] + (p[2][0] - p[0][0]) * r[1],
-                p[0][1] + (p[1][1] - p[0][1]) * r[0] + (p[2][1] - p[0][1]) * r[1],
-            ];
+            let x = [p[0][0] + (p[1][0] - p[0][0]) * r[0] + (p[2][0] - p[0][0]) * r[1], p[0][1] + (p[1][1] - p[0][1]) * r[0] + (p[2][1] - p[0][1]) * r[1]];
             let w = 2.0 * area * wref;
             let (xl, yl) = ((x[0] - c[0]) / s, (x[1] - c[1]) / s);
             let (val, dv) = rt_basis(k, xl, yl);
             let divp: Vec<f64> = dv.iter().map(|d| d / s).collect();
             let test: Vec<f64> = tests.iter().map(|&(a, b)| mono(a, b, xl, yl)).collect();
-            let st = stress_at_xi(
-                blk.kind,
-                mesh.physics,
-                &blk.material,
-                &xyz,
-                &ue,
-                [r[0], r[1], 0.0],
-                ctx.loads.delta_t,
-            )
-            .map_err(MeshError::Failed)?;
-            stress_scale = stress_scale
-                .max(st[0].abs())
-                .max(st[1].abs())
-                .max(st[3].abs());
+            let st = stress_at_xi(blk.kind, mesh.physics, &blk.material, &xyz, &ue, [r[0], r[1], 0.0], ctx.loads.delta_t).map_err(MeshError::Failed)?;
+            stress_scale = stress_scale.max(st[0].abs()).max(st[1].abs()).max(st[3].abs());
             for i in 0..nb {
                 for j in 0..nb {
                     mass[i * nb + j] += w * (val[i][0] * val[j][0] + val[i][1] * val[j][1]);
@@ -422,31 +362,7 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
             q_sigma.push([st[0], st[1], st[3]]);
             q_lambda.push([1.0 - r[0] - r[1], r[0], r[1]]);
         }
-        Ok((
-            ElemData {
-                block: te.block,
-                corners: te.corners,
-                p,
-                c,
-                s,
-                grad,
-                q_x,
-                q_w,
-                q_v,
-                q_div,
-                q_test,
-                q_sigma,
-                q_lambda,
-                mass_chol: chol_factor(nb, &mass).ok_or_else(|| {
-                    MeshError::Failed(
-                        "the RT mass matrix of an element is not positive definite".into(),
-                    )
-                })?,
-                body: tm.body[te.block],
-                edge_flux: [Vec::new(), Vec::new(), Vec::new()],
-            },
-            stress_scale,
-        ))
+        Ok((ElemData { block: te.block, corners: te.corners, p, c, s, grad, q_x, q_w, q_v, q_div, q_test, q_sigma, q_lambda, mass_chol: chol_factor(nb, &mass).ok_or_else(|| MeshError::Failed("the RT mass matrix of an element is not positive definite".into()))?, body: tm.body[te.block], edge_flux: [Vec::new(), Vec::new(), Vec::new()] }, stress_scale))
     };
     let built: Vec<(ElemData, f64)> = tm.elems.par_iter().map(build).collect::<Result<_, _>>()?;
     let mut stress_scale = built.iter().fold(0.0f64, |m, b| m.max(b.1));
@@ -492,25 +408,14 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
             let mut r = vec![0.0; n_a];
             for (m, &ei) in members.iter().enumerate() {
                 let el = &elems[ei];
-                let la = el
-                    .corners
-                    .iter()
-                    .position(|&c| c == a)
-                    .expect("the vertex belongs to its patch element");
+                let la = el.corners.iter().position(|&c| c == a).expect("the vertex belongs to its patch element");
                 let mut gq = vec![0.0; tests.len()];
                 for (q, &w) in el.q_w.iter().enumerate() {
                     let psi = el.q_lambda[q][la];
-                    let sig_row = if row == 0 {
-                        [el.q_sigma[q][0], el.q_sigma[q][2]]
-                    } else {
-                        [el.q_sigma[q][2], el.q_sigma[q][1]]
-                    };
-                    let g = -psi * el.body[row]
-                        + el.grad[la][0] * sig_row[0]
-                        + el.grad[la][1] * sig_row[1];
+                    let sig_row = if row == 0 { [el.q_sigma[q][0], el.q_sigma[q][2]] } else { [el.q_sigma[q][2], el.q_sigma[q][1]] };
+                    let g = -psi * el.body[row] + el.grad[la][0] * sig_row[0] + el.grad[la][1] * sig_row[1];
                     for j in 0..nb {
-                        r[m * nb + j] +=
-                            w * psi * (el.q_v[q][j][0] * sig_row[0] + el.q_v[q][j][1] * sig_row[1]);
+                        r[m * nb + j] += w * psi * (el.q_v[q][j][0] * sig_row[0] + el.q_v[q][j][1] * sig_row[1]);
                     }
                     for (t, gv) in gq.iter_mut().enumerate() {
                         *gv += w * g * el.q_test[q][t];
@@ -592,11 +497,7 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
                                 // rhs: int psi_a t_row P_l ds with psi_a = (1 -/+ t)/2 along the edge
                                 let mut d = 0.0;
                                 for &(tt, w) in &GL3 {
-                                    let psi = if ed.a == a {
-                                        0.5 * (1.0 - tt)
-                                    } else {
-                                        0.5 * (1.0 + tt)
-                                    };
+                                    let psi = if ed.a == a { 0.5 * (1.0 - tt) } else { 0.5 * (1.0 + tt) };
                                     d += w * 0.5 * ed.len * psi * legendre(l, tt) * t[row];
                                 }
                                 rows.push((c, d));
@@ -610,24 +511,12 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
         // Both rows of a vertex share the constraint matrix unless one of the displacement components is constrained there
         // (then the boundary edges differ): solve them together, once, in the Schur complement of the constraints.
         let scale_rhs = stress_scale * el_scale(&elems, members);
-        let blocks: Vec<&[f64]> = members
-            .iter()
-            .map(|&ei| elems[ei].mass_chol.as_slice())
-            .collect();
-        let solved: Vec<(usize, Vec<Vec<f64>>)> = if ctx.bc.fixed[2 * a] == ctx.bc.fixed[2 * a + 1]
-        {
+        let blocks: Vec<&[f64]> = members.iter().map(|&ei| elems[ei].mass_chol.as_slice()).collect();
+        let solved: Vec<(usize, Vec<Vec<f64>>)> = if ctx.bc.fixed[2 * a] == ctx.bc.fixed[2 * a + 1] {
             let rows: Vec<&Vec<f64>> = built[0].0.iter().map(|x| &x.0).collect();
-            let ds = vec![
-                built[0].0.iter().map(|x| x.1).collect::<Vec<_>>(),
-                built[1].0.iter().map(|x| x.1).collect::<Vec<_>>(),
-            ];
+            let ds = vec![built[0].0.iter().map(|x| x.1).collect::<Vec<_>>(), built[1].0.iter().map(|x| x.1).collect::<Vec<_>>()];
             let rs = vec![built[0].1.clone(), built[1].1.clone()];
-            let (a_all, dfx) =
-                schur_solve(&rows, &blocks, nb, &rs, &ds, scale_rhs).ok_or_else(|| {
-                    MeshError::Failed(format!(
-                        "the local reconstruction problem at node {a} is singular"
-                    ))
-                })?;
+            let (a_all, dfx) = schur_solve(&rows, &blocks, nb, &rs, &ds, scale_rhs).ok_or_else(|| MeshError::Failed(format!("the local reconstruction problem at node {a} is singular")))?;
             defect = defect.max(dfx);
             vec![(0, a_all)]
         } else {
@@ -635,13 +524,7 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
             for (row, (rows_r, r)) in built.iter().enumerate() {
                 let rows: Vec<&Vec<f64>> = rows_r.iter().map(|x| &x.0).collect();
                 let ds = vec![rows_r.iter().map(|x| x.1).collect::<Vec<_>>()];
-                let (a_all, dfx) =
-                    schur_solve(&rows, &blocks, nb, std::slice::from_ref(r), &ds, scale_rhs)
-                        .ok_or_else(|| {
-                            MeshError::Failed(format!(
-                                "the local reconstruction problem at node {a} is singular"
-                            ))
-                        })?;
+                let (a_all, dfx) = schur_solve(&rows, &blocks, nb, std::slice::from_ref(r), &ds, scale_rhs).ok_or_else(|| MeshError::Failed(format!("the local reconstruction problem at node {a} is singular")))?;
                 defect = defect.max(dfx);
                 out.push((row, a_all));
             }
@@ -657,16 +540,11 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
         Ok(PatchSolution { parts, defect })
     };
     let solutions: Vec<PatchSolution> = if vertices.len() >= 200 {
-        vertices
-            .par_iter()
-            .map(solve_patch)
-            .collect::<Result<_, _>>()?
+        vertices.par_iter().map(solve_patch).collect::<Result<_, _>>()?
     } else {
         vertices.iter().map(solve_patch).collect::<Result<_, _>>()?
     };
-    let mut coef: Vec<[Vec<f64>; 2]> = (0..elems.len())
-        .map(|_| [vec![0.0; nb], vec![0.0; nb]])
-        .collect();
+    let mut coef: Vec<[Vec<f64>; 2]> = (0..elems.len()).map(|_| [vec![0.0; nb], vec![0.0; nb]]).collect();
     let mut max_defect = 0.0f64;
     for sol in &solutions {
         max_defect = max_defect.max(sol.defect);
@@ -676,30 +554,13 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
             }
         }
     }
-    let mut rec = Reconstruction {
-        k,
-        elems,
-        edges,
-        coef,
-        report: EquilibrationReport {
-            degree: k,
-            patches: vertices.len(),
-            max_compat_defect: max_defect,
-            affine,
-            stress_scale,
-            ..Default::default()
-        },
-    };
+    let mut rec = Reconstruction { k, elems, edges, coef, report: EquilibrationReport { degree: k, patches: vertices.len(), max_compat_defect: max_defect, affine, stress_scale, ..Default::default() } };
     rec.verify(ctx, &traction);
     Ok(rec)
 }
 
 fn el_scale(elems: &[ElemData], members: &[usize]) -> f64 {
-    members
-        .iter()
-        .map(|&m| elems[m].s)
-        .fold(0.0f64, f64::max)
-        .max(1e-300)
+    members.iter().map(|&m| elems[m].s).fold(0.0f64, f64::max).max(1e-300)
 }
 
 impl Reconstruction {
@@ -762,10 +623,7 @@ impl Reconstruction {
                     if ed.owners.len() == 2 {
                         let (e1, k1) = ed.owners[0];
                         let (e2, k2) = ed.owners[1];
-                        let (n1, n2) = (
-                            outward_normal(&this.elems[e1].p, k1),
-                            outward_normal(&this.elems[e2].p, k2),
-                        );
+                        let (n1, n2) = (outward_normal(&this.elems[e1].p, k1), outward_normal(&this.elems[e2].p, k2));
                         let (s1, s2) = (this.stress_at(e1, x), this.stress_at(e2, x));
                         for row in 0..2 {
                             let f1 = s1[row][0] * n1[0] + s1[row][1] * n1[1];
@@ -800,26 +658,16 @@ impl Reconstruction {
                     let s = this.stress_at(ei, x);
                     let sk = 0.5 * (s[0][1] - s[1][0]);
                     skew2 += el.q_w[q] * sk * sk;
-                    tot2 += el.q_w[q]
-                        * (s[0][0] * s[0][0]
-                            + s[1][1] * s[1][1]
-                            + 0.5 * (s[0][1] + s[1][0]).powi(2)
-                            + sk * sk);
+                    tot2 += el.q_w[q] * (s[0][0] * s[0][0] + s[1][1] * s[1][1] + 0.5 * (s[0][1] + s[1][0]).powi(2) + sk * sk);
                 }
                 (skew2, tot2)
             })
             .collect();
-        let (skew2, tot2) = parts
-            .iter()
-            .fold((0.0f64, 0.0f64), |a, p| (a.0 + p.0, a.1 + p.1));
+        let (skew2, tot2) = parts.iter().fold((0.0f64, 0.0f64), |a, p| (a.0 + p.0, a.1 + p.1));
         self.report.max_div_residual = div_res;
         self.report.max_normal_jump = jump;
         self.report.max_neumann_residual = neu;
-        self.report.skew_fraction = if tot2 > 0.0 {
-            (skew2 / tot2).sqrt()
-        } else {
-            0.0
-        };
+        self.report.skew_fraction = if tot2 > 0.0 { (skew2 / tot2).sqrt() } else { 0.0 };
     }
 
     /// Element error indicators `eta_K = || sym(sigma*) - sigma_h ||_{C^-1, K}` (global element order).
@@ -836,19 +684,9 @@ impl Reconstruction {
                 for (q, &x) in el.q_x.iter().enumerate() {
                     let s = self.stress_at(ei, x);
                     let sh = el.q_sigma[q];
-                    let (dxx, dyy, dxy) = (
-                        s[0][0] - sh[0],
-                        s[1][1] - sh[1],
-                        0.5 * (s[0][1] + s[1][0]) - sh[2],
-                    );
-                    let dzz = if plane_strain && mat.aniso.is_none() {
-                        nu * (dxx + dyy)
-                    } else {
-                        0.0
-                    };
-                    sum += el.q_w[q]
-                        * 2.0
-                        * complementary_energy(mat, &[dxx, dyy, dzz, dxy, 0.0, 0.0]);
+                    let (dxx, dyy, dxy) = (s[0][0] - sh[0], s[1][1] - sh[1], 0.5 * (s[0][1] + s[1][0]) - sh[2]);
+                    let dzz = if plane_strain && mat.aniso.is_none() { nu * (dxx + dyy) } else { 0.0 };
+                    sum += el.q_w[q] * 2.0 * complementary_energy(mat, &[dxx, dyy, dzz, dxy, 0.0, 0.0]);
                 }
                 sum.max(0.0).sqrt()
             })
@@ -868,9 +706,7 @@ impl ErrorEstimator for EquilibratedEstimator {
         let t = Instant::now();
         let rec = match reconstruct(ctx) {
             Ok(r) => r,
-            Err(MeshError::Unsupported(why)) => {
-                return Ok(ErrorField::unsupported("equilibrated", &why, ctx.n_elems()))
-            }
+            Err(MeshError::Unsupported(why)) => return Ok(ErrorField::unsupported("equilibrated", &why, ctx.n_elems())),
             Err(e) => return Err(e),
         };
         let eta = rec.indicators(ctx);
@@ -879,25 +715,13 @@ impl ErrorEstimator for EquilibratedEstimator {
         let reliability = if !rep.equilibrated() {
             Reliability::Degraded(format!("the reconstruction is not equilibrated to round-off (div {:.1e}, jump {:.1e}, traction {:.1e}); the geometry is {}", rep.max_div_residual, rep.max_normal_jump, rep.max_neumann_residual, if rep.affine { "straight-sided" } else { "curved and treated as straight" }))
         } else if !rep.affine {
-            Reliability::Degraded(
-                "curved element edges are reconstructed on straight triangles".into(),
-            )
+            Reliability::Degraded("curved element edges are reconstructed on straight triangles".into())
         } else if rep.skew_fraction > 0.05 {
-            Reliability::Degraded(format!(
-                "the row-wise reconstruction is {:.1} % skew",
-                100.0 * rep.skew_fraction
-            ))
+            Reliability::Degraded(format!("the row-wise reconstruction is {:.1} % skew", 100.0 * rep.skew_fraction))
         } else {
             Reliability::Reliable
         };
-        let mut f = ErrorField::new(
-            "equilibrated",
-            Indicator::Marking,
-            eta,
-            total,
-            reliability,
-            t.elapsed().as_secs_f64(),
-        );
+        let mut f = ErrorField::new("equilibrated", Indicator::Marking, eta, total, reliability, t.elapsed().as_secs_f64());
         f.notes.push(format!(
             "RT degree {}, {} patches; div residual {:.1e}, normal jump {:.1e}, traction residual {:.1e}, compatibility defect {:.1e}, skew {:.2e}",
             rep.degree, rep.patches, rep.max_div_residual, rep.max_normal_jump, rep.max_neumann_residual, rep.max_compat_defect, rep.skew_fraction

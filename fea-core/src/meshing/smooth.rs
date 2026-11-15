@@ -28,11 +28,7 @@ pub struct SmoothOptions {
 
 impl Default for SmoothOptions {
     fn default() -> Self {
-        Self {
-            passes: 10,
-            relax: 0.7,
-            protect: Vec::new(),
-        }
+        Self { passes: 10, relax: 0.7, protect: Vec::new() }
     }
 }
 
@@ -108,24 +104,17 @@ pub fn smooth(mesh: &mut Mesh, opt: &SmoothOptions) -> SmoothReport {
             }
         }
     }
-    let movable: Vec<usize> = (0..n)
-        .filter(|&v| !fixed[v] && corner_only[v] && block_of[v] != usize::MAX)
-        .collect();
+    let movable: Vec<usize> = (0..n).filter(|&v| !fixed[v] && corner_only[v] && block_of[v] != usize::MAX).collect();
 
     // corner neighbours through element edges, and midside bookkeeping
-    let pairs: Vec<Vec<(usize, usize, usize)>> =
-        mesh.blocks.iter().map(|b| midside_pairs(b.kind)).collect();
+    let pairs: Vec<Vec<(usize, usize, usize)>> = mesh.blocks.iter().map(|b| midside_pairs(b.kind)).collect();
     let before = mesh.quality();
     let mut moves = 0;
     let mut passes_run = 0;
     for _ in 0..opt.passes {
         let mut moved_this_pass = 0;
         for &v in &movable {
-            let elems: Vec<(usize, usize)> = adj
-                .node_elements(v)
-                .iter()
-                .map(|&g| adj.local(g as usize))
-                .collect();
+            let elems: Vec<(usize, usize)> = adj.node_elements(v).iter().map(|&g| adj.local(g as usize)).collect();
             let mut nbrs: Vec<usize> = Vec::new();
             for &(b, e) in &elems {
                 let blk = &mesh.blocks[b];
@@ -145,10 +134,7 @@ pub fn smooth(mesh: &mut Mesh, opt: &SmoothOptions) -> SmoothReport {
                 }
             }
             let old = mesh.nodes[v];
-            let worst_before = elems
-                .iter()
-                .map(|&(b, e)| element_min_jacobian(mesh, b, e))
-                .fold(f64::INFINITY, f64::min);
+            let worst_before = elems.iter().map(|&(b, e)| element_min_jacobian(mesh, b, e)).fold(f64::INFINITY, f64::min);
             // midside nodes of the edges at v, with their old positions
             let mut mids: Vec<(usize, [f64; 3])> = Vec::new();
             for &(b, e) in &elems {
@@ -168,16 +154,12 @@ pub fn smooth(mesh: &mut Mesh, opt: &SmoothOptions) -> SmoothReport {
                 for &(m, ca, cb) in &pairs[b] {
                     if conn[ca] == v || conn[cb] == v {
                         for k in 0..3 {
-                            mesh.nodes[conn[m]][k] =
-                                0.5 * (mesh.nodes[conn[ca]][k] + mesh.nodes[conn[cb]][k]);
+                            mesh.nodes[conn[m]][k] = 0.5 * (mesh.nodes[conn[ca]][k] + mesh.nodes[conn[cb]][k]);
                         }
                     }
                 }
             }
-            let worst_after = elems
-                .iter()
-                .map(|&(b, e)| element_min_jacobian(mesh, b, e))
-                .fold(f64::INFINITY, f64::min);
+            let worst_after = elems.iter().map(|&(b, e)| element_min_jacobian(mesh, b, e)).fold(f64::INFINITY, f64::min);
             if worst_after > worst_before + 1e-12 {
                 moved_this_pass += 1;
             } else {
@@ -213,45 +195,20 @@ mod tests {
 
     #[test]
     fn a_distorted_interior_node_returns_toward_the_centre_and_the_boundary_stays_put() {
-        let mut m = grid(
-            Physics::PlaneStress { thickness: 1.0 },
-            ElementKind::Tri6,
-            Elastic::new(1.0, 0.3),
-            [6, 6, 1],
-            &|p| p,
-        )
-        .unwrap();
-        let centre = m
-            .nodes
-            .iter()
-            .position(|x| (x[0] - 0.5).abs() < 1e-12 && (x[1] - 0.5).abs() < 1e-12)
-            .unwrap();
+        let mut m = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Tri6, Elastic::new(1.0, 0.3), [6, 6, 1], &|p| p).unwrap();
+        let centre = m.nodes.iter().position(|x| (x[0] - 0.5).abs() < 1e-12 && (x[1] - 0.5).abs() < 1e-12).unwrap();
         // distort: pull the centre node and its midside nodes consistently towards a corner
         m.nodes[centre] = [0.62, 0.58, 0.0];
-        let boundary_before: Vec<[f64; 3]> = m
-            .nodes
-            .iter()
-            .copied()
-            .filter(|x| x[0] == 0.0 || x[0] == 1.0 || x[1] == 0.0 || x[1] == 1.0)
-            .collect();
+        let boundary_before: Vec<[f64; 3]> = m.nodes.iter().copied().filter(|x| x[0] == 0.0 || x[0] == 1.0 || x[1] == 0.0 || x[1] == 1.0).collect();
         let q0 = m.quality();
         let rep = smooth(&mut m, &SmoothOptions::default());
         assert!(rep.moves > 0 && rep.movable_nodes > 0);
         assert!(rep.min_scaled_jacobian_after >= rep.min_scaled_jacobian_before - 1e-12);
         assert!(rep.mean_scaled_jacobian_after >= q0.mean_scaled_jacobian - 1e-12);
-        let boundary_after: Vec<[f64; 3]> = m
-            .nodes
-            .iter()
-            .copied()
-            .filter(|x| x[0] == 0.0 || x[0] == 1.0 || x[1] == 0.0 || x[1] == 1.0)
-            .collect();
+        let boundary_after: Vec<[f64; 3]> = m.nodes.iter().copied().filter(|x| x[0] == 0.0 || x[0] == 1.0 || x[1] == 0.0 || x[1] == 1.0).collect();
         assert_eq!(boundary_before, boundary_after);
         assert!(m.conformity().is_conforming());
-        assert!(
-            (m.nodes[centre][0] - 0.5).abs() < 0.05 && (m.nodes[centre][1] - 0.5).abs() < 0.05,
-            "{:?}",
-            m.nodes[centre]
-        );
+        assert!((m.nodes[centre][0] - 0.5).abs() < 0.05 && (m.nodes[centre][1] - 0.5).abs() < 0.05, "{:?}", m.nodes[centre]);
         // midside nodes of the edges at the centre sit at the new edge midpoints
         let blk = &m.blocks[0];
         for e in 0..blk.n_elems() {
@@ -260,12 +217,7 @@ mod tests {
                 for (k, (a, b)) in [(0usize, 1usize), (1, 2), (2, 0)].into_iter().enumerate() {
                     if c[a] == centre || c[b] == centre {
                         for ax in 0..2 {
-                            assert!(
-                                (m.nodes[c[3 + k]][ax]
-                                    - 0.5 * (m.nodes[c[a]][ax] + m.nodes[c[b]][ax]))
-                                    .abs()
-                                    < 1e-12
-                            );
+                            assert!((m.nodes[c[3 + k]][ax] - 0.5 * (m.nodes[c[a]][ax] + m.nodes[c[b]][ax])).abs() < 1e-12);
                         }
                     }
                 }
@@ -275,14 +227,7 @@ mod tests {
 
     #[test]
     fn structured_quads_and_block_interfaces_are_untouched() {
-        let mut m = grid(
-            Physics::PlaneStress { thickness: 1.0 },
-            ElementKind::Quad8,
-            Elastic::new(1.0, 0.3),
-            [4, 4, 1],
-            &|p| p,
-        )
-        .unwrap();
+        let mut m = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad8, Elastic::new(1.0, 0.3), [4, 4, 1], &|p| p).unwrap();
         let before = m.nodes.clone();
         let rep = smooth(&mut m, &SmoothOptions::default());
         assert_eq!(rep.movable_nodes, 0);
@@ -291,26 +236,8 @@ mod tests {
 
     #[test]
     fn a_tetrahedral_interior_node_is_smoothed_without_breaking_the_mesh() {
-        let mut m = grid(
-            Physics::Solid,
-            ElementKind::Tet10,
-            Elastic::new(1.0, 0.3),
-            [3, 3, 3],
-            &|p| p,
-        )
-        .unwrap();
-        let inner: Vec<usize> = m
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, x)| {
-                x.iter().all(|&c| c > 1e-9 && c < 1.0 - 1e-9)
-                    && (x[0] * 3.0).fract().abs() < 1e-9
-                    && (x[1] * 3.0).fract().abs() < 1e-9
-                    && (x[2] * 3.0).fract().abs() < 1e-9
-            })
-            .map(|(i, _)| i)
-            .collect();
+        let mut m = grid(Physics::Solid, ElementKind::Tet10, Elastic::new(1.0, 0.3), [3, 3, 3], &|p| p).unwrap();
+        let inner: Vec<usize> = m.nodes.iter().enumerate().filter(|(_, x)| x.iter().all(|&c| c > 1e-9 && c < 1.0 - 1e-9) && (x[0] * 3.0).fract().abs() < 1e-9 && (x[1] * 3.0).fract().abs() < 1e-9 && (x[2] * 3.0).fract().abs() < 1e-9).map(|(i, _)| i).collect();
         assert!(!inner.is_empty());
         let v = inner[0];
         m.nodes[v][0] += 0.08;

@@ -53,18 +53,10 @@ fn excess(kind: ElementKind, xi: [f64; 3]) -> f64 {
 }
 
 /// Newton inverse of the isoparametric map. `None` if it does not converge.
-fn natural_coordinates(
-    kind: ElementKind,
-    xyz: &[[f64; 3]],
-    x: [f64; 3],
-) -> Option<([f64; 3], f64)> {
+fn natural_coordinates(kind: ElementKind, xyz: &[[f64; 3]], x: [f64; 3]) -> Option<([f64; 3], f64)> {
     let d = kind.dim();
     let nn = kind.n_nodes();
-    let mut xi = if kind.is_simplex() {
-        [1.0 / (d as f64 + 1.0); 3]
-    } else {
-        [0.0; 3]
-    };
+    let mut xi = if kind.is_simplex() { [1.0 / (d as f64 + 1.0); 3] } else { [0.0; 3] };
     for k in d..3 {
         xi[k] = 0.0;
     }
@@ -99,17 +91,9 @@ fn solve_small(j: &[[f64; 3]; 3], r: &[f64; 3], d: usize) -> Option<[f64; 3]> {
         if det.abs() < 1e-300 {
             return None;
         }
-        return Some([
-            (r[0] * j[1][1] - r[1] * j[0][1]) / det,
-            (-r[0] * j[1][0] + r[1] * j[0][0]) / det,
-            0.0,
-        ]);
+        return Some([(r[0] * j[1][1] - r[1] * j[0][1]) / det, (-r[0] * j[1][0] + r[1] * j[0][0]) / det, 0.0]);
     }
-    let det3 = |m: [[f64; 3]; 3]| {
-        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
-    };
+    let det3 = |m: [[f64; 3]; 3]| m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
     let det = det3(*j);
     if det.abs() < 1e-300 {
         return None;
@@ -142,19 +126,10 @@ impl Locator {
                 }
                 size_sum += (0..dim).map(|i| hi[i] - lo[i]).fold(0.0, f64::max);
                 count += 1;
-                entries.push(Entry {
-                    block: bi,
-                    elem: e,
-                    lo,
-                    hi,
-                });
+                entries.push(Entry { block: bi, elem: e, lo, hi });
             }
         }
-        let cell = if count > 0 {
-            (size_sum / count as f64).max(1e-300)
-        } else {
-            1.0
-        };
+        let cell = if count > 0 { (size_sum / count as f64).max(1e-300) } else { 1.0 };
         let mut origin = [f64::INFINITY; 3];
         for e in &entries {
             for i in 0..3 {
@@ -175,13 +150,7 @@ impl Locator {
                 }
             }
         }
-        Self {
-            entries,
-            cell,
-            origin,
-            bins,
-            dim,
-        }
+        Self { entries, cell, origin, bins, dim }
     }
 
     fn bin(origin: [f64; 3], cell: f64, x: [f64; 3]) -> [i64; 3] {
@@ -192,10 +161,7 @@ impl Locator {
     pub fn locate(&self, model: &Model, x: [f64; 3]) -> Vec<Hit> {
         let mesh = &model.mesh;
         let pad = NEAREST_TOL * self.cell * 1.5;
-        let (a, b) = (
-            Self::bin(self.origin, self.cell, std::array::from_fn(|i| x[i] - pad)),
-            Self::bin(self.origin, self.cell, std::array::from_fn(|i| x[i] + pad)),
-        );
+        let (a, b) = (Self::bin(self.origin, self.cell, std::array::from_fn(|i| x[i] - pad)), Self::bin(self.origin, self.cell, std::array::from_fn(|i| x[i] + pad)));
         let mut seen: Vec<u32> = Vec::new();
         for i in a[0]..=b[0] {
             for j in a[1]..=b[1] {
@@ -212,8 +178,7 @@ impl Locator {
         let mut nearest: Option<Hit> = None;
         for idx in seen {
             let e = &self.entries[idx as usize];
-            let tol = 1e-9 * (1.0 + x.iter().map(|v| v.abs()).sum::<f64>())
-                + NEAREST_TOL * (0..self.dim).map(|i| e.hi[i] - e.lo[i]).fold(0.0, f64::max);
+            let tol = 1e-9 * (1.0 + x.iter().map(|v| v.abs()).sum::<f64>()) + NEAREST_TOL * (0..self.dim).map(|i| e.hi[i] - e.lo[i]).fold(0.0, f64::max);
             if (0..self.dim).any(|i| x[i] < e.lo[i] - tol || x[i] > e.hi[i] + tol) {
                 continue;
             }
@@ -222,16 +187,8 @@ impl Locator {
             for (a, &n) in blk.elem(e.elem).iter().enumerate() {
                 xyz[a] = mesh.nodes[n];
             }
-            let Some((xi, ex)) = natural_coordinates(blk.kind, &xyz[..blk.kind.n_nodes()], x)
-            else {
-                continue;
-            };
-            let hit = Hit {
-                block: e.block,
-                elem: e.elem,
-                xi,
-                excess: ex,
-            };
+            let Some((xi, ex)) = natural_coordinates(blk.kind, &xyz[..blk.kind.n_nodes()], x) else { continue };
+            let hit = Hit { block: e.block, elem: e.elem, xi, excess: ex };
             if ex <= INSIDE_TOL {
                 inside.push(hit);
             } else if ex <= NEAREST_TOL && nearest.is_none_or(|n| ex < n.excess) {
@@ -246,13 +203,7 @@ impl Locator {
 
     /// Stress `[xx, yy, zz, xy, yz, zx]` at `x` for displacements `u`, averaged over the elements
     /// containing the point. `None` outside the mesh.
-    pub fn stress_at(
-        &self,
-        model: &Model,
-        u: &[f64],
-        x: [f64; 3],
-        delta_t: f64,
-    ) -> Option<[f64; 6]> {
+    pub fn stress_at(&self, model: &Model, u: &[f64], x: [f64; 3], delta_t: f64) -> Option<[f64; 6]> {
         let hits = self.locate(model, x);
         if hits.is_empty() {
             return None;
@@ -273,16 +224,7 @@ impl Locator {
             }
             // A point a hair outside is evaluated at the clamped natural coordinates (the element's own edge).
             let xi = clamp_natural(blk.kind, h.xi);
-            let s = stress_at_xi(
-                blk.kind,
-                mesh.physics,
-                &blk.material,
-                &xyz,
-                &ue,
-                xi,
-                delta_t,
-            )
-            .ok()?;
+            let s = stress_at_xi(blk.kind, mesh.physics, &blk.material, &xyz, &ue, xi, delta_t).ok()?;
             for c in 0..6 {
                 acc[c] += s[c];
             }

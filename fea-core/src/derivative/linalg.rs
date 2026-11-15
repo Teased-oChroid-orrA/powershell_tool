@@ -92,9 +92,7 @@ pub struct ClosureOperator<F: Fn(&[f64], &mut [f64]), G: Fn(&[f64], &mut [f64])>
     pub symmetric: bool,
 }
 
-impl<F: Fn(&[f64], &mut [f64]), G: Fn(&[f64], &mut [f64])> LinearOperator
-    for ClosureOperator<F, G>
-{
+impl<F: Fn(&[f64], &mut [f64]), G: Fn(&[f64], &mut [f64])> LinearOperator for ClosureOperator<F, G> {
     fn dim(&self) -> usize {
         self.n
     }
@@ -138,14 +136,7 @@ fn residual_norm(op: &dyn LinearOperator, transposed: bool, b: &[f64], x: &[f64]
 }
 
 /// Preconditioned conjugate gradients for a symmetric positive definite operator; `precond(r, z)` writes `z = M^-1 r`.
-pub fn cg(
-    op: &dyn LinearOperator,
-    b: &[f64],
-    x: &mut [f64],
-    precond: &dyn Fn(&[f64], &mut [f64]),
-    tol: f64,
-    max_iter: usize,
-) -> KrylovReport {
+pub fn cg(op: &dyn LinearOperator, b: &[f64], x: &mut [f64], precond: &dyn Fn(&[f64], &mut [f64]), tol: f64, max_iter: usize) -> KrylovReport {
     let n = b.len();
     let bn = norm(b).max(1e-300);
     let mut ax = vec![0.0; n];
@@ -158,11 +149,7 @@ pub fn cg(
     let mut ap = vec![0.0; n];
     for it in 0..max_iter {
         if norm(&r) <= tol * bn {
-            return KrylovReport {
-                iterations: it,
-                rel_residual: residual_norm(op, false, b, x),
-                converged: true,
-            };
+            return KrylovReport { iterations: it, rel_residual: residual_norm(op, false, b, x), converged: true };
         }
         op.apply(&p, &mut ap);
         let alpha = rz / dot(&p, &ap);
@@ -179,26 +166,13 @@ pub fn cg(
         }
     }
     let rel = residual_norm(op, false, b, x);
-    KrylovReport {
-        iterations: max_iter,
-        rel_residual: rel,
-        converged: rel <= tol,
-    }
+    KrylovReport { iterations: max_iter, rel_residual: rel, converged: rel <= tol }
 }
 
 /// Restarted right-preconditioned GMRES for `A x = b` (or `A^T x = b` with `transposed`). `precond(v, z)` writes `z = M^-1 v` (it
 /// may be the factorisation of the symmetric part of the operator).
 #[allow(clippy::too_many_arguments)]
-pub fn gmres(
-    op: &dyn LinearOperator,
-    transposed: bool,
-    b: &[f64],
-    x: &mut [f64],
-    precond: &dyn Fn(&[f64], &mut [f64]),
-    tol: f64,
-    restart: usize,
-    max_iter: usize,
-) -> KrylovReport {
+pub fn gmres(op: &dyn LinearOperator, transposed: bool, b: &[f64], x: &mut [f64], precond: &dyn Fn(&[f64], &mut [f64]), tol: f64, restart: usize, max_iter: usize) -> KrylovReport {
     let n = b.len();
     let bn = norm(b).max(1e-300);
     let apply = |v: &[f64], y: &mut [f64]| {
@@ -216,11 +190,7 @@ pub fn gmres(
         let r0: Vec<f64> = b.iter().zip(&ax).map(|(a, c)| a - c).collect();
         let beta = norm(&r0);
         if beta <= tol * bn {
-            return KrylovReport {
-                iterations: total,
-                rel_residual: beta / bn,
-                converged: true,
-            };
+            return KrylovReport { iterations: total, rel_residual: beta / bn, converged: true };
         }
         let mut v: Vec<Vec<f64>> = vec![r0.iter().map(|t| t / beta).collect()];
         let mut z: Vec<Vec<f64>> = Vec::new();
@@ -284,11 +254,7 @@ pub fn gmres(
         }
     }
     let rel = residual_norm(op, transposed, b, x);
-    KrylovReport {
-        iterations: total,
-        rel_residual: rel,
-        converged: rel <= tol,
-    }
+    KrylovReport { iterations: total, rel_residual: rel, converged: rel <= tol }
 }
 
 /// Solves with the (possibly unsymmetric) tangent over the free dofs, direct and transposed, from one factorisation of its symmetric
@@ -306,28 +272,9 @@ pub struct TangentSolver<'a> {
 
 impl<'a> TangentSolver<'a> {
     /// Factor the symmetric part `k` over the reduced system `red`.
-    pub fn new(
-        red: &'a Reduced,
-        pattern: &'a Pattern,
-        k: &'a BlockMatrix,
-        n_total: usize,
-        free: &'a [usize],
-        defect: &'a DefectBlocks,
-    ) -> Result<Self, SolveError> {
+    pub fn new(red: &'a Reduced, pattern: &'a Pattern, k: &'a BlockMatrix, n_total: usize, free: &'a [usize], defect: &'a DefectBlocks) -> Result<Self, SolveError> {
         let fac = red.factor_any(k)?;
-        Ok(Self {
-            fac,
-            op: AssembledTangent {
-                pattern,
-                k,
-                free,
-                n_total,
-                defect,
-            },
-            solves: Cell::new(0),
-            krylov_iterations: Cell::new(0),
-            tol: 1e-12,
-        })
+        Ok(Self { fac, op: AssembledTangent { pattern, k, free, n_total, defect }, solves: Cell::new(0), krylov_iterations: Cell::new(0), tol: 1e-12 })
     }
 
     pub fn n_solves(&self) -> usize {
@@ -357,11 +304,8 @@ impl<'a> TangentSolver<'a> {
             z.copy_from_slice(v);
             self.fac.solve_reduced(z);
         };
-        let rep = gmres(
-            &self.op, transposed, rhs, &mut x, &precond, self.tol, 60, 400,
-        );
-        self.krylov_iterations
-            .set(self.krylov_iterations.get() + rep.iterations);
+        let rep = gmres(&self.op, transposed, rhs, &mut x, &precond, self.tol, 60, 400);
+        self.krylov_iterations.set(self.krylov_iterations.get() + rep.iterations);
         if rep.converged {
             Ok(x)
         } else {

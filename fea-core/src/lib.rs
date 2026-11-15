@@ -1,40 +1,40 @@
 //! General finite-element kernel. See `Cargo.toml`.
 pub mod adapt;
-pub mod adaptivity;
 pub mod amg;
+pub mod adaptivity;
 pub mod analysis;
 pub mod assembly;
 pub mod contact;
-pub mod coupling;
-pub mod delaunay;
 pub mod dense;
-pub mod derivative;
 pub mod dynamics;
+pub mod delaunay;
+pub mod derivative;
 pub mod element;
-pub mod fields;
 pub mod fit;
+pub mod fields;
+pub mod coupling;
 pub mod generate;
 pub mod geometry;
 pub mod import;
 pub mod kernel;
 pub mod linear;
-pub mod loads;
 pub mod locate;
 pub mod material;
+pub mod loads;
 pub mod mesh;
-pub mod mesh2d;
 pub mod meshing;
+pub mod mesh2d;
 pub mod mpc;
 pub mod nonlinear;
 pub mod optimize;
 pub mod ordering;
-pub mod plate;
 pub mod recover;
 pub mod report;
 pub mod sensitivity;
 pub mod sparse;
 pub mod strategy;
 pub mod structural;
+pub mod plate;
 pub mod sweep;
 pub mod tetmesh;
 pub mod thermal;
@@ -53,22 +53,17 @@ pub fn sequentially<R: Send>(f: impl FnOnce() -> R + Send) -> R {
         Err(_) => f(),
     }
 }
-pub use dynamics::{
-    Buckling, BucklingMode, BucklingOptions, EigMethod, MassKind, Modal, ModalOptions, Mode,
-    Transient, TransientOptions,
-};
 pub use element::ElementKind;
 pub use linear::Dirichlet;
 pub use loads::{FaceField, Loads, SurfaceLoad};
-pub use material::J2;
 pub use mesh::{Elastic, Mesh, Physics};
-pub use mpc::{Constraints, RefPoint};
-pub use nonlinear::{
-    Control, Interrupt, NlOptions, NlSolution, NlState, Start, StepEvent, StepObserver,
-};
-pub use optimize::{OptOptions, OptResult};
-pub use report::{Condition, EventKind, Profile, SolveEvent};
-pub use sensitivity::Param;
+pub use material::J2;
+pub use nonlinear::{Control, Interrupt, NlOptions, StepEvent, StepObserver, NlSolution, NlState, Start};
+pub use dynamics::{EigMethod, Buckling, BucklingMode, BucklingOptions, MassKind, Modal, ModalOptions, Mode, Transient, TransientOptions};
 pub use strategy::{Adaptive, Ladder, Requirements, Rung, Verification};
-pub use thermal::{Conductivity, HeatLoads, HeatSolution, ThermalProps};
 pub use validate::{Issue, Severity};
+pub use thermal::{Conductivity, HeatLoads, HeatSolution, ThermalProps};
+pub use optimize::{OptOptions, OptResult};
+pub use sensitivity::Param;
+pub use report::{Condition, EventKind, Profile, SolveEvent};
+pub use mpc::{Constraints, RefPoint};

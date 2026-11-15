@@ -81,18 +81,7 @@ pub struct HybridOptions2d {
 
 impl HybridOptions2d {
     pub fn new(physics: Physics, family: ElementFamily) -> Self {
-        Self {
-            physics,
-            family,
-            partition: PartitionOptions2d::default(),
-            mesh: MeshOptions::default(),
-            min_structured_fraction: 0.15,
-            structured_scale: 1.0,
-            structured_aspect: [1.0, 1.0],
-            smooth: Some(super::smooth::SmoothOptions::default()),
-            quality: QualityThresholds::default(),
-            max_refits: 4,
-        }
+        Self { physics, family, partition: PartitionOptions2d::default(), mesh: MeshOptions::default(), min_structured_fraction: 0.15, structured_scale: 1.0, structured_aspect: [1.0, 1.0], smooth: Some(super::smooth::SmoothOptions::default()), quality: QualityThresholds::default(), max_refits: 4 }
     }
 }
 
@@ -100,9 +89,7 @@ impl HybridOptions2d {
 pub enum Strategy {
     Hybrid,
     /// The plain unstructured mesh of the whole region, with why the hybrid one was not used.
-    Unstructured {
-        reason: String,
-    },
+    Unstructured { reason: String },
 }
 
 #[derive(Debug, Clone)]
@@ -133,11 +120,7 @@ fn dist_to_curve(c: &Curve, p: [f64; 2]) -> f64 {
         Curve::Line { a, b } => {
             let (ab, ap) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
             let l2 = ab[0] * ab[0] + ab[1] * ab[1];
-            let t = if l2 > 0.0 {
-                ((ap[0] * ab[0] + ap[1] * ab[1]) / l2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
+            let t = if l2 > 0.0 { ((ap[0] * ab[0] + ap[1] * ab[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
             (p[0] - a[0] - t * ab[0]).hypot(p[1] - a[1] - t * ab[1])
         }
         Curve::Arc { c: ctr, r, a0, a1 } => {
@@ -155,9 +138,7 @@ fn dist_to_curve(c: &Curve, p: [f64; 2]) -> f64 {
                 ((p[0] - ctr[0]).hypot(p[1] - ctr[1]) - r).abs()
             } else {
                 let (s, e) = (c.start(), c.end());
-                (p[0] - s[0])
-                    .hypot(p[1] - s[1])
-                    .min((p[0] - e[0]).hypot(p[1] - e[1]))
+                (p[0] - s[0]).hypot(p[1] - s[1]).min((p[0] - e[0]).hypot(p[1] - e[1]))
             }
         }
     }
@@ -179,25 +160,15 @@ pub fn assign_names_of(mesh: &mut Mesh, regions: &[&Region]) {
             1e-7 * (hi[0] - lo[0]).hypot(hi[1] - lo[1])
         })
         .fold(f64::INFINITY, f64::min);
-    let segs: Vec<&Segment> = regions
-        .iter()
-        .flat_map(|r| r.loops())
-        .flat_map(|l| l.segments.iter())
-        .collect();
+    let segs: Vec<&Segment> = regions.iter().flat_map(|r| r.loops()).flat_map(|l| l.segments.iter()).collect();
     mesh.node_sets.clear();
     mesh.surfaces.clear();
     for f in mesh.boundary_faces() {
         let (a, b) = (mesh.nodes[f.nodes[0]], mesh.nodes[f.nodes[1]]);
         let on = |s: &Segment, p: [f64; 3]| dist_to_curve(&s.curve, [p[0], p[1]]) <= tol;
         if let Some(s) = segs.iter().find(|s| on(s, a) && on(s, b)) {
-            mesh.surfaces
-                .entry(s.name.clone())
-                .or_default()
-                .push(f.nodes.clone());
-            mesh.node_sets
-                .entry(s.name.clone())
-                .or_default()
-                .extend(f.nodes.iter().copied());
+            mesh.surfaces.entry(s.name.clone()).or_default().push(f.nodes.clone());
+            mesh.node_sets.entry(s.name.clone()).or_default().extend(f.nodes.iter().copied());
         }
     }
     for set in mesh.node_sets.values_mut() {
@@ -275,12 +246,7 @@ fn find(parent: &mut [usize], mut i: usize) -> usize {
     i
 }
 
-fn divisions(
-    grid: &CellGrid,
-    size: &dyn Fn([f64; 2]) -> f64,
-    quad_scale: f64,
-    aspect: [f64; 2],
-) -> Divs {
+fn divisions(grid: &CellGrid, size: &dyn Fn([f64; 2]) -> f64, quad_scale: f64, aspect: [f64; 2]) -> Divs {
     let (nxc, nyc) = (grid.nx(), grid.ny());
     let n = nxc * nyc;
     let (mut xparent, mut yparent): (Vec<usize>, Vec<usize>) = ((0..n).collect(), (0..n).collect());
@@ -322,13 +288,7 @@ fn divisions(
         xmax[xroot[c]] = xmax[xroot[c]].max(xcount[c]);
         ymax[yroot[c]] = ymax[yroot[c]].max(ycount[c]);
     }
-    Divs {
-        xroot,
-        yroot,
-        xcount: xmax,
-        ycount: ymax,
-        nxcells: nxc,
-    }
+    Divs { xroot, yroot, xcount: xmax, ycount: ymax, nxcells: nxc }
 }
 
 /// Largest factor by which the aspect of a structured element may differ from the requested one (`structured_aspect`).
@@ -339,12 +299,7 @@ const MAX_ASPECT_DEVIATION: f64 = 3.0;
 /// coarse cells are divided as finely as the fine ones and their elements stretch along the gradient. A cell that would stretch
 /// too far is given to the unstructured mesher instead, which grades freely; the divisions are then recomputed (a run without
 /// that cell needs fewer).
-fn balanced_divisions(
-    grid: &mut CellGrid,
-    size: &dyn Fn([f64; 2]) -> f64,
-    quad_scale: f64,
-    aspect: [f64; 2],
-) -> Divs {
+fn balanced_divisions(grid: &mut CellGrid, size: &dyn Fn([f64; 2]) -> f64, quad_scale: f64, aspect: [f64; 2]) -> Divs {
     let intended = aspect[0] / aspect[1];
     loop {
         let divs = divisions(grid, size, quad_scale, aspect);
@@ -355,8 +310,7 @@ fn balanced_divisions(
                     continue;
                 }
                 let (a, b) = grid.cell_box(ci, cj);
-                let actual = ((b[0] - a[0]) / divs.nx(ci, cj) as f64)
-                    / ((b[1] - a[1]) / divs.ny(ci, cj) as f64);
+                let actual = ((b[0] - a[0]) / divs.nx(ci, cj) as f64) / ((b[1] - a[1]) / divs.ny(ci, cj) as f64);
                 let deviation = (actual / intended).max(intended / actual);
                 if deviation > MAX_ASPECT_DEVIATION {
                     grid.set(ci, cj, CellState::Unstructured);
@@ -381,11 +335,7 @@ enum Node {
 
 enum Geom {
     /// A grid edge shared with a structured cell, pre-split into `parts` equal pieces on its structured side.
-    Interface {
-        from: [f64; 2],
-        to: [f64; 2],
-        parts: usize,
-    },
+    Interface { from: [f64; 2], to: [f64; 2], parts: usize },
     /// A piece of the outer boundary, with the name of the segment it belongs to.
     Boundary(Segment),
 }
@@ -398,10 +348,7 @@ struct DirEdge {
 
 /// Index of the grid interval of `v` in `lines` (clamped).
 fn interval_of(lines: &[f64], v: f64) -> usize {
-    lines
-        .partition_point(|&l| l <= v)
-        .saturating_sub(1)
-        .min(lines.len() - 2)
+    lines.partition_point(|&l| l <= v).saturating_sub(1).min(lines.len() - 2)
 }
 
 /// The outer boundary cut at every grid line it crosses, each piece with the cell it bounds from inside. A piece lying along a
@@ -434,28 +381,16 @@ fn boundary_pieces(region: &Region, grid: &CellGrid, diag: f64) -> Vec<(Segment,
             let curve = seg.curve.sub(w[0], w[1]);
             let m = curve.point(0.5);
             let (ci, cj) = (interval_of(&grid.xs, m[0]), interval_of(&grid.ys, m[1]));
-            let on_line = (m[0] - grid.xs[ci]).abs() <= near
-                || (m[0] - grid.xs[ci + 1]).abs() <= near
-                || (m[1] - grid.ys[cj]).abs() <= near
-                || (m[1] - grid.ys[cj + 1]).abs() <= near;
+            let on_line = (m[0] - grid.xs[ci]).abs() <= near || (m[0] - grid.xs[ci + 1]).abs() <= near || (m[1] - grid.ys[cj]).abs() <= near || (m[1] - grid.ys[cj + 1]).abs() <= near;
             let cell = if on_line {
                 // the cell on the left of the direction of travel (the loop is counter-clockwise)
                 let t = curve.tangent(0.5);
                 let probe = [m[0] - 1e-6 * diag * t[1], m[1] + 1e-6 * diag * t[0]];
-                (
-                    interval_of(&grid.xs, probe[0]),
-                    interval_of(&grid.ys, probe[1]),
-                )
+                (interval_of(&grid.xs, probe[0]), interval_of(&grid.ys, probe[1]))
             } else {
                 (ci, cj)
             };
-            out.push((
-                Segment {
-                    curve,
-                    name: seg.name.clone(),
-                },
-                cell,
-            ));
+            out.push((Segment { curve, name: seg.name.clone() }, cell));
         }
     }
     out
@@ -490,42 +425,21 @@ fn trace_regions(region: &Region, grid: &CellGrid, divs: &Divs) -> Result<Vec<Re
             }
             let (i, j) = (ci as i64, cj as i64);
             // counter-clockwise around the cell: bottom, right, top, left, each with the neighbour across it
-            let sides = [
-                ((ci, cj), (ci + 1, cj), (i, j - 1), true),
-                ((ci + 1, cj), (ci + 1, cj + 1), (i + 1, j), false),
-                ((ci + 1, cj + 1), (ci, cj + 1), (i, j + 1), true),
-                ((ci, cj + 1), (ci, cj), (i - 1, j), false),
-            ];
+            let sides = [((ci, cj), (ci + 1, cj), (i, j - 1), true), ((ci + 1, cj), (ci + 1, cj + 1), (i + 1, j), false), ((ci + 1, cj + 1), (ci, cj + 1), (i, j + 1), true), ((ci, cj + 1), (ci, cj), (i - 1, j), false)];
             for (from, to, nb, horizontal) in sides {
                 // only the interface to a structured cell is a boundary of the unstructured region here; the outer boundary
                 // (along a grid line or through the cell) comes from the pieces below
                 if grid.at_signed(nb.0, nb.1) == CellState::Structured {
                     let (ni, nj) = (nb.0 as usize, nb.1 as usize);
-                    let parts = if horizontal {
-                        divs.nx(ni, nj)
-                    } else {
-                        divs.ny(ni, nj)
-                    };
-                    edges.push(DirEdge {
-                        from: Node::Lattice(from.0, from.1),
-                        to: Node::Lattice(to.0, to.1),
-                        geom: Geom::Interface {
-                            from: pt(from.0, from.1),
-                            to: pt(to.0, to.1),
-                            parts,
-                        },
-                    });
+                    let parts = if horizontal { divs.nx(ni, nj) } else { divs.ny(ni, nj) };
+                    edges.push(DirEdge { from: Node::Lattice(from.0, from.1), to: Node::Lattice(to.0, to.1), geom: Geom::Interface { from: pt(from.0, from.1), to: pt(to.0, to.1), parts } });
                 }
             }
         }
     }
     for (seg, (ci, cj)) in boundary_pieces(region, grid, diag) {
         if grid.at(ci, cj) == CellState::Unstructured {
-            edges.push(DirEdge {
-                from: node_of(seg.curve.start()),
-                to: node_of(seg.curve.end()),
-                geom: Geom::Boundary(seg),
-            });
+            edges.push(DirEdge { from: node_of(seg.curve.start()), to: node_of(seg.curve.end()), geom: Geom::Boundary(seg) });
         }
     }
     if edges.is_empty() {
@@ -536,9 +450,7 @@ fn trace_regions(region: &Region, grid: &CellGrid, divs: &Divs) -> Result<Vec<Re
         out_of.entry(e.from).or_default().push(k);
     }
     if out_of.values().any(|v| v.len() > 1) {
-        return Err(MeshError::Unsupported(
-            "two unstructured regions touch at a single point".into(),
-        ));
+        return Err(MeshError::Unsupported("two unstructured regions touch at a single point".into()));
     }
     let mut used = vec![false; edges.len()];
     let mut loops: Vec<(Loop, f64)> = Vec::new();
@@ -552,11 +464,7 @@ fn trace_regions(region: &Region, grid: &CellGrid, divs: &Divs) -> Result<Vec<Re
             used[k] = true;
             let e = &edges[k];
             match &e.geom {
-                Geom::Interface {
-                    from: a,
-                    to: b,
-                    parts,
-                } => {
+                Geom::Interface { from: a, to: b, parts } => {
                     let horizontal = e.from.lattice_row() == e.to.lattice_row();
                     for q in 0..*parts {
                         let p = |t: usize| -> [f64; 2] {
@@ -566,10 +474,7 @@ fn trace_regions(region: &Region, grid: &CellGrid, divs: &Divs) -> Result<Vec<Re
                                 [a[0], axis_point(a[1], b[1], t, *parts)]
                             }
                         };
-                        segs.push(Segment {
-                            curve: Curve::line(p(q), p(q + 1)),
-                            name: "_interface".into(),
-                        });
+                        segs.push(Segment { curve: Curve::line(p(q), p(q + 1)), name: "_interface".into() });
                     }
                 }
                 Geom::Boundary(seg) => segs.push(seg.clone()),
@@ -577,11 +482,7 @@ fn trace_regions(region: &Region, grid: &CellGrid, divs: &Divs) -> Result<Vec<Re
             match out_of.get(&e.to).and_then(|v| v.first().copied()) {
                 Some(n) if n == start => break,
                 Some(n) if !used[n] => k = n,
-                _ => {
-                    return Err(MeshError::Failed(
-                        "the boundary of the unstructured cells does not close".into(),
-                    ))
-                }
+                _ => return Err(MeshError::Failed("the boundary of the unstructured cells does not close".into())),
             }
         }
         let l = Loop::new(segs).map_err(MeshError::Failed)?;
@@ -589,55 +490,28 @@ fn trace_regions(region: &Region, grid: &CellGrid, divs: &Divs) -> Result<Vec<Re
         loops.push((l, area));
     }
     // outer loops (counter-clockwise, positive area) and the inner loops they enclose
-    let mut regions: Vec<(Loop, f64, Vec<Loop>)> = loops
-        .iter()
-        .filter(|l| l.1 > 0.0)
-        .map(|l| (l.0.clone(), l.1, Vec::new()))
-        .collect();
+    let mut regions: Vec<(Loop, f64, Vec<Loop>)> = loops.iter().filter(|l| l.1 > 0.0).map(|l| (l.0.clone(), l.1, Vec::new())).collect();
     for (inner, _) in loops.iter().filter(|l| l.1 < 0.0) {
         let p = inner.segments[0].curve.point(0.5);
-        let owner = regions
-            .iter_mut()
-            .filter(|r| r.0.contains(p))
-            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let owner = regions.iter_mut().filter(|r| r.0.contains(p)).min_by(|a, b| a.1.total_cmp(&b.1));
         match owner {
             Some(r) => r.2.push(inner.clone()),
-            None => {
-                return Err(MeshError::Failed(
-                    "an inner boundary has no enclosing region".into(),
-                ))
-            }
+            None => return Err(MeshError::Failed("an inner boundary has no enclosing region".into())),
         }
     }
     for h in &region.holes {
         let p = h.segments[0].curve.start();
-        let owner = regions
-            .iter_mut()
-            .filter(|r| r.0.contains(p))
-            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let owner = regions.iter_mut().filter(|r| r.0.contains(p)).min_by(|a, b| a.1.total_cmp(&b.1));
         match owner {
             Some(r) => r.2.push(h.clone()),
-            None => {
-                return Err(MeshError::Failed(
-                    "a hole lies outside every unstructured region".into(),
-                ))
-            }
+            None => return Err(MeshError::Failed("a hole lies outside every unstructured region".into())),
         }
     }
-    regions
-        .into_iter()
-        .map(|(o, _, holes)| Region::new(o, holes, region.material).map_err(MeshError::Failed))
-        .collect()
+    regions.into_iter().map(|(o, _, holes)| Region::new(o, holes, region.material).map_err(MeshError::Failed)).collect()
 }
 
 /// The structured cells as one Quad block (nodes duplicated between cells; the weld joins them).
-fn structured_part(
-    region: &Region,
-    grid: &CellGrid,
-    divs: &Divs,
-    physics: Physics,
-    family: ElementFamily,
-) -> Result<Option<Mesh>, MeshError> {
+fn structured_part(region: &Region, grid: &CellGrid, divs: &Divs, physics: Physics, family: ElementFamily) -> Result<Option<Mesh>, MeshError> {
     let quad = family.quad();
     let p = family.order();
     let mut mesh = Mesh::new(physics);
@@ -651,13 +525,7 @@ fn structured_part(
             let (x0, x1, y0, y1) = (grid.xs[ci], grid.xs[ci + 1], grid.ys[cj], grid.ys[cj + 1]);
             let mut ids: HashMap<(usize, usize), usize> = HashMap::new();
             let mut node = |mesh: &mut Mesh, a: usize, b: usize| -> usize {
-                *ids.entry((a, b)).or_insert_with(|| {
-                    mesh.add_node([
-                        axis_point(x0, x1, a, p * nx),
-                        axis_point(y0, y1, b, p * ny),
-                        0.0,
-                    ])
-                })
+                *ids.entry((a, b)).or_insert_with(|| mesh.add_node([axis_point(x0, x1, a, p * nx), axis_point(y0, y1, b, p * ny), 0.0]))
             };
             for j in 0..ny {
                 for i in 0..nx {
@@ -678,28 +546,12 @@ fn structured_part(
     if conn.is_empty() {
         return Ok(None);
     }
-    mesh.add_block(quad, conn, region.material, "structured")
-        .map_err(MeshError::Failed)?;
+    mesh.add_block(quad, conn, region.material, "structured").map_err(MeshError::Failed)?;
     Ok(Some(mesh))
 }
 
 fn block_origin_labels(mesh: &Mesh, structured_block: usize) -> ElementLabels {
-    ElementLabels(
-        mesh.blocks
-            .iter()
-            .enumerate()
-            .flat_map(|(b, blk)| {
-                std::iter::repeat_n(
-                    if b == structured_block {
-                        RegionKind::Structured
-                    } else {
-                        RegionKind::Unstructured
-                    },
-                    blk.n_elems(),
-                )
-            })
-            .collect(),
-    )
+    ElementLabels(mesh.blocks.iter().enumerate().flat_map(|(b, blk)| std::iter::repeat_n(if b == structured_block { RegionKind::Structured } else { RegionKind::Unstructured }, blk.n_elems())).collect())
 }
 
 /// Mark the elements that touch a node shared by the structured and an unstructured block as transition elements.
@@ -760,23 +612,13 @@ fn mesh_area(mesh: &Mesh) -> f64 {
     a
 }
 
-fn report_of(
-    mesh: &Mesh,
-    labels: &ElementLabels,
-    strategy: Strategy,
-    grid: Option<&CellGrid>,
-    refits: usize,
-) -> HybridReport {
+fn report_of(mesh: &Mesh, labels: &ElementLabels, strategy: Strategy, grid: Option<&CellGrid>, refits: usize) -> HybridReport {
     let adj = Adjacency::new(mesh);
     let quality = mesh.quality().with_progression(&adj);
     let conformity = check_conformity(mesh, &adj);
     let (sc, uc, frac) = grid.map_or((0, 0, 0.0), |g| {
         let (s, u) = (g.structured_area(), g.unstructured_area());
-        (
-            g.count(CellState::Structured),
-            g.count(CellState::Unstructured),
-            if s + u > 0.0 { s / (s + u) } else { 0.0 },
-        )
+        (g.count(CellState::Structured), g.count(CellState::Unstructured), if s + u > 0.0 { s / (s + u) } else { 0.0 })
     });
     let hybrid = matches!(strategy, Strategy::Hybrid);
     HybridReport {
@@ -795,42 +637,20 @@ fn report_of(
 }
 
 /// Plain unstructured mesh of the whole region (Tri3 / Tri6), the fallback and the baseline of the hybrid one.
-pub fn mesh_unstructured_2d(
-    region: &Region,
-    size: &dyn Fn([f64; 2]) -> f64,
-    opt: &HybridOptions2d,
-    reason: &str,
-) -> Result<HybridMesh2d, MeshError> {
-    let mut mesh = mesh_region(region, opt.physics, opt.family.tri(), size, opt.mesh)
-        .map_err(MeshError::Failed)?;
+pub fn mesh_unstructured_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &HybridOptions2d, reason: &str) -> Result<HybridMesh2d, MeshError> {
+    let mut mesh = mesh_region(region, opt.physics, opt.family.tri(), size, opt.mesh).map_err(MeshError::Failed)?;
     if let Some(so) = &opt.smooth {
         super::smooth::smooth(&mut mesh, so);
     }
     let labels = ElementLabels::uniform(&mesh, RegionKind::Unstructured);
-    let report = report_of(
-        &mesh,
-        &labels,
-        Strategy::Unstructured {
-            reason: reason.to_string(),
-        },
-        None,
-        0,
-    );
+    let report = report_of(&mesh, &labels, Strategy::Unstructured { reason: reason.to_string() }, None, 0);
     report.quality.require(&opt.quality)?;
-    Ok(HybridMesh2d {
-        mesh,
-        labels,
-        report,
-    })
+    Ok(HybridMesh2d { mesh, labels, report })
 }
 
 /// Hybrid structured/unstructured mesh of `region` (see the module docs). Falls back to the unstructured mesh, with the reason
 /// in the report, when the region is not suitable or the construction cannot be verified.
-pub fn mesh_hybrid_2d(
-    region: &Region,
-    size: &dyn Fn([f64; 2]) -> f64,
-    opt: &HybridOptions2d,
-) -> Result<HybridMesh2d, MeshError> {
+pub fn mesh_hybrid_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &HybridOptions2d) -> Result<HybridMesh2d, MeshError> {
     let fallback = |why: String| mesh_unstructured_2d(region, size, opt, &why);
     let mut grid = match classify_2d(region, size, &opt.partition) {
         Ok(g) => g,
@@ -839,20 +659,12 @@ pub fn mesh_hybrid_2d(
     };
     let mut divs = balanced_divisions(&mut grid, size, opt.structured_scale, opt.structured_aspect);
     let (s_area, u_area) = (grid.structured_area(), grid.unstructured_area());
-    if grid.count(CellState::Structured) == 0
-        || s_area / (s_area + u_area) < opt.min_structured_fraction
-    {
-        return fallback(format!(
-            "only {:.0} % of the area is regular (need {:.0} %)",
-            100.0 * s_area / (s_area + u_area).max(1e-300),
-            100.0 * opt.min_structured_fraction
-        ));
+    if grid.count(CellState::Structured) == 0 || s_area / (s_area + u_area) < opt.min_structured_fraction {
+        return fallback(format!("only {:.0} % of the area is regular (need {:.0} %)", 100.0 * s_area / (s_area + u_area).max(1e-300), 100.0 * opt.min_structured_fraction));
     }
     if grid.count(CellState::Unstructured) == 0 {
         // wholly regular: a structured mesh needs no unstructured part
-        let Some(part) = structured_part(region, &grid, &divs, opt.physics, opt.family)? else {
-            return fallback("no structured cells".into());
-        };
+        let Some(part) = structured_part(region, &grid, &divs, opt.physics, opt.family)? else { return fallback("no structured cells".into()) };
         let (lo, hi) = region.bounds();
         let mut mesh = merge(&[part], 1e-9 * (hi[0] - lo[0]).hypot(hi[1] - lo[1]))?;
         assign_names(&mut mesh, region);
@@ -860,11 +672,7 @@ pub fn mesh_hybrid_2d(
         let report = report_of(&mesh, &labels, Strategy::Hybrid, Some(&grid), 0);
         report.conformity.require_conforming()?;
         report.quality.require(&opt.quality)?;
-        return Ok(HybridMesh2d {
-            mesh,
-            labels,
-            report,
-        });
+        return Ok(HybridMesh2d { mesh, labels, report });
     }
     let (lo, hi) = region.bounds();
     let diag = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
@@ -874,14 +682,10 @@ pub fn mesh_hybrid_2d(
             let regions = trace_regions(region, &grid, &divs)?;
             let mut parts: Vec<Mesh> = Vec::new();
             for r in &regions {
-                parts.push(
-                    mesh_region(r, opt.physics, opt.family.tri(), size, opt.mesh)
-                        .map_err(MeshError::Failed)?,
-                );
+                parts.push(mesh_region(r, opt.physics, opt.family.tri(), size, opt.mesh).map_err(MeshError::Failed)?);
             }
             let n_unstructured_blocks = parts.len();
-            let s = structured_part(region, &grid, &divs, opt.physics, opt.family)?
-                .ok_or_else(|| MeshError::Failed("no structured cells".into()))?;
+            let s = structured_part(region, &grid, &divs, opt.physics, opt.family)?.ok_or_else(|| MeshError::Failed("no structured cells".into()))?;
             parts.push(s);
             let mut mesh = merge(&parts, 1e-9 * diag)?;
             if let Some(so) = &opt.smooth {
@@ -895,16 +699,9 @@ pub fn mesh_hybrid_2d(
             let report = report_of(&mesh, &labels, Strategy::Hybrid, Some(&grid), refit);
             let area = mesh_area(&mesh);
             if (area - region.area()).abs() > 2e-3 * region.area() + chord_allowance(region, size) {
-                return Err(MeshError::Failed(format!(
-                    "the meshed area {area} differs from the region's {}",
-                    region.area()
-                )));
+                return Err(MeshError::Failed(format!("the meshed area {area} differs from the region's {}", region.area())));
             }
-            Ok(HybridMesh2d {
-                mesh,
-                labels,
-                report,
-            })
+            Ok(HybridMesh2d { mesh, labels, report })
         })();
         match attempt {
             Ok(h) if h.report.conformity.is_conforming() => {
@@ -927,9 +724,7 @@ pub fn mesh_hybrid_2d(
                     for (i, &x) in grid.xs.iter().enumerate() {
                         if (x - p[0]).abs() <= tol {
                             // a vertical interface: the structured cell on either side, in the row holding p
-                            for j in
-                                (0..grid.ny()).filter(|&j| inside(grid.ys[j], grid.ys[j + 1], p[1]))
-                            {
+                            for j in (0..grid.ny()).filter(|&j| inside(grid.ys[j], grid.ys[j + 1], p[1])) {
                                 for ci in [i as i64 - 1, i as i64] {
                                     if structured(ci, j as i64) {
                                         bump_y.insert((ci as usize, j));
@@ -940,9 +735,7 @@ pub fn mesh_hybrid_2d(
                     }
                     for (j, &y) in grid.ys.iter().enumerate() {
                         if (y - p[1]).abs() <= tol {
-                            for i in
-                                (0..grid.nx()).filter(|&i| inside(grid.xs[i], grid.xs[i + 1], p[0]))
-                            {
+                            for i in (0..grid.nx()).filter(|&i| inside(grid.xs[i], grid.xs[i + 1], p[0])) {
                                 for cj in [j as i64 - 1, j as i64] {
                                     if structured(i as i64, cj) {
                                         bump_x.insert((i, cj as usize));
@@ -976,9 +769,7 @@ pub fn mesh_hybrid_2d(
             }
         }
     }
-    fallback(format!(
-        "the hybrid construction could not be verified ({last_problem})"
-    ))
+    fallback(format!("the hybrid construction could not be verified ({last_problem})"))
 }
 
 /// A mesh chosen among candidates by predicted total cost.
@@ -993,25 +784,13 @@ pub struct Selection {
 /// `opt.structured_aspect` is anisotropic, the anisotropic hybrid) and pick the cheapest by predicted cost for `workload`.
 /// The baseline is always eligible and listed first; the anisotropic candidate is eligible only with `allow_unvalidated`
 /// (its accuracy is the caller's modelling assumption until an error estimate confirms it).
-pub fn mesh_best_2d(
-    region: &Region,
-    size: &dyn Fn([f64; 2]) -> f64,
-    opt: &HybridOptions2d,
-    model: &super::cost::CostModel,
-    workload: &super::cost::Workload,
-    allow_unvalidated: bool,
-) -> Result<Selection, MeshError> {
+pub fn mesh_best_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &HybridOptions2d, model: &super::cost::CostModel, workload: &super::cost::Workload, allow_unvalidated: bool) -> Result<Selection, MeshError> {
     use super::cost::{choose, Candidate, Equivalence};
     use std::time::Instant;
     let mut built: Vec<(String, HybridMesh2d, f64, Equivalence)> = Vec::new();
     let t = Instant::now();
     let base = mesh_unstructured_2d(region, size, opt, "baseline")?;
-    built.push((
-        "unstructured".into(),
-        base,
-        t.elapsed().as_secs_f64(),
-        Equivalence::Nominal,
-    ));
+    built.push(("unstructured".into(), base, t.elapsed().as_secs_f64(), Equivalence::Nominal));
     let mut iso = opt.clone();
     iso.structured_aspect = [1.0, 1.0];
     let t = Instant::now();
@@ -1025,30 +804,13 @@ pub fn mesh_best_2d(
         let h = mesh_hybrid_2d(region, size, opt)?;
         let dt = t.elapsed().as_secs_f64();
         if h.report.strategy == Strategy::Hybrid {
-            built.push((
-                format!("hybrid anisotropic {:?}", opt.structured_aspect),
-                h,
-                dt,
-                Equivalence::NeedsValidation,
-            ));
+            built.push((format!("hybrid anisotropic {:?}", opt.structured_aspect), h, dt, Equivalence::NeedsValidation));
         }
     }
-    let candidates: Vec<Candidate> = built
-        .iter()
-        .map(|(n, h, t, e)| Candidate {
-            name: n.clone(),
-            mesh: h.mesh.clone(),
-            generation_seconds: *t,
-            equivalence: *e,
-        })
-        .collect();
+    let candidates: Vec<Candidate> = built.iter().map(|(n, h, t, e)| Candidate { name: n.clone(), mesh: h.mesh.clone(), generation_seconds: *t, equivalence: *e }).collect();
     let choice = choose(&candidates, model, workload, allow_unvalidated)?;
     let (name, chosen, ..) = built.swap_remove(choice.index);
-    Ok(Selection {
-        chosen,
-        name,
-        choice,
-    })
+    Ok(Selection { chosen, name, choice })
 }
 
 #[cfg(test)]
@@ -1061,12 +823,7 @@ mod tests {
     }
 
     fn plate_with_hole() -> Region {
-        Region::new(
-            Loop::rectangle(0.0, 0.0, 12.0, 4.0).unwrap(),
-            vec![Loop::circle([6.0, 2.0], 0.6, "hole").unwrap()],
-            steel(),
-        )
-        .unwrap()
+        Region::new(Loop::rectangle(0.0, 0.0, 12.0, 4.0).unwrap(), vec![Loop::circle([6.0, 2.0], 0.6, "hole").unwrap()], steel()).unwrap()
     }
 
     #[test]
@@ -1077,37 +834,18 @@ mod tests {
             let h = mesh_hybrid_2d(&r, &|_| 0.4, &opt).unwrap();
             assert_eq!(h.report.strategy, Strategy::Hybrid, "{family:?}");
             let c = &h.report.conformity;
-            assert!(
-                c.is_conforming() && c.components == 1 && c.unused_nodes == 0,
-                "{family:?}: {}",
-                c.summary()
-            );
-            assert!(
-                h.report.structured_elements > 0
-                    && h.report.unstructured_elements > 0
-                    && h.report.transition_elements > 0
-            );
-            assert!(
-                h.report.quality.inverted == 0 && h.report.quality.min_scaled_jacobian > 0.2,
-                "{}",
-                h.report.quality.min_scaled_jacobian
-            );
+            assert!(c.is_conforming() && c.components == 1 && c.unused_nodes == 0, "{family:?}: {}", c.summary());
+            assert!(h.report.structured_elements > 0 && h.report.unstructured_elements > 0 && h.report.transition_elements > 0);
+            assert!(h.report.quality.inverted == 0 && h.report.quality.min_scaled_jacobian > 0.2, "{}", h.report.quality.min_scaled_jacobian);
             // Quad and Tri blocks coexist
             let kinds: Vec<ElementKind> = h.mesh.blocks.iter().map(|b| b.kind).collect();
             assert!(kinds.contains(&family.quad()) && kinds.contains(&family.tri()));
             // every named boundary is present, outer edges and the hole
             for name in ["bottom", "right", "top", "left", "hole"] {
-                assert!(
-                    h.mesh.surfaces.get(name).is_some_and(|v| !v.is_empty()),
-                    "missing {name}"
-                );
+                assert!(h.mesh.surfaces.get(name).is_some_and(|v| !v.is_empty()), "missing {name}");
             }
             // area is the region's (the hole is an arc: quadratic elements follow it, linear ones cut chords)
-            let tol = if family == ElementFamily::Linear {
-                5e-3
-            } else {
-                1e-3
-            };
+            let tol = if family == ElementFamily::Linear { 5e-3 } else { 1e-3 };
             assert!((mesh_area(&h.mesh) - r.area()).abs() < tol * r.area());
         }
     }
@@ -1115,21 +853,10 @@ mod tests {
     #[test]
     fn labels_cover_every_element_and_the_transition_separates_the_families() {
         let r = plate_with_hole();
-        let h = mesh_hybrid_2d(
-            &r,
-            &|_| 0.4,
-            &HybridOptions2d::new(
-                Physics::PlaneStress { thickness: 0.1 },
-                ElementFamily::Quadratic,
-            ),
-        )
-        .unwrap();
+        let h = mesh_hybrid_2d(&r, &|_| 0.4, &HybridOptions2d::new(Physics::PlaneStress { thickness: 0.1 }, ElementFamily::Quadratic)).unwrap();
         assert_eq!(h.labels.0.len(), h.mesh.n_elems());
         let rep = &h.report;
-        assert_eq!(
-            rep.structured_elements + rep.unstructured_elements + rep.transition_elements,
-            h.mesh.n_elems()
-        );
+        assert_eq!(rep.structured_elements + rep.unstructured_elements + rep.transition_elements, h.mesh.n_elems());
         // no purely structured element shares a node with a purely unstructured one except through transition elements
         let adj = h.mesh.adjacency();
         for e in 0..h.mesh.n_elems() {
@@ -1142,60 +869,23 @@ mod tests {
     }
 
     #[test]
-    fn a_disc_meshes_as_a_hybrid_with_a_regular_core_and_a_boundary_layer_that_follows_the_circle()
-    {
-        let r = Region::new(
-            Loop::circle([0.0, 0.0], 5.0, "rim").unwrap(),
-            vec![],
-            steel(),
-        )
-        .unwrap();
+    fn a_disc_meshes_as_a_hybrid_with_a_regular_core_and_a_boundary_layer_that_follows_the_circle() {
+        let r = Region::new(Loop::circle([0.0, 0.0], 5.0, "rim").unwrap(), vec![], steel()).unwrap();
         for family in [ElementFamily::Linear, ElementFamily::Quadratic] {
-            let h = mesh_hybrid_2d(
-                &r,
-                &|_| 0.4,
-                &HybridOptions2d::new(Physics::PlaneStress { thickness: 1.0 }, family),
-            )
-            .unwrap();
+            let h = mesh_hybrid_2d(&r, &|_| 0.4, &HybridOptions2d::new(Physics::PlaneStress { thickness: 1.0 }, family)).unwrap();
             assert_eq!(h.report.strategy, Strategy::Hybrid, "{family:?}");
             let c = &h.report.conformity;
-            assert!(
-                c.is_conforming() && c.components == 1 && c.unused_nodes == 0,
-                "{family:?}: {}",
-                c.summary()
-            );
-            assert!(
-                h.report.structured_elements > 0
-                    && h.report.unstructured_elements > 0
-                    && h.report.transition_elements > 0
-            );
-            assert!(
-                h.report.quality.inverted == 0 && h.report.quality.min_scaled_jacobian > 0.3,
-                "{}",
-                h.report.quality.min_scaled_jacobian
-            );
+            assert!(c.is_conforming() && c.components == 1 && c.unused_nodes == 0, "{family:?}: {}", c.summary());
+            assert!(h.report.structured_elements > 0 && h.report.unstructured_elements > 0 && h.report.transition_elements > 0);
+            assert!(h.report.quality.inverted == 0 && h.report.quality.min_scaled_jacobian > 0.3, "{}", h.report.quality.min_scaled_jacobian);
             // the boundary is the circle: every boundary node of the rim lies on it, and the area is the disc's up to the chords
             let rim = h.mesh.node_sets.get("rim").expect("the rim keeps its name");
-            assert!(rim
-                .iter()
-                .all(|&n| (h.mesh.nodes[n][0].hypot(h.mesh.nodes[n][1]) - 5.0).abs() < 1e-9));
+            assert!(rim.iter().all(|&n| (h.mesh.nodes[n][0].hypot(h.mesh.nodes[n][1]) - 5.0).abs() < 1e-9));
             let chords = chord_allowance(&r, &|_| 0.4);
             assert!((mesh_area(&h.mesh) - r.area()).abs() < chords + 2e-3 * r.area());
             // no structured element reaches the boundary layer: they all stay a margin inside
-            let blk = h
-                .mesh
-                .blocks
-                .iter()
-                .find(|b| b.kind == family.quad())
-                .unwrap();
-            let far = (0..blk.n_elems())
-                .flat_map(|e| {
-                    blk.elem(e)
-                        .iter()
-                        .map(|&n| h.mesh.nodes[n][0].hypot(h.mesh.nodes[n][1]))
-                        .collect::<Vec<_>>()
-                })
-                .fold(0.0f64, f64::max);
+            let blk = h.mesh.blocks.iter().find(|b| b.kind == family.quad()).unwrap();
+            let far = (0..blk.n_elems()).flat_map(|e| blk.elem(e).iter().map(|&n| h.mesh.nodes[n][0].hypot(h.mesh.nodes[n][1])).collect::<Vec<_>>()).fold(0.0f64, f64::max);
             assert!(far < 5.0 - 0.4, "a structured node at radius {far}");
         }
     }
@@ -1203,75 +893,29 @@ mod tests {
     #[test]
     fn angled_edges_get_an_unstructured_layer_and_the_straight_edges_stay_regular() {
         // a trapezoid: the base and the top are on grid lines, the legs are not
-        let outer = Loop::polygon_named(
-            &[[0.0, 0.0], [10.0, 0.0], [8.0, 4.0], [2.0, 4.0]],
-            &["base", "right", "top", "left"],
-        )
-        .unwrap();
+        let outer = Loop::polygon_named(&[[0.0, 0.0], [10.0, 0.0], [8.0, 4.0], [2.0, 4.0]], &["base", "right", "top", "left"]).unwrap();
         let r = Region::new(outer, vec![], steel()).unwrap();
-        let h = mesh_hybrid_2d(
-            &r,
-            &|_| 0.4,
-            &HybridOptions2d::new(
-                Physics::PlaneStress { thickness: 1.0 },
-                ElementFamily::Quadratic,
-            ),
-        )
-        .unwrap();
+        let h = mesh_hybrid_2d(&r, &|_| 0.4, &HybridOptions2d::new(Physics::PlaneStress { thickness: 1.0 }, ElementFamily::Quadratic)).unwrap();
         assert_eq!(h.report.strategy, Strategy::Hybrid);
-        assert!(
-            h.report.conformity.is_conforming(),
-            "{}",
-            h.report.conformity.summary()
-        );
-        assert!(
-            (mesh_area(&h.mesh) - r.area()).abs() < 1e-9 * r.area(),
-            "straight edges lose no area"
-        );
+        assert!(h.report.conformity.is_conforming(), "{}", h.report.conformity.summary());
+        assert!((mesh_area(&h.mesh) - r.area()).abs() < 1e-9 * r.area(), "straight edges lose no area");
         for name in ["base", "right", "top", "left"] {
-            assert!(
-                h.mesh.surfaces.get(name).is_some_and(|v| !v.is_empty()),
-                "missing {name}"
-            );
+            assert!(h.mesh.surfaces.get(name).is_some_and(|v| !v.is_empty()), "missing {name}");
         }
         // the legs are triangles all the way (unstructured layer); the base row is structured
         let adj = h.mesh.adjacency();
         let leg_faces = &h.mesh.surfaces["left"];
         let is_leg_node = |n: usize| h.mesh.node_sets["left"].binary_search(&n).is_ok();
         let _ = (&adj, leg_faces);
-        let quad_blk = h
-            .mesh
-            .blocks
-            .iter()
-            .position(|b| b.kind == ElementKind::Quad8)
-            .unwrap();
-        assert!(
-            h.mesh.blocks[quad_blk]
-                .conn
-                .iter()
-                .all(|&n| !is_leg_node(n)),
-            "a structured element touches the angled edge"
-        );
+        let quad_blk = h.mesh.blocks.iter().position(|b| b.kind == ElementKind::Quad8).unwrap();
+        assert!(h.mesh.blocks[quad_blk].conn.iter().all(|&n| !is_leg_node(n)), "a structured element touches the angled edge");
     }
 
     #[test]
     fn a_region_that_is_mostly_boundary_layer_or_feature_falls_back_with_the_reason() {
         // the bore and the thin wall leave too little regular area
-        let r = Region::new(
-            Loop::circle([0.0, 0.0], 5.0, "rim").unwrap(),
-            vec![Loop::circle([0.0, 0.0], 1.5, "bore").unwrap()],
-            steel(),
-        )
-        .unwrap();
-        let h = mesh_hybrid_2d(
-            &r,
-            &|_| 0.5,
-            &HybridOptions2d::new(
-                Physics::PlaneStress { thickness: 1.0 },
-                ElementFamily::Quadratic,
-            ),
-        )
-        .unwrap();
+        let r = Region::new(Loop::circle([0.0, 0.0], 5.0, "rim").unwrap(), vec![Loop::circle([0.0, 0.0], 1.5, "bore").unwrap()], steel()).unwrap();
+        let h = mesh_hybrid_2d(&r, &|_| 0.5, &HybridOptions2d::new(Physics::PlaneStress { thickness: 1.0 }, ElementFamily::Quadratic)).unwrap();
         match &h.report.strategy {
             Strategy::Unstructured { reason } => assert!(reason.contains("regular"), "{reason}"),
             s => panic!("{s:?}"),
@@ -1284,90 +928,34 @@ mod tests {
     fn a_steep_size_gradient_does_not_stretch_the_regular_elements() {
         // The size grows tenfold along the plate. A row of regular cells shares its vertical divisions, so the coarse end used
         // to be divided as finely as the fine end and its elements came out ten times longer than high (edge ratio 7.5).
-        let r = Region::new(
-            Loop::rectangle(0.0, 0.0, 12.0, 4.0).unwrap(),
-            vec![],
-            steel(),
-        )
-        .unwrap();
+        let r = Region::new(Loop::rectangle(0.0, 0.0, 12.0, 4.0).unwrap(), vec![], steel()).unwrap();
         let size = |p: [f64; 2]| 0.1 + 0.9 * p[0] / 12.0;
-        let h = mesh_hybrid_2d(
-            &r,
-            &size,
-            &HybridOptions2d::new(
-                Physics::PlaneStress { thickness: 1.0 },
-                ElementFamily::Quadratic,
-            ),
-        )
-        .unwrap();
+        let h = mesh_hybrid_2d(&r, &size, &HybridOptions2d::new(Physics::PlaneStress { thickness: 1.0 }, ElementFamily::Quadratic)).unwrap();
         assert_eq!(h.report.strategy, Strategy::Hybrid);
-        assert!(
-            h.report.conformity.is_conforming(),
-            "{}",
-            h.report.conformity.summary()
-        );
-        assert!(
-            h.report.structured_elements > 0 && h.report.unstructured_elements > 0,
-            "the coarse end must go to the unstructured mesher"
-        );
-        assert!(
-            h.report.quality.max_edge_ratio < 4.0,
-            "edge ratio {}",
-            h.report.quality.max_edge_ratio
-        );
+        assert!(h.report.conformity.is_conforming(), "{}", h.report.conformity.summary());
+        assert!(h.report.structured_elements > 0 && h.report.unstructured_elements > 0, "the coarse end must go to the unstructured mesher");
+        assert!(h.report.quality.max_edge_ratio < 4.0, "edge ratio {}", h.report.quality.max_edge_ratio);
         assert!((mesh_area(&h.mesh) - r.area()).abs() < 1e-9 * r.area());
     }
 
     #[test]
     fn the_requested_anisotropy_is_not_mistaken_for_stretching() {
         // elongated quads are what the caller asked for: the guard measures the deviation from the requested aspect
-        let r = Region::new(
-            Loop::rectangle(0.0, 0.0, 12.0, 2.0).unwrap(),
-            vec![],
-            steel(),
-        )
-        .unwrap();
-        let mut opt = HybridOptions2d::new(
-            Physics::PlaneStress { thickness: 1.0 },
-            ElementFamily::Linear,
-        );
+        let r = Region::new(Loop::rectangle(0.0, 0.0, 12.0, 2.0).unwrap(), vec![], steel()).unwrap();
+        let mut opt = HybridOptions2d::new(Physics::PlaneStress { thickness: 1.0 }, ElementFamily::Linear);
         opt.structured_aspect = [4.0, 1.0];
         let h = mesh_hybrid_2d(&r, &|_| 0.25, &opt).unwrap();
         assert_eq!(h.report.strategy, Strategy::Hybrid);
-        assert_eq!(
-            h.report.unstructured_elements + h.report.transition_elements,
-            0,
-            "a uniform size field needs no unstructured cell"
-        );
-        assert!(
-            h.report.quality.max_edge_ratio > 2.9,
-            "elongated elements were requested: {}",
-            h.report.quality.max_edge_ratio
-        );
+        assert_eq!(h.report.unstructured_elements + h.report.transition_elements, 0, "a uniform size field needs no unstructured cell");
+        assert!(h.report.quality.max_edge_ratio > 2.9, "elongated elements were requested: {}", h.report.quality.max_edge_ratio);
     }
 
     #[test]
     fn a_wholly_regular_region_is_a_pure_structured_mesh() {
-        let r = Region::new(
-            Loop::rectangle(0.0, 0.0, 4.0, 2.0).unwrap(),
-            vec![],
-            steel(),
-        )
-        .unwrap();
-        let h = mesh_hybrid_2d(
-            &r,
-            &|_| 0.5,
-            &HybridOptions2d::new(
-                Physics::PlaneStress { thickness: 1.0 },
-                ElementFamily::Linear,
-            ),
-        )
-        .unwrap();
+        let r = Region::new(Loop::rectangle(0.0, 0.0, 4.0, 2.0).unwrap(), vec![], steel()).unwrap();
+        let h = mesh_hybrid_2d(&r, &|_| 0.5, &HybridOptions2d::new(Physics::PlaneStress { thickness: 1.0 }, ElementFamily::Linear)).unwrap();
         assert_eq!(h.report.strategy, Strategy::Hybrid);
-        assert_eq!(
-            h.report.unstructured_elements + h.report.transition_elements,
-            0
-        );
+        assert_eq!(h.report.unstructured_elements + h.report.transition_elements, 0);
         assert!(h.mesh.blocks.iter().all(|b| b.kind == ElementKind::Quad4));
         assert!((mesh_area(&h.mesh) - 8.0).abs() < 1e-9);
     }
@@ -1375,59 +963,18 @@ mod tests {
     #[test]
     fn little_regular_area_means_the_unstructured_mesh() {
         // a hole that fills most of a small plate leaves no worthwhile block
-        let r = Region::new(
-            Loop::rectangle(0.0, 0.0, 3.0, 3.0).unwrap(),
-            vec![Loop::circle([1.5, 1.5], 1.0, "hole").unwrap()],
-            steel(),
-        )
-        .unwrap();
-        let h = mesh_hybrid_2d(
-            &r,
-            &|_| 0.3,
-            &HybridOptions2d::new(
-                Physics::PlaneStress { thickness: 1.0 },
-                ElementFamily::Quadratic,
-            ),
-        )
-        .unwrap();
+        let r = Region::new(Loop::rectangle(0.0, 0.0, 3.0, 3.0).unwrap(), vec![Loop::circle([1.5, 1.5], 1.0, "hole").unwrap()], steel()).unwrap();
+        let h = mesh_hybrid_2d(&r, &|_| 0.3, &HybridOptions2d::new(Physics::PlaneStress { thickness: 1.0 }, ElementFamily::Quadratic)).unwrap();
         assert!(matches!(h.report.strategy, Strategy::Unstructured { .. }));
     }
 
     #[test]
     fn an_l_shaped_plate_with_a_hole_meshes_hybrid() {
-        let outer = Loop::polygon(
-            &[
-                [0.0, 0.0],
-                [10.0, 0.0],
-                [10.0, 3.0],
-                [3.0, 3.0],
-                [3.0, 10.0],
-                [0.0, 10.0],
-            ],
-            "edge",
-        )
-        .unwrap();
-        let r = Region::new(
-            outer,
-            vec![Loop::circle([1.5, 1.5], 0.5, "hole").unwrap()],
-            steel(),
-        )
-        .unwrap();
-        let h = mesh_hybrid_2d(
-            &r,
-            &|_| 0.5,
-            &HybridOptions2d::new(
-                Physics::PlaneStress { thickness: 1.0 },
-                ElementFamily::Quadratic,
-            ),
-        )
-        .unwrap();
+        let outer = Loop::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 3.0], [3.0, 3.0], [3.0, 10.0], [0.0, 10.0]], "edge").unwrap();
+        let r = Region::new(outer, vec![Loop::circle([1.5, 1.5], 0.5, "hole").unwrap()], steel()).unwrap();
+        let h = mesh_hybrid_2d(&r, &|_| 0.5, &HybridOptions2d::new(Physics::PlaneStress { thickness: 1.0 }, ElementFamily::Quadratic)).unwrap();
         assert_eq!(h.report.strategy, Strategy::Hybrid);
-        assert!(
-            h.report.conformity.is_conforming(),
-            "{}",
-            h.report.conformity.summary()
-        );
+        assert!(h.report.conformity.is_conforming(), "{}", h.report.conformity.summary());
         assert!(h.report.structured_elements > 0);
         assert!((mesh_area(&h.mesh) - r.area()).abs() < 1e-3 * r.area());
     }
@@ -1435,58 +982,20 @@ mod tests {
     #[test]
     fn the_selection_lists_the_candidates_and_never_picks_an_unvalidated_one_unasked() {
         use crate::meshing::cost::{CostModel, Workload};
-        let bar = Region::new(
-            Loop::rectangle(0.0, 0.0, 30.0, 3.0).unwrap(),
-            vec![Loop::circle([15.0, 1.5], 0.5, "hole").unwrap()],
-            steel(),
-        )
-        .unwrap();
-        let mut opt = HybridOptions2d::new(
-            Physics::PlaneStress { thickness: 1.0 },
-            ElementFamily::Quadratic,
-        );
+        let bar = Region::new(Loop::rectangle(0.0, 0.0, 30.0, 3.0).unwrap(), vec![Loop::circle([15.0, 1.5], 0.5, "hole").unwrap()], steel()).unwrap();
+        let mut opt = HybridOptions2d::new(Physics::PlaneStress { thickness: 1.0 }, ElementFamily::Quadratic);
         opt.structured_aspect = [4.0, 1.0];
         // solving dominates: a nonlinear analysis with 200 factorisations
-        let model = CostModel {
-            assembly_s_per_unit: 1e-8,
-            factor_s_per_unit: 1e-9,
-            solve_s_per_factor_nnz: 1e-8,
-        };
+        let model = CostModel { assembly_s_per_unit: 1e-8, factor_s_per_unit: 1e-9, solve_s_per_factor_nnz: 1e-8 };
         let work = Workload::nonlinear(200.0);
         let size = |_: [f64; 2]| 0.3;
         let strict = mesh_best_2d(&bar, &size, &opt, &model, &work, false).unwrap();
         assert!(strict.choice.predictions.len() >= 2);
         assert!(!strict.name.contains("anisotropic"), "{}", strict.name);
         let loose = mesh_best_2d(&bar, &size, &opt, &model, &work, true).unwrap();
-        let dofs = |name: &str| {
-            loose
-                .choice
-                .predictions
-                .iter()
-                .find(|p| p.0.starts_with(name))
-                .map(|p| p.1.dofs)
-        };
-        assert!(
-            dofs("hybrid anisotropic").unwrap() < dofs("unstructured").unwrap(),
-            "{:?}",
-            loose
-                .choice
-                .predictions
-                .iter()
-                .map(|p| (&p.0, p.1.dofs))
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            loose.name.contains("anisotropic"),
-            "{} {:?}",
-            loose.name,
-            loose
-                .choice
-                .predictions
-                .iter()
-                .map(|p| (&p.0, p.2))
-                .collect::<Vec<_>>()
-        );
+        let dofs = |name: &str| loose.choice.predictions.iter().find(|p| p.0.starts_with(name)).map(|p| p.1.dofs);
+        assert!(dofs("hybrid anisotropic").unwrap() < dofs("unstructured").unwrap(), "{:?}", loose.choice.predictions.iter().map(|p| (&p.0, p.1.dofs)).collect::<Vec<_>>());
+        assert!(loose.name.contains("anisotropic"), "{} {:?}", loose.name, loose.choice.predictions.iter().map(|p| (&p.0, p.2)).collect::<Vec<_>>());
         assert!(loose.chosen.report.conformity.is_conforming());
     }
 }

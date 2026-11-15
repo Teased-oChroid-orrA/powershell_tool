@@ -176,8 +176,7 @@ fn refine_impl(
     };
     // The field is evaluated at the current position of every vertex of a cell, again and again while smoothing tries moves of
     // one vertex at a time: memoise by (vertex, exact position) so only the moved vertex is evaluated afresh.
-    let memo: std::cell::RefCell<std::collections::HashMap<(usize, [u64; 3]), Metric>> =
-        Default::default();
+    let memo: std::cell::RefCell<std::collections::HashMap<(usize, [u64; 3]), Metric>> = Default::default();
     let metric_at = |v: usize, x: Point| -> Result<Metric, MeshError> {
         let key = (v, x.map(f64::to_bits));
         if let Some(m) = memo.borrow().get(&key) {
@@ -242,12 +241,7 @@ fn refine_impl(
         if boundary_only || project.is_some() {
             let mut face_use = BTreeMap::<[usize; 3], usize>::new();
             for t in &cells {
-                for f in [
-                    [t[0], t[1], t[2]],
-                    [t[0], t[1], t[3]],
-                    [t[0], t[2], t[3]],
-                    [t[1], t[2], t[3]],
-                ] {
+                for f in [[t[0], t[1], t[2]], [t[0], t[1], t[3]], [t[0], t[2], t[3]], [t[1], t[2], t[3]]] {
                     let mut k = f;
                     k.sort_unstable();
                     *face_use.entry(k).or_default() += 1;
@@ -339,27 +333,13 @@ fn refine_impl(
             if let (Some(project), true) = (project, on_boundary.contains(&edge_key(a, b))) {
                 let projected = project(m);
                 // Keep the projection only if every tetrahedron around the edge, both halves, stays positively oriented.
-                let mut ok = projected.iter().all(|v| v.is_finite())
-                    && projected != points[a]
-                    && projected != points[b];
+                let mut ok = projected.iter().all(|v| v.is_finite()) && projected != points[a] && projected != points[b];
                 if ok {
                     'cells: for &c in around {
                         let t = cells[c];
-                        for half in [
-                            t.map(|v| if v == b { usize::MAX } else { v }),
-                            t.map(|v| if v == a { usize::MAX } else { v }),
-                        ] {
-                            let p = half.map(|v| {
-                                if v == usize::MAX {
-                                    projected
-                                } else {
-                                    points[v]
-                                }
-                            });
-                            if !matches!(
-                                super::tet_topology::orientation(p[0], p[1], p[2], p[3]),
-                                Ok(std::cmp::Ordering::Greater)
-                            ) {
+                        for half in [t.map(|v| if v == b { usize::MAX } else { v }), t.map(|v| if v == a { usize::MAX } else { v })] {
+                            let p = half.map(|v| if v == usize::MAX { projected } else { points[v] });
+                            if !matches!(super::tet_topology::orientation(p[0], p[1], p[2], p[3]), Ok(std::cmp::Ordering::Greater)) {
                                 ok = false;
                                 break 'cells;
                             }
@@ -623,35 +603,19 @@ mod tests {
         assert!(r.min_quality_after > 0., "no flat cell: {r:?}");
         assert!(r.longest_edge_after < r.longest_edge_before);
     }
-    fn q_unsorted(
-        out: &TetTopology,
-        field: &dyn Fn(Point) -> Result<Metric, super::super::metric::MetricError>,
-    ) -> Vec<f64> {
+    fn q_unsorted(out: &TetTopology, field: &dyn Fn(Point) -> Result<Metric, super::super::metric::MetricError>) -> Vec<f64> {
         let metrics: Vec<Metric> = out.points().iter().map(|p| field(*p).unwrap()).collect();
-        out.cells()
-            .iter()
-            .map(|&t| metric_quality(out.points(), &metrics, t))
-            .collect()
+        out.cells().iter().map(|&t| metric_quality(out.points(), &metrics, t)).collect()
     }
     #[test]
     fn flat_boundary_flips_raise_the_worst_cell_of_a_converging_four_to_one_layer() {
         let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
         let field = |p: Point| {
             let hx = 0.1 + 0.7 * (p[0] - 0.5).abs();
-            Metric::from_sizes(
-                [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
-                [hx.min(0.4), 0.4, 0.4],
-            )
+            Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
         };
         let worst = |planar: bool| {
-            let options = RefineOptions {
-                max_passes: 40,
-                flips: Some(FlipOptions {
-                    planar_boundary: planar,
-                    ..FlipOptions::default()
-                }),
-                ..RefineOptions::default()
-            };
+            let options = RefineOptions { max_passes: 40, flips: Some(FlipOptions { planar_boundary: planar, ..FlipOptions::default() }), ..RefineOptions::default() };
             let (out, r) = refine(&cube(), &field, &bounds, options).unwrap();
             assert!(r.converged, "planar {planar}: {r:?}");
             assert!((volume(&out) - 1.).abs() < 1e-12 && (boundary_area(&out) - 6.).abs() < 1e-12);
@@ -670,20 +634,10 @@ mod tests {
         let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
         let field = |p: Point| {
             let hx = 0.04 + 0.7 * (p[0] - 0.5).abs();
-            Metric::from_sizes(
-                [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
-                [hx.min(0.4), 0.4, 0.4],
-            )
+            Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
         };
         let run = |planar: bool| {
-            let options = RefineOptions {
-                max_passes: 40,
-                flips: Some(FlipOptions {
-                    planar_boundary: planar,
-                    ..FlipOptions::default()
-                }),
-                ..RefineOptions::default()
-            };
+            let options = RefineOptions { max_passes: 40, flips: Some(FlipOptions { planar_boundary: planar, ..FlipOptions::default() }), ..RefineOptions::default() };
             let (out, r) = refine(&cube(), &field, &bounds, options).unwrap();
             let mut q = q_unsorted(&out, &field);
             q.sort_by(f64::total_cmp);
@@ -693,12 +647,7 @@ mod tests {
         let (out, _, on) = run(true);
         let bad = |q: &[f64]| q.iter().filter(|x| **x < 0.1).count();
         eprintln!("flat boundary flips: min {:.1e} -> {:.1e}, median {:.3} -> {:.3}, below 0.1: {} of {} -> {} of {}", off[0], on[0], off[off.len() / 2], on[on.len() / 2], bad(&off), off.len(), bad(&on), on.len());
-        assert!(
-            on[0] > 1e-6 && on[0] > 1e6 * off[0].max(1e-300),
-            "worst {:e} vs {:e}",
-            on[0],
-            off[0]
-        );
+        assert!(on[0] > 1e-6 && on[0] > 1e6 * off[0].max(1e-300), "worst {:e} vs {:e}", on[0], off[0]);
         assert!(on[on.len() / 2] > 1.5 * off[off.len() / 2], "median");
         assert!(bad(&on) * 3 < bad(&off), "{} vs {}", bad(&on), bad(&off));
         // Same domain: volume, surface area and the cube surface itself.
@@ -706,55 +655,26 @@ mod tests {
         assert!((boundary_area(&out) - 6.).abs() < 1e-12);
         for v in out.boundary().iter().flatten() {
             let p = out.points()[*v];
-            assert!(
-                (0..3).any(|k| p[k] == 0. || p[k] == 1.),
-                "boundary vertex left the cube surface"
-            );
+            assert!((0..3).any(|k| p[k] == 0. || p[k] == 1.), "boundary vertex left the cube surface");
         }
     }
     fn sphere_topology(boundary_size: f64) -> TetTopology {
         use crate::tetmesh::{mesh_solid, Solid, TetOptions};
         let sdf = |x: [f64; 3]| (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt() - 1.0;
         let (size, face) = (|_: [f64; 3]| 10.0, |_: [f64; 3]| 0usize);
-        let solid = Solid {
-            lo: [-1.2; 3],
-            hi: [1.2; 3],
-            sdf: &sdf,
-            size: &size,
-            face_of: &face,
-            face_dists: None,
-        };
-        let (mesh, _) = mesh_solid(
-            &solid,
-            crate::Elastic::new(1.0, 0.3),
-            TetOptions {
-                base: 0.8,
-                boundary_size,
-                quadratic: false,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let cells: Vec<[usize; 4]> = mesh.blocks[0]
-            .conn
-            .chunks_exact(4)
-            .map(|c| [c[0], c[1], c[2], c[3]])
-            .collect();
+        let solid = Solid { lo: [-1.2; 3], hi: [1.2; 3], sdf: &sdf, size: &size, face_of: &face, face_dists: None };
+        let (mesh, _) = mesh_solid(&solid, crate::Elastic::new(1.0, 0.3), TetOptions { base: 0.8, boundary_size, quadratic: false, ..Default::default() }).unwrap();
+        let cells: Vec<[usize; 4]> = mesh.blocks[0].conn.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
         TetTopology::new(mesh.nodes.clone(), cells, 1_000_000).expect("sphere topology")
     }
 
     #[test]
-    fn projecting_inserted_boundary_vertices_onto_a_sphere_converges_the_volume_where_chords_do_not(
-    ) {
+    fn projecting_inserted_boundary_vertices_onto_a_sphere_converges_the_volume_where_chords_do_not() {
         let start = sphere_topology(0.8);
         let exact = 4.0 / 3.0 * std::f64::consts::PI;
-        let field =
-            |_p: Point| Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [0.3; 3]);
+        let field = |_p: Point| Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [0.3; 3]);
         let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
-        let options = RefineOptions {
-            max_passes: 30,
-            ..RefineOptions::default()
-        };
+        let options = RefineOptions { max_passes: 30, ..RefineOptions::default() };
         let radial = |p: Point| -> Point {
             let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
             [p[0] / r, p[1] / r, p[2] / r]
@@ -765,20 +685,11 @@ mod tests {
         // Inserted boundary vertices (index at or beyond the start's) that are on the unit sphere to rounding, and the number
         // that fell back to the chord midpoint because the projection would have inverted a cell.
         let inserted = |t: &TetTopology| -> (usize, usize) {
-            let boundary: BTreeSet<usize> = t
-                .boundary()
-                .iter()
-                .flatten()
-                .copied()
-                .filter(|&v| v >= start.points().len())
-                .collect();
-            let on = boundary
-                .iter()
-                .filter(|&&v| {
-                    let p = t.points()[v];
-                    ((p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() - 1.0).abs() < 1e-9
-                })
-                .count();
+            let boundary: BTreeSet<usize> = t.boundary().iter().flatten().copied().filter(|&v| v >= start.points().len()).collect();
+            let on = boundary.iter().filter(|&&v| {
+                let p = t.points()[v];
+                ((p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() - 1.0).abs() < 1e-9
+            }).count();
             (on, boundary.len())
         };
         let q = |t: &TetTopology, field: &dyn Fn(Point) -> Result<Metric, super::super::metric::MetricError>| {
@@ -790,19 +701,11 @@ mod tests {
         assert!(rf.converged && rc.converged);
         // The chord mesh keeps the start's volume (flat subdivision); the projected one moves toward the sphere's.
         assert!((vol(&flat) - vol(&start)).abs() < 1e-9);
-        assert!(
-            (vol(&curved) - exact).abs() < 0.5 * (vol(&start) - exact).abs(),
-            "{} {} {exact}",
-            vol(&curved),
-            vol(&start)
-        );
+        assert!((vol(&curved) - exact).abs() < 0.5 * (vol(&start) - exact).abs(), "{} {} {exact}", vol(&curved), vol(&start));
         // Inserted boundary vertices lie on the sphere (to rounding); the start's own vertices were on it already.
         let (on, total) = inserted(&curved);
         eprintln!("inserted boundary vertices on the sphere: {on} of {total}");
-        assert!(
-            total > 100 && on as f64 >= 0.9 * total as f64,
-            "{on} of {total} inserted boundary vertices on the sphere"
-        );
+        assert!(total > 100 && on as f64 >= 0.9 * total as f64, "{on} of {total} inserted boundary vertices on the sphere");
         let (min_q, _) = q(&curved, &field);
         assert!(min_q > 1e-3, "projected mesh worst cell {min_q}");
     }
@@ -811,28 +714,15 @@ mod tests {
     #[ignore = "study: refinement time against the smoothing skip threshold"]
     fn refinement_time_against_the_smoothing_skip_threshold() {
         let start = sphere_topology(0.6);
-        let field =
-            |_p: Point| Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [0.16; 3]);
+        let field = |_p: Point| Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [0.16; 3]);
         let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
         for skip in [0.0, 0.4, 0.5, 0.6] {
-            let options = RefineOptions {
-                max_passes: 30,
-                smooth_skip_above: skip,
-                ..RefineOptions::default()
-            };
+            let options = RefineOptions { max_passes: 30, smooth_skip_above: skip, ..RefineOptions::default() };
             let t = std::time::Instant::now();
             let (out, r) = refine(&start, &field, &bounds, options).unwrap();
             let mut q = q_unsorted(&out, &field);
             q.sort_by(f64::total_cmp);
-            eprintln!(
-                "skip {skip}: {:.2} s, {} cells, converged {}, band {:.2}, min {:.3}, median {:.3}",
-                t.elapsed().as_secs_f64(),
-                q.len(),
-                r.converged,
-                r.edges_in_band_after,
-                q[0],
-                q[q.len() / 2]
-            );
+            eprintln!("skip {skip}: {:.2} s, {} cells, converged {}, band {:.2}, min {:.3}, median {:.3}", t.elapsed().as_secs_f64(), q.len(), r.converged, r.edges_in_band_after, q[0], q[q.len() / 2]);
         }
     }
 
@@ -843,57 +733,26 @@ mod tests {
         let bounds = MetricBounds::new(0.001, 10., 1000.).unwrap();
         let field = |p: Point| {
             let hx = 0.04 + 0.7 * (p[0] - 0.5).abs();
-            Metric::from_sizes(
-                [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
-                [hx.min(0.4), 0.4, 0.4],
-            )
+            Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
         };
-        let options = RefineOptions {
-            max_passes: 60,
-            boundary_first_passes: 6,
-            flips: Some(FlipOptions {
-                planar_boundary: true,
-                ..FlipOptions::default()
-            }),
-            ..RefineOptions::default()
-        };
+        let options = RefineOptions { max_passes: 60, boundary_first_passes: 6, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() };
         let (out, r) = refine(&cube(), &field, &bounds, options).unwrap();
         let mut q = q_unsorted(&out, &field);
         q.sort_by(f64::total_cmp);
-        eprintln!(
-            "10:1 boundary-first + flat flips: {} cells, {} passes, min {:.3}, median {:.3}",
-            q.len(),
-            r.passes,
-            q[0],
-            q[q.len() / 2]
-        );
+        eprintln!("10:1 boundary-first + flat flips: {} cells, {} passes, min {:.3}, median {:.3}", q.len(), r.passes, q[0], q[q.len() / 2]);
         assert!(r.converged, "{r:?}");
         assert!(q[0] > 0.2, "worst cell {}", q[0]);
         assert!(q.iter().all(|x| *x >= 0.1));
-        assert!(
-            r.edges_in_band_after > 0.7,
-            "band {}",
-            r.edges_in_band_after
-        );
+        assert!(r.edges_in_band_after > 0.7, "band {}", r.edges_in_band_after);
         assert!((volume(&out) - 1.).abs() < 1e-12 && (boundary_area(&out) - 6.).abs() < 1e-12);
         for v in out.boundary().iter().flatten() {
             let p = out.points()[*v];
-            assert!(
-                (0..3).any(|k| p[k] == 0. || p[k] == 1.),
-                "boundary vertex left the cube surface"
-            );
+            assert!((0..3).any(|k| p[k] == 0. || p[k] == 1.), "boundary vertex left the cube surface");
         }
         // Without the boundary-first passes the same flips alone do not converge on this field.
-        let flips_only = RefineOptions {
-            boundary_first_passes: 0,
-            max_passes: 20,
-            ..options
-        };
+        let flips_only = RefineOptions { boundary_first_passes: 0, max_passes: 20, ..options };
         let (_, r0) = refine(&cube(), &field, &bounds, flips_only).unwrap();
-        assert!(
-            !r0.converged || r0.min_quality_after < q[0] / 10.0,
-            "{r0:?}"
-        );
+        assert!(!r0.converged || r0.min_quality_after < q[0] / 10.0, "{r0:?}");
     }
 
     #[test]
@@ -903,31 +762,11 @@ mod tests {
         for ratio in [2.0f64, 4.0, 6.0, 10.0, 15.0, 20.0, 40.0] {
             let field = |p: Point| {
                 let hx = 0.4 / ratio + 0.7 * (p[0] - 0.5).abs();
-                Metric::from_sizes(
-                    [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
-                    [hx.min(0.4), 0.4, 0.4],
-                )
+                Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
             };
             for (name, options) in [
-                (
-                    "default",
-                    RefineOptions {
-                        max_passes: 60,
-                        ..RefineOptions::default()
-                    },
-                ),
-                (
-                    "boundary-first 6 + flat flips",
-                    RefineOptions {
-                        max_passes: 60,
-                        boundary_first_passes: 6,
-                        flips: Some(FlipOptions {
-                            planar_boundary: true,
-                            ..FlipOptions::default()
-                        }),
-                        ..RefineOptions::default()
-                    },
-                ),
+                ("default", RefineOptions { max_passes: 60, ..RefineOptions::default() }),
+                ("boundary-first 6 + flat flips", RefineOptions { max_passes: 60, boundary_first_passes: 6, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() }),
             ] {
                 match refine(&cube(), &field, &bounds, options) {
                     Ok((out, r)) => {
@@ -947,134 +786,37 @@ mod tests {
         let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
         let field = |p: Point| {
             let hx = 0.04 + 0.7 * (p[0] - 0.5).abs();
-            Metric::from_sizes(
-                [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
-                [hx.min(0.4), 0.4, 0.4],
-            )
+            Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
         };
         let variants: Vec<(&str, RefineOptions)> = vec![
-            (
-                "default",
-                RefineOptions {
-                    max_passes: 40,
-                    ..RefineOptions::default()
-                },
-            ),
-            (
-                "no smoothing",
-                RefineOptions {
-                    max_passes: 40,
-                    smooth_passes: 0,
-                    ..RefineOptions::default()
-                },
-            ),
-            (
-                "no coarsening",
-                RefineOptions {
-                    max_passes: 40,
-                    coarsen_passes: 0,
-                    ..RefineOptions::default()
-                },
-            ),
-            (
-                "no smoothing, no coarsening",
-                RefineOptions {
-                    max_passes: 40,
-                    smooth_passes: 0,
-                    coarsen_passes: 0,
-                    ..RefineOptions::default()
-                },
-            ),
-            (
-                "planar boundary flips",
-                RefineOptions {
-                    max_passes: 40,
-                    flips: Some(FlipOptions {
-                        planar_boundary: true,
-                        ..FlipOptions::default()
-                    }),
-                    ..RefineOptions::default()
-                },
-            ),
-            (
-                "boundary first 6 + planar",
-                RefineOptions {
-                    max_passes: 40,
-                    boundary_first_passes: 6,
-                    flips: Some(FlipOptions {
-                        planar_boundary: true,
-                        ..FlipOptions::default()
-                    }),
-                    ..RefineOptions::default()
-                },
-            ),
-            (
-                "boundary first 12 + planar",
-                RefineOptions {
-                    max_passes: 40,
-                    boundary_first_passes: 12,
-                    flips: Some(FlipOptions {
-                        planar_boundary: true,
-                        ..FlipOptions::default()
-                    }),
-                    ..RefineOptions::default()
-                },
-            ),
-            (
-                "splits only",
-                RefineOptions {
-                    max_passes: 40,
-                    smooth_passes: 0,
-                    coarsen_passes: 0,
-                    flips: None,
-                    ..RefineOptions::default()
-                },
-            ),
+            ("default", RefineOptions { max_passes: 40, ..RefineOptions::default() }),
+            ("no smoothing", RefineOptions { max_passes: 40, smooth_passes: 0, ..RefineOptions::default() }),
+            ("no coarsening", RefineOptions { max_passes: 40, coarsen_passes: 0, ..RefineOptions::default() }),
+            ("no smoothing, no coarsening", RefineOptions { max_passes: 40, smooth_passes: 0, coarsen_passes: 0, ..RefineOptions::default() }),
+            ("planar boundary flips", RefineOptions { max_passes: 40, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() }),
+            ("boundary first 6 + planar", RefineOptions { max_passes: 40, boundary_first_passes: 6, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() }),
+            ("boundary first 12 + planar", RefineOptions { max_passes: 40, boundary_first_passes: 12, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() }),
+            ("splits only", RefineOptions { max_passes: 40, smooth_passes: 0, coarsen_passes: 0, flips: None, ..RefineOptions::default() }),
         ];
         for (name, options) in variants {
             let (out, r) = refine(&cube(), &field, &bounds, options).unwrap();
             let mut q = q_unsorted(&out, &field);
             q.sort_by(f64::total_cmp);
             if name == "planar boundary flips" {
-                let metrics: Vec<Metric> =
-                    out.points().iter().map(|p| field(*p).unwrap()).collect();
+                let metrics: Vec<Metric> = out.points().iter().map(|p| field(*p).unwrap()).collect();
                 let mut edges = BTreeSet::new();
                 for t in out.cells() {
                     for (a, b) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
                         edges.insert(edge_key(t[a], t[b]));
                     }
                 }
-                let mut lens: Vec<(f64, [usize; 2])> = edges
-                    .iter()
-                    .map(|e| {
-                        (
-                            edge_length(
-                                out.points()[e[0]],
-                                out.points()[e[1]],
-                                &metrics[e[0]],
-                                &metrics[e[1]],
-                            ),
-                            *e,
-                        )
-                    })
-                    .collect();
+                let mut lens: Vec<(f64, [usize; 2])> = edges.iter().map(|e| (edge_length(out.points()[e[0]], out.points()[e[1]], &metrics[e[0]], &metrics[e[1]]), *e)).collect();
                 lens.sort_by(|a, b| b.0.total_cmp(&a.0));
-                let long = lens
-                    .iter()
-                    .filter(|l| l.0 > std::f64::consts::SQRT_2)
-                    .count();
-                eprintln!(
-                    "  {} edges, {} longer than sqrt2; longest report {:.3}; the 6 longest:",
-                    lens.len(),
-                    long,
-                    r.longest_edge_after
-                );
+                let long = lens.iter().filter(|l| l.0 > std::f64::consts::SQRT_2).count();
+                eprintln!("  {} edges, {} longer than sqrt2; longest report {:.3}; the 6 longest:", lens.len(), long, r.longest_edge_after);
                 for (l, e) in lens.iter().take(6) {
                     let (a, b) = (out.points()[e[0]], out.points()[e[1]]);
-                    eprintln!(
-                        "    metric length {l:.3}: ({:.3},{:.3},{:.3}) - ({:.3},{:.3},{:.3})",
-                        a[0], a[1], a[2], b[0], b[1], b[2]
-                    );
+                    eprintln!("    metric length {l:.3}: ({:.3},{:.3},{:.3}) - ({:.3},{:.3},{:.3})", a[0], a[1], a[2], b[0], b[1], b[2]);
                 }
             }
             eprintln!("{name:<28}: {:>5} cells, passes {}, converged {}, min {:.2e}, p1 {:.3}, median {:.3}, below 0.1: {}", q.len(), r.passes, r.converged, q[0], q[q.len() / 100], q[q.len() / 2], q.iter().filter(|x| **x < 0.1).count());
@@ -1087,54 +829,19 @@ mod tests {
         for ratio in [4.0f64, 10.0] {
             let field = |p: Point| {
                 let hx = 0.4 / ratio + 0.7 * (p[0] - 0.5).abs();
-                Metric::from_sizes(
-                    [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
-                    [hx.min(0.4), 0.4, 0.4],
-                )
+                Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
             };
             for passes in [10usize, 40] {
-                let options = RefineOptions {
-                    max_passes: passes,
-                    flips: Some(FlipOptions {
-                        planar_boundary: true,
-                        ..FlipOptions::default()
-                    }),
-                    ..RefineOptions::default()
-                };
+                let options = RefineOptions { max_passes: passes, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() };
                 let (out, r) = refine(&cube(), &field, &bounds, options).unwrap();
-                let metrics: Vec<Metric> =
-                    out.points().iter().map(|p| field(*p).unwrap()).collect();
-                let mut q: Vec<f64> = out
-                    .cells()
-                    .iter()
-                    .map(|&t| metric_quality(out.points(), &metrics, t))
-                    .collect();
+                let metrics: Vec<Metric> = out.points().iter().map(|p| field(*p).unwrap()).collect();
+                let mut q: Vec<f64> = out.cells().iter().map(|&t| metric_quality(out.points(), &metrics, t)).collect();
                 q.sort_by(f64::total_cmp);
                 let pct = |f: f64| q[((q.len() - 1) as f64 * f) as usize];
-                let signed: Vec<f64> = out
-                    .cells()
-                    .iter()
-                    .map(|t| {
-                        let p = t.map(|v| out.points()[v]);
-                        let d =
-                            |a: usize| [p[a][0] - p[0][0], p[a][1] - p[0][1], p[a][2] - p[0][2]];
-                        let (a, b, c) = (d(1), d(2), d(3));
-                        (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-                            + a[2] * (b[0] * c[1] - b[1] * c[0]))
-                            / 6.0
-                    })
-                    .collect();
-                eprintln!(
-                    "  min quality {:e}, min signed volume {:e}, max {:e}, volume sum {:.12}",
-                    q[0],
-                    signed.iter().cloned().fold(f64::INFINITY, f64::min),
-                    signed.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
-                    signed.iter().sum::<f64>()
-                );
+                let signed: Vec<f64> = out.cells().iter().map(|t| { let p = t.map(|v| out.points()[v]); let d = |a: usize| [p[a][0] - p[0][0], p[a][1] - p[0][1], p[a][2] - p[0][2]]; let (a, b, c) = (d(1), d(2), d(3)); (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0 }).collect();
+                eprintln!("  min quality {:e}, min signed volume {:e}, max {:e}, volume sum {:.12}", q[0], signed.iter().cloned().fold(f64::INFINITY, f64::min), signed.iter().cloned().fold(f64::NEG_INFINITY, f64::max), signed.iter().sum::<f64>());
                 if passes == 40 {
-                    let on_b = |v: usize| {
-                        (0..3).any(|k| out.points()[v][k] == 0.0 || out.points()[v][k] == 1.0)
-                    };
+                    let on_b = |v: usize| (0..3).any(|k| out.points()[v][k] == 0.0 || out.points()[v][k] == 1.0);
                     let mut by_nb = [0usize; 5];
                     let mut interior_bad = 0;
                     let (mut xs, mut ys, mut zs) = ([0usize; 5], [0usize; 5], [0usize; 5]);
@@ -1142,15 +849,9 @@ mod tests {
                         if qq < 0.1 {
                             let nb = t.iter().filter(|&&v| on_b(v)).count();
                             by_nb[nb] += 1;
-                            if nb == 0 {
-                                interior_bad += 1;
-                            }
-                            let c: Vec<f64> = (0..3)
-                                .map(|k| t.iter().map(|&v| out.points()[v][k]).sum::<f64>() / 4.0)
-                                .collect();
-                            xs[((c[0] * 5.0) as usize).min(4)] += 1;
-                            ys[((c[1] * 5.0) as usize).min(4)] += 1;
-                            zs[((c[2] * 5.0) as usize).min(4)] += 1;
+                            if nb == 0 { interior_bad += 1; }
+                            let c: Vec<f64> = (0..3).map(|k| t.iter().map(|&v| out.points()[v][k]).sum::<f64>() / 4.0).collect();
+                            xs[((c[0] * 5.0) as usize).min(4)] += 1; ys[((c[1] * 5.0) as usize).min(4)] += 1; zs[((c[2] * 5.0) as usize).min(4)] += 1;
                         }
                     }
                     eprintln!("  bad cells (<0.1) by number of boundary vertices {by_nb:?}, interior-only {interior_bad}; centroid histogram x {xs:?} y {ys:?} z {zs:?}");

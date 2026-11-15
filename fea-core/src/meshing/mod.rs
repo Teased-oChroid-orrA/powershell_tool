@@ -6,8 +6,8 @@
 pub mod adjacency;
 pub mod ale;
 pub mod boundary_repair;
-pub mod compatibility;
 pub mod cost;
+pub mod compatibility;
 pub mod curved;
 pub mod hybrid;
 pub mod learned_cost;
@@ -20,11 +20,11 @@ pub mod predictor;
 pub mod quality;
 pub mod smooth;
 pub mod tet_collapse;
-pub mod tet_delaunay;
 pub mod tet_flip;
 pub mod tet_smooth;
 pub mod tet_topology;
 pub mod transition;
+pub mod tet_delaunay;
 pub mod weld;
 
 use crate::mesh::Mesh;
@@ -48,11 +48,7 @@ pub enum MeshError {
 impl std::fmt::Display for MeshError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidElements { count, first } => write!(
-                f,
-                "{count} inverted or degenerate elements (first: block {}, element {})",
-                first.0, first.1
-            ),
+            Self::InvalidElements { count, first } => write!(f, "{count} inverted or degenerate elements (first: block {}, element {})", first.0, first.1),
             Self::NonConforming(s) => write!(f, "non-conforming mesh: {s}"),
             Self::Unsupported(s) => write!(f, "unsupported: {s}"),
             Self::LimitExceeded(s) => write!(f, "limit exceeded: {s}"),
@@ -138,10 +134,7 @@ pub struct Cached<T> {
 
 impl<T> Cached<T> {
     pub fn new(mesh: &Mesh, value: T) -> Self {
-        Self {
-            key: fingerprint(mesh),
-            value,
-        }
+        Self { key: fingerprint(mesh), value }
     }
 
     /// The value if `mesh` is the mesh it was computed for.

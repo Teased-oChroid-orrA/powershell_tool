@@ -25,13 +25,7 @@ pub struct OptOptions {
 
 impl Default for OptOptions {
     fn default() -> Self {
-        Self {
-            s_min: 1e-3,
-            s_max: 1e3,
-            move_limit: 0.3,
-            max_iter: 200,
-            tol: 1e-8,
-        }
+        Self { s_min: 1e-3, s_max: 1e3, move_limit: 0.3, max_iter: 200, tol: 1e-8 }
     }
 }
 
@@ -56,8 +50,7 @@ impl Model {
             let mut total = 0.0;
             for conn in blk.conn.chunks_exact(nn) {
                 let xyz: Vec<[f64; 3]> = conn.iter().map(|&n| self.mesh.nodes[n]).collect();
-                kernel::mass(blk.kind, self.mesh.physics, 1.0, &xyz, &mut work, &mut me)
-                    .map_err(|e| e.to_string())?;
+                kernel::mass(blk.kind, self.mesh.physics, 1.0, &xyz, &mut work, &mut me).map_err(|e| e.to_string())?;
                 total += me[..nn * nn].iter().sum::<f64>();
             }
             out.push(total);
@@ -67,29 +60,16 @@ impl Model {
 
     /// Minimise the compliance over the block stiffness scales at the budget `sum w_b s_b = budget`, starting from `s = 1`
     /// (the model's current moduli). `blocks` selects the design blocks (others stay fixed).
-    pub fn optimize_compliance(
-        &self,
-        loads: &Loads,
-        bc: &Dirichlet,
-        blocks: &[usize],
-        budget: f64,
-        opt: &OptOptions,
-    ) -> Result<OptResult, String> {
+    pub fn optimize_compliance(&self, loads: &Loads, bc: &Dirichlet, blocks: &[usize], budget: f64, opt: &OptOptions) -> Result<OptResult, String> {
         let w_all = self.block_volumes()?;
         let w: Vec<f64> = blocks.iter().map(|&b| w_all[b]).collect();
-        let fixed_part: f64 = (0..self.mesh.blocks.len())
-            .filter(|b| !blocks.contains(b))
-            .map(|b| w_all[b])
-            .sum();
+        let fixed_part: f64 = (0..self.mesh.blocks.len()).filter(|b| !blocks.contains(b)).map(|b| w_all[b]).sum();
         let target = budget - fixed_part;
         let (lo, hi) = (opt.s_min, opt.s_max);
         if !(target > lo * w.iter().sum::<f64>() && target < hi * w.iter().sum::<f64>()) {
             return Err(format!("the budget {budget} cannot be met within the scale bounds [{lo}, {hi}] of the design blocks"));
         }
-        let e0: Vec<crate::mesh::Elastic> = blocks
-            .iter()
-            .map(|&b| self.mesh.blocks[b].material)
-            .collect();
+        let e0: Vec<crate::mesh::Elastic> = blocks.iter().map(|&b| self.mesh.blocks[b].material).collect();
         // Start from the uniform scale that meets the budget.
         let mut s = vec![target / w.iter().sum::<f64>(); blocks.len()];
         let apply = |s: &[f64]| -> Model {
@@ -97,10 +77,7 @@ impl Model {
             for (k, &b) in blocks.iter().enumerate() {
                 mesh.blocks[b].material = e0[k].scaled(s[k]);
             }
-            Model {
-                mesh,
-                pattern: self.pattern.clone(),
-            }
+            Model { mesh, pattern: self.pattern.clone() }
         };
         let (mut history, mut converged) = (Vec::new(), false);
         let mut iterations = 0;
@@ -110,7 +87,7 @@ impl Model {
             let m = apply(&s);
             let params: Vec<Param> = blocks.iter().map(|&b| Param::ModulusScale(b)).collect();
             let dc = m.compliance_sensitivities(loads, bc, &params)?; // with respect to a multiplier of the CURRENT modulus
-                                                                      // d C / d s_b (s relative to the original modulus) = dC/d(multiplier) / s_b.
+            // d C / d s_b (s relative to the original modulus) = dC/d(multiplier) / s_b.
             let g: Vec<f64> = dc.iter().zip(&s).map(|(d, sb)| -d / sb).collect();
             last_dc = g.clone();
             let f = crate::loads::assemble(&m.mesh, loads)?;
@@ -121,9 +98,7 @@ impl Model {
                 (0..s.len())
                     .map(|k| {
                         let target_s = s[k] * (g[k].max(0.0) / (mu * w[k])).sqrt();
-                        target_s
-                            .clamp(s[k] * (1.0 - opt.move_limit), s[k] * (1.0 + opt.move_limit))
-                            .clamp(lo, hi)
+                        target_s.clamp(s[k] * (1.0 - opt.move_limit), s[k] * (1.0 + opt.move_limit)).clamp(lo, hi)
                     })
                     .collect()
             };
@@ -138,34 +113,15 @@ impl Model {
                 }
             }
             let new = update((a * b).sqrt());
-            let change = new
-                .iter()
-                .zip(&s)
-                .map(|(n, o)| (n - o).abs() / o)
-                .fold(0.0, f64::max);
+            let change = new.iter().zip(&s).map(|(n, o)| (n - o).abs() / o).fold(0.0, f64::max);
             s = new;
             if change < opt.tol {
                 converged = true;
                 break;
             }
         }
-        let free: Vec<f64> = (0..s.len())
-            .filter(|&k| s[k] > lo * (1.0 + 1e-9) && s[k] < hi * (1.0 - 1e-9))
-            .map(|k| last_dc[k] / w[k])
-            .collect();
-        let spread = if free.is_empty() {
-            0.0
-        } else {
-            (free.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
-                - free.iter().cloned().fold(f64::INFINITY, f64::min))
-                / free.iter().cloned().fold(0.0f64, f64::max).max(1e-300)
-        };
-        Ok(OptResult {
-            scales: s,
-            compliance: history,
-            iterations,
-            converged,
-            free_sensitivity_spread: spread,
-        })
+        let free: Vec<f64> = (0..s.len()).filter(|&k| s[k] > lo * (1.0 + 1e-9) && s[k] < hi * (1.0 - 1e-9)).map(|k| last_dc[k] / w[k]).collect();
+        let spread = if free.is_empty() { 0.0 } else { (free.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - free.iter().cloned().fold(f64::INFINITY, f64::min)) / free.iter().cloned().fold(0.0f64, f64::max).max(1e-300) };
+        Ok(OptResult { scales: s, compliance: history, iterations, converged, free_sensitivity_spread: spread })
     }
 }

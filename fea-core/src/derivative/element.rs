@@ -33,14 +33,8 @@ pub enum ElementGeometryError {
 impl std::fmt::Display for ElementGeometryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NonPositiveJacobian { gauss_point, det } => write!(
-                f,
-                "inverted or degenerate element (Jacobian {det:.3e} at Gauss point {gauss_point})"
-            ),
-            Self::NonPositiveRadius { gauss_point, r } => write!(
-                f,
-                "axisymmetric element with radius {r:.3e} at Gauss point {gauss_point}"
-            ),
+            Self::NonPositiveJacobian { gauss_point, det } => write!(f, "inverted or degenerate element (Jacobian {det:.3e} at Gauss point {gauss_point})"),
+            Self::NonPositiveRadius { gauss_point, r } => write!(f, "axisymmetric element with radius {r:.3e} at Gauss point {gauss_point}"),
         }
     }
 }
@@ -52,14 +46,7 @@ fn jacobian_inverse<S: Scalar>(jac: &[[S; 3]; 3], d: usize) -> ([[S; 3]; 3], S) 
     if d == 2 {
         let det = jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0];
         let r = det.recip();
-        (
-            [
-                [jac[1][1] * r, -(jac[0][1] * r), zero],
-                [-(jac[1][0] * r), jac[0][0] * r, zero],
-                [zero; 3],
-            ],
-            det,
-        )
+        ([[jac[1][1] * r, -(jac[0][1] * r), zero], [-(jac[1][0] * r), jac[0][0] * r, zero], [zero; 3]], det)
     } else {
         let c00 = jac[1][1] * jac[2][2] - jac[1][2] * jac[2][1];
         let c01 = jac[1][2] * jac[2][0] - jac[1][0] * jac[2][2];
@@ -67,33 +54,16 @@ fn jacobian_inverse<S: Scalar>(jac: &[[S; 3]; 3], d: usize) -> ([[S; 3]; 3], S) 
         let det = jac[0][0] * c00 + jac[0][1] * c01 + jac[0][2] * c02;
         let r = det.recip();
         let inv = [
-            [
-                c00 * r,
-                (jac[0][2] * jac[2][1] - jac[0][1] * jac[2][2]) * r,
-                (jac[0][1] * jac[1][2] - jac[0][2] * jac[1][1]) * r,
-            ],
-            [
-                c01 * r,
-                (jac[0][0] * jac[2][2] - jac[0][2] * jac[2][0]) * r,
-                (jac[0][2] * jac[1][0] - jac[0][0] * jac[1][2]) * r,
-            ],
-            [
-                c02 * r,
-                (jac[0][1] * jac[2][0] - jac[0][0] * jac[2][1]) * r,
-                (jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0]) * r,
-            ],
+            [c00 * r, (jac[0][2] * jac[2][1] - jac[0][1] * jac[2][2]) * r, (jac[0][1] * jac[1][2] - jac[0][2] * jac[1][1]) * r],
+            [c01 * r, (jac[0][0] * jac[2][2] - jac[0][2] * jac[2][0]) * r, (jac[0][2] * jac[1][0] - jac[0][0] * jac[1][2]) * r],
+            [c02 * r, (jac[0][1] * jac[2][0] - jac[0][0] * jac[2][1]) * r, (jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0]) * r],
         ];
         (inv, det)
     }
 }
 
 /// Geometry of every Gauss point of an element on the rule `table` (stiffness or mass).
-pub fn geometry<S: Scalar>(
-    table: &crate::element::ShapeTable,
-    physics: Physics,
-    coords: &[[S; 3]],
-    thickness: S,
-) -> Result<Vec<GaussGeometry<S>>, ElementGeometryError> {
+pub fn geometry<S: Scalar>(table: &crate::element::ShapeTable, physics: Physics, coords: &[[S; 3]], thickness: S) -> Result<Vec<GaussGeometry<S>>, ElementGeometryError> {
     let (nn, d) = (table.nn, table.dim);
     let scale = match physics {
         Physics::PlaneStress { .. } | Physics::PlaneStrain { .. } => thickness,
@@ -112,10 +82,7 @@ pub fn geometry<S: Scalar>(
         }
         let (inv, det) = jacobian_inverse(&jac, d);
         if !(det.value() > 0.0) || !det.value().is_finite() {
-            return Err(ElementGeometryError::NonPositiveJacobian {
-                gauss_point: g,
-                det: det.value(),
-            });
+            return Err(ElementGeometryError::NonPositiveJacobian { gauss_point: g, det: det.value() });
         }
         let mut grad = vec![S::cst(0.0); nn * d];
         for a in 0..nn {
@@ -136,33 +103,18 @@ pub fn geometry<S: Scalar>(
                 r = r + coords[a][0] * S::cst(n[a]);
             }
             if !(r.value() > 0.0) {
-                return Err(ElementGeometryError::NonPositiveRadius {
-                    gauss_point: g,
-                    r: r.value(),
-                });
+                return Err(ElementGeometryError::NonPositiveRadius { gauss_point: g, r: r.value() });
             }
             weight = weight * r * S::cst(2.0 * std::f64::consts::PI);
             radius = r;
         }
-        out.push(GaussGeometry {
-            det,
-            weight,
-            grad,
-            radius,
-        });
+        out.push(GaussGeometry { det, weight, grad, radius });
     }
     Ok(out)
 }
 
 /// Isotropic element stiffness, full `(nn d) x (nn d)` row-major: entry `[(a d + i) (nn d) + b d + j]` is `K[(a, i), (b, j)]`.
-pub fn stiffness<S: Scalar>(
-    kind: ElementKind,
-    physics: Physics,
-    coords: &[[S; 3]],
-    e: S,
-    nu: S,
-    thickness: S,
-) -> Result<Vec<S>, ElementGeometryError> {
+pub fn stiffness<S: Scalar>(kind: ElementKind, physics: Physics, coords: &[[S; 3]], e: S, nu: S, thickness: S) -> Result<Vec<S>, ElementGeometryError> {
     let t = kind.table();
     let (nn, d) = (t.nn, t.dim);
     let nd = nn * d;
@@ -179,21 +131,11 @@ pub fn stiffness<S: Scalar>(
         if matches!(physics, Physics::Axisymmetric) {
             // strain rows (rr, zz, theta theta, rz), constitutive 4 x 4
             let n = t.n_at(g);
-            let dmat = [
-                [lam + mu.scale(2.0), lam, lam, S::cst(0.0)],
-                [lam, lam + mu.scale(2.0), lam, S::cst(0.0)],
-                [lam, lam, lam + mu.scale(2.0), S::cst(0.0)],
-                [S::cst(0.0), S::cst(0.0), S::cst(0.0), mu],
-            ];
+            let dmat = [[lam + mu.scale(2.0), lam, lam, S::cst(0.0)], [lam, lam + mu.scale(2.0), lam, S::cst(0.0)], [lam, lam, lam + mu.scale(2.0), S::cst(0.0)], [S::cst(0.0), S::cst(0.0), S::cst(0.0), mu]];
             let mut bm = vec![[[S::cst(0.0); 2]; 4]; nn];
             for a in 0..nn {
                 let (gx, gz) = (gg.grad[2 * a], gg.grad[2 * a + 1]);
-                bm[a] = [
-                    [gx, S::cst(0.0)],
-                    [S::cst(0.0), gz],
-                    [S::cst(n[a]) / gg.radius, S::cst(0.0)],
-                    [gz, gx],
-                ];
+                bm[a] = [[gx, S::cst(0.0)], [S::cst(0.0), gz], [S::cst(n[a]) / gg.radius, S::cst(0.0)], [gz, gx]];
             }
             for a in 0..nn {
                 for b in 0..nn {
@@ -205,8 +147,7 @@ pub fn stiffness<S: Scalar>(
                                     s = s + bm[a][p][i] * dmat[p][q] * bm[b][q][j];
                                 }
                             }
-                            ke[(a * d + i) * nd + b * d + j] =
-                                ke[(a * d + i) * nd + b * d + j] + w * s;
+                            ke[(a * d + i) * nd + b * d + j] = ke[(a * d + i) * nd + b * d + j] + w * s;
                         }
                     }
                 }
@@ -220,13 +161,11 @@ pub fn stiffness<S: Scalar>(
                     }
                     for i in 0..d {
                         for j in 0..d {
-                            let mut v = lam * gg.grad[a * d + i] * gg.grad[b * d + j]
-                                + mu * gg.grad[b * d + i] * gg.grad[a * d + j];
+                            let mut v = lam * gg.grad[a * d + i] * gg.grad[b * d + j] + mu * gg.grad[b * d + i] * gg.grad[a * d + j];
                             if i == j {
                                 v = v + mu * dot;
                             }
-                            ke[(a * d + i) * nd + b * d + j] =
-                                ke[(a * d + i) * nd + b * d + j] + w * v;
+                            ke[(a * d + i) * nd + b * d + j] = ke[(a * d + i) * nd + b * d + j] + w * v;
                         }
                     }
                 }
@@ -237,13 +176,7 @@ pub fn stiffness<S: Scalar>(
 }
 
 /// Consistent mass `rho * integral N_a N_b` as `nn x nn` scalars; the element mass matrix is this times the identity on the components.
-pub fn mass<S: Scalar>(
-    kind: ElementKind,
-    physics: Physics,
-    coords: &[[S; 3]],
-    rho: S,
-    thickness: S,
-) -> Result<Vec<S>, ElementGeometryError> {
+pub fn mass<S: Scalar>(kind: ElementKind, physics: Physics, coords: &[[S; 3]], rho: S, thickness: S) -> Result<Vec<S>, ElementGeometryError> {
     let t = kind.mass_table();
     let nn = t.nn;
     let geo = geometry(t, physics, coords, thickness)?;
@@ -264,16 +197,7 @@ pub fn mass<S: Scalar>(
 /// `f[(a, i)] = integral c0 dT grad_i N_a`, `c0 = alpha (d_eff lambda + 2 mu)`, as `kernel::thermal_load_with` computes it. With dual
 /// numbers the modulus, Poisson ratio, expansion coefficient, thickness and the coordinates are differentiable inputs.
 #[allow(clippy::too_many_arguments)]
-pub fn thermal_load<S: Scalar>(
-    kind: ElementKind,
-    physics: Physics,
-    coords: &[[S; 3]],
-    e: S,
-    nu: S,
-    alpha: S,
-    thickness: S,
-    dt: &[S],
-) -> Result<Vec<S>, ElementGeometryError> {
+pub fn thermal_load<S: Scalar>(kind: ElementKind, physics: Physics, coords: &[[S; 3]], e: S, nu: S, alpha: S, thickness: S, dt: &[S]) -> Result<Vec<S>, ElementGeometryError> {
     let t = kind.table();
     let (nn, d) = (t.nn, t.dim);
     let geo = geometry(t, physics, coords, thickness)?;
@@ -304,13 +228,7 @@ pub fn thermal_load<S: Scalar>(
 /// `stress[g]` at each Gauss point (engineering ordering `xx, yy, zz, xy, yz, zx`; plane problems use `xx, yy, ., xy`), times the
 /// identity on the displacement components. Plane and 3D solids, as `kernel::geometric_stiffness`. With dual numbers, both the
 /// coordinates and the stress (hence, through the stress, the displacements and material constants) are differentiable inputs.
-pub fn geometric_stiffness<S: Scalar>(
-    kind: ElementKind,
-    physics: Physics,
-    coords: &[[S; 3]],
-    stress: &[[S; 6]],
-    thickness: S,
-) -> Result<Vec<S>, ElementGeometryError> {
+pub fn geometric_stiffness<S: Scalar>(kind: ElementKind, physics: Physics, coords: &[[S; 3]], stress: &[[S; 6]], thickness: S) -> Result<Vec<S>, ElementGeometryError> {
     let t = kind.table();
     let (nn, d) = (t.nn, t.dim);
     let geo = geometry(t, physics, coords, thickness)?;
@@ -318,11 +236,7 @@ pub fn geometric_stiffness<S: Scalar>(
     let mut kg = vec![zero; nn * nn];
     for (g, gg) in geo.iter().enumerate() {
         let s = &stress[g];
-        let m = if d == 2 {
-            [[s[0], s[3], zero], [s[3], s[1], zero], [zero; 3]]
-        } else {
-            [[s[0], s[3], s[5]], [s[3], s[1], s[4]], [s[5], s[4], s[2]]]
-        };
+        let m = if d == 2 { [[s[0], s[3], zero], [s[3], s[1], zero], [zero; 3]] } else { [[s[0], s[3], s[5]], [s[3], s[1], s[4]], [s[5], s[4], s[2]]] };
         for a in 0..nn {
             for b in 0..nn {
                 let mut v = zero;

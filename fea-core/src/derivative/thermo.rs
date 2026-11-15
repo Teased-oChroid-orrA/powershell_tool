@@ -55,13 +55,7 @@ pub struct CoupledState {
 
 impl<'m> ThermoMechanicalSensitivity<'m> {
     /// `mech_loads` must not carry its own temperature field (the conduction solve provides it); a uniform `delta_t` is allowed.
-    pub fn new(
-        model: &'m Model,
-        mech_loads: &'m Loads,
-        heat_loads: &'m HeatLoads,
-        bc: &'m Dirichlet,
-        thermal_bc: &'m Dirichlet,
-    ) -> Result<Self, String> {
+    pub fn new(model: &'m Model, mech_loads: &'m Loads, heat_loads: &'m HeatLoads, bc: &'m Dirichlet, thermal_bc: &'m Dirichlet) -> Result<Self, String> {
         if mech_loads.temperature.is_some() {
             return Err("the structural loads must not carry a temperature field: the conduction solve provides it".into());
         }
@@ -72,31 +66,16 @@ impl<'m> ThermoMechanicalSensitivity<'m> {
                 _ => {}
             }
         }
-        Ok(Self {
-            model,
-            mech_loads,
-            heat_loads,
-            bc,
-            thermal_bc,
-        })
+        Ok(Self { model, mech_loads, heat_loads, bc, thermal_bc })
     }
 
     fn total_loads(&self, t: &[f64]) -> Loads {
-        Loads {
-            temperature: Some(t.to_vec()),
-            ..self.mech_loads.clone()
-        }
+        Loads { temperature: Some(t.to_vec()), ..self.mech_loads.clone() }
     }
 
     /// `G x`: the thermal load of the nodal temperature field `x` (no uniform part).
     fn g_apply(&self, x: &[f64]) -> Result<Vec<f64>, String> {
-        loads::assemble(
-            &self.model.mesh,
-            &Loads {
-                temperature: Some(x.to_vec()),
-                ..Loads::default()
-            },
-        )
+        loads::assemble(&self.model.mesh, &Loads { temperature: Some(x.to_vec()), ..Loads::default() })
     }
 
     /// `G^T lambda`, nodal.
@@ -117,16 +96,7 @@ impl<'m> ThermoMechanicalSensitivity<'m> {
                     let mut unit = vec![0.0; nn];
                     unit[a] = 1.0;
                     let gauss = kernel::gauss_temperatures(blk.kind, &unit);
-                    kernel::thermal_load_with(
-                        blk.kind,
-                        mesh.physics,
-                        &blk.material,
-                        &|g| gauss[g],
-                        &xyz[..nn],
-                        &mut work,
-                        &mut fe,
-                    )
-                    .map_err(|e| e.to_string())?;
+                    kernel::thermal_load_with(blk.kind, mesh.physics, &blk.material, &|g| gauss[g], &xyz[..nn], &mut work, &mut fe).map_err(|e| e.to_string())?;
                     let mut s = 0.0;
                     for (b, &nd) in conn.iter().enumerate() {
                         for i in 0..d {
@@ -158,10 +128,7 @@ impl<'m> ThermoMechanicalSensitivity<'m> {
                 Ok(kt.iter().map(|v| -v).collect())
             }
             CoupledParam::HeatLoadScale => {
-                let only = HeatLoads {
-                    convection: Vec::new(),
-                    ..self.heat_loads.clone()
-                };
+                let only = HeatLoads { convection: Vec::new(), ..self.heat_loads.clone() };
                 let mut dummy = crate::assembly::BlockMatrix::zeros(spat);
                 Ok(self.model.heat_system(spat, &only, &mut dummy)?.0)
             }
@@ -170,50 +137,27 @@ impl<'m> ThermoMechanicalSensitivity<'m> {
     }
 
     pub fn solve(&self) -> Result<CoupledState, String> {
-        let heat = self
-            .model
-            .solve_heat_steady(self.heat_loads, self.thermal_bc, 1e-12)?;
+        let heat = self.model.solve_heat_steady(self.heat_loads, self.thermal_bc, 1e-12)?;
         let loads = self.total_loads(&heat.temperature);
         let sol = self.model.solve_static(&loads, self.bc)?;
-        Ok(CoupledState {
-            temperature: heat.temperature,
-            u: sol.u,
-        })
+        Ok(CoupledState { temperature: heat.temperature, u: sol.u })
     }
 
     /// Direct sensitivities `result[q][p]`.
-    pub fn direct(
-        &self,
-        params: &[CoupledParam],
-        qois: &[Vec<f64>],
-    ) -> Result<(Vec<Vec<f64>>, CoupledReport), String> {
+    pub fn direct(&self, params: &[CoupledParam], qois: &[Vec<f64>]) -> Result<(Vec<Vec<f64>>, CoupledReport), String> {
         self.sensitivities(params, qois, false)
     }
 
     /// Adjoint sensitivities `result[q][p]`.
-    pub fn adjoint(
-        &self,
-        params: &[CoupledParam],
-        qois: &[Vec<f64>],
-    ) -> Result<(Vec<Vec<f64>>, CoupledReport), String> {
+    pub fn adjoint(&self, params: &[CoupledParam], qois: &[Vec<f64>]) -> Result<(Vec<Vec<f64>>, CoupledReport), String> {
         self.sensitivities(params, qois, true)
     }
 
-    fn sensitivities(
-        &self,
-        params: &[CoupledParam],
-        qois: &[Vec<f64>],
-        adjoint: bool,
-    ) -> Result<(Vec<Vec<f64>>, CoupledReport), String> {
+    fn sensitivities(&self, params: &[CoupledParam], qois: &[Vec<f64>], adjoint: bool) -> Result<(Vec<Vec<f64>>, CoupledReport), String> {
         let m = self.model;
         for p in params {
             if let CoupledParam::Structural(s) = p {
-                if !matches!(
-                    s,
-                    LinearParam::ModulusScale(_)
-                        | LinearParam::PoissonRatio(_)
-                        | LinearParam::ThermalExpansion(_)
-                ) {
+                if !matches!(s, LinearParam::ModulusScale(_) | LinearParam::PoissonRatio(_) | LinearParam::ThermalExpansion(_)) {
                     return Err(format!("{s:?}: geometry and thickness also change the conduction problem; the coupled derivative is not implemented"));
                 }
             }
@@ -222,22 +166,16 @@ impl<'m> ThermoMechanicalSensitivity<'m> {
         let loads = self.total_loads(&state.temperature);
         m.check_constrained(self.bc)?;
         let k = m.assemble()?;
-        let red = Reduced::with_ordering(&m.pattern, self.bc, Some(&m.mesh.nodes), Ordering::Auto)
-            .map_err(|e| e.to_string())?;
+        let red = Reduced::with_ordering(&m.pattern, self.bc, Some(&m.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
         let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
-        let solver = TangentSolver::new(&red, &m.pattern, &k, m.mesh.n_dofs(), &free, &[])
-            .map_err(|e| e.to_string())?;
+        let solver = TangentSolver::new(&red, &m.pattern, &k, m.mesh.n_dofs(), &free, &[]).map_err(|e| e.to_string())?;
         let spat = self.scalar_pattern();
         let kt = m.conduction_matrix_block(&spat, &state.temperature, None)?;
-        let tred =
-            Reduced::with_ordering(&spat, self.thermal_bc, Some(&m.mesh.nodes), Ordering::Auto)
-                .map_err(|e| e.to_string())?;
+        let tred = Reduced::with_ordering(&spat, self.thermal_bc, Some(&m.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
         let tfree: Vec<usize> = tred.free_dofs().iter().map(|&d| d as usize).collect();
-        let tsolver = TangentSolver::new(&tred, &spat, &kt, m.mesh.nodes.len(), &tfree, &[])
-            .map_err(|e| e.to_string())?;
+        let tsolver = TangentSolver::new(&tred, &spat, &kt, m.mesh.nodes.len(), &tfree, &[]).map_err(|e| e.to_string())?;
         let lin = LinearSensitivityEngine::new(m, &loads, self.bc);
-        let restrict =
-            |v: &[f64], idx: &[usize]| -> Vec<f64> { idx.iter().map(|&d| v[d]).collect() };
+        let restrict = |v: &[f64], idx: &[usize]| -> Vec<f64> { idx.iter().map(|&d| v[d]).collect() };
         let scatter = |x: &[f64], idx: &[usize], n: usize| -> Vec<f64> {
             let mut out = vec![0.0; n];
             for (&d, v) in idx.iter().zip(x) {
@@ -246,46 +184,20 @@ impl<'m> ThermoMechanicalSensitivity<'m> {
             out
         };
         let (n_dof, n_node) = (m.mesh.n_dofs(), m.mesh.nodes.len());
-        let heat_params: Vec<(usize, CoupledParam)> = params
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(_, p)| !matches!(p, CoupledParam::Structural(_)))
-            .collect();
+        let heat_params: Vec<(usize, CoupledParam)> = params.iter().copied().enumerate().filter(|(_, p)| !matches!(p, CoupledParam::Structural(_))).collect();
         // structural parameters: partial derivative at the fixed temperature field (they do not move T)
-        let structural: Vec<(usize, LinearParam)> = params
-            .iter()
-            .enumerate()
-            .filter_map(|(i, p)| {
-                if let CoupledParam::Structural(s) = p {
-                    Some((i, *s))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let structural: Vec<(usize, LinearParam)> = params.iter().enumerate().filter_map(|(i, p)| if let CoupledParam::Structural(s) = p { Some((i, *s)) } else { None }).collect();
         let mut out = vec![vec![0.0; params.len()]; qois.len()];
         if !structural.is_empty() {
             let sp: Vec<LinearParam> = structural.iter().map(|(_, s)| *s).collect();
-            let (r, _) = lin.sensitivities(
-                qois,
-                &sp,
-                Some(if adjoint {
-                    super::SensitivityMethod::DiscreteAdjoint
-                } else {
-                    super::SensitivityMethod::Direct
-                }),
-            )?;
+            let (r, _) = lin.sensitivities(qois, &sp, Some(if adjoint { super::SensitivityMethod::DiscreteAdjoint } else { super::SensitivityMethod::Direct }))?;
             for (qi, row) in r.iter().enumerate() {
                 for (k2, (pi, _)) in structural.iter().enumerate() {
                     out[qi][*pi] = row[k2];
                 }
             }
         }
-        let rhs: Vec<Vec<f64>> = heat_params
-            .iter()
-            .map(|(_, p)| self.heat_rhs(*p, &state.temperature, &spat))
-            .collect::<Result<_, _>>()?;
+        let rhs: Vec<Vec<f64>> = heat_params.iter().map(|(_, p)| self.heat_rhs(*p, &state.temperature, &spat)).collect::<Result<_, _>>()?;
         if adjoint {
             for (qi, g) in qois.iter().enumerate() {
                 let lambda = scatter(&solver.solve(&restrict(g, &free))?, &free, n_dof);
@@ -305,12 +217,6 @@ impl<'m> ThermoMechanicalSensitivity<'m> {
                 }
             }
         }
-        Ok((
-            out,
-            CoupledReport {
-                structural_solves: solver.n_solves(),
-                thermal_solves: tsolver.n_solves(),
-            },
-        ))
+        Ok((out, CoupledReport { structural_solves: solver.n_solves(), thermal_solves: tsolver.n_solves() }))
     }
 }

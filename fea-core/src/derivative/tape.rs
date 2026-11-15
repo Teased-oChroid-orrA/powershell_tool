@@ -29,10 +29,7 @@ pub enum TapeError {
 impl std::fmt::Display for TapeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Overflow { limit } => write!(
-                f,
-                "the local tape overflowed its limit of {limit} operations"
-            ),
+            Self::Overflow { limit } => write!(f, "the local tape overflowed its limit of {limit} operations"),
         }
     }
 }
@@ -46,11 +43,7 @@ pub struct Tape<T: Scalar> {
 impl<T: Scalar> Tape<T> {
     /// A tape of at most `limit` recorded operations.
     pub fn with_limit(limit: usize) -> Self {
-        Self {
-            nodes: RefCell::new(Vec::with_capacity(limit.min(1 << 16))),
-            limit,
-            overflow: Cell::new(false),
-        }
+        Self { nodes: RefCell::new(Vec::with_capacity(limit.min(1 << 16))), limit, overflow: Cell::new(false) }
     }
 
     /// Forget the recording, keep the memory.
@@ -87,11 +80,7 @@ impl<T: Scalar> Tape<T> {
     /// An independent variable of the recording.
     pub fn var(&self, v: T) -> Rev<'_, T> {
         let idx = self.push(NONE, NONE, T::cst(0.0), T::cst(0.0));
-        Rev {
-            tape: Some(self),
-            idx,
-            v,
-        }
+        Rev { tape: Some(self), idx, v }
     }
 
     fn push(&self, a: u32, b: u32, da: T, db: T) -> u32 {
@@ -142,36 +131,17 @@ impl<'t, T: Scalar> Rev<'t, T> {
 
     fn unary(self, v: T, d: T) -> Self {
         match self.tape {
-            Some(t) if self.idx != NONE => Rev {
-                tape: Some(t),
-                idx: t.push(self.idx, NONE, d, T::cst(0.0)),
-                v,
-            },
-            _ => Rev {
-                tape: None,
-                idx: NONE,
-                v,
-            },
+            Some(t) if self.idx != NONE => Rev { tape: Some(t), idx: t.push(self.idx, NONE, d, T::cst(0.0)), v },
+            _ => Rev { tape: None, idx: NONE, v },
         }
     }
 
     fn binary(a: Self, b: Self, v: T, da: T, db: T) -> Self {
         let tape = a.tape.or(b.tape);
-        let (ia, ib) = (
-            if a.tape.is_some() { a.idx } else { NONE },
-            if b.tape.is_some() { b.idx } else { NONE },
-        );
+        let (ia, ib) = (if a.tape.is_some() { a.idx } else { NONE }, if b.tape.is_some() { b.idx } else { NONE });
         match tape {
-            Some(t) if ia != NONE || ib != NONE => Rev {
-                tape: Some(t),
-                idx: t.push(ia, ib, da, db),
-                v,
-            },
-            _ => Rev {
-                tape: None,
-                idx: NONE,
-                v,
-            },
+            Some(t) if ia != NONE || ib != NONE => Rev { tape: Some(t), idx: t.push(ia, ib, da, db), v },
+            _ => Rev { tape: None, idx: NONE, v },
         }
     }
 }
@@ -214,11 +184,7 @@ impl<'t, T: Scalar> Neg for Rev<'t, T> {
 
 impl<'t, T: Scalar> Scalar for Rev<'t, T> {
     fn cst(v: f64) -> Self {
-        Rev {
-            tape: None,
-            idx: NONE,
-            v: T::cst(v),
-        }
+        Rev { tape: None, idx: NONE, v: T::cst(v) }
     }
     fn value(&self) -> f64 {
         self.v.value()
@@ -252,11 +218,7 @@ impl<'t, T: Scalar> Scalar for Rev<'t, T> {
             return Self::cst(1.0);
         }
         if self.tape.is_none() {
-            return Rev {
-                tape: None,
-                idx: NONE,
-                v: powi_by_mul(self.v, n),
-            };
+            return Rev { tape: None, idx: NONE, v: powi_by_mul(self.v, n) };
         }
         let low = powi_by_mul(self.v, n - 1);
         self.unary(low * self.v, T::cst(n as f64) * low)

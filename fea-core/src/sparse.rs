@@ -48,13 +48,7 @@ impl Csr {
                 }
             }
         }
-        let mut a = Self {
-            n_rows: m,
-            n_cols: m,
-            ptr: count,
-            idx,
-            val,
-        };
+        let mut a = Self { n_rows: m, n_cols: m, ptr: count, idx, val };
         a.sort_rows();
         a
     }
@@ -68,12 +62,7 @@ impl Csr {
                 continue;
             }
             tmp.clear();
-            tmp.extend(
-                idx[r.clone()]
-                    .iter()
-                    .copied()
-                    .zip(val[r.clone()].iter().copied()),
-            );
+            tmp.extend(idx[r.clone()].iter().copied().zip(val[r.clone()].iter().copied()));
             tmp.sort_by_key(|t| t.0);
             for (k, (c, v)) in tmp.iter().enumerate() {
                 idx[r.start + k] = *c;
@@ -106,20 +95,13 @@ impl Csr {
     pub fn spmv(&self, x: &[f64], y: &mut [f64]) {
         debug_assert!(x.len() >= self.n_cols && y.len() >= self.n_rows);
         let (ptr, idx, val) = (&self.ptr, &self.idx, &self.val);
-        let row = |i: usize| -> f64 {
-            (ptr[i]..ptr[i + 1])
-                .map(|k| val[k] * x[idx[k] as usize])
-                .sum()
-        };
+        let row = |i: usize| -> f64 { (ptr[i]..ptr[i + 1]).map(|k| val[k] * x[idx[k] as usize]).sum() };
         if self.n_rows < 4096 {
             for (i, yi) in y[..self.n_rows].iter_mut().enumerate() {
                 *yi = row(i);
             }
         } else {
-            y[..self.n_rows]
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(i, yi)| *yi = row(i));
+            y[..self.n_rows].par_iter_mut().enumerate().for_each(|(i, yi)| *yi = row(i));
         }
     }
 
@@ -153,13 +135,7 @@ impl Csr {
                 fill[c] += 1;
             }
         }
-        Self {
-            n_rows: self.n_cols,
-            n_cols: self.n_rows,
-            ptr: count,
-            idx,
-            val,
-        }
+        Self { n_rows: self.n_cols, n_cols: self.n_rows, ptr: count, idx, val }
     }
 
     /// `A * B` (Gustavson), parallel over rows of `A`.
@@ -197,13 +173,7 @@ impl Csr {
             val.extend(v);
             ptr.push(idx.len());
         }
-        Csr {
-            n_rows: self.n_rows,
-            n_cols: b.n_cols,
-            ptr,
-            idx,
-            val,
-        }
+        Csr { n_rows: self.n_rows, n_cols: b.n_cols, ptr, idx, val }
     }
 }
 
@@ -213,12 +183,7 @@ mod tests {
 
     /// Lower triangle of `[[4,1,0],[1,3,2],[0,2,5]]`.
     fn small() -> Csr {
-        Csr::from_lower_csc(
-            3,
-            &[0, 2, 4, 5],
-            &[0, 1, 1, 2, 2],
-            &[4.0, 1.0, 3.0, 2.0, 5.0],
-        )
+        Csr::from_lower_csc(3, &[0, 2, 4, 5], &[0, 1, 1, 2, 2], &[4.0, 1.0, 3.0, 2.0, 5.0])
     }
 
     #[test]
@@ -231,9 +196,7 @@ mod tests {
         assert_eq!(a.diagonal(), vec![4.0, 3.0, 5.0]);
         assert!(a.ptr.windows(2).all(|w| w[0] <= w[1]));
         for i in 0..3 {
-            assert!(a.idx[a.ptr[i]..a.ptr[i + 1]]
-                .windows(2)
-                .all(|w| w[0] < w[1]));
+            assert!(a.idx[a.ptr[i]..a.ptr[i + 1]].windows(2).all(|w| w[0] < w[1]));
         }
     }
 
@@ -247,33 +210,10 @@ mod tests {
         let r = sq.ptr[1]..sq.ptr[2];
         assert_eq!(&sq.val[r], &[7.0, 14.0, 16.0]);
         // Rectangular product: (3x3) * (3x2)
-        let b = Csr {
-            n_rows: 3,
-            n_cols: 2,
-            ptr: vec![0, 1, 3, 4],
-            idx: vec![0, 0, 1, 1],
-            val: vec![1.0, 2.0, 3.0, 4.0],
-        };
+        let b = Csr { n_rows: 3, n_cols: 2, ptr: vec![0, 1, 3, 4], idx: vec![0, 0, 1, 1], val: vec![1.0, 2.0, 3.0, 4.0] };
         let ab = a.matmul(&b);
-        let dense: Vec<f64> = (0..3)
-            .flat_map(|i| (0..2).map(move |j| (i, j)))
-            .map(|(i, j)| {
-                (ab.ptr[i]..ab.ptr[i + 1])
-                    .find(|&k| ab.idx[k] as usize == j)
-                    .map_or(0.0, |k| ab.val[k])
-            })
-            .collect();
+        let dense: Vec<f64> = (0..3).flat_map(|i| (0..2).map(move |j| (i, j))).map(|(i, j)| (ab.ptr[i]..ab.ptr[i + 1]).find(|&k| ab.idx[k] as usize == j).map_or(0.0, |k| ab.val[k])).collect();
         // rows of A times columns of B: [4+2, 3] / [1+6, 9+8] / [4+... computed by hand below
-        assert_eq!(
-            dense,
-            vec![
-                4.0 * 1.0 + 1.0 * 2.0,
-                1.0 * 3.0,
-                1.0 * 1.0 + 3.0 * 2.0,
-                3.0 * 3.0 + 2.0 * 4.0,
-                2.0 * 2.0 + 5.0 * 0.0,
-                2.0 * 3.0 + 5.0 * 4.0
-            ]
-        );
+        assert_eq!(dense, vec![4.0 * 1.0 + 1.0 * 2.0, 1.0 * 3.0, 1.0 * 1.0 + 3.0 * 2.0, 3.0 * 3.0 + 2.0 * 4.0, 2.0 * 2.0 + 5.0 * 0.0, 2.0 * 3.0 + 5.0 * 4.0]);
     }
 }

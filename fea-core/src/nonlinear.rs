@@ -24,8 +24,8 @@ use crate::linear::{Dirichlet, Ordering, Reduced};
 use crate::loads::{self, Loads};
 use crate::material::*;
 use crate::mesh::{Block, Mesh, Physics};
-use crate::report::{EventKind, Profile, SolveEvent};
 use rayon::prelude::*;
+use crate::report::{EventKind, Profile, SolveEvent};
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Instant;
@@ -44,19 +44,7 @@ pub struct NlState {
 impl NlState {
     /// Virgin state: no plastic strain.
     pub fn new(mesh: &Mesh) -> Self {
-        Self {
-            gp: mesh
-                .blocks
-                .iter()
-                .map(|b| {
-                    b.plasticity.map_or(Vec::new(), |j| {
-                        vec![j.initial_state(); b.n_elems() * b.kind.table().ngp]
-                    })
-                })
-                .collect(),
-            contact: Vec::new(),
-            rigid_q: Vec::new(),
-        }
+        Self { gp: mesh.blocks.iter().map(|b| b.plasticity.map_or(Vec::new(), |j| vec![j.initial_state(); b.n_elems() * b.kind.table().ngp])).collect(), contact: Vec::new(), rigid_q: Vec::new() }
     }
 
     /// Largest equivalent plastic strain anywhere.
@@ -71,11 +59,7 @@ impl NlState {
             n += 1;
             yielded += usize::from(g[6] > 0.0);
         }
-        if n == 0 {
-            0.0
-        } else {
-            yielded as f64 / n as f64
-        }
+        if n == 0 { 0.0 } else { yielded as f64 / n as f64 }
     }
 
     /// Equivalent plastic strain at every Gauss point of every plastic block with its reference position.
@@ -110,18 +94,7 @@ unsafe impl<T> Sync for Shared<T> {}
 /// `K += w * sum_gp (dH/du_a)^T A (dH/du_b)` for any dimension (and the axisymmetric hoop entry): `A` is the
 /// 9 x 9 `dS/dH` tangent, `dH/du` a 9-vector per dof.
 #[allow(clippy::too_many_arguments)]
-fn accumulate_tangent_generic(
-    k: &mut [f64],
-    nn: usize,
-    d: usize,
-    nd: usize,
-    gr: &[f64],
-    nsh: &[f64],
-    radius: f64,
-    axisym: bool,
-    tangent: &[[f64; 9]; 9],
-    w: f64,
-) {
+fn accumulate_tangent_generic(k: &mut [f64], nn: usize, d: usize, nd: usize, gr: &[f64], nsh: &[f64], radius: f64, axisym: bool, tangent: &[[f64; 9]; 9], w: f64) {
     let mut ba = [[0.0f64; 9]; 3 * MAX_NODES];
     for a in 0..nn {
         for i in 0..d {
@@ -158,8 +131,7 @@ fn accumulate_tangent_2d(k: &mut [f64], nn: usize, gr: &[f64], tangent: &[[f64; 
         for i in 0..2 {
             for kk in 0..2 {
                 for l in 0..2 {
-                    t[a][i][kk][l] =
-                        g0 * tangent[3 * i][3 * kk + l] + g1 * tangent[3 * i + 1][3 * kk + l];
+                    t[a][i][kk][l] = g0 * tangent[3 * i][3 * kk + l] + g1 * tangent[3 * i + 1][3 * kk + l];
                 }
             }
         }
@@ -169,8 +141,7 @@ fn accumulate_tangent_2d(k: &mut [f64], nn: usize, gr: &[f64], tangent: &[[f64; 
             let (g0, g1) = (gr[b * 2], gr[b * 2 + 1]);
             for i in 0..2 {
                 for kk in 0..2 {
-                    k[(a * 2 + i) * nd + b * 2 + kk] +=
-                        w * (t[a][i][kk][0] * g0 + t[a][i][kk][1] * g1);
+                    k[(a * 2 + i) * nd + b * 2 + kk] += w * (t[a][i][kk][0] * g0 + t[a][i][kk][1] * g1);
                 }
             }
         }
@@ -180,14 +151,7 @@ fn accumulate_tangent_2d(k: &mut [f64], nn: usize, gr: &[f64], tangent: &[[f64; 
 /// The constitutive update of one plastic Gauss point from its displacement gradient `h` (the hoop entry already set for
 /// axisymmetry) and its state at the start of the step: the single authoritative path of the element kernel and of every
 /// stress read-out of a nonlinear state.
-fn plastic_update_at(
-    blk: &Block,
-    j2: &J2,
-    mo: Moduli,
-    plane_stress: bool,
-    h: &M3,
-    old: &GpState,
-) -> Result<Update, String> {
+fn plastic_update_at(blk: &Block, j2: &J2, mo: Moduli, plane_stress: bool, h: &M3, old: &GpState) -> Result<Update, String> {
     Ok(if j2.large_strain {
         let mut f = *h;
         for (i, row) in f.iter_mut().enumerate() {
@@ -196,20 +160,11 @@ fn plastic_update_at(
         if j2.neo_hookean {
             neo_hookean_update(mo, h, old)
         } else if plane_stress {
-            finite_strain_plane_stress(
-                mo,
-                &j2.law,
-                &f,
-                old,
-                1.0 - blk.material.nu / (1.0 - blk.material.nu) * (h[0][0] + h[1][1]),
-            )
-            .map(|r| r.0)
+            finite_strain_plane_stress(mo, &j2.law, &f, old, 1.0 - blk.material.nu / (1.0 - blk.material.nu) * (h[0][0] + h[1][1])).map(|r| r.0)
         } else {
             finite_strain_update(mo, &j2.law, &f, old)
         }
-        .ok_or_else(|| {
-            "material state failed (inverted element or non-positive stretch)".to_string()
-        })?
+        .ok_or_else(|| "material state failed (inverted element or non-positive stretch)".to_string())?
     } else {
         let eps: M3 = std::array::from_fn(|i| std::array::from_fn(|j| 0.5 * (h[i][j] + h[j][i])));
         match (&blk.material.aniso, plane_stress) {
@@ -221,17 +176,11 @@ fn plastic_update_at(
     })
 }
 
+
 /// Stress (library order `xx, yy, zz, xy, yz, zx`) of a small-strain plastic point at natural coordinates `xi` of an element, from
 /// the element displacements `ue` and the material state `old` at the start of the step. The return map is evaluated at `xi`
 /// with that state (for a point that is not a Gauss point the state is the caller's choice, e.g. the nearest Gauss point's).
-pub(crate) fn plastic_stress_at(
-    blk: &Block,
-    physics: Physics,
-    xyz: &[[f64; 3]],
-    ue: &[f64],
-    xi: [f64; 3],
-    old: &GpState,
-) -> Result<([f64; 6], GpState), String> {
+pub(crate) fn plastic_stress_at(blk: &Block, physics: Physics, xyz: &[[f64; 3]], ue: &[f64], xi: [f64; 3], old: &GpState) -> Result<([f64; 6], GpState), String> {
     let j2 = blk.plasticity.ok_or("not a plastic block")?;
     if j2.large_strain {
         return Err("the stress read-out of a finite-strain state is the first Piola-Kirchhoff stress, which this read-out does not provide".into());
@@ -271,34 +220,14 @@ pub(crate) fn plastic_stress_at(
         h[2][2] = if r > 1e-12 { ur / r } else { h[0][0] };
     }
     let mo = Moduli::new(blk.material.e, blk.material.nu);
-    let up = plastic_update_at(
-        blk,
-        &j2,
-        mo,
-        matches!(physics, Physics::PlaneStress { .. }),
-        &h,
-        old,
-    )?;
+    let up = plastic_update_at(blk, &j2, mo, matches!(physics, Physics::PlaneStress { .. }), &h, old)?;
     let s = &up.stress;
-    Ok((
-        [s[0][0], s[1][1], s[2][2], s[0][1], s[1][2], s[2][0]],
-        up.state,
-    ))
+    Ok(([s[0][0], s[1][1], s[2][2], s[0][1], s[1][2], s[2][0]], up.state))
 }
 
 /// Element internal force `fe` and tangent `ke` (`(a*d+i, b*d+k)`, row major) of one plastic element.
 #[allow(clippy::too_many_arguments)] // a hot kernel: every input is a distinct piece of element data
-fn plastic_element(
-    blk: &Block,
-    physics: Physics,
-    xyz: &[[f64; 3]],
-    ue: &[f64],
-    old: &[GpState],
-    new: &mut [GpState],
-    work: &mut Work,
-    fe: &mut [f64],
-    ke: Option<&mut [f64]>,
-) -> Result<(), String> {
+fn plastic_element(blk: &Block, physics: Physics, xyz: &[[f64; 3]], ue: &[f64], old: &[GpState], new: &mut [GpState], work: &mut Work, fe: &mut [f64], ke: Option<&mut [f64]>) -> Result<(), String> {
     let j2 = blk.plasticity.expect("plastic block");
     let kind = blk.kind;
     let t = kind.table();
@@ -357,37 +286,18 @@ fn plastic_element(
 
 /// Assemble the internal force vector (and the tangent if `want_k`) at displacements `u` from the
 /// committed state `old`; the updated trial state goes to `new`.
-pub(crate) fn assemble_nl(
-    mesh: &Mesh,
-    pat: &Pattern,
-    u: &[f64],
-    old: &NlState,
-    new: &mut NlState,
-    want_k: bool,
-) -> Result<(Vec<f64>, Option<BlockMatrix>), String> {
+pub(crate) fn assemble_nl(mesh: &Mesh, pat: &Pattern, u: &[f64], old: &NlState, new: &mut NlState, want_k: bool) -> Result<(Vec<f64>, Option<BlockMatrix>), String> {
     let d = pat.d;
     let dd = d * d;
     let mut f = vec![0.0; mesh.n_dofs()];
     let mut k = want_k.then(|| BlockMatrix::zeros(pat));
-    let kptr = Shared(
-        k.as_mut()
-            .map_or(std::ptr::null_mut(), |m| m.vals.as_mut_ptr()),
-    );
+    let kptr = Shared(k.as_mut().map_or(std::ptr::null_mut(), |m| m.vals.as_mut_ptr()));
     let fptr = Shared(f.as_mut_ptr());
     let sptr: Vec<Shared<GpState>> = new.gp.iter_mut().map(|v| Shared(v.as_mut_ptr())).collect();
     let (kptr, fptr, sptr) = (&kptr, &fptr, &sptr);
     for class in &pat.colors {
         class.par_iter().try_for_each_init(
-            || {
-                (
-                    Work::new(),
-                    vec![[0.0f64; 3]; MAX_NODES],
-                    vec![0.0f64; 3 * MAX_NODES],
-                    vec![0.0f64; 3 * MAX_NODES],
-                    vec![0.0f64; 9 * MAX_NODES * MAX_NODES],
-                    vec![0.0f64; MAX_NODES * MAX_NODES * 10],
-                )
-            },
+            || (Work::new(), vec![[0.0f64; 3]; MAX_NODES], vec![0.0f64; 3 * MAX_NODES], vec![0.0f64; 3 * MAX_NODES], vec![0.0f64; 9 * MAX_NODES * MAX_NODES], vec![0.0f64; MAX_NODES * MAX_NODES * 10]),
             |(work, xyz, ue, fe, ke, kk), &(bi, e)| -> Result<(), String> {
                 let blk = &mesh.blocks[bi as usize];
                 let nn = blk.kind.n_nodes();
@@ -403,34 +313,10 @@ pub(crate) fn assemble_nl(
                     let ngp = blk.kind.table().ngp;
                     let base = e as usize * ngp;
                     // SAFETY: elements of a colour touch disjoint state ranges, nodes and blocks.
-                    let new_s = unsafe {
-                        std::slice::from_raw_parts_mut(sptr[bi as usize].0.add(base), ngp)
-                    };
-                    plastic_element(
-                        blk,
-                        mesh.physics,
-                        &xyz[..nn],
-                        &ue[..nd],
-                        &old.gp[bi as usize][base..base + ngp],
-                        new_s,
-                        work,
-                        fe,
-                        if want_k {
-                            Some(&mut ke[..nd * nd])
-                        } else {
-                            None
-                        },
-                    )?;
+                    let new_s = unsafe { std::slice::from_raw_parts_mut(sptr[bi as usize].0.add(base), ngp) };
+                    plastic_element(blk, mesh.physics, &xyz[..nn], &ue[..nd], &old.gp[bi as usize][base..base + ngp], new_s, work, fe, if want_k { Some(&mut ke[..nd * nd]) } else { None })?;
                 } else {
-                    let layout = kernel::stiffness_fast(
-                        blk.kind,
-                        mesh.physics,
-                        &blk.material,
-                        &xyz[..nn],
-                        work,
-                        kk,
-                    )
-                    .map_err(|e| e.to_string())?;
+                    let layout = kernel::stiffness_fast(blk.kind, mesh.physics, &blk.material, &xyz[..nn], work, kk).map_err(|e| e.to_string())?;
                     for a in 0..nn {
                         for i in 0..d {
                             let mut s = 0.0;
@@ -455,8 +341,7 @@ pub(crate) fn assemble_nl(
                         }
                     }
                     if want_k {
-                        let map = &pat.scatter[bi as usize]
-                            [e as usize * nn * nn..(e as usize + 1) * nn * nn];
+                        let map = &pat.scatter[bi as usize][e as usize * nn * nn..(e as usize + 1) * nn * nn];
                         for a in 0..nn {
                             for b in 0..nn {
                                 let pos = map[a * nn + b];
@@ -482,14 +367,7 @@ pub(crate) fn assemble_nl(
 
 /// Benchmark entry point to the assembly (internal force and tangent at displacements `u`).
 #[doc(hidden)]
-pub fn assemble_nl_public(
-    mesh: &Mesh,
-    pat: &Pattern,
-    u: &[f64],
-    old: &NlState,
-    new: &mut NlState,
-    want_k: bool,
-) -> Result<(Vec<f64>, Option<BlockMatrix>), String> {
+pub fn assemble_nl_public(mesh: &Mesh, pat: &Pattern, u: &[f64], old: &NlState, new: &mut NlState, want_k: bool) -> Result<(Vec<f64>, Option<BlockMatrix>), String> {
     assemble_nl(mesh, pat, u, old, new, want_k)
 }
 
@@ -508,11 +386,7 @@ pub enum Control {
     /// Cylindrical arc-length (Crisfield) with step `ds` in displacement norm, until the load factor
     /// reaches `lambda_max` or `max_steps` steps have converged. Loads only (prescribed displacements
     /// must be zero).
-    Arc {
-        ds: f64,
-        lambda_max: f64,
-        max_steps: usize,
-    },
+    Arc { ds: f64, lambda_max: f64, max_steps: usize },
 }
 
 /// A cooperative stop for a long solve: a wall-clock deadline and/or a flag another thread raises. The solver checks it
@@ -556,11 +430,7 @@ pub struct Interrupt {
 impl Interrupt {
     /// Why it fired, if it has: a cancel request or the deadline.
     pub fn reason(&self) -> Option<&'static str> {
-        if self
-            .cancel
-            .as_ref()
-            .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
-        {
+        if self.cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
             Some("cancelled")
         } else if self.deadline.is_some_and(|d| Instant::now() >= d) {
             Some("time budget used up")
@@ -632,12 +502,9 @@ impl NlOptions {
     /// equivalent plastic strain at which that material is taken to fail in bearing/tension.
     pub fn failure_for_material(mut self, id: &str) -> Result<Self, String> {
         use mechanics_core::fracture::{failure_strain, Basis};
-        let f =
-            failure_strain(id).ok_or_else(|| format!("no failure strain for material '{id}'"))?;
+        let f = failure_strain(id).ok_or_else(|| format!("no failure strain for material '{id}'"))?;
         if f.basis == Basis::NotApplicable {
-            return Err(format!(
-                "the finite-strain failure rule does not apply to '{id}'"
-            ));
+            return Err(format!("the finite-strain failure rule does not apply to '{id}'"));
         }
         self.failure_ep = Some(f.value);
         Ok(self)
@@ -646,26 +513,7 @@ impl NlOptions {
 
 impl Default for NlOptions {
     fn default() -> Self {
-        Self {
-            control: Control::Load,
-            steps: 10,
-            max_iter: 25,
-            tol: 1e-9,
-            line_search: true,
-            max_cuts: 12,
-            failure_ep: None,
-            chord_iters: 0,
-            max_outer: 12,
-            outer_tol: 1e-4,
-            stop_on_plateau: false,
-            stop_on_fall: 0.0,
-            stop_at_force: 0.0,
-            stall_tol: 0.0,
-            first_step: 1.0,
-            interrupt: Interrupt::default(),
-            stick_slip_guard: false,
-            observer: None,
-        }
+        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0, interrupt: Interrupt::default(), stick_slip_guard: false, observer: None }
     }
 }
 
@@ -748,13 +596,7 @@ impl NlSolution {
     /// these (the transmitted force `sum p w n`, a torque `sum x cross t w`) are the reliable outputs: pointwise values
     /// scatter on non-matching deformable meshes.
     pub fn contact_tractions(&self, spec: usize, mu: f64) -> Vec<crate::contact::ContactTraction> {
-        let (Some(states), Some(points), Some(weights)) = (
-            self.state.contact.get(spec),
-            self.contact_points.get(spec),
-            self.contact_weights.get(spec),
-        ) else {
-            return Vec::new();
-        };
+        let (Some(states), Some(points), Some(weights)) = (self.state.contact.get(spec), self.contact_points.get(spec), self.contact_weights.get(spec)) else { return Vec::new() };
         states
             .iter()
             .zip(points)
@@ -762,28 +604,13 @@ impl NlSolution {
             .map(|((s, x), w)| {
                 let friction = if s.active { s.fric } else { [0.0; 3] };
                 let fmag = norm(&friction);
-                crate::contact::ContactTraction {
-                    x: *x,
-                    normal: s.n,
-                    pressure: if s.active { s.p } else { 0.0 },
-                    friction,
-                    weight: *w,
-                    active: s.active,
-                    slipping: s.active && mu > 0.0 && fmag >= mu * s.p * (1.0 - 1e-3),
-                }
+                crate::contact::ContactTraction { x: *x, normal: s.n, pressure: if s.active { s.p } else { 0.0 }, friction, weight: *w, active: s.active, slipping: s.active && mu > 0.0 && fmag >= mu * s.p * (1.0 - 1e-3) }
             })
             .collect()
     }
 
     pub fn complete(&self) -> bool {
-        matches!(
-            self.stop,
-            Stop::Completed
-                | Stop::FailureStrain
-                | Stop::StepLimit
-                | Stop::Plateau
-                | Stop::ForceReached
-        )
+        matches!(self.stop, Stop::Completed | Stop::FailureStrain | Stop::StepLimit | Stop::Plateau | Stop::ForceReached)
     }
 
     /// Peak load factor over the converged steps.
@@ -796,14 +623,9 @@ impl NlSolution {
 fn solve_dense(a: &mut [f64], b: &mut [f64], n: usize) -> Result<Vec<f64>, String> {
     let scale = a.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-300);
     for c in 0..n {
-        let p = (c..n)
-            .max_by(|&i, &j| a[i * n + c].abs().total_cmp(&a[j * n + c].abs()))
-            .unwrap();
+        let p = (c..n).max_by(|&i, &j| a[i * n + c].abs().total_cmp(&a[j * n + c].abs())).unwrap();
         if a[p * n + c].abs() < 1e-13 * scale {
-            return Err(
-                "the rigid-body degrees of freedom are singular (a free pin with no contact)"
-                    .into(),
-            );
+            return Err("the rigid-body degrees of freedom are singular (a free pin with no contact)".into());
         }
         if p != c {
             for k in 0..n {
@@ -886,14 +708,7 @@ struct Eval {
 }
 
 impl Ctx<'_> {
-    fn eval(
-        &self,
-        u: &[f64],
-        q: &[f64],
-        old: &NlState,
-        lambda: f64,
-        want_k: bool,
-    ) -> Result<Eval, String> {
+    fn eval(&self, u: &[f64], q: &[f64], old: &NlState, lambda: f64, want_k: bool) -> Result<Eval, String> {
         let t_eval = Instant::now();
         let mut state = old.clone();
         let (mut f, mut k) = assemble_nl(&self.model.mesh, &self.pat, u, old, &mut state, want_k)?;
@@ -905,18 +720,7 @@ impl Ctx<'_> {
         if let Some(cs) = &self.contacts {
             let m = cs.n_extra();
             let mut out = (m > 0).then(|| ExtraOut::new(self.model.mesh.n_dofs(), m));
-            let st = cs.eval(
-                &self.model.mesh,
-                &self.pat,
-                u,
-                q,
-                lambda,
-                &old.contact,
-                &mut state.contact,
-                &mut f,
-                k.as_mut(),
-                out.as_mut(),
-            )?;
+            let st = cs.eval(&self.model.mesh, &self.pat, u, q, lambda, &old.contact, &mut state.contact, &mut f, k.as_mut(), out.as_mut())?;
             if !st.missing_pairs.is_empty() {
                 return Err(format!("contact reached node pairs outside the matrix pattern (increase the contact margin): {:?}", &st.missing_pairs[..st.missing_pairs.len().min(4)]));
             }
@@ -955,10 +759,7 @@ impl Ctx<'_> {
                     }
                 }
                 if any {
-                    let dofs: Vec<usize> = nodes
-                        .iter()
-                        .flat_map(|&n| (0..d).map(move |c| n * d + c))
-                        .collect();
+                    let dofs: Vec<usize> = nodes.iter().flat_map(|&n| (0..d).map(move |c| n * d + c)).collect();
                     load_defect.push((dofs, defect));
                 }
             }
@@ -978,25 +779,13 @@ impl Ctx<'_> {
             return Err("non-finite internal force".into());
         }
         self.timers[0].set(self.timers[0].get() + t_eval.elapsed().as_secs_f64());
-        Ok(Eval {
-            f,
-            k,
-            state,
-            stats,
-            ex,
-            f_elem,
-            load_defect,
-        })
+        Ok(Eval { f, k, state, stats, ex, f_elem, load_defect })
     }
 
     /// Residual over the free dofs followed by the residuals of the extra (rigid-body) unknowns at
     /// load factor `lambda`.
     fn residual(&self, ev: &Eval, lambda: f64) -> Vec<f64> {
-        let mut r: Vec<f64> = self
-            .free
-            .iter()
-            .map(|&i| ev.f[i] - lambda * self.f_ext[i])
-            .collect();
+        let mut r: Vec<f64> = self.free.iter().map(|&i| ev.f[i] - lambda * self.f_ext[i]).collect();
         if let (Some(ex), Some(cs)) = (&ev.ex, &self.contacts) {
             for (j, v) in ex.rq.iter().enumerate() {
                 r.push(v - lambda * cs.extra_load(j));
@@ -1007,12 +796,7 @@ impl Ctx<'_> {
 
     /// Newton step for the augmented system `[K_uu K_uq; K_qu K_qq] [du; dq] = -[r_u; r_q]` by a Schur
     /// complement on the extra unknowns (a handful) over the existing factorization of `K_uu`.
-    fn newton_step(
-        &self,
-        fac: &crate::linear::AnyFactor<'_>,
-        ev: &Eval,
-        r: &[f64],
-    ) -> Result<Vec<f64>, String> {
+    fn newton_step(&self, fac: &crate::linear::AnyFactor<'_>, ev: &Eval, r: &[f64]) -> Result<Vec<f64>, String> {
         let nf = self.free.len();
         let m = r.len() - nf;
         let mut a: Vec<f64> = r[..nf].iter().map(|v| -v).collect();
@@ -1035,8 +819,7 @@ impl Ctx<'_> {
         let mut rhs = vec![0.0; m];
         for i in 0..m {
             for j in 0..m {
-                s[i * m + j] =
-                    ex.kqq[i * m + j] - (0..nf).map(|f| bcol(i, f) * z[j][f]).sum::<f64>();
+                s[i * m + j] = ex.kqq[i * m + j] - (0..nf).map(|f| bcol(i, f) * z[j][f]).sum::<f64>();
             }
             rhs[i] = -r[nf + i] - (0..nf).map(|f| bcol(i, f) * a[f]).sum::<f64>();
         }
@@ -1062,23 +845,12 @@ impl Ctx<'_> {
     /// Solved by GMRES preconditioned with the factorisation (plain refinement diverged where most points are at their
     /// friction limit: the 3D partial-slip failures); stops when the residual is down to 1 % of the right-hand side, and
     /// keeps the result only if the true residual fell.
-    fn refine_consistent(
-        &self,
-        fac: &crate::linear::AnyFactor<'_>,
-        ev: &Eval,
-        b: &[f64],
-        x: &mut Vec<f64>,
-    ) {
-        let contact_defect: &[(Vec<usize>, Vec<f64>)] =
-            ev.stats.as_ref().map_or(&[], |s| &s.defect);
+    fn refine_consistent(&self, fac: &crate::linear::AnyFactor<'_>, ev: &Eval, b: &[f64], x: &mut Vec<f64>) {
+        let contact_defect: &[(Vec<usize>, Vec<f64>)] = ev.stats.as_ref().map_or(&[], |s| &s.defect);
         if contact_defect.is_empty() && ev.load_defect.is_empty() {
             return;
         }
-        let (k, nf, n) = (
-            ev.k.as_ref().expect("tangent"),
-            self.free.len(),
-            self.model.mesh.n_dofs(),
-        );
+        let (k, nf, n) = (ev.k.as_ref().expect("tangent"), self.free.len(), self.model.mesh.n_dofs());
         let bn = norm(b).max(1e-300);
         let apply = |x: &[f64]| -> Vec<f64> {
             let mut xf = vec![0.0; n];
@@ -1166,31 +938,20 @@ impl Ctx<'_> {
         }
         // Keep it only if it really lowered the true residual (a GMRES step cannot raise the preconditioned one, but the
         // defect operator is only as accurate as its finite differences).
-        let after = norm(
-            &b.iter()
-                .zip(&apply(&xn))
-                .map(|(bb, aa)| bb - aa)
-                .collect::<Vec<_>>(),
-        );
+        let after = norm(&b.iter().zip(&apply(&xn)).map(|(bb, aa)| bb - aa).collect::<Vec<_>>());
         if after < rn0 {
             *x = xn;
         }
     }
 
     fn scale(&self, ev: &Eval, lambda: f64) -> f64 {
-        norm(&ev.f)
-            .max(ev.f_elem)
-            .max(lambda * norm(&self.f_ext))
-            .max(1e-300)
+        norm(&ev.f).max(ev.f_elem).max(lambda * norm(&self.f_ext)).max(1e-300)
     }
 
     /// Solve `K_ff x = a` and `K_ff y = b` with one factorization of the tangent of `ev` (LDL^T when the
     /// tangent is indefinite, as it is past a limit point); returns whether it was indefinite.
     fn solve2(&self, ev: &Eval, a: &mut [f64], b: &mut [f64]) -> Result<bool, String> {
-        let fac = self
-            .red
-            .factor_any(ev.k.as_ref().expect("tangent"))
-            .map_err(|e| e.to_string())?;
+        let fac = self.red.factor_any(ev.k.as_ref().expect("tangent")).map_err(|e| e.to_string())?;
         let (a0, b0) = (a.to_vec(), b.to_vec());
         fac.solve_reduced(a);
         fac.solve_reduced(b);
@@ -1205,10 +966,7 @@ impl Ctx<'_> {
 
     /// As [`solve`](Self::solve) with LDL^T where the tangent is indefinite (contact with friction).
     fn solve_any(&self, ev: &Eval, rhs: &mut [f64]) -> Result<(), String> {
-        let fac = self
-            .red
-            .factor_any(ev.k.as_ref().expect("tangent"))
-            .map_err(|e| e.to_string())?;
+        let fac = self.red.factor_any(ev.k.as_ref().expect("tangent")).map_err(|e| e.to_string())?;
         fac.solve_reduced(rhs);
         self.factorisations.set(self.factorisations.get() + 1);
         Ok(())
@@ -1216,10 +974,7 @@ impl Ctx<'_> {
 
     /// Solve `K_ff x = rhs` with the tangent of `ev`.
     fn solve(&self, ev: &Eval, rhs: &mut [f64]) -> Result<(), String> {
-        let fac = self
-            .red
-            .factor(ev.k.as_ref().expect("tangent"))
-            .map_err(|e| e.to_string())?;
+        let fac = self.red.factor(ev.k.as_ref().expect("tangent")).map_err(|e| e.to_string())?;
         fac.solve_reduced(rhs);
         self.factorisations.set(self.factorisations.get() + 1);
         Ok(())
@@ -1230,11 +985,7 @@ impl Model {
     /// Cauchy stresses at the Gauss points of a small-strain nonlinear state: `u` the displacements and `old` the material
     /// state at the start of the last accepted step (`NlSolution::prev_state`, or the virgin state for a single step), the same
     /// path the element kernel takes. Elastic blocks give their linear stress.
-    pub fn nl_gauss_stresses(
-        &self,
-        u: &[f64],
-        old: &NlState,
-    ) -> Result<Vec<Vec<crate::analysis::GaussStress>>, String> {
+    pub fn nl_gauss_stresses(&self, u: &[f64], old: &NlState) -> Result<Vec<Vec<crate::analysis::GaussStress>>, String> {
         let d = self.mesh.dim();
         let elastic = self.gauss_stresses(u, 0.0)?;
         let mut out = Vec::with_capacity(self.mesh.blocks.len());
@@ -1257,16 +1008,8 @@ impl Model {
                 }
                 for g in 0..ngp {
                     let n = t.n_at(g);
-                    let pos: [f64; 3] =
-                        std::array::from_fn(|k| (0..nn).map(|a| n[a] * xyz[a][k]).sum());
-                    let (s, _) = plastic_stress_at(
-                        blk,
-                        self.mesh.physics,
-                        &xyz,
-                        &ue,
-                        t.xi[g],
-                        &old.gp[bi][e * ngp + g],
-                    )?;
+                    let pos: [f64; 3] = std::array::from_fn(|k| (0..nn).map(|a| n[a] * xyz[a][k]).sum());
+                    let (s, _) = plastic_stress_at(blk, self.mesh.physics, &xyz, &ue, t.xi[g], &old.gp[bi][e * ngp + g])?;
                     v.push((pos, s));
                 }
             }
@@ -1277,12 +1020,7 @@ impl Model {
 
     /// Reject a body that nothing holds: no prescribed displacement, no grounding spring and no contact touching any of
     /// its nodes. It would float (a singular system can still factorise and return an arbitrary rigid motion).
-    fn check_not_floating(
-        &self,
-        bc: &Dirichlet,
-        ground: &[(usize, f64)],
-        contacts: &[ContactSpec],
-    ) -> Result<(), String> {
+    fn check_not_floating(&self, bc: &Dirichlet, ground: &[(usize, f64)], contacts: &[ContactSpec]) -> Result<(), String> {
         let (n, d) = (self.mesh.nodes.len(), self.mesh.dim());
         let mut parent: Vec<usize> = (0..n).collect();
         fn find(p: &mut [usize], mut a: usize) -> usize {
@@ -1343,36 +1081,18 @@ impl Model {
 
     /// Nonlinear static solution. Blocks with `plasticity` use J2 plasticity (small or finite strain);
     /// other blocks are linear elastic. See the module documentation for the conventions.
-    pub fn solve_nonlinear(
-        &self,
-        loads: &Loads,
-        bc: &Dirichlet,
-        opt: &NlOptions,
-    ) -> Result<NlSolution, String> {
+    pub fn solve_nonlinear(&self, loads: &Loads, bc: &Dirichlet, opt: &NlOptions) -> Result<NlSolution, String> {
         self.solve_nonlinear_contact(loads, bc, Vec::new(), opt)
     }
 
     /// Nonlinear solution with contact interfaces (see `contact.rs`). Contact needs load control.
-    pub fn solve_nonlinear_contact(
-        &self,
-        loads: &Loads,
-        bc: &Dirichlet,
-        contacts: Vec<ContactSpec>,
-        opt: &NlOptions,
-    ) -> Result<NlSolution, String> {
+    pub fn solve_nonlinear_contact(&self, loads: &Loads, bc: &Dirichlet, contacts: Vec<ContactSpec>, opt: &NlOptions) -> Result<NlSolution, String> {
         self.solve_nonlinear_contact_from(loads, bc, contacts, opt, None)
     }
 
     /// As [`solve_nonlinear_contact`](Self::solve_nonlinear_contact), continuing from a converged `start`
     /// (load control only): the load factor runs `0 -> 1` on top of it.
-    pub fn solve_nonlinear_contact_from(
-        &self,
-        loads: &Loads,
-        bc: &Dirichlet,
-        contacts: Vec<ContactSpec>,
-        opt: &NlOptions,
-        start: Option<&Start>,
-    ) -> Result<NlSolution, String> {
+    pub fn solve_nonlinear_contact_from(&self, loads: &Loads, bc: &Dirichlet, contacts: Vec<ContactSpec>, opt: &NlOptions, start: Option<&Start>) -> Result<NlSolution, String> {
         // The matrix pattern is built once from the initial proximity (`margin`); a contact that slides to a node pair
         // outside it fails the step. Rather than make the caller guess a margin, widen every margin and rerun.
         let mut specs = contacts;
@@ -1380,18 +1100,8 @@ impl Model {
         for attempt in 0..=MARGIN_RETRIES {
             match self.solve_nonlinear_contact_once(loads, bc, specs.clone(), opt, start) {
                 Err(e) if attempt < MARGIN_RETRIES && e.contains("outside the matrix pattern") => {
-                    widened.push(SolveEvent {
-                        kind: EventKind::MarginWidened,
-                        lambda: 0.0,
-                        residual: f64::NAN,
-                        detail: format!(
-                            "attempt {} left the matrix pattern; margins doubled",
-                            attempt + 1
-                        ),
-                    });
-                    specs
-                        .iter_mut()
-                        .for_each(|s| s.margin = Some(2.0 * s.effective_margin(&self.mesh)));
+                    widened.push(SolveEvent { kind: EventKind::MarginWidened, lambda: 0.0, residual: f64::NAN, detail: format!("attempt {} left the matrix pattern; margins doubled", attempt + 1) });
+                    specs.iter_mut().for_each(|s| s.margin = Some(2.0 * s.effective_margin(&self.mesh)));
                 }
                 Ok(mut sol) => {
                     widened.append(&mut sol.events);
@@ -1404,14 +1114,7 @@ impl Model {
         unreachable!("the last attempt returns")
     }
 
-    fn solve_nonlinear_contact_once(
-        &self,
-        loads: &Loads,
-        bc: &Dirichlet,
-        contacts: Vec<ContactSpec>,
-        opt: &NlOptions,
-        start: Option<&Start>,
-    ) -> Result<NlSolution, String> {
+    fn solve_nonlinear_contact_once(&self, loads: &Loads, bc: &Dirichlet, contacts: Vec<ContactSpec>, opt: &NlOptions, start: Option<&Start>) -> Result<NlSolution, String> {
         let clock = Instant::now();
         let any_plastic = self.mesh.blocks.iter().any(|b| b.plasticity.is_some());
         if any_plastic && (loads.delta_t != 0.0 || loads.temperature.is_some()) {
@@ -1420,25 +1123,9 @@ impl Model {
         let n = self.mesh.n_dofs();
         self.check_not_floating(bc, &loads.ground, &contacts)?;
         // Follower pressures are applied by the driver at the deformed configuration, not as dead loads.
-        let f_ext = if loads.followers.is_empty() {
-            loads::assemble(&self.mesh, loads)?
-        } else {
-            loads::assemble(
-                &self.mesh,
-                &Loads {
-                    followers: Vec::new(),
-                    ..loads.clone()
-                },
-            )?
-        };
-        let contact_set = if contacts.is_empty() {
-            None
-        } else {
-            Some(ContactSet::new(&self.mesh, contacts)?)
-        };
-        if contact_set.as_ref().is_some_and(|cs| cs.n_extra() > 0)
-            && !matches!(opt.control, Control::Load)
-        {
+        let f_ext = if loads.followers.is_empty() { loads::assemble(&self.mesh, loads)? } else { loads::assemble(&self.mesh, &Loads { followers: Vec::new(), ..loads.clone() })? };
+        let contact_set = if contacts.is_empty() { None } else { Some(ContactSet::new(&self.mesh, contacts)?) };
+        if contact_set.as_ref().is_some_and(|cs| cs.n_extra() > 0) && !matches!(opt.control, Control::Load) {
             return Err("a rigid master with free translations needs load control (arc-length handles deformable contact only)".into());
         }
         let _ = Master::Faces(Vec::new());
@@ -1453,8 +1140,7 @@ impl Model {
             }
             None => self.pattern.clone(),
         };
-        let red = Reduced::with_ordering(&pat, bc, Some(&self.mesh.nodes), Ordering::Auto)
-            .map_err(|e| e.to_string())?;
+        let red = Reduced::with_ordering(&pat, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
         let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
         let fixed: Vec<usize> = (0..n).filter(|&i| bc.fixed[i]).collect();
         if let Control::Arc { .. } = opt.control {
@@ -1462,45 +1148,16 @@ impl Model {
                 return Err("arc-length control needs zero prescribed displacements".into());
             }
         }
-        let mut ctx = Ctx {
-            model: self,
-            pat,
-            contacts: contact_set,
-            red,
-            free,
-            fixed,
-            f_ext,
-            bc,
-            opt: opt.clone(),
-            factorisations: Cell::new(0),
-            stalled: Cell::new(0),
-            held: Cell::new(0),
-            events: RefCell::new(Vec::new()),
-            start,
-            ground: loads.ground.clone(),
-            followers: loads.followers.clone(),
-            timers: Default::default(),
-            last_start: RefCell::new(None),
-        };
+        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), held: Cell::new(0), events: RefCell::new(Vec::new()), start, ground: loads.ground.clone(), followers: loads.followers.clone(), timers: Default::default(), last_start: RefCell::new(None) };
         let mut sol = match opt.control {
             Control::Load => ctx.run_load_control()?,
-            Control::Arc {
-                ds,
-                lambda_max,
-                max_steps,
-            } => ctx.run_arc_length(ds, lambda_max, max_steps)?,
+            Control::Arc { ds, lambda_max, max_steps } => ctx.run_arc_length(ds, lambda_max, max_steps)?,
         };
         sol.factorisations = ctx.factorisations.get();
         sol.stalled_solves = ctx.stalled.get();
         sol.held_solves = ctx.held.get();
         sol.elapsed_ms = clock.elapsed().as_secs_f64() * 1e3;
-        sol.profile = Profile {
-            evaluation_ms: 1e3 * ctx.timers[0].get(),
-            assembly_ms: 1e3 * ctx.timers[3].get(),
-            contact_ms: 1e3 * ctx.timers[4].get(),
-            factorisation_ms: 1e3 * ctx.timers[1].get(),
-            solve_ms: 1e3 * ctx.timers[2].get(),
-        };
+        sol.profile = Profile { evaluation_ms: 1e3 * ctx.timers[0].get(), assembly_ms: 1e3 * ctx.timers[3].get(), contact_ms: 1e3 * ctx.timers[4].get(), factorisation_ms: 1e3 * ctx.timers[1].get(), solve_ms: 1e3 * ctx.timers[2].get() };
         if std::env::var("NL_PROFILE").is_ok() {
             eprintln!("nl profile: {:.0} ms total, evaluation {:.0} ms (element assembly {:.0}, contact {:.0}), factorisation {:.0} ms ({} of them), solves {:.0} ms", sol.elapsed_ms, 1e3 * ctx.timers[0].get(), 1e3 * ctx.timers[3].get(), 1e3 * ctx.timers[4].get(), 1e3 * ctx.timers[1].get(), sol.factorisations, 1e3 * ctx.timers[2].get());
         }
@@ -1513,15 +1170,11 @@ impl Model {
 /// convergence trouble leave tiny steps over which any load looks flat.
 fn load_flat(steps: &[StepInfo], gain: f64) -> bool {
     let f = |s: &StepInfo| -> f64 { s.master_force.first().map_or(0.0, |v| norm(v)) };
-    let Some(last) = steps.last() else {
-        return false;
-    };
+    let Some(last) = steps.last() else { return false };
     if steps.len() < 4 {
         return false;
     }
-    let Some(j) = steps.iter().rposition(|s| s.lambda <= last.lambda - 0.05) else {
-        return false;
-    };
+    let Some(j) = steps.iter().rposition(|s| s.lambda <= last.lambda - 0.05) else { return false };
     let top = steps[j..].iter().map(f).fold(0.0f64, f64::max).max(1e-12);
     f(last) - f(&steps[j]) < gain * top
 }
@@ -1530,9 +1183,7 @@ fn load_flat(steps: &[StepInfo], gain: f64) -> bool {
 fn load_fell(steps: &[StepInfo], frac: f64) -> bool {
     let f = |s: &StepInfo| -> f64 { s.master_force.first().map_or(0.0, |v| norm(v)) };
     let peak = steps.iter().map(f).fold(0.0f64, f64::max);
-    steps
-        .last()
-        .is_some_and(|s| peak > 0.0 && f(s) < (1.0 - frac) * peak)
+    steps.last().is_some_and(|s| peak > 0.0 && f(s) < (1.0 - frac) * peak)
 }
 
 impl Ctx<'_> {
@@ -1541,22 +1192,10 @@ impl Ctx<'_> {
         if std::env::var("NL_EVENTS").is_ok() {
             eprintln!("EVENT {} at lambda {lambda:.4}: {detail}", kind.name());
         }
-        self.events.borrow_mut().push(SolveEvent {
-            kind,
-            lambda,
-            residual,
-            detail,
-        });
+        self.events.borrow_mut().push(SolveEvent { kind, lambda, residual, detail });
     }
 
-    fn finish(
-        &self,
-        u: Vec<f64>,
-        state: NlState,
-        lambda: f64,
-        steps: Vec<StepInfo>,
-        stop: Stop,
-    ) -> NlSolution {
+    fn finish(&self, u: Vec<f64>, state: NlState, lambda: f64, steps: Vec<StepInfo>, stop: Stop) -> NlSolution {
         let mut reactions = vec![0.0; u.len()];
         let mut contact = None;
         if let Ok(ev) = self.eval(&u, &state.rigid_q, &state, lambda, false) {
@@ -1565,15 +1204,9 @@ impl Ctx<'_> {
             }
             contact = ev.stats;
         }
-        let contact_points = self.contacts.as_ref().map_or(Vec::new(), |cs| {
-            (0..cs.specs.len()).map(|i| cs.slave_positions(i)).collect()
-        });
-        let rigid_translation = self.contacts.as_ref().map_or(Vec::new(), |cs| {
-            cs.rigid_translations(lambda, &state.rigid_q)
-        });
-        let contact_weights = self.contacts.as_ref().map_or(Vec::new(), |cs| {
-            (0..cs.specs.len()).map(|i| cs.slave_weights(i)).collect()
-        });
+        let contact_points = self.contacts.as_ref().map_or(Vec::new(), |cs| (0..cs.specs.len()).map(|i| cs.slave_positions(i)).collect());
+        let rigid_translation = self.contacts.as_ref().map_or(Vec::new(), |cs| cs.rigid_translations(lambda, &state.rigid_q));
+        let contact_weights = self.contacts.as_ref().map_or(Vec::new(), |cs| (0..cs.specs.len()).map(|i| cs.slave_weights(i)).collect());
         let ground_leak = {
             let d = self.model.mesh.dim();
             let mut net = [0.0f64; 3];
@@ -1582,36 +1215,11 @@ impl Ctx<'_> {
             }
             norm(&net)
         };
-        NlSolution {
-            u,
-            state,
-            prev_state: self.last_start.borrow().clone(),
-            lambda,
-            steps,
-            reactions,
-            stop,
-            factorisations: 0,
-            stalled_solves: 0,
-            held_solves: 0,
-            elapsed_ms: 0.0,
-            contact,
-            contact_points,
-            contact_weights,
-            rigid_translation,
-            ground_leak,
-            events: self.events.borrow().clone(),
-            profile: Profile::default(),
-        }
+        NlSolution { u, state, prev_state: self.last_start.borrow().clone(), lambda, steps, reactions, stop, factorisations: 0, stalled_solves: 0, held_solves: 0, elapsed_ms: 0.0, contact, contact_points, contact_weights, rigid_translation, ground_leak, events: self.events.borrow().clone(), profile: Profile::default() }
     }
 
     /// Newton iterations at load factor `lambda` from the converged `(u, state)`.
-    fn newton(
-        &self,
-        lambda_prev: f64,
-        lambda: f64,
-        u0: &[f64],
-        state0: &NlState,
-    ) -> Result<(Vec<f64>, NlState, Vec<f64>), String> {
+    fn newton(&self, lambda_prev: f64, lambda: f64, u0: &[f64], state0: &NlState) -> Result<(Vec<f64>, NlState, Vec<f64>), String> {
         let result = self.newton_iterations(lambda_prev, lambda, u0, state0);
         // A held active set belongs to the one solve that asked for it.
         if let Some(cs) = &self.contacts {
@@ -1620,13 +1228,7 @@ impl Ctx<'_> {
         result
     }
 
-    fn newton_iterations(
-        &self,
-        lambda_prev: f64,
-        lambda: f64,
-        u0: &[f64],
-        state0: &NlState,
-    ) -> Result<(Vec<f64>, NlState, Vec<f64>), String> {
+    fn newton_iterations(&self, lambda_prev: f64, lambda: f64, u0: &[f64], state0: &NlState) -> Result<(Vec<f64>, NlState, Vec<f64>), String> {
         let nf = self.free.len();
         let mut u = u0.to_vec();
         let mut q = state0.rigid_q.clone();
@@ -1649,10 +1251,7 @@ impl Ctx<'_> {
             }
             let ev0 = ev0?;
             let mut kd = vec![0.0; u.len()];
-            ev0.k
-                .as_ref()
-                .expect("tangent")
-                .matvec_add(&self.pat, &jump, &mut kd);
+            ev0.k.as_ref().expect("tangent").matvec_add(&self.pat, &jump, &mut kd);
             let mut dx: Vec<f64> = self.free.iter().map(|&i| -kd[i]).collect();
             self.solve(&ev0, &mut dx)?;
             for (j, &i) in self.free.iter().enumerate() {
@@ -1668,25 +1267,8 @@ impl Ctx<'_> {
             let mut idx: Vec<usize> = (0..self.free.len()).collect();
             idx.sort_by(|&a, &b| r[b].abs().total_cmp(&r[a].abs()));
             let d = self.model.mesh.dim();
-            let top: Vec<String> = idx
-                .iter()
-                .take(4)
-                .map(|&j| {
-                    let dof = self.free[j];
-                    let nd = dof / d;
-                    format!(
-                        "node {nd} comp {} r {:.2e} at {:?} u {:.2e}",
-                        dof % d,
-                        r[j],
-                        &self.model.mesh.nodes[nd][..2],
-                        u[dof]
-                    )
-                })
-                .collect();
-            eprintln!(
-                "  lambda {lambda:.4e} initial residual {rn:.3e}: {}",
-                top.join(" | ")
-            );
+            let top: Vec<String> = idx.iter().take(4).map(|&j| { let dof = self.free[j]; let nd = dof / d; format!("node {nd} comp {} r {:.2e} at {:?} u {:.2e}", dof % d, r[j], &self.model.mesh.nodes[nd][..2], u[dof]) }).collect();
+            eprintln!("  lambda {lambda:.4e} initial residual {rn:.3e}: {}", top.join(" | "));
         }
         // (u, q before the step, the step, residual norm before it)
         type Prev = (Vec<f64>, Vec<f64>, Vec<f64>, f64);
@@ -1700,21 +1282,14 @@ impl Ctx<'_> {
         // With `stall_tol` the iterate of the lowest residual is kept, to be accepted when the iteration stalls.
         let mut lowest: Option<(f64, Vec<f64>, Vec<f64>, NlState)> = None;
         // Only a frictional contact cycles between stick and slip: `NlOptions::stick_slip_guard` is for it.
-        let frictional = self.opt.stick_slip_guard
-            && self
-                .contacts
-                .as_ref()
-                .is_some_and(|cs| cs.specs.iter().any(|s| s.mu > 0.0));
+        let frictional = self.opt.stick_slip_guard && self.contacts.as_ref().is_some_and(|cs| cs.specs.iter().any(|s| s.mu > 0.0));
         let (mut iteration, mut budget) = (0usize, self.opt.max_iter);
         while iteration <= budget {
             iteration += 1;
             if self.opt.interrupt.triggered() {
                 return Err("interrupted".into());
             }
-            if rn <= self.opt.tol * self.scale(&ev, lambda)
-                || rn < 1e-14 * self.scale(&ev, lambda).max(1.0)
-                || rn <= self.abs_tol()
-            {
+            if rn <= self.opt.tol * self.scale(&ev, lambda) || rn < 1e-14 * self.scale(&ev, lambda).max(1.0) || rn <= self.abs_tol() {
                 let mut st = ev.state;
                 st.rigid_q = q;
                 return Ok((u, st, residuals));
@@ -1739,15 +1314,7 @@ impl Ctx<'_> {
             // lost half the contact (or all of it) of the step's start is not chattering, it has left the solution: freezing
             // that active set "converged" to a pin carrying none of its load (3D partial-slip GMRES steps exposed it:
             // `eccentric-bushing` seed 77), so the stagnation stands and the step is cut.
-            let hold_plausible =
-                state0
-                    .contact
-                    .iter()
-                    .zip(&ev.state.contact)
-                    .all(|(start, now)| {
-                        2 * now.iter().filter(|c| c.active).count()
-                            >= start.iter().filter(|c| c.active).count()
-                    });
+            let hold_plausible = state0.contact.iter().zip(&ev.state.contact).all(|(start, now)| 2 * now.iter().filter(|c| c.active).count() >= start.iter().filter(|c| c.active).count());
             if frictional && since_best >= STAGNATION_ITERATIONS && hold_plausible {
                 if let Some(cs) = self.contacts.as_ref().filter(|cs| !cs.active_set_held()) {
                     cs.hold_active_set(&ev.state.contact);
@@ -1769,25 +1336,15 @@ impl Ctx<'_> {
                 }
             }
             if frictional && since_best >= STAGNATION_ITERATIONS && self.opt.stall_tol > 0.0 {
-                if let Some((_, lu, lq, mut lst)) = lowest
-                    .take()
-                    .filter(|l| l.0 <= self.opt.stall_tol * self.scale(&ev, lambda))
-                {
+                if let Some((_, lu, lq, mut lst)) = lowest.take().filter(|l| l.0 <= self.opt.stall_tol * self.scale(&ev, lambda)) {
                     lst.rigid_q = lq;
                     self.stalled.set(self.stalled.get() + 1);
-                    self.note(
-                        EventKind::StallAccepted,
-                        lambda,
-                        residuals.last().copied().unwrap_or(f64::NAN),
-                        "stagnated; lowest iterate accepted under stall_tol",
-                    );
+                    self.note(EventKind::StallAccepted, lambda, residuals.last().copied().unwrap_or(f64::NAN), "stagnated; lowest iterate accepted under stall_tol");
                     return Ok((lu, lst, residuals));
                 }
             }
             if frictional && since_best >= STAGNATION_ITERATIONS {
-                return Err(format!(
-                    "{STAGNATED} (residual {rn:.3e}, best {best_rn:.3e})"
-                ));
+                return Err(format!("{STAGNATED} (residual {rn:.3e}, best {best_rn:.3e})"));
             }
             // Backtrack when the last full step increased the residual.
             if self.opt.line_search {
@@ -1823,36 +1380,16 @@ impl Ctx<'_> {
                 }
             }
             // Refactor unless a recent factor is still contracting fast enough.
-            let reuse = self.opt.chord_iters > 0
-                && chord
-                    .as_ref()
-                    .is_some_and(|(_, age)| *age < self.opt.chord_iters)
-                && rn < 0.25 * last_rn;
+            let reuse = self.opt.chord_iters > 0 && chord.as_ref().is_some_and(|(_, age)| *age < self.opt.chord_iters) && rn < 0.25 * last_rn;
             if !reuse {
                 // Cholesky; with contact the (symmetrised) frictional tangent can be indefinite, so LDL^T is the fallback there.
                 let k = ev.k.as_ref().expect("tangent");
                 let t_fac = Instant::now();
                 // (Follower loads too: the symmetric part of their load stiffness is indefinite well before the body is.)
-                let fac = if self.contacts.is_some() || !self.followers.is_empty() {
-                    self.red.factor_any(k)
-                } else {
-                    self.red.factor(k).map(crate::linear::AnyFactor::Llt)
-                }
-                .map_err(|e| e.to_string())?;
+                let fac = if self.contacts.is_some() || !self.followers.is_empty() { self.red.factor_any(k) } else { self.red.factor(k).map(crate::linear::AnyFactor::Llt) }.map_err(|e| e.to_string())?;
                 self.timers[1].set(self.timers[1].get() + t_fac.elapsed().as_secs_f64());
-                if fac.is_indefinite()
-                    && !self
-                        .events
-                        .borrow()
-                        .iter()
-                        .any(|e| e.kind == EventKind::IndefiniteTangent)
-                {
-                    self.note(
-                        EventKind::IndefiniteTangent,
-                        lambda,
-                        rn,
-                        "tangent not positive definite: LDL^T factorisation (first occurrence)",
-                    );
+                if fac.is_indefinite() && !self.events.borrow().iter().any(|e| e.kind == EventKind::IndefiniteTangent) {
+                    self.note(EventKind::IndefiniteTangent, lambda, rn, "tangent not positive definite: LDL^T factorisation (first occurrence)");
                 }
                 self.factorisations.set(self.factorisations.get() + 1);
                 chord = Some((fac, 0));
@@ -1878,41 +1415,19 @@ impl Ctx<'_> {
             rn = norm(&r);
             if let Ok(mode) = std::env::var("NL_TRACE") {
                 let dxn = dx.iter().map(|v| v * v).sum::<f64>().sqrt();
-                let summary = self
-                    .contacts
-                    .as_ref()
-                    .map_or(String::new(), |cs| cs.describe(&ev.state.contact));
+                let summary = self.contacts.as_ref().map_or(String::new(), |cs| cs.describe(&ev.state.contact));
                 // The two largest residual dofs: a residual that stays put while `dx` shrinks is a discontinuity at them.
                 let mut idx: Vec<usize> = (0..self.free.len()).collect();
                 idx.sort_by(|&a, &b| r[b].abs().total_cmp(&r[a].abs()));
                 let d = self.model.mesh.dim();
-                let top: Vec<String> = idx
-                    .iter()
-                    .take(2)
-                    .map(|&j| {
-                        let (dof, node) = (self.free[j], self.free[j] / d);
-                        format!(
-                            "node {node} comp {} r {:.1e} at ({:.3}, {:.3})",
-                            dof % d,
-                            r[j],
-                            self.model.mesh.nodes[node][0],
-                            self.model.mesh.nodes[node][1]
-                        )
-                    })
-                    .collect();
+                let top: Vec<String> = idx.iter().take(2).map(|&j| {
+                    let (dof, node) = (self.free[j], self.free[j] / d);
+                    format!("node {node} comp {} r {:.1e} at ({:.3}, {:.3})", dof % d, r[j], self.model.mesh.nodes[node][0], self.model.mesh.nodes[node][1])
+                }).collect();
                 let gap = ev.stats.as_ref().map_or(0.0, |s| s.min_gap);
-                eprintln!(
-                    "  it rn {rn:.6e} |dx| {dxn:.1e} min gap {gap:.2e} q {q:?} {summary} | {}",
-                    top.join(" | ")
-                );
+                eprintln!("  it rn {rn:.6e} |dx| {dxn:.1e} min gap {gap:.2e} q {q:?} {summary} | {}", top.join(" | "));
                 if mode == "full" {
-                    let act: Vec<String> = ev.state.contact.first().map_or(vec![], |v| {
-                        v.iter()
-                            .enumerate()
-                            .filter(|(_, c)| c.active)
-                            .map(|(i, c)| format!("{i}:{:.1e}", c.p))
-                            .collect()
-                    });
+                    let act: Vec<String> = ev.state.contact.first().map_or(vec![], |v| v.iter().enumerate().filter(|(_, c)| c.active).map(|(i, c)| format!("{i}:{:.1e}", c.p)).collect());
                     eprintln!("    active {}", act.join(" "));
                 }
             }
@@ -1920,48 +1435,27 @@ impl Ctx<'_> {
             prev = Some(before);
         }
         if self.opt.stall_tol > 0.0 && rn.is_finite() {
-            if let Some((_, lu, lq, mut lst)) = lowest
-                .take()
-                .filter(|l| l.0 <= self.opt.stall_tol * self.scale(&ev, lambda))
-            {
+            if let Some((_, lu, lq, mut lst)) = lowest.take().filter(|l| l.0 <= self.opt.stall_tol * self.scale(&ev, lambda)) {
                 lst.rigid_q = lq;
                 self.stalled.set(self.stalled.get() + 1);
-                self.note(
-                    EventKind::StallAccepted,
-                    lambda,
-                    residuals.last().copied().unwrap_or(f64::NAN),
-                    "iteration limit; lowest iterate accepted under stall_tol",
-                );
+                self.note(EventKind::StallAccepted, lambda, residuals.last().copied().unwrap_or(f64::NAN), "iteration limit; lowest iterate accepted under stall_tol");
                 return Ok((lu, lst, residuals));
             }
         }
         if std::env::var("NL_DEBUG").is_ok() {
             eprintln!("newton lambda {lambda:.3e} failed (force scale {:.3e}, elastic {:.3e}): residuals {:?}", self.scale(&ev, lambda), ev.f_elem, residuals.iter().map(|r| format!("{r:.2e}")).collect::<Vec<_>>());
         }
-        Err(format!(
-            "no convergence in {} iterations (residual {rn:.3e})",
-            self.opt.max_iter
-        ))
+        Err(format!("no convergence in {} iterations (residual {rn:.3e})", self.opt.max_iter))
     }
 
     /// Debug aid: compare the analytic tangent with central differences of the residual along a few directions.
-    fn fd_check(
-        &self,
-        ev: &Eval,
-        u: &[f64],
-        q: &[f64],
-        state0: &NlState,
-        lambda: f64,
-        r0: &[f64],
-    ) -> Result<(), String> {
+    fn fd_check(&self, ev: &Eval, u: &[f64], q: &[f64], state0: &NlState, lambda: f64, r0: &[f64]) -> Result<(), String> {
         let nf = self.free.len();
         let m = r0.len() - nf;
         let k = ev.k.as_ref().expect("tangent");
         for trial in 0..5 {
             // Direction: smooth pseudo-random; trials 3 and 4 move only the mesh / only the rigid body.
-            let mut dx: Vec<f64> = (0..nf + m)
-                .map(|i| ((i * 7919 + trial * 104729) as f64 * 0.618).sin())
-                .collect();
+            let mut dx: Vec<f64> = (0..nf + m).map(|i| ((i * 7919 + trial * 104729) as f64 * 0.618).sin()).collect();
             if trial == 3 {
                 dx[nf..].fill(0.0);
             } else if trial == 4 {
@@ -1990,10 +1484,7 @@ impl Ctx<'_> {
                     jd.push(v);
                 }
             }
-            let h = std::env::var("NL_FDH")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1e-7);
+            let h = std::env::var("NL_FDH").ok().and_then(|v| v.parse().ok()).unwrap_or(1e-7);
             let eval_at = |sgn: f64| -> Result<Vec<f64>, String> {
                 let mut ut = u.to_vec();
                 for (j, &i) in self.free.iter().enumerate() {
@@ -2004,18 +1495,9 @@ impl Ctx<'_> {
                 Ok(self.residual(&e, lambda))
             };
             let (rp, rm) = (eval_at(1.0)?, eval_at(-1.0)?);
-            let fd: Vec<f64> = rp
-                .iter()
-                .zip(&rm)
-                .map(|(a, b)| (a - b) / (2.0 * h))
-                .collect();
-            let err_u = (0..nf).map(|i| (fd[i] - jd[i]).powi(2)).sum::<f64>().sqrt()
-                / norm(&jd[..nf]).max(1e-300);
-            let err_q = (nf..nf + m)
-                .map(|i| (fd[i] - jd[i]).powi(2))
-                .sum::<f64>()
-                .sqrt()
-                / norm(&jd[nf..]).max(1e-300);
+            let fd: Vec<f64> = rp.iter().zip(&rm).map(|(a, b)| (a - b) / (2.0 * h)).collect();
+            let err_u = (0..nf).map(|i| (fd[i] - jd[i]).powi(2)).sum::<f64>().sqrt() / norm(&jd[..nf]).max(1e-300);
+            let err_q = (nf..nf + m).map(|i| (fd[i] - jd[i]).powi(2)).sum::<f64>().sqrt() / norm(&jd[nf..]).max(1e-300);
             eprintln!("  fdcheck trial {trial}: free-row rel err {err_u:.2e}, extra-row rel err {err_q:.2e}, |Jd_q| {:.3e}", norm(&jd[nf..]));
         }
         let _ = r0;
@@ -2060,17 +1542,8 @@ impl Ctx<'_> {
 
     /// Augmented-Lagrangian passes at a converged load factor: update the multipliers from the converged pressures
     /// and re-solve until they stop changing, then commit the slip history. `residuals` collects the Newton work.
-    fn refine_contact(
-        &self,
-        lambda_prev: f64,
-        target: f64,
-        mut un: Vec<f64>,
-        mut sn: NlState,
-        residuals: &mut Vec<f64>,
-    ) -> (Vec<f64>, NlState) {
-        let Some(cs) = &self.contacts else {
-            return (un, sn);
-        };
+    fn refine_contact(&self, lambda_prev: f64, target: f64, mut un: Vec<f64>, mut sn: NlState, residuals: &mut Vec<f64>) -> (Vec<f64>, NlState) {
+        let Some(cs) = &self.contacts else { return (un, sn) };
         // The multipliers `un` was solved for. The update that ends the passes is not re-solved, and a state that pairs
         // `un` with the updated multipliers is off by that update: reactions and master forces read off it miss the
         // equilibrium by `outer_tol x` the fit pressure, which is large next to a small applied load.
@@ -2099,15 +1572,7 @@ impl Ctx<'_> {
                 }
             }
             if pass + 1 == self.opt.max_outer {
-                self.note(
-                    EventKind::OuterNotConverged,
-                    target,
-                    f64::NAN,
-                    format!(
-                        "{} passes left the multiplier change at {chg:.2e} (outer_tol {:.1e})",
-                        self.opt.max_outer, self.opt.outer_tol
-                    ),
-                );
+                self.note(EventKind::OuterNotConverged, target, f64::NAN, format!("{} passes left the multiplier change at {chg:.2e} (outer_tol {:.1e})", self.opt.max_outer, self.opt.outer_tol));
             }
         }
         for (pts, old) in sn.contact.iter_mut().zip(&solved) {
@@ -2144,71 +1609,38 @@ impl Ctx<'_> {
                     lambda = target;
                     let iterations = residuals.len();
                     let max_ep = sn.max_ep();
-                    let master_force = if self.contacts.is_some() {
-                        self.eval(&un, &sn.rigid_q, &sn, lambda, false)
-                            .ok()
-                            .and_then(|e| e.stats)
-                            .map_or(Vec::new(), |st| st.master_force)
-                    } else {
-                        Vec::new()
-                    };
+                    let master_force = if self.contacts.is_some() { self.eval(&un, &sn.rigid_q, &sn, lambda, false).ok().and_then(|e| e.stats).map_or(Vec::new(), |st| st.master_force) } else { Vec::new() };
                     if std::env::var("NL_DEBUG").is_ok() {
                         eprintln!("step ok lambda {target:.4} effort {newton_effort} total {} master force {:?}", residuals.len(), master_force.first());
                     }
                     // A step that carries the first master well past the target force is taken again with half the step
                     // (the force rises steeply once a body is in contact, so a uniform step can jump far over the target).
-                    if self.opt.stop_at_force > 0.0
-                        && master_force
-                            .first()
-                            .is_some_and(|f| norm(f) > 1.25 * self.opt.stop_at_force)
-                        && dl > 1e-9
-                    {
+                    if self.opt.stop_at_force > 0.0 && master_force.first().is_some_and(|f| norm(f) > 1.25 * self.opt.stop_at_force) && dl > 1e-9 {
                         lambda = lambda_before;
                         dl *= 0.5;
                         continue;
                     }
                     if let Some(obs) = &self.opt.observer {
-                        (obs.0)(&StepEvent {
-                            step: steps.len() + 1,
-                            lambda,
-                            master_force: master_force.first().map(|f| norm(f)),
-                            factorisations: self.factorisations.get(),
-                        });
+                        (obs.0)(&StepEvent { step: steps.len() + 1, lambda, master_force: master_force.first().map(|f| norm(f)), factorisations: self.factorisations.get() });
                     }
-                    steps.push(StepInfo {
-                        lambda,
-                        iterations,
-                        residuals,
-                        max_ep,
-                        plastic_fraction: sn.plastic_fraction(),
-                        cuts: cuts_total,
-                        indefinite: false,
-                        master_force,
-                    });
+                    steps.push(StepInfo { lambda, iterations, residuals, max_ep, plastic_fraction: sn.plastic_fraction(), cuts: cuts_total, indefinite: false, master_force });
                     u = un;
                     *self.last_start.borrow_mut() = Some(state.clone());
                     state = sn;
                     cuts_total = 0;
                     stagnated_cuts = 0; // (per load step, as documented: the budget was cumulative over the whole analysis)
-                                        // Frictional contact converges linearly (the sliding traction is frozen in the tangent), so
-                                        // its first pass legitimately takes 10-15 iterations.
+                    // Frictional contact converges linearly (the sliding traction is frozen in the tangent), so
+                    // its first pass legitimately takes 10-15 iterations.
                     if newton_effort <= if self.contacts.is_some() { 16 } else { 5 } {
                         dl = (dl * 1.5).min(dl_max);
                     }
                     if self.opt.failure_ep.is_some_and(|lim| max_ep >= lim) {
                         return Ok(self.finish(u, state, lambda, steps, Stop::FailureStrain));
                     }
-                    if self.opt.stop_at_force > 0.0
-                        && steps
-                            .last()
-                            .and_then(|s| s.master_force.first())
-                            .is_some_and(|f| norm(f) >= self.opt.stop_at_force)
-                    {
+                    if self.opt.stop_at_force > 0.0 && steps.last().and_then(|s| s.master_force.first()).is_some_and(|f| norm(f) >= self.opt.stop_at_force) {
                         return Ok(self.finish(u, state, lambda, steps, Stop::ForceReached));
                     }
-                    if (self.opt.stop_on_plateau && load_flat(&steps, 0.012))
-                        || (self.opt.stop_on_fall > 0.0 && load_fell(&steps, self.opt.stop_on_fall))
-                    {
+                    if (self.opt.stop_on_plateau && load_flat(&steps, 0.012)) || (self.opt.stop_on_fall > 0.0 && load_fell(&steps, self.opt.stop_on_fall)) {
                         return Ok(self.finish(u, state, lambda, steps, Stop::Plateau));
                     }
                 }
@@ -2224,13 +1656,7 @@ impl Ctx<'_> {
                     if self.opt.stick_slip_guard && e.starts_with(STAGNATED) {
                         stagnated_cuts += 1;
                         if stagnated_cuts > STAGNATION_CUTS {
-                            return Ok(self.finish(
-                                u,
-                                state,
-                                lambda,
-                                steps,
-                                Stop::NoConvergence(e),
-                            ));
+                            return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(e)));
                         }
                     }
                     dl *= 0.5;
@@ -2248,12 +1674,7 @@ impl Ctx<'_> {
         Ok(self.finish(u, state, lambda, steps, Stop::Completed))
     }
 
-    fn run_arc_length(
-        &mut self,
-        ds0: f64,
-        lambda_max: f64,
-        max_steps: usize,
-    ) -> Result<NlSolution, String> {
+    fn run_arc_length(&mut self, ds0: f64, lambda_max: f64, max_steps: usize) -> Result<NlSolution, String> {
         let (mut u, mut state, lambda0) = self.initial_with_start()?;
         let (mut lambda, mut ds) = (lambda0, ds0);
         let mut steps: Vec<StepInfo> = Vec::new();
@@ -2280,10 +1701,7 @@ impl Ctx<'_> {
             // extrapolates the previous converged increment (a secant predictor), which stays on the
             // path through limit points and perfect-plasticity plateaus where the tangent is singular
             // and the sign of K^-1 f is meaningless.
-            let (mut du, mut dlam): (Vec<f64>, f64) = match dir
-                .as_ref()
-                .filter(|(d, _)| norm(d) > 1e-300)
-            {
+            let (mut du, mut dlam): (Vec<f64>, f64) = match dir.as_ref().filter(|(d, _)| norm(d) > 1e-300) {
                 Some((dprev, dlprev)) => {
                     let k = ds / norm(dprev);
                     (dprev.iter().map(|v| v * k).collect(), dlprev * k)
@@ -2291,9 +1709,7 @@ impl Ctx<'_> {
                 None => {
                     let ev0 = match self.eval(&u, &state.rigid_q, &state, lambda, true) {
                         Ok(e) => e,
-                        Err(e) => {
-                            return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(e)))
-                        }
+                        Err(e) => return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(e))),
                     };
                     let mut duf = fext_free.clone();
                     if let Err(e) = self.solve_any(&ev0, &mut duf) {
@@ -2352,19 +1768,12 @@ impl Ctx<'_> {
                 let disc = b * b - a * c;
                 if disc < 0.0 || a <= 0.0 {
                     failed = true;
-                    reason = format!(
-                        "the arc-length constraint has no real root (discriminant {disc:.3e})"
-                    );
+                    reason = format!("the arc-length constraint has no real root (discriminant {disc:.3e})");
                     break;
                 }
                 let (r1, r2) = ((-b + disc.sqrt()) / a, (-b - disc.sqrt()) / a);
                 // The root that keeps going the same way as the increment so far.
-                let dot = |dl: f64| -> f64 {
-                    du.iter()
-                        .zip(base.iter().zip(&duf2))
-                        .map(|(d0, (bb, ff))| d0 * (bb + dl * ff))
-                        .sum()
-                };
+                let dot = |dl: f64| -> f64 { du.iter().zip(base.iter().zip(&duf2)).map(|(d0, (bb, ff))| d0 * (bb + dl * ff)).sum() };
                 let ddl = if dot(r1) >= dot(r2) { r1 } else { r2 };
                 for j in 0..du.len() {
                     du[j] = base[j] + ddl * duf2[j];
@@ -2378,19 +1787,9 @@ impl Ctx<'_> {
                     if lam > lambda_max {
                         return match self.newton(lambda, lambda_max, &u, &state) {
                             Ok((ul, sl, mut res)) => {
-                                let (ul, sl) =
-                                    self.refine_contact(lambda, lambda_max, ul, sl, &mut res);
+                                let (ul, sl) = self.refine_contact(lambda, lambda_max, ul, sl, &mut res);
                                 let (max_ep, iterations) = (sl.max_ep(), res.len());
-                                steps.push(StepInfo {
-                                    lambda: lambda_max,
-                                    iterations,
-                                    residuals: res,
-                                    max_ep,
-                                    plastic_fraction: sl.plastic_fraction(),
-                                    cuts,
-                                    indefinite,
-                                    master_force: Vec::new(),
-                                });
+                                steps.push(StepInfo { lambda: lambda_max, iterations, residuals: res, max_ep, plastic_fraction: sl.plastic_fraction(), cuts, indefinite, master_force: Vec::new() });
                                 Ok(self.finish(ul, sl, lambda_max, steps, Stop::Completed))
                             }
                             Err(_) => {
@@ -2398,15 +1797,7 @@ impl Ctx<'_> {
                                 cuts += 1;
                                 ds *= 0.5;
                                 if cuts > self.opt.max_cuts {
-                                    return Ok(self.finish(
-                                        u,
-                                        state,
-                                        lambda,
-                                        steps,
-                                        Stop::NoConvergence(format!(
-                                            "could not land on lambda {lambda_max}"
-                                        )),
-                                    ));
+                                    return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(format!("could not land on lambda {lambda_max}"))));
                                 }
                                 continue;
                             }
@@ -2421,20 +1812,9 @@ impl Ctx<'_> {
                     let max_ep = sn.max_ep();
                     let iterations = residuals.len();
                     if std::env::var("NL_DEBUG").is_ok() {
-                        eprintln!(
-                            "arc step ok: lambda {lam:.5e} ds {ds:.2e} iterations {iterations}"
-                        );
+                        eprintln!("arc step ok: lambda {lam:.5e} ds {ds:.2e} iterations {iterations}");
                     }
-                    steps.push(StepInfo {
-                        lambda: lam,
-                        iterations,
-                        residuals,
-                        max_ep,
-                        plastic_fraction: sn.plastic_fraction(),
-                        cuts,
-                        indefinite,
-                        master_force: Vec::new(),
-                    });
+                    steps.push(StepInfo { lambda: lam, iterations, residuals, max_ep, plastic_fraction: sn.plastic_fraction(), cuts, indefinite, master_force: Vec::new() });
                     dir = Some((du, dlam));
                     u = un;
                     *self.last_start.borrow_mut() = Some(state.clone());
@@ -2457,24 +1837,9 @@ impl Ctx<'_> {
                     cuts += 1;
                     ds *= 0.5;
                     if reason.is_empty() {
-                        reason = format!(
-                            "no convergence in {} iterations (residuals {:?})",
-                            self.opt.max_iter,
-                            residuals
-                                .iter()
-                                .rev()
-                                .take(4)
-                                .rev()
-                                .map(|r| format!("{r:.2e}"))
-                                .collect::<Vec<_>>()
-                        );
+                        reason = format!("no convergence in {} iterations (residuals {:?})", self.opt.max_iter, residuals.iter().rev().take(4).rev().map(|r| format!("{r:.2e}")).collect::<Vec<_>>());
                     }
-                    self.note(
-                        EventKind::StepCut,
-                        lambda,
-                        residuals.last().copied().unwrap_or(f64::NAN),
-                        reason.clone(),
-                    );
+                    self.note(EventKind::StepCut, lambda, residuals.last().copied().unwrap_or(f64::NAN), reason.clone());
                     if cuts > self.opt.max_cuts {
                         return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(format!("arc-length step could not converge at lambda {lambda:.5} (ds {ds:.2e}): {reason}"))));
                     }
@@ -2494,9 +1859,7 @@ mod tangent_tests {
     fn the_2d_tangent_accumulation_matches_the_generic_one() {
         let nn = 9;
         let nd = 2 * nn;
-        let gr: Vec<f64> = (0..nn * 2)
-            .map(|i| ((i * 37 + 11) as f64 * 0.731).sin())
-            .collect();
+        let gr: Vec<f64> = (0..nn * 2).map(|i| ((i * 37 + 11) as f64 * 0.731).sin()).collect();
         let nsh = vec![0.1; nn];
         let mut tangent = [[0.0f64; 9]; 9];
         for r in 0..9 {
@@ -2507,10 +1870,7 @@ mod tangent_tests {
         let (mut a, mut b) = (vec![0.0; nd * nd], vec![0.0; nd * nd]);
         accumulate_tangent_generic(&mut a, nn, 2, nd, &gr, &nsh, 1.0, false, &tangent, 0.7);
         accumulate_tangent_2d(&mut b, nn, &gr, &tangent, 0.7);
-        let diff = a
-            .iter()
-            .zip(&b)
-            .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+        let diff = a.iter().zip(&b).fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
         assert!(diff < 1e-12, "{diff:e}");
     }
 }
@@ -2520,46 +1880,24 @@ mod plateau_tests {
     use super::*;
 
     fn step(lambda: f64, load: f64) -> StepInfo {
-        StepInfo {
-            lambda,
-            iterations: 5,
-            residuals: vec![],
-            max_ep: 0.0,
-            plastic_fraction: 0.0,
-            cuts: 0,
-            indefinite: false,
-            master_force: vec![[load, 0.0, 0.0]],
-        }
+        StepInfo { lambda, iterations: 5, residuals: vec![], max_ep: 0.0, plastic_fraction: 0.0, cuts: 0, indefinite: false, master_force: vec![[load, 0.0, 0.0]] }
     }
 
     #[test]
     fn a_plateau_is_read_on_travel_not_on_the_number_of_steps() {
         // Rising load with regular steps: not flat. Flat over 6 % of the travel: flat.
-        let rising: Vec<StepInfo> = (1..=10)
-            .map(|i| step(0.03 * i as f64, 1000.0 * i as f64))
-            .collect();
+        let rising: Vec<StepInfo> = (1..=10).map(|i| step(0.03 * i as f64, 1000.0 * i as f64)).collect();
         assert!(!load_flat(&rising, 0.012));
         let mut flat = rising.clone();
         flat.extend((11..=13).map(|i| step(0.03 * i as f64, 10_000.0)));
-        assert!(
-            load_flat(&flat, 0.012),
-            "flat over the last 9 % of the travel"
-        );
+        assert!(load_flat(&flat, 0.012), "flat over the last 9 % of the travel");
         // After a convergence trouble the steps shrink: three equal loads over a sliver of travel say nothing.
         let mut tiny = rising.clone();
-        tiny.extend([
-            step(0.3005, 10_000.0),
-            step(0.3011, 10_000.0),
-            step(0.3015, 10_000.0),
-        ]);
-        assert!(
-            !load_flat(&tiny, 0.012),
-            "tiny steps must not read as a plateau"
-        );
+        tiny.extend([step(0.3005, 10_000.0), step(0.3011, 10_000.0), step(0.3015, 10_000.0)]);
+        assert!(!load_flat(&tiny, 0.012), "tiny steps must not read as a plateau");
         // A falling load is flat (the collapse is behind it).
         let mut falling = rising;
-        falling
-            .extend((11..=14).map(|i| step(0.03 * i as f64, 10_000.0 - 400.0 * (i - 10) as f64)));
+        falling.extend((11..=14).map(|i| step(0.03 * i as f64, 10_000.0 - 400.0 * (i - 10) as f64)));
         assert!(load_flat(&falling, 0.012));
         assert!(load_fell(&falling, 0.1) && !load_fell(&falling, 0.2));
     }

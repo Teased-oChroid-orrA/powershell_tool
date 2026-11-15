@@ -51,14 +51,7 @@ pub struct ModalOptions {
 
 impl Default for ModalOptions {
     fn default() -> Self {
-        Self {
-            n_modes: 6,
-            shift: 0.0,
-            tol: 1e-9,
-            max_iter: 200,
-            mass: MassKind::Consistent,
-            method: EigMethod::Auto,
-        }
+        Self { n_modes: 6, shift: 0.0, tol: 1e-9, max_iter: 200, mass: MassKind::Consistent, method: EigMethod::Auto }
     }
 }
 
@@ -98,12 +91,7 @@ pub struct BucklingOptions {
 
 impl Default for BucklingOptions {
     fn default() -> Self {
-        Self {
-            n_modes: 3,
-            tol: 1e-9,
-            max_iter: 200,
-            method: EigMethod::Auto,
-        }
+        Self { n_modes: 3, tol: 1e-9, max_iter: 200, method: EigMethod::Auto }
     }
 }
 
@@ -150,10 +138,7 @@ struct Lcg(u64);
 
 impl Lcg {
     fn next(&mut self) -> f64 {
-        self.0 = self
-            .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         ((self.0 >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
     }
 }
@@ -176,12 +161,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 
 impl Model {
     fn require_mass(&self) -> Result<(), String> {
-        if self
-            .mesh
-            .blocks
-            .iter()
-            .any(|b| !(b.density.is_finite() && b.density > 0.0))
-        {
+        if self.mesh.blocks.iter().any(|b| !(b.density.is_finite() && b.density > 0.0)) {
             return Err("every block needs a mass density (Mesh::set_density); a block without one is massless".into());
         }
         Ok(())
@@ -217,11 +197,7 @@ impl Model {
 
     /// Geometric (initial-stress) stiffness for the stress state of displacement `u` (a linear static solution of the
     /// reference load): plane stress / strain and 3D solids.
-    pub fn assemble_geometric_stiffness(
-        &self,
-        u: &[f64],
-        delta_t: f64,
-    ) -> Result<BlockMatrix, String> {
+    pub fn assemble_geometric_stiffness(&self, u: &[f64], delta_t: f64) -> Result<BlockMatrix, String> {
         if matches!(self.mesh.physics, crate::mesh::Physics::Axisymmetric) {
             return Err("buckling is not available for axisymmetric models (the geometric stiffness has hoop terms that are not implemented)".into());
         }
@@ -230,35 +206,18 @@ impl Model {
         assemble_scalar_identity(mesh, &self.pattern, |bi, e, xyz, work, kg| {
             let blk = &mesh.blocks[bi];
             let ngp = blk.kind.table().ngp;
-            let s: Vec<[f64; 6]> = stress[bi][e * ngp..(e + 1) * ngp]
-                .iter()
-                .map(|(_, s)| *s)
-                .collect();
+            let s: Vec<[f64; 6]> = stress[bi][e * ngp..(e + 1) * ngp].iter().map(|(_, s)| *s).collect();
             kernel::geometric_stiffness(blk.kind, mesh.physics, &s, xyz, work, kg)
         })
     }
 
     /// Block shift-and-invert subspace iteration with Rayleigh-Ritz on the free dofs.
     #[allow(clippy::too_many_arguments)]
-    fn eig_pencil(
-        &self,
-        bc: &Dirichlet,
-        k: &BlockMatrix,
-        b: &BlockMatrix,
-        sigma: f64,
-        kind: Kind,
-        nev: usize,
-        tol: f64,
-        max_iter: usize,
-        method: EigMethod,
-    ) -> Result<Pairs, String> {
-        let red = Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), Ordering::Auto)
-            .map_err(|e| e.to_string())?;
+    fn eig_pencil(&self, bc: &Dirichlet, k: &BlockMatrix, b: &BlockMatrix, sigma: f64, kind: Kind, nev: usize, tol: f64, max_iter: usize, method: EigMethod) -> Result<Pairs, String> {
+        let red = Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
         let m = red.n_free();
         if nev == 0 || nev > m {
-            return Err(format!(
-                "{nev} modes requested of a system with {m} free dofs"
-            ));
+            return Err(format!("{nev} modes requested of a system with {m} free dofs"));
         }
         let p = (2 * nev).max(nev + 8).min(m);
         let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
@@ -294,72 +253,32 @@ impl Model {
                 }
             }
         } else {
-            let a = if sigma == 0.0 {
-                k.clone()
-            } else {
-                k.axpy(-sigma, b)
-            };
-            let f = red.factor_any(&a).map_err(|e| {
-                format!("{e} (for a structure with rigid-body modes use a negative shift)")
-            })?;
+            let a = if sigma == 0.0 { k.clone() } else { k.axpy(-sigma, b) };
+            let f = red.factor_any(&a).map_err(|e| format!("{e} (for a structure with rigid-body modes use a negative shift)"))?;
             (sigma, a, f)
         };
         // Floating-point allowance of a residual: `K x` of an exact null vector (a rigid-body mode of a free structure) is
         // round-off, not zero, so a backward error measured against `|K x| + |lambda| |B x|` alone is meaningless there.
-        let kscale = k
-            .diagonal(&self.pattern)
-            .iter()
-            .fold(0.0f64, |m, v| m.max(v.abs()));
+        let kscale = k.diagonal(&self.pattern).iter().fold(0.0f64, |m, v| m.max(v.abs()));
         let noise = 100.0 * f64::EPSILON * kscale;
         let mut fallback: Option<String> = None;
         let pair_of = |lam: f64, v: &[f64]| -> Pair {
             let kv = mul(k, v);
             let bv = mul(b, v);
-            let r: f64 = kv
-                .iter()
-                .zip(&bv)
-                .map(|(a, bb)| (a - lam * bb).powi(2))
-                .sum::<f64>()
-                .sqrt();
-            Pair {
-                lambda: lam,
-                x: v.to_vec(),
-                residual: (r - noise * dot(v, v).sqrt()).max(0.0)
-                    / (dot(&kv, &kv).sqrt() + lam.abs() * dot(&bv, &bv).sqrt()).max(1e-300),
-            }
+            let r: f64 = kv.iter().zip(&bv).map(|(a, bb)| (a - lam * bb).powi(2)).sum::<f64>().sqrt();
+            Pair { lambda: lam, x: v.to_vec(), residual: (r - noise * dot(v, v).sqrt()).max(0.0) / (dot(&kv, &kv).sqrt() + lam.abs() * dot(&bv, &bv).sqrt()).max(1e-300) }
         };
-        if method == EigMethod::Lanczos
-            || (method == EigMethod::Auto && AUTO_METHOD == EigMethod::Lanczos)
-        {
-            let attempt = lanczos(
-                m,
-                nev,
-                tol,
-                max_iter,
-                kind,
-                sigma,
-                &mul,
-                &a_mat,
-                b,
-                &fac,
-                &pair_of,
-                red.factor_nnz(),
-            );
+        if method == EigMethod::Lanczos || (method == EigMethod::Auto && AUTO_METHOD == EigMethod::Lanczos) {
+            let attempt = lanczos(m, nev, tol, max_iter, kind, sigma, &mul, &a_mat, b, &fac, &pair_of, red.factor_nnz());
             match (attempt, method) {
                 // The cheap method failed its verification: `Auto` goes on with the robust one and says so; an explicit request is an error.
-                (Err(why), EigMethod::Auto) => {
-                    fallback = Some(format!(
-                        "Lanczos was rejected ({why}); subspace iteration used"
-                    ))
-                }
+                (Err(why), EigMethod::Auto) => fallback = Some(format!("Lanczos was rejected ({why}); subspace iteration used")),
                 (other, _) => return other,
             }
         }
         let mut rng = Lcg(0x9E37_79B9_7F4A_7C15);
         let mut fallback_note = fallback;
-        let mut x: Vec<Vec<f64>> = (0..p)
-            .map(|_| (0..m).map(|_| rng.next()).collect())
-            .collect();
+        let mut x: Vec<Vec<f64>> = (0..p).map(|_| (0..m).map(|_| rng.next()).collect()).collect();
         let mut best: Vec<Pair> = Vec::new();
         let mut converged = false;
         let mut iterations = 0;
@@ -403,16 +322,7 @@ impl Model {
                     let (theta, vec) = sym_gen_eigen(&bt, &at, p)?;
                     let mut ord: Vec<usize> = (0..p).filter(|&i| theta[i] != 0.0).collect();
                     ord.sort_by(|&i, &j| theta[j].abs().total_cmp(&theta[i].abs()));
-                    let lam: Vec<f64> = theta
-                        .iter()
-                        .map(|t| {
-                            if *t != 0.0 {
-                                sigma + 1.0 / t
-                            } else {
-                                f64::INFINITY
-                            }
-                        })
-                        .collect();
+                    let lam: Vec<f64> = theta.iter().map(|t| if *t != 0.0 { sigma + 1.0 / t } else { f64::INFINITY }).collect();
                     (ord, lam, vec)
                 }
             };
@@ -439,37 +349,14 @@ impl Model {
                     let v = &x[w];
                     let kv = mul(k, v);
                     let bv = mul(b, v);
-                    let r: f64 = kv
-                        .iter()
-                        .zip(&bv)
-                        .map(|(a, bb)| (a - lam * bb).powi(2))
-                        .sum::<f64>()
-                        .sqrt();
-                    Pair {
-                        lambda: lam,
-                        x: v.clone(),
-                        residual: (r - noise * dot(v, v).sqrt()).max(0.0)
-                            / (dot(&kv, &kv).sqrt() + lam.abs() * dot(&bv, &bv).sqrt()).max(1e-300),
-                    }
+                    let r: f64 = kv.iter().zip(&bv).map(|(a, bb)| (a - lam * bb).powi(2)).sum::<f64>().sqrt();
+                    Pair { lambda: lam, x: v.clone(), residual: (r - noise * dot(v, v).sqrt()).max(0.0) / (dot(&kv, &kv).sqrt() + lam.abs() * dot(&bv, &bv).sqrt()).max(1e-300) }
                 })
                 .collect();
             if std::env::var("EIG_TRACE").is_ok() {
-                eprintln!(
-                    "eig it {it}: lambda {:?} residual {:?}",
-                    best.iter().map(|q| q.lambda).collect::<Vec<_>>(),
-                    best.iter()
-                        .map(|q| format!("{:.1e}", q.residual))
-                        .collect::<Vec<_>>()
-                );
+                eprintln!("eig it {it}: lambda {:?} residual {:?}", best.iter().map(|q| q.lambda).collect::<Vec<_>>(), best.iter().map(|q| format!("{:.1e}", q.residual)).collect::<Vec<_>>());
             }
-            if best.len() == nev
-                && best.iter().all(|q| {
-                    q.lambda.is_finite()
-                        && q.residual.is_finite()
-                        && q.residual <= tol
-                        && q.x.iter().all(|x| x.is_finite())
-                })
-            {
+            if best.len() == nev && best.iter().all(|q| q.lambda.is_finite() && q.residual.is_finite() && q.residual <= tol && q.x.iter().all(|x| x.is_finite())) {
                 converged = true;
                 break;
             }
@@ -481,13 +368,7 @@ impl Model {
             let worst = best.iter().map(|q| q.residual).fold(0.0f64, f64::max);
             return Err(format!("the eigensolver did not reach residual {tol:e} in {max_iter} iterations (worst residual {worst:.2e}, subspace {p})"));
         }
-        Ok(Pairs {
-            pairs: best,
-            iterations,
-            subspace: p,
-            factor_nnz: red.factor_nnz(),
-            fallback: fallback_note.take(),
-        })
+        Ok(Pairs { pairs: best, iterations, subspace: p, factor_nnz: red.factor_nnz(), fallback: fallback_note.take() })
     }
 
     fn expand(&self, bc: &Dirichlet, x: &[f64]) -> Vec<f64> {
@@ -499,11 +380,7 @@ impl Model {
 
     fn validate_dynamic_constraints(&self, bc: &Dirichlet) -> Result<(), String> {
         let n = self.mesh.n_dofs();
-        if bc.d != self.mesh.dim()
-            || bc.fixed.len() != n
-            || bc.value.len() != n
-            || bc.value.iter().any(|v| !v.is_finite())
-        {
+        if bc.d != self.mesh.dim() || bc.fixed.len() != n || bc.value.len() != n || bc.value.iter().any(|v| !v.is_finite()) {
             return Err("dynamics: invalid constraint dimensions or nonfinite values".into());
         }
         Ok(())
@@ -512,12 +389,7 @@ impl Model {
     /// Natural frequencies and mode shapes of the constrained structure (homogeneous Dirichlet conditions).
     pub fn modal(&self, bc: &Dirichlet, opt: &ModalOptions) -> Result<Modal, String> {
         self.validate_dynamic_constraints(bc)?;
-        if !opt.tol.is_finite()
-            || opt.tol <= 0.0
-            || !opt.shift.is_finite()
-            || opt.max_iter == 0
-            || opt.n_modes == 0
-        {
+        if !opt.tol.is_finite() || opt.tol <= 0.0 || !opt.shift.is_finite() || opt.max_iter == 0 || opt.n_modes == 0 {
             return Err("modal: finite positive tolerance, finite shift, and nonzero modes/iterations are required".into());
         }
         self.require_mass()?;
@@ -529,17 +401,7 @@ impl Model {
         }
         let k = self.assemble()?;
         let mass = self.assemble_mass(opt.mass)?;
-        let r = self.eig_pencil(
-            bc,
-            &k,
-            &mass,
-            opt.shift,
-            Kind::Modal,
-            opt.n_modes,
-            opt.tol,
-            opt.max_iter,
-            opt.method,
-        )?;
+        let r = self.eig_pencil(bc, &k, &mass, opt.shift, Kind::Modal, opt.n_modes, opt.tol, opt.max_iter, opt.method)?;
         let d = self.mesh.dim();
         let total_mass = self.total_mass()?;
         let mut modes = Vec::new();
@@ -548,89 +410,41 @@ impl Model {
             let mut mphi = vec![0.0; shape.len()];
             mass.matvec_add(&self.pattern, &shape, &mut mphi);
             let norm = dot(&shape, &mphi).sqrt();
-            if !norm.is_finite()
-                || norm <= 0.0
-                || !q.lambda.is_finite()
-                || !q.residual.is_finite()
-                || q.residual > opt.tol
-            {
+            if !norm.is_finite() || norm <= 0.0 || !q.lambda.is_finite() || !q.residual.is_finite() || q.residual > opt.tol {
                 return Err("modal: eigenpair failed finite mass-norm/residual acceptance".into());
             }
             shape.iter_mut().for_each(|v| *v /= norm);
             mphi.iter_mut().for_each(|v| *v /= norm);
             let mut eff = [0.0; 3];
             for (axis, e) in eff.iter_mut().enumerate().take(d) {
-                let gamma: f64 = (0..self.mesh.nodes.len())
-                    .map(|nd| mphi[nd * d + axis])
-                    .sum();
+                let gamma: f64 = (0..self.mesh.nodes.len()).map(|nd| mphi[nd * d + axis]).sum();
                 *e = gamma * gamma;
             }
-            modes.push(Mode {
-                omega2: q.lambda,
-                frequency_hz: q.lambda.max(0.0).sqrt() / (2.0 * std::f64::consts::PI),
-                shape,
-                residual: q.residual,
-                effective_mass: eff,
-                mass: opt.mass,
-            });
+            modes.push(Mode { omega2: q.lambda, frequency_hz: q.lambda.max(0.0).sqrt() / (2.0 * std::f64::consts::PI), shape, residual: q.residual, effective_mass: eff, mass: opt.mass });
         }
-        Ok(Modal {
-            modes,
-            total_mass,
-            iterations: r.iterations,
-            subspace: r.subspace,
-            factor_nnz: r.factor_nnz,
-            fallback: r.fallback,
-        })
+        Ok(Modal { modes, total_mass, iterations: r.iterations, subspace: r.subspace, factor_nnz: r.factor_nnz, fallback: r.fallback })
     }
 
     /// Linear (eigenvalue) buckling: the smallest positive multipliers `lambda` of `loads` (and its prescribed displacements, taken
     /// as part of the reference state) for which `K + lambda K_G(sigma_ref)` is singular. The prestress is the linear
     /// static solution of the reference load; supports are those of `bc`. The reference load must put the structure in
     /// compression somewhere or no positive factor exists.
-    pub fn buckling(
-        &self,
-        loads: &Loads,
-        bc: &Dirichlet,
-        opt: &BucklingOptions,
-    ) -> Result<Buckling, String> {
+    pub fn buckling(&self, loads: &Loads, bc: &Dirichlet, opt: &BucklingOptions) -> Result<Buckling, String> {
         self.validate_dynamic_constraints(bc)?;
-        if !opt.tol.is_finite()
-            || opt.tol <= 0.0
-            || opt.max_iter == 0
-            || opt.n_modes == 0
-            || opt.n_modes > self.mesh.n_dofs()
-        {
+        if !opt.tol.is_finite() || opt.tol <= 0.0 || opt.max_iter == 0 || opt.n_modes == 0 || opt.n_modes > self.mesh.n_dofs() {
             return Err("buckling: finite positive tolerance and valid nonzero modes/iterations are required".into());
         }
         self.check_constrained(bc)?;
         let sol = self.solve_static(loads, bc)?;
         let k = self.assemble()?;
         let kg = self.assemble_geometric_stiffness(&sol.u, loads.delta_t)?;
-        let neg_kg = BlockMatrix {
-            d: kg.d,
-            vals: kg.vals.iter().map(|v| -v).collect(),
-        };
+        let neg_kg = BlockMatrix { d: kg.d, vals: kg.vals.iter().map(|v| -v).collect() };
         // The eigensolvers find the factors of largest 1/|lambda| (both signs: the reversed load buckles too); the positive ones
         // are kept. Ask for more until `n_modes` of them are in hand.
         let mut total = 2 * opt.n_modes + 2;
         let r = loop {
-            let found = self.eig_pencil(
-                bc,
-                &k,
-                &neg_kg,
-                0.0,
-                Kind::Buckling,
-                total,
-                opt.tol,
-                opt.max_iter,
-                opt.method,
-            )?;
-            let positive = found
-                .pairs
-                .iter()
-                .filter(|q| q.lambda > 0.0 && q.lambda.is_finite())
-                .count();
+            let found = self.eig_pencil(bc, &k, &neg_kg, 0.0, Kind::Buckling, total, opt.tol, opt.max_iter, opt.method)?;
+            let positive = found.pairs.iter().filter(|q| q.lambda > 0.0 && q.lambda.is_finite()).count();
             if positive >= opt.n_modes {
                 break found;
             }
@@ -639,11 +453,7 @@ impl Model {
             }
             total *= 2;
         };
-        let mut pairs: Vec<&Pair> = r
-            .pairs
-            .iter()
-            .filter(|q| q.lambda > 0.0 && q.lambda.is_finite())
-            .collect();
+        let mut pairs: Vec<&Pair> = r.pairs.iter().filter(|q| q.lambda > 0.0 && q.lambda.is_finite()).collect();
         pairs.sort_by(|a, b| a.lambda.total_cmp(&b.lambda));
         pairs.truncate(opt.n_modes);
         let modes = pairs
@@ -652,31 +462,16 @@ impl Model {
                 let mut shape = self.expand(bc, &q.x);
                 let peak = shape.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-300);
                 shape.iter_mut().for_each(|v| *v /= peak);
-                BucklingMode {
-                    load_factor: q.lambda,
-                    shape,
-                    residual: q.residual,
-                }
+                BucklingMode { load_factor: q.lambda, shape, residual: q.residual }
             })
             .collect();
-        Ok(Buckling {
-            modes,
-            iterations: r.iterations,
-            fallback: r.fallback,
-        })
+        Ok(Buckling { modes, iterations: r.iterations, fallback: r.fallback })
     }
 }
 
 /// Largest positive eigenvalue estimate (a Ritz value, so a lower bound) of `K^-1 B` from a short Lanczos process in the
 /// `K` inner product; `None` when the process finds none.
-fn largest_positive_theta(
-    m: usize,
-    nev: usize,
-    mul: &(dyn Fn(&BlockMatrix, &[f64]) -> Vec<f64> + Sync),
-    k: &BlockMatrix,
-    b: &BlockMatrix,
-    fac: &crate::linear::Factor<'_>,
-) -> Option<f64> {
+fn largest_positive_theta(m: usize, nev: usize, mul: &(dyn Fn(&BlockMatrix, &[f64]) -> Vec<f64> + Sync), k: &BlockMatrix, b: &BlockMatrix, fac: &crate::linear::Factor<'_>) -> Option<f64> {
     let steps = (4 * nev + 24).min(m);
     let mut rng = Lcg(0x2545_F491_4F6C_DD1D);
     let mut q: Vec<Vec<f64>> = Vec::new();
@@ -726,10 +521,7 @@ fn largest_positive_theta(
         }
     }
     let (theta, _) = crate::dense::sym_eigen(&t, dim);
-    theta
-        .into_iter()
-        .filter(|v| *v > 0.0)
-        .fold(None, |m: Option<f64>, v| Some(m.map_or(v, |x| x.max(v))))
+    theta.into_iter().filter(|v| *v > 0.0).fold(None, |m: Option<f64>, v| Some(m.map_or(v, |x| x.max(v))))
 }
 
 /// The method `EigMethod::Auto` resolves to (set from the benchmark of `tests/bench.rs::modal_analysis_cost`).
@@ -745,64 +537,26 @@ const AUTO_METHOD: EigMethod = EigMethod::Lanczos;
 /// converge, a second process runs with the found vectors deflated; if it finds a value that belongs among the wanted
 /// ones, that pair replaces the least wanted one and the check repeats. Every pair still goes through the true residual.
 #[allow(clippy::too_many_arguments)]
-fn lanczos(
-    m: usize,
-    nev: usize,
-    tol: f64,
-    max_iter: usize,
-    kind: Kind,
-    sigma: f64,
-    mul: &(dyn Fn(&BlockMatrix, &[f64]) -> Vec<f64> + Sync),
-    k: &BlockMatrix,
-    b: &BlockMatrix,
-    fac: &crate::linear::AnyFactor<'_>,
-    pair_of: &dyn Fn(f64, &[f64]) -> Pair,
-    factor_nnz: usize,
-) -> Result<Pairs, String> {
+fn lanczos(m: usize, nev: usize, tol: f64, max_iter: usize, kind: Kind, sigma: f64, mul: &(dyn Fn(&BlockMatrix, &[f64]) -> Vec<f64> + Sync), k: &BlockMatrix, b: &BlockMatrix, fac: &crate::linear::AnyFactor<'_>, pair_of: &dyn Fn(f64, &[f64]) -> Pair, factor_nnz: usize) -> Result<Pairs, String> {
     let g_mat = if kind == Kind::Modal { b } else { k }; // (for buckling `k` is the shifted SPD matrix `K - sigma B`)
     let theta_of = |lam: f64| 1.0 / (lam - sigma);
     // `interest`: larger is more wanted (|theta| for both problems; buckling keeps the positive factors afterwards).
     let interest = |lam: f64| theta_of(lam).abs();
-    let ctx = LanczosCtx {
-        m,
-        tol,
-        max_iter,
-        sigma,
-        mul,
-        g_mat,
-        k,
-        b,
-        fac,
-        pair_of,
-    };
+    let ctx = LanczosCtx { m, tol, max_iter, sigma, mul, g_mat, k, b, fac, pair_of };
     let mut dim_total = 0;
     let (mut found, d) = ctx.run(nev, &[])?;
     dim_total += d;
     // Completeness check by deflated restarts.
     for _ in 0..nev + 4 {
-        let locked: Vec<(Vec<f64>, Vec<f64>)> = found
-            .iter()
-            .map(|(_, x)| {
-                let gx = mul(g_mat, x);
-                let nrm = dot(x, &gx).sqrt();
-                (
-                    x.iter().map(|v| v / nrm).collect(),
-                    gx.iter().map(|v| v / nrm).collect(),
-                )
-            })
-            .collect();
-        let Ok((extra, d)) = ctx.run(1, &locked) else {
-            break;
-        };
+        let locked: Vec<(Vec<f64>, Vec<f64>)> = found.iter().map(|(_, x)| {
+            let gx = mul(g_mat, x);
+            let nrm = dot(x, &gx).sqrt();
+            (x.iter().map(|v| v / nrm).collect(), gx.iter().map(|v| v / nrm).collect())
+        }).collect();
+        let Ok((extra, d)) = ctx.run(1, &locked) else { break };
         dim_total += d;
-        let Some((lam, x)) = extra.into_iter().next() else {
-            break;
-        };
-        let (worst_i, worst) = found
-            .iter()
-            .enumerate()
-            .map(|(i, (l, _))| (i, interest(*l)))
-            .fold((0, f64::INFINITY), |a, c| if c.1 < a.1 { c } else { a });
+        let Some((lam, x)) = extra.into_iter().next() else { break };
+        let (worst_i, worst) = found.iter().enumerate().map(|(i, (l, _))| (i, interest(*l))).fold((0, f64::INFINITY), |a, c| if c.1 < a.1 { c } else { a });
         if interest(lam) > worst * (1.0 + 1e-8) {
             found[worst_i] = (lam, x);
         } else {
@@ -812,21 +566,10 @@ fn lanczos(
     found.sort_by(|a, b| interest(b.0).total_cmp(&interest(a.0)));
     let pairs: Vec<Pair> = found.iter().map(|(l, x)| pair_of(*l, x)).collect();
     let worst = pairs.iter().map(|p| p.residual).fold(0.0f64, f64::max);
-    if !worst.is_finite()
-        || worst > tol
-        || pairs.iter().any(|p| {
-            !p.lambda.is_finite() || !p.residual.is_finite() || p.x.iter().any(|x| !x.is_finite())
-        })
-    {
+    if !worst.is_finite() || worst > tol || pairs.iter().any(|p| !p.lambda.is_finite() || !p.residual.is_finite() || p.x.iter().any(|x| !x.is_finite())) {
         return Err(format!("Lanczos did not reach residual {tol:e} (worst residual {worst:.2e}); try EigMethod::Subspace or a larger max_iter"));
     }
-    Ok(Pairs {
-        pairs,
-        iterations: dim_total,
-        subspace: dim_total,
-        factor_nnz,
-        fallback: None,
-    })
+    Ok(Pairs { pairs, iterations: dim_total, subspace: dim_total, factor_nnz, fallback: None })
 }
 
 /// An eigenvalue and its vector.
@@ -848,31 +591,10 @@ struct LanczosCtx<'a> {
 impl LanczosCtx<'_> {
     /// One Lanczos process for the `nev` most wanted pairs orthogonal (in `G`) to `locked = (x, G x)`. Returns the pairs
     /// (eigenvalue, vector) and the Krylov dimension used.
-    fn run(
-        &self,
-        nev: usize,
-        locked: &[(Vec<f64>, Vec<f64>)],
-    ) -> Result<(Vec<RitzPair>, usize), String> {
-        let Self {
-            m,
-            tol,
-            max_iter,
-            sigma,
-            mul,
-            g_mat,
-            b,
-            fac,
-            pair_of,
-            ..
-        } = *self;
+    fn run(&self, nev: usize, locked: &[(Vec<f64>, Vec<f64>)]) -> Result<(Vec<RitzPair>, usize), String> {
+        let Self { m, tol, max_iter, sigma, mul, g_mat, b, fac, pair_of, .. } = *self;
         let _ = self.k;
-        let max_dim = if locked.is_empty() {
-            (nev * 3 + 30).max(max_iter.min(nev * 3 + 30))
-        } else {
-            40
-        }
-        .min(m.saturating_sub(locked.len()))
-        .max(1);
+        let max_dim = if locked.is_empty() { (nev * 3 + 30).max(max_iter.min(nev * 3 + 30)) } else { 40 }.min(m.saturating_sub(locked.len())).max(1);
         let deflate = |r: &mut Vec<f64>| {
             for (x, gx) in locked {
                 let c = dot(r, gx);
@@ -884,8 +606,7 @@ impl LanczosCtx<'_> {
         let mut q: Vec<Vec<f64>> = Vec::new();
         let mut gq: Vec<Vec<f64>> = Vec::new();
         let (mut alpha, mut beta): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
-        let mut rng =
-            Lcg(0x9E37_79B9_7F4A_7C15 ^ (locked.len() as u64).wrapping_mul(0xD1B5_4A32_D192_ED03));
+        let mut rng = Lcg(0x9E37_79B9_7F4A_7C15 ^ (locked.len() as u64).wrapping_mul(0xD1B5_4A32_D192_ED03));
         let mut w: Vec<f64> = (0..m).map(|_| rng.next()).collect();
         deflate(&mut w);
         let mut result: Option<Vec<(f64, Vec<f64>)>> = None;
@@ -923,8 +644,7 @@ impl LanczosCtx<'_> {
             let dim = q.len();
             let at_limit = dim >= max_dim || dim + locked.len() >= m;
             let exhausted = b_j < 1e-12 * a_j.abs().max(1.0);
-            #[allow(clippy::manual_is_multiple_of)]
-            // is_multiple_of needs a newer toolchain than the CI pin
+            #[allow(clippy::manual_is_multiple_of)] // is_multiple_of needs a newer toolchain than the CI pin
             let check_now = dim % 4 == 0;
             if dim >= nev && (check_now || at_limit || exhausted) {
                 let mut t = vec![0.0; dim * dim];
@@ -939,10 +659,7 @@ impl LanczosCtx<'_> {
                 let mut order: Vec<usize> = (0..dim).filter(|&i| theta[i] != 0.0).collect();
                 order.sort_by(|&i, &jx| theta[jx].abs().total_cmp(&theta[i].abs()));
                 let wanted: Vec<usize> = order.into_iter().take(nev).collect();
-                let est_ok = wanted.len() == nev
-                    && wanted.iter().all(|&i| {
-                        b_j * s[i * dim + dim - 1].abs() <= 0.1 * tol * theta[i].abs().max(1e-300)
-                    });
+                let est_ok = wanted.len() == nev && wanted.iter().all(|&i| b_j * s[i * dim + dim - 1].abs() <= 0.1 * tol * theta[i].abs().max(1e-300));
                 dim_done = dim;
                 if est_ok || at_limit || exhausted {
                     let pairs: Vec<(f64, Vec<f64>)> = wanted
@@ -959,8 +676,7 @@ impl LanczosCtx<'_> {
                         })
                         .collect();
                     // The estimate only says when to look; the true residual decides.
-                    let verified = pairs.len() == nev
-                        && pairs.iter().all(|(l, x)| pair_of(*l, x).residual <= tol);
+                    let verified = pairs.len() == nev && pairs.iter().all(|(l, x)| pair_of(*l, x).residual <= tol);
                     result = Some(pairs);
                     if (est_ok && verified) || at_limit || exhausted {
                         break;
@@ -994,14 +710,7 @@ pub struct TransientOptions {
 
 impl Default for TransientOptions {
     fn default() -> Self {
-        Self {
-            dt: 1e-3,
-            steps: 100,
-            alpha: 0.0,
-            rayleigh: (0.0, 0.0),
-            mass: MassKind::Consistent,
-            record: Vec::new(),
-        }
+        Self { dt: 1e-3, steps: 100, alpha: 0.0, rayleigh: (0.0, 0.0), mass: MassKind::Consistent, record: Vec::new() }
     }
 }
 
@@ -1022,14 +731,7 @@ pub struct Transient {
 impl Model {
     /// Linear transient response of `K u + C v + M a = g(t) f` from the state `(u0, v0)` (zero when `None`), `f` the
     /// assembly of `loads`, homogeneous constraints. Constant step, one factorisation of the effective matrix.
-    pub fn transient(
-        &self,
-        loads: &Loads,
-        g: &dyn Fn(f64) -> f64,
-        bc: &Dirichlet,
-        init: Option<(&[f64], &[f64])>,
-        opt: &TransientOptions,
-    ) -> Result<Transient, String> {
+    pub fn transient(&self, loads: &Loads, g: &dyn Fn(f64) -> f64, bc: &Dirichlet, init: Option<(&[f64], &[f64])>, opt: &TransientOptions) -> Result<Transient, String> {
         self.transient_observed(loads, g, bc, init, opt, &mut |_, _, _| Ok(()))
     }
 
@@ -1037,34 +739,17 @@ impl Model {
     /// Apply result acceptance before publishing snapshots.
     /// Callback errors abort the solve; all residual/energy diagnostics remain recorded at every step.
     #[allow(clippy::too_many_arguments)]
-    pub fn transient_observed(
-        &self,
-        loads: &Loads,
-        g: &dyn Fn(f64) -> f64,
-        bc: &Dirichlet,
-        init: Option<(&[f64], &[f64])>,
-        opt: &TransientOptions,
-        observe: &mut dyn FnMut(usize, f64, &[f64]) -> Result<(), String>,
-    ) -> Result<Transient, String> {
-        if !opt.dt.is_finite()
-            || opt.dt <= 0.0
-            || !(-1.0 / 3.0 - 1e-12..=1e-12).contains(&opt.alpha)
-        {
+    pub fn transient_observed(&self, loads: &Loads, g: &dyn Fn(f64) -> f64, bc: &Dirichlet, init: Option<(&[f64], &[f64])>, opt: &TransientOptions, observe: &mut dyn FnMut(usize, f64, &[f64]) -> Result<(), String>) -> Result<Transient, String> {
+        if !opt.dt.is_finite() || opt.dt <= 0.0 || !(-1.0 / 3.0 - 1e-12..=1e-12).contains(&opt.alpha) {
             return Err("transient: dt must be positive and alpha within [-1/3, 0]".into());
         }
         let n = self.mesh.n_dofs();
-        if bc.d != self.mesh.physics.dim()
-            || bc.fixed.len() != n
-            || bc.value.len() != n
-            || bc.value.iter().any(|v| !v.is_finite())
-        {
+        if bc.d != self.mesh.physics.dim() || bc.fixed.len() != n || bc.value.len() != n
+            || bc.value.iter().any(|v| !v.is_finite()) {
             return Err("transient: invalid constraint dimensions or nonfinite values".into());
         }
-        if !opt.rayleigh.0.is_finite()
-            || !opt.rayleigh.1.is_finite()
-            || opt.rayleigh.0 < 0.0
-            || opt.rayleigh.1 < 0.0
-        {
+        if !opt.rayleigh.0.is_finite() || !opt.rayleigh.1.is_finite()
+            || opt.rayleigh.0 < 0.0 || opt.rayleigh.1 < 0.0 {
             return Err("transient: Rayleigh coefficients must be finite and nonnegative".into());
         }
         if !(opt.steps as f64 * opt.dt).is_finite() || opt.record.iter().any(|&d| d >= n) {
@@ -1072,10 +757,7 @@ impl Model {
         }
         if let Some((u, v)) = init {
             if u.len() != n || v.len() != n || u.iter().chain(v).any(|x| !x.is_finite()) {
-                return Err(
-                    "transient: initial state must have the correct length and finite values"
-                        .into(),
-                );
+                return Err("transient: initial state must have the correct length and finite values".into());
             }
         }
         if bc.fixed.iter().zip(&bc.value).any(|(f, v)| *f && *v != 0.0) {
@@ -1085,31 +767,13 @@ impl Model {
         let k = self.assemble()?;
         let mass = self.assemble_mass(opt.mass)?;
         let (a0, a1) = opt.rayleigh;
-        let c = BlockMatrix {
-            d: mass.d,
-            vals: mass
-                .vals
-                .iter()
-                .zip(&k.vals)
-                .map(|(m, kk)| a0 * m + a1 * kk)
-                .collect(),
-        };
+        let c = BlockMatrix { d: mass.d, vals: mass.vals.iter().zip(&k.vals).map(|(m, kk)| a0 * m + a1 * kk).collect() };
         let alpha = opt.alpha;
         let beta = (1.0 - alpha) * (1.0 - alpha) / 4.0;
         let gamma = 0.5 - alpha;
         let dt = opt.dt;
-        let eff = BlockMatrix {
-            d: k.d,
-            vals: (0..k.vals.len())
-                .map(|i| {
-                    mass.vals[i]
-                        + (1.0 + alpha) * gamma * dt * c.vals[i]
-                        + (1.0 + alpha) * beta * dt * dt * k.vals[i]
-                })
-                .collect(),
-        };
-        let red = Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), Ordering::Auto)
-            .map_err(|e| e.to_string())?;
+        let eff = BlockMatrix { d: k.d, vals: (0..k.vals.len()).map(|i| mass.vals[i] + (1.0 + alpha) * gamma * dt * c.vals[i] + (1.0 + alpha) * beta * dt * dt * k.vals[i]).collect() };
+        let red = Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
         let fac_eff = red.factor(&eff).map_err(|e| e.to_string())?;
         let fac_m = red.factor(&mass).map_err(|e| e.to_string())?;
         let n = self.mesh.n_dofs();
@@ -1132,10 +796,7 @@ impl Model {
         }
         let backward_error = |mat: &BlockMatrix, x: &[f64], rhs: &[f64]| -> Result<f64, String> {
             let ax = mul(mat, x);
-            let abs_mat = BlockMatrix {
-                d: mat.d,
-                vals: mat.vals.iter().map(|v| v.abs()).collect(),
-            };
+            let abs_mat = BlockMatrix { d: mat.d, vals: mat.vals.iter().map(|v| v.abs()).collect() };
             let scale = mul(&abs_mat, &x.iter().map(|v| v.abs()).collect::<Vec<_>>());
             let mut rn = 0.0_f64;
             let mut sn = 0.0_f64;
@@ -1145,9 +806,7 @@ impl Model {
             }
             let r = rn / sn.max(1e-300);
             if !rn.is_finite() || !sn.is_finite() || !r.is_finite() || r > 1e-8 {
-                return Err(format!(
-                    "transient: effective-system residual {r:e} exceeds 1e-8 or is nonfinite"
-                ));
+                return Err(format!("transient: effective-system residual {r:e} exceeds 1e-8 or is nonfinite"));
             }
             Ok(r)
         };
@@ -1172,17 +831,8 @@ impl Model {
             }
             a
         };
-        let energy = |u: &[f64], v: &[f64]| -> f64 {
-            0.5 * dot(v, &mul(&mass, v)) + 0.5 * dot(u, &mul(&k, u))
-        };
-        let mut out = Transient {
-            times: vec![0.0],
-            history: opt.record.iter().map(|&d| vec![u[d]]).collect(),
-            energy: vec![energy(&u, &v)],
-            residuals: vec![backward_error(&mass, &a, &initial_rhs)?],
-            u: Vec::new(),
-            v: Vec::new(),
-        };
+        let energy = |u: &[f64], v: &[f64]| -> f64 { 0.5 * dot(v, &mul(&mass, v)) + 0.5 * dot(u, &mul(&k, u)) };
+        let mut out = Transient { times: vec![0.0], history: opt.record.iter().map(|&d| vec![u[d]]).collect(), energy: vec![energy(&u, &v)], residuals: vec![backward_error(&mass, &a, &initial_rhs)?], u: Vec::new(), v: Vec::new() };
         if !out.energy[0].is_finite() || a.iter().any(|x| !x.is_finite()) {
             return Err("transient: nonfinite initial acceleration or energy".into());
         }
@@ -1190,25 +840,12 @@ impl Model {
         for s in 1..=opt.steps {
             let t = s as f64 * dt;
             let f_new = load_at(t)?;
-            let u_pred: Vec<f64> = (0..n)
-                .map(|i| u[i] + dt * v[i] + dt * dt * (0.5 - beta) * a[i])
-                .collect();
+            let u_pred: Vec<f64> = (0..n).map(|i| u[i] + dt * v[i] + dt * dt * (0.5 - beta) * a[i]).collect();
             let v_pred: Vec<f64> = (0..n).map(|i| v[i] + dt * (1.0 - gamma) * a[i]).collect();
-            let (c_vp, c_v, k_up, k_u) =
-                (mul(&c, &v_pred), mul(&c, &v), mul(&k, &u_pred), mul(&k, &u));
-            let mut rhs: Vec<f64> = free
-                .iter()
-                .map(|&d| {
-                    (1.0 + alpha) * f_new[d] - alpha * f_prev[d] - (1.0 + alpha) * c_vp[d]
-                        + alpha * c_v[d]
-                        - (1.0 + alpha) * k_up[d]
-                        + alpha * k_u[d]
-                })
-                .collect();
+            let (c_vp, c_v, k_up, k_u) = (mul(&c, &v_pred), mul(&c, &v), mul(&k, &u_pred), mul(&k, &u));
+            let mut rhs: Vec<f64> = free.iter().map(|&d| (1.0 + alpha) * f_new[d] - alpha * f_prev[d] - (1.0 + alpha) * c_vp[d] + alpha * c_v[d] - (1.0 + alpha) * k_up[d] + alpha * k_u[d]).collect();
             let mut full_rhs = vec![0.0; n];
-            for (&d, &r) in free.iter().zip(&rhs) {
-                full_rhs[d] = r;
-            }
+            for (&d, &r) in free.iter().zip(&rhs) { full_rhs[d] = r; }
             fac_eff.solve_reduced(&mut rhs);
             let mut a_new = vec![0.0; n];
             for (&d, x) in free.iter().zip(&rhs) {

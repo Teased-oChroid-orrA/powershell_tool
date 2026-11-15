@@ -6,7 +6,10 @@
 //! Within a simplex, an edge meets a face of that simplex only in their common
 //! vertices' hull, so each edge/face test can use its own shared IDs.
 
-use crate::meshing::{tet_topology::orientation, MeshError};
+use crate::meshing::{
+    tet_topology::orientation,
+    MeshError,
+};
 use std::cmp::Ordering::{self, Equal, Greater, Less};
 
 const FACES: [[usize; 3]; 4] = [[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]];
@@ -15,11 +18,7 @@ const EDGES: [[usize; 2]; 6] = [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]];
 /// Whether the closed intersection equals the hull of the shared vertex IDs.
 /// Invalid indices, repeated IDs, flat cells and unsupported coordinates error.
 /// Cell ordering is immaterial; rejecting duplicate cells belongs to the caller.
-pub(super) fn compatible(
-    points: &[[f64; 3]],
-    a: [usize; 4],
-    b: [usize; 4],
-) -> Result<bool, MeshError> {
+pub(super) fn compatible(points: &[[f64; 3]], a: [usize; 4], b: [usize; 4]) -> Result<bool, MeshError> {
     let mut signs = [Equal; 2];
     for (i, t) in [a, b].into_iter().enumerate() {
         if t.iter().any(|&v| v >= points.len()) {
@@ -28,7 +27,9 @@ pub(super) fn compatible(
             ));
         }
         if (0..4).any(|j| t[j + 1..].contains(&t[j])) {
-            return Err(MeshError::NonConforming("repeated tetrahedron node".into()));
+            return Err(MeshError::NonConforming(
+                "repeated tetrahedron node".into(),
+            ));
         }
         let [p, q, r, s] = t.map(|v| points[v]);
         signs[i] = orientation(p, q, r, s)?;
@@ -57,7 +58,12 @@ pub(super) fn compatible(
     Ok(true)
 }
 
-fn in_tet(points: &[[f64; 3]], v: usize, t: [usize; 4], sign: Ordering) -> Result<bool, MeshError> {
+fn in_tet(
+    points: &[[f64; 3]],
+    v: usize,
+    t: [usize; 4],
+    sign: Ordering,
+) -> Result<bool, MeshError> {
     for i in 0..4 {
         let mut replaced = t;
         replaced[i] = v;
@@ -323,31 +329,15 @@ mod tests {
     #[test]
     fn refuses_invalid_cells_and_predicate_ranges_before_contact_checks() {
         for b in [[0, 1, 2, 99], [0, 1, 2, 2]] {
-            assert!(matches!(
-                compatible(&BASE, A, b),
-                Err(MeshError::NonConforming(_))
-            ));
+            assert!(matches!(compatible(&BASE, A, b), Err(MeshError::NonConforming(_))));
         }
         let p = with_points(&[[0.5, 0.5, 0.]]);
-        assert!(matches!(
-            compatible(&p, A, [0, 1, 2, 4]),
-            Err(MeshError::InvalidElements { .. })
-        ));
+        assert!(matches!(compatible(&p, A, [0, 1, 2, 4]), Err(MeshError::InvalidElements { .. })));
 
-        for value in [
-            f64::NAN,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            1e31,
-            -1e31,
-            2_f64.powi(-100),
-        ] {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e31, -1e31, 2_f64.powi(-100)] {
             let p = with_points(&[[0., 0., 0.], [4., 0., 0.], [0., 4., 0.], [0., 0., value]]);
             for (a, b) in [(A, [4, 5, 6, 7]), ([4, 5, 6, 7], A)] {
-                assert!(
-                    matches!(compatible(&p, a, b), Err(MeshError::Unsupported(_))),
-                    "{value:?}"
-                );
+                assert!(matches!(compatible(&p, a, b), Err(MeshError::Unsupported(_))), "{value:?}");
             }
         }
     }
