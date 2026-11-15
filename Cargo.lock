@@ -4157,6 +4157,7 @@ name = "pressure-vessel-solver"
 version = "0.1.0"
 dependencies = [
  "engineering-math",
+ "fea-problem",
  "mechanics-core",
 ]
 

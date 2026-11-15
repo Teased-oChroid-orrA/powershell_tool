@@ -25,3 +25,6 @@ mechanics-core = { path = "../mechanics-core" }
 engineering-math = { path = "../engineering-math" }
 
 [dev-dependencies]
+# Independent cross-check of `line_run`'s beam / bar member actions against the 3-D frame solver
+# (`tests/members_cross_check.rs`); dev-only, so the library stays a pure calculation crate.
+fea-problem = { path = "../fea-problem" }
