@@ -126,7 +126,7 @@ pub struct MarginResult {
     pub allowable: f64,
 }
 
-fn worst_of(
+pub(crate) fn worst_of(
     name: &'static str,
     demand_fn: impl Fn(&StressState) -> f64,
     allowable: f64,

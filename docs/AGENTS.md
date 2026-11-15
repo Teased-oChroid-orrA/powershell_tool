@@ -35,6 +35,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | #6 — index-first/incremental search engine (80-section epic) | `docs/issue-6-status.md` (gap analysis) → `docs/issue-6-phase-1.md` .. `phase-16.md` → `docs/issue-6-validation-report.md` (**closed**, all 16 phases + final validation) |
 | Edge-distance cross-check (stress superposition / FE / allowables vs the legacy `Fbru + 0.8 p` check; merged to main, including the contact FE) | `docs/edge-distance-crosscheck.md` |
 | Pressure line run (supported tube: beam / thermal / pressure / thrust load state, failure criterion by material class, sources and limits) | `docs/pressure-vessel-line-run.md` |
+| Per-criterion minimum wall thickness (yield / von Mises / Tresca / ultimate / buckling, user factors and margins; cylinder and line run) | `docs/pressure-vessel-thickness.md` |
 | Lug Analysis: rigid-pin contact FE (options considered, method, validation numbers, performance, what is not done) | `docs/lug-analysis.md` |
 | Lug solver upgrade pass (15 accuracy/robustness items, status and measured outcome of each) | `docs/lug-solver-upgrade-plan.md` |
 | General FEA kernel `fea-core` (2D/3D elements, assembly, faer solver, validation, measured speed, phase plan; Phase 8: FEA Workbench, toolboxes on the kernel, point location, rigid-body check) | `docs/fea-core.md`; decisions `docs/adr/ADR-012-general-fea-kernel.md`, `docs/adr/ADR-013-eigen-and-transient-methods.md` (eigen / transient / adaptive strategy) |
