@@ -446,6 +446,31 @@ impl SemanticIndex {
         Ok(orphaned.len())
     }
 
+    /// Load the model and build the in-memory snapshot of the index as it is now, so the first query pays neither
+    /// (about 2.3 s at 35,000 chunks, measured in `docs/search-benchmarks.md`). Returns whether a snapshot is
+    /// ready: `false` for an index above the snapshot limit, which streams. Never changes the index.
+    pub fn warm(&self) -> Result<bool, String> {
+        let _ = search_ml::embed_queries(&["warm"]);
+        let stem = crate::lexical::LexicalConfig::default().stem;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "semantic index lock poisoned".to_string())?;
+        let generation = generation(&conn)?;
+        if crate::semantic_cache::cached(&self.path, stem, generation).is_some() {
+            return Ok(true);
+        }
+        let chunks: i64 = conn
+            .query_row("SELECT COUNT(*) FROM semantic_chunks", [], |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        if chunks as usize > self.cache_limit {
+            return Ok(false);
+        }
+        let snapshot = std::sync::Arc::new(crate::semantic_cache::Snapshot::build(&conn, generation, stem, EMBEDDING_DIMENSIONS)?);
+        crate::semantic_cache::store(&self.path, stem, snapshot);
+        Ok(true)
+    }
+
     /// Semantic results are separate, cited suggestions. This method never
     /// changes the exact-search result set or query semantics.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SemanticHit>, String> {
@@ -848,6 +873,15 @@ pub fn search_directory(
     SemanticIndex::open(&path)
         .map_err(|error| error.to_string())?
         .search(query, limit)
+}
+
+/// [`SemanticIndex::warm`] for the index stored in `index_directory`; `Ok(false)` when none is built there.
+pub fn warm_directory(index_directory: &Path) -> Result<bool, String> {
+    let path = index_directory.join("semantic.sqlite");
+    if !path.is_file() {
+        return Ok(false);
+    }
+    SemanticIndex::open(&path).map_err(|error| error.to_string())?.warm()
 }
 
 pub fn search_directory_with_settings(
@@ -1464,6 +1498,31 @@ mod tests {
         index.index_document("a.txt", 300, 41, &edited).unwrap();
         assert!(generation_of(&index) > written);
         assert!(index.is_current("a.txt", 300, 41).unwrap());
+    }
+
+    #[test]
+    fn warm_builds_the_snapshot_once_and_a_write_makes_it_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = SemanticIndex::open(&dir.path().join("semantic.sqlite")).unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "Torque the bolt.").unwrap();
+        let (modified, size) = source_metadata(&path);
+        index.index_document(&path.to_string_lossy(), modified, size, &["Torque the bolt.".to_string()]).unwrap();
+        let stem = crate::lexical::LexicalConfig::default().stem;
+        let ready = |index: &SemanticIndex| {
+            let generation = generation(&index.conn.lock().unwrap()).unwrap();
+            crate::semantic_cache::cached(&index.path, stem, generation).is_some()
+        };
+        assert!(!ready(&index));
+        assert!(index.warm().unwrap());
+        assert!(ready(&index));
+        assert!(index.warm().unwrap(), "warming twice is harmless");
+        index.index_document(&path.to_string_lossy(), modified, size, &["Torque the nut.".to_string()]).unwrap();
+        assert!(!ready(&index), "a write bumps the generation");
+        index.cache_limit = 0;
+        assert!(!index.warm().unwrap(), "above the snapshot limit nothing is built");
+        let empty = tempfile::tempdir().unwrap();
+        assert!(!warm_directory(empty.path()).unwrap(), "no index there");
     }
 
     #[test]

@@ -671,3 +671,11 @@ Probe: `search-core/examples/semantic_startup.rs` (`cargo run -p search-core --r
 Reading. Opening is cheap. The first semantic query of a session is not: about 0.25 s of it is loading the model (the small indexes), so roughly 2.1 s at 35,318 chunks is building the snapshot, about 60 microseconds per chunk. Every later query is under 20 ms. Extrapolating linearly (not measured; the in-memory limit is 250,000 chunks) the first query could take around 15 s on an index near that limit. Resident memory stays under 300 MB at 35k chunks, with run-to-run spread of 115 MB that was not explained.
 
 Not done, and why. Building the snapshot in the background when the window opens would hide the wait, but it spends memory and CPU for people who never run a semantic query, so it needs a decision on when to pay (on open, on first typing in Find, or never). Not measured: above 35,318 chunks (no more distinct text on this machine; embedding runs at about 20 chunks per second, so 250,000 chunks is about 3.5 hours), the streaming path above the limit, Windows, spinning disks.
+
+### Prewarm on first Find typing (decision taken, measured)
+
+Decision (owner, 2026-11-14): build the snapshot when the user first types in Find, not on open. `SemanticIndex::warm` / `warm_directory` (`search-core/src/semantic_index.rs`) build the in-memory snapshot on the search worker; `warm_semantic` (`app-tui/src/gpu_viewer/editor/search/mod.rs`) triggers it once per built semantic index from `document_field` for the Find input. The probe takes `--warm` to time it.
+
+Measured on the 35,318-chunk scale index (128 MB), macOS release build, one machine: the warm takes about 2.4 s on the worker, and the first query afterwards takes 22 to 25 ms instead of about 2.3 s. Tests: `warm_builds_the_snapshot_once_and_a_write_makes_it_stale`, `typing_in_find_warms_each_built_semantic_index_once`.
+
+Not checked: the trigger in a real window, Windows, indexes above 35k chunks.

@@ -1084,6 +1084,29 @@ fn semantic_search_shows_cited_hits_separately_from_exact_results() {
 
 #[cfg(feature = "semantic-search")]
 #[test]
+fn typing_in_find_warms_each_built_semantic_index_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = dir.path().to_string_lossy().into_owned();
+    s.st.config.index.semantic = true;
+    let index = crate::toolboxes::search::indexing::index_directory(s.st.config.index.location, &s.st.config.search_path, &s.st.config.output_folder);
+    s.document_field(INPUT_FIND, "shaft".into());
+    assert!(s.semantic_warmed.is_empty(), "no index is built yet, nothing to warm");
+    std::fs::create_dir_all(&index).unwrap();
+    search_core::semantic_index::SemanticIndex::open(&index.join("semantic.sqlite")).unwrap();
+    s.document_field(INPUT_FIND, "".into());
+    assert!(s.semantic_warmed.is_empty(), "an empty Find is not typing");
+    s.document_field(INPUT_FIND, "shaft stress".into());
+    s.document_field(INPUT_FIND, "shaft stress limit".into());
+    assert_eq!(s.semantic_warmed, vec![index], "warmed once for the folder");
+    s.st.config.index.semantic = false;
+    s.semantic_warmed.clear();
+    s.document_field(INPUT_FIND, "shaft".into());
+    assert!(s.semantic_warmed.is_empty(), "off when the Semantic index is off");
+}
+
+#[cfg(feature = "semantic-search")]
+#[test]
 fn semantic_results_are_discarded_when_scope_changes_before_poll() {
     let mut s = SearchSession::in_memory();
     s.st.config.search_path = "/w".into();
