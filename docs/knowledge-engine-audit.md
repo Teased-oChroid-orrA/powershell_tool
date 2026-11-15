@@ -360,3 +360,12 @@ An alert reads at most three hit contexts and six evenly spaced lines of each fi
 - A file in the baseline that stopped being an exact hit (edited so it no longer matches, moved or deleted) was dropped from the baseline without a word. It is now `AlertChange::Removed` ("No longer a hit"), reported once; if the file matches again it is `New`. Test: `a_file_that_stops_matching_is_reported_once_and_dropped_from_the_baseline`.
 
 Not changed, and why. An edit outside the sample that keeps both size and modification time is still invisible (exact membership is the contract; reading whole files would turn a bounded check into a rescan). The 2026-11-07 materiality probe stands: cosine distance is an uncalibrated review signal, neither bundled model gives a materiality verdict. The Touched row appears in the Search window's alert list; it was not screenshotted.
+
+## 2026-11-14: real-window evidence for the Search window (rendered with `search_snapshot`)
+
+Rendering the native window (`FEA_SNAPSHOT_SEARCH_OUT=dir cargo test -p app-tui --release search_snapshot -- --ignored`, RGBA to PNG) showed two defects that no unit test had caught:
+
+- "Match across line breaks" and "Better PDF text (trial)" were not in the Options popover. The page bench shows no ribbon (`app-tui/src/gpu_viewer/editor/search/AGENTS.md`, "No docks"), and each popover card picks settings by header name; the headers `PDF` and `Phrases` were in no card, so both switches existed only in the ribbon and the terminal settings list. They are now in the Files and folders and Matching cards. Test: `options_offer_every_setting_group_the_window_can_reach`. Seen after the change: the Matching card lists "Match across line breaks" (screenshot of the 1440 x 900 options snapshot).
+- At 860 px (sidebar open) the circadian slider and clock label ran under the breadcrumb and "Help & shortcuts". Below 700 px of bar width the slider is not drawn (`search_top_bar`); checked at 860 x 760 and 1100 x 560 (slider still shown there). The theme button and picker stay.
+
+Not checked: Windows rendering, the alert rows added in the previous section (the snapshot has no saved alert), the Files and folders card expanded.

@@ -188,6 +188,17 @@ fn options_matching_card_offers_accent_and_typo_settings() {
 }
 
 #[test]
+fn options_offer_every_setting_group_the_window_can_reach() {
+    // A group header missing from the cards hides its switches from the native window (the ribbon is not shown on
+    // the page bench): this once hid "Better PDF text (trial)" and "Across line breaks".
+    let s = with_results();
+    let text = format!("{:?}", view::document(&s).panels);
+    for label in ["OCR scanned PDFs", "Better PDF text (trial)", "Match across line breaks"] {
+        assert!(text.contains(label), "{label} missing: {text}");
+    }
+}
+
+#[test]
 fn best_match_sort_follows_relevance_order_and_flips_with_direction() {
     let mut s = with_results();
     s.st.config.filters_text = "bolt".into();
