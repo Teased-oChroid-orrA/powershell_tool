@@ -25,3 +25,13 @@ Some files declare a distance uncertainty of 0.01 mm (`nist_ctc_01` rd and AP242
 1. "boundary winds without a chart-closing seam": the largest class once the tolerance is out of the way (about 7 files).
 2. "invalid or unsupported geometric radius" (4 AP242 files; likely the zero-radius cone class of PR 281, to be re-measured after it merges).
 3. Placement directions (2), spherical orientation (2), half-turn trim (1), product structure (1), unsupported item (1).
+
+## Fix: an unseamed cone tip gets a seam to its apex
+
+Cause of "boundary winds without a chart-closing seam" in `ctc_04` AP203 and `ftc_10_rb`: a cone face (semi-angle 59 degrees, a drill point) bounded by one circle that winds once around the axis, the apex inside the face and no seam edge. The chart code reads an apex only on an explicit seam edge. (The other nine tolerance-class files that reach this message in the experiment above are different faces and are not fixed here; the experiment's count of seven mixed the two causes.)
+
+`AnalyticModel::seam_cone_tips` (`solid-kernel/src/analytic_step.rs`, run with the other band-seam passes at read time) cuts such a face along a generator from the circle's first vertex to a new apex vertex, used once each way in one merged loop: the shape of `data/cone.step`. Only cone faces with exactly one bound that turns once (|turns - 1| < 1e-6) are touched; anything else is left to the chart code as before. The apex is `origin - z * radius / tan(semi_angle)`.
+
+Proof: `unseamed_cone_tip_gets_a_seam_to_its_apex_and_samples_like_the_seamed_original` (the OpenCASCADE cone fixture with the seam removed from the loop) gives the same vertex and triangle counts and the same signed volume (1e-9 relative) as the seamed original, and 1.2 % below pi r^2 h / 3, the chord's sampling error at 0.05 mm on r = 5 mm. `cargo test -p solid-kernel` and `-p fea-problem --release` pass.
+
+Measured (`import_step_native`, NIST corpus): **11 of 33**, up from 9: `nist_ctc_04_asme1_ap203` (405 faces, 7016 triangles, 0.6 s) and `nist_ftc_10_asme1_rb` (214 faces, 8470 triangles, 0.3 s). Import only: no OpenCASCADE comparison or solve (no prebuilt here), so volume parity for these two is not measured; retirement remains unapproved.

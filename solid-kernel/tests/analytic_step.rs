@@ -1772,3 +1772,27 @@ fn unseamed_band_with_misaligned_circle_starts_gets_a_split_vertex_and_a_generat
     let relative = (a.signed_volume_mm3 - b.signed_volume_mm3).abs() / a.signed_volume_mm3;
     assert!(relative < 2e-3, "{} vs {}", a.signed_volume_mm3, b.signed_volume_mm3);
 }
+
+/// Onshape and SolidWorks write the tip of a cone (a drill point) as one face bounded by its base circle alone, with no seam to
+/// the apex. An OpenCASCADE fixture with the seam edge removed from the loop must sample to the same shell as the seamed
+/// original, and that shell must hold the closed-form volume of the cone, pi r^2 h / 3 = 200 pi / 3 mm^3,
+/// to the sampling chord (0.05 mm on r = 5 mm costs about 1.2 %).
+#[test]
+fn unseamed_cone_tip_gets_a_seam_to_its_apex_and_samples_like_the_seamed_original() {
+    let seamed = include_str!("data/cone.step");
+    let unseamed = seamed.replace("#19 = EDGE_LOOP('',(#20,#50,#77));", "#19 = EDGE_LOOP('',(#50));");
+    assert_ne!(seamed, unseamed);
+    let sample = |text: &str| {
+        let data = inventory(text, Limits::default()).unwrap();
+        AnalyticModel::read(&data, Options::default())
+            .unwrap()
+            .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+            .unwrap()
+    };
+    let (a, b) = (sample(seamed), sample(&unseamed));
+    assert_eq!(a.mesh.triangles.len(), b.mesh.triangles.len());
+    assert_eq!(a.mesh.vertices.len(), b.mesh.vertices.len());
+    assert!((a.signed_volume_mm3 - b.signed_volume_mm3).abs() < 1e-9 * a.signed_volume_mm3);
+    let exact = std::f64::consts::PI * 25. * 8. / 3.;
+    assert!((b.signed_volume_mm3 - exact).abs() < 2e-2 * exact, "{} against {exact}", b.signed_volume_mm3);
+}

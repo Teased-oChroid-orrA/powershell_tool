@@ -1898,6 +1898,7 @@ impl AnalyticModel {
         }
         self.seam_unseamed_torus_bands(&mut next);
         self.seam_unseamed_revolution_bands(&mut next);
+        self.seam_cone_tips(&mut next);
     }
     /// Join the loops `la` and `lb` of the bounds `pair` of a band face into one through a new seam edge from `ends.0` (the
     /// first vertex of `la`) to `ends.1` (the first vertex of `lb`), used once each way: the shape of an OpenCASCADE seam.
@@ -2040,6 +2041,63 @@ impl AnalyticModel {
                 continue;
             };
             self.install_band_seam(face_id, pair, la, lb, (va, vb), curve, samples, next);
+        }
+    }
+    /// A cone face bounded by one circle that winds once around the axis, with no seam (a drill point or a countersink tip as
+    /// Onshape or SolidWorks write it), is the tip: the apex is inside the face, since the other side of the circle is
+    /// unbounded. It is cut along a generator from the circle's first vertex to a new apex vertex, used once each way in one
+    /// merged loop: the shape of a cone with an explicit seam to its apex, which the chart code reads. New ids follow
+    /// [`Self::seam_unseamed_cylinder_bands`]'s rule. A cone of any other shape is left to the chart code.
+    fn seam_cone_tips(&mut self, next: &mut u64) {
+        let tolerance = self.geometry_tolerance_mm;
+        let faces: Vec<u64> = self
+            .body
+            .faces
+            .values()
+            .filter(|f| f.bounds.len() == 1 && matches!(self.surfaces.get(&f.id), Some(Surface::Cone { .. })))
+            .map(|f| f.id)
+            .collect();
+        for face_id in faces {
+            let Some(Surface::Cone { frame, radius, semi_angle, .. }) = self.surfaces.get(&face_id).cloned() else {
+                continue;
+            };
+            let angle = |p: V3| {
+                let d = sub(p, frame.origin);
+                dot(d, frame.y).atan2(dot(d, frame.x))
+            };
+            let wrap = |a: f64| a - TAU * (a / TAU).round();
+            let Some(turns) = self.bound_turns(face_id, &angle, &wrap) else {
+                continue;
+            };
+            let (uses, turn) = &turns[0];
+            if (turn.abs() - 1.).abs() > 1e-6 {
+                continue;
+            }
+            let Some(va) = uses.first().and_then(|u| self.use_start(u)) else {
+                continue;
+            };
+            let apex = add(frame.origin, mul(frame.z, -radius / semi_angle.tan()));
+            let pa = self.vertices[&va];
+            let length = norm(sub(apex, pa));
+            if length <= tolerance {
+                continue;
+            }
+            let (vertex, seam) = (*next, *next + 1);
+            *next += 5;
+            self.vertices.insert(vertex, apex);
+            self.body.vertices.insert(
+                vertex,
+                crate::step_topology::RawVertex { id: vertex, point: 0, coordinates: apex.map(|x| x / self.scale_mm) },
+            );
+            self.body.edges.insert(seam, RawEdge { id: seam, start: va, end: vertex, curve: 0, same_sense: true });
+            self.curves.insert(seam, Curve::Line { origin: pa, direction: mul(sub(apex, pa), 1. / length) });
+            self.edges.insert(seam, vec![pa, apex]);
+            let mut merged = uses.clone();
+            merged.push(EdgeUse { id: seam + 1, edge: seam, forward: true });
+            merged.push(EdgeUse { id: seam + 2, edge: seam, forward: false });
+            let face = self.body.faces.get_mut(&face_id).unwrap();
+            let first = face.bounds[0].clone();
+            face.bounds = vec![RawBound { id: first.id, loop_id: first.loop_id, forward: true, explicitly_outer: false, edges: merged }];
         }
     }
     /// Cut a revolution band between two winding circles along its bounded profile interval.
