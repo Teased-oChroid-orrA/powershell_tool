@@ -113,3 +113,35 @@ fn degenerate_input_is_refused() {
     assert!(NativeBrep::lathe(&[[0., 0.], [3., 0.], [0., 4.]]).is_err());
     assert!(NativeBrep::lathe(&[[1., 0.], [2., 0.]]).is_err());
 }
+
+/// A comb-shaped prism of 60 teeth has 124 faces. The default surface limits used to refuse any body of more than 40 faces
+/// (`faces * face_work <= total_work` charged every face its worst case): real CAD parts have hundreds.
+#[test]
+fn a_body_of_more_than_forty_faces_samples_at_the_default_limits() {
+    let teeth = 60;
+    let w = 2. * teeth as f64 - 1.;
+    // a bar along the base, the teeth rising from it
+    let mut outer = vec![[0., -1.], [w + 1., -1.]];
+    outer.push([w + 1., 0.]);
+    for k in (0..teeth).rev() {
+        let x = 2. * k as f64;
+        outer.extend([[x + 1., 0.], [x + 1., 1.], [x, 1.], [x, 0.]]);
+    }
+    outer.push([0., 0.]);
+    outer.dedup();
+    let p = Profile { outer: poly(&outer), holes: vec![] };
+    let (faces, s) = round_trip(&NativeBrep::extrude(&p, 0., 2.).unwrap(), 0.05);
+    assert!(faces > 40, "{faces}");
+    assert!((s.signed_volume_mm3 - extrude_volume(&p, 2.)).abs() < 1e-6, "{}", s.signed_volume_mm3);
+}
+
+/// The whole-body budget is charged what the charts produce: a limit below one face's chart refuses.
+#[test]
+fn the_total_work_budget_still_bounds_the_charts_produced() {
+    let b = NativeBrep::box_from_corners([0., 0., 0.], [1., 1., 1.]).unwrap();
+    let text = b.to_step_text();
+    let data = inventory(&text, Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::default()).unwrap();
+    let e = model.sampled_surface(SurfaceLimits { total_work: 3, ..SurfaceLimits::default() }, |_| true).unwrap_err();
+    assert!(e.to_string().contains("work budget"), "{e}");
+}

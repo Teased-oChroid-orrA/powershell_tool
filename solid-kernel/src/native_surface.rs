@@ -175,13 +175,13 @@ impl AnalyticModel {
         mut progress: impl FnMut(Progress) -> bool,
     ) -> Result<SampledSurface, Error> {
         let total = self.body().faces.len();
-        if limits.face_work == 0
-            || total
-                .checked_mul(limits.face_work)
-                .is_none_or(|work| work > limits.total_work)
-        {
+        // Each face is capped at `face_work`, and the whole body is charged what its charts actually produce (below). The earlier
+        // check, `faces * face_work <= total_work`, charged every face its worst case and so refused any body of more than 40
+        // faces at the defaults, though real parts use a tiny fraction of the per-face cap.
+        if limits.face_work == 0 {
             return Err(fail(ErrorKind::Limit, "surface chart work budget exceeded"));
         }
+        let mut charged = 0usize;
         let boundary_vertices = self
             .body()
             .edges
@@ -219,6 +219,10 @@ impl AnalyticModel {
                 limits.chart_policy,
                 limits.chart_quality,
             )?;
+            charged = charged.saturating_add(chart.vertices.len()).saturating_add(chart.triangles.len());
+            if charged > limits.total_work {
+                return Err(fail(ErrorKind::Limit, "surface chart work budget exceeded"));
+            }
             if chart.triangles.len() > limits.triangles.saturating_sub(mesh.triangles.len()) {
                 return Err(fail(ErrorKind::Limit, "surface triangle budget exceeded"));
             }

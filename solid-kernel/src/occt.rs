@@ -3,6 +3,7 @@
 use crate::{SurfaceMesh, SurfaceSolid, V3};
 use cadrum::{BSplineEnd, DVec3, Edge, Solid, Tessellation};
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 
 // Compatibility exports; neutral contracts live outside the OCCT adapter.
 pub use crate::cad::{Bool, FaceInfo, Loop, Profile};
@@ -10,6 +11,15 @@ pub use crate::cad::{Bool, FaceInfo, Loop, Profile};
 /// A B-rep shape: normally one solid; a STEP file or a cut that splits the part can give several pieces.
 pub struct Brep {
     solids: Vec<Solid>,
+}
+
+/// OpenCASCADE's STEP reader and writer share process-wide state (the global message / registry singletons) and are not
+/// safe to enter from several threads at once: parallel test threads aborted in CI with `munmap_chunk(): invalid pointer`
+/// (step_assembly) and SIGSEGV (fea-problem native_solid). Every STEP entry point holds this lock for its duration.
+static STEP_IO: Mutex<()> = Mutex::new(());
+
+fn step_io() -> MutexGuard<'static, ()> {
+    STEP_IO.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn err(e: cadrum::Error) -> String {
@@ -214,10 +224,12 @@ impl Brep {
 
     pub fn write_step(&self, path: &Path) -> Result<(), String> {
         let mut f = std::fs::File::create(path).map_err(|e| e.to_string())?;
+        let _io = step_io();
         Solid::write_step(&self.solids, &mut f).map_err(err)
     }
     pub fn read_step(path: &Path) -> Result<Self, String> {
         let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let _io = step_io();
         let solids = Solid::read_step(&mut f).map_err(err)?;
         if solids.is_empty() {
             return Err("the STEP file contains no solid".into());
@@ -228,10 +240,12 @@ impl Brep {
     /// The STEP text of the shape (what `fea-problem` stores as the source of truth of a solid).
     pub fn to_step_text(&self) -> Result<String, String> {
         let mut buf = Vec::new();
+        let _io = step_io();
         Solid::write_step(&self.solids, &mut buf).map_err(err)?;
         String::from_utf8(buf).map_err(|e| e.to_string())
     }
     pub fn from_step_text(text: &str) -> Result<Self, String> {
+        let _io = step_io();
         let solids = Solid::read_step(&mut text.as_bytes()).map_err(err)?;
         if solids.is_empty() {
             return Err("the STEP text contains no solid".into());
