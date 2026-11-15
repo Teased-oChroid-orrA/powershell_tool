@@ -5,7 +5,7 @@
 //! allows it:
 //!
 //! * **sphere**: stereographic projection from the antipode of the face's mean direction (conformal). A face must stay
-//!   within 120 degrees of that direction, so the pole of the projection and the periodic seam never meet the face.
+//!   within 150 degrees of that direction, so the pole of the projection and the periodic seam never meet the face.
 //! * **cone**: the development of the cone into the plane (isometric): slant distance `rho` from the apex and the angle
 //!   `-lon * sin(semi_angle)`. The angle is periodic (`2 pi sin(semi_angle)`), so a full band is a sector with two straight
 //!   seam sides, exactly as a cylinder's seam.
@@ -58,8 +58,10 @@ fn norm(a: V3) -> f64 {
 fn finite(p: V3) -> bool {
     p.iter().all(|x| x.is_finite())
 }
-/// Faces of a sphere must stay this close (angle from the mean direction) to be charted.
-const MAX_SPHERE_REACH: f64 = 120. * PI / 180.;
+/// Faces of a sphere must stay this close (angle from the mean direction) to be charted. The chart is a stereographic
+/// projection from the antipode: conformal, with a scale of 1 / cos^2(reach / 2) (15 at 150 degrees), which the
+/// surface-aware refinement of the chart meets (`unseamed_sphere_cap_beyond_a_hemisphere_holds_its_closed_form_volume`).
+const MAX_SPHERE_REACH: f64 = 150. * PI / 180.;
 /// A cone point this close (mm) to the apex is the apex.
 const APEX_SLANT: f64 = 1e-9;
 
@@ -587,7 +589,7 @@ impl Surface {
     /// direction of the vector area of the largest loop (a seam traversed twice cancels out), on the side the face occupies:
     /// with the face's normal outward (`same_sense`) the interior is to the left of a loop that runs counter-clockwise seen
     /// from outside, i.e. around `+a`; with the normal inward it is the complement. Refused when the face is not contained
-    /// within 120 degrees of that centre (a full sphere, a band around the equator, ...).
+    /// within 150 degrees of that centre (a full sphere, a band around the equator, ...).
     pub(crate) fn localized_sphere(
         &self,
         loops: &[Vec<V3>],
@@ -638,19 +640,10 @@ impl Surface {
             Ok(reach)
         };
         let reach = reach_from(z)?;
-        let other = reach_from(mul(z, -1.))?;
-        // When the other side is clearly the smaller one the orientation convention of the file disagrees with this
-        // reading; refuse rather than guess (a hemisphere reaches 90 degrees from either side).
-        if other + 0.1 < reach && other <= MAX_SPHERE_REACH {
-            return Err(fail(
-                ErrorKind::Geometry,
-                "spherical face orientation and extent disagree: the face is not on the side its bound encloses",
-            ));
-        }
         if reach > MAX_SPHERE_REACH {
             return Err(fail(
                 ErrorKind::Geometry,
-                "a spherical face reaches further than 120 degrees from its centre: not charted",
+                "a spherical face reaches further than 150 degrees from its centre: not charted",
             ));
         }
         // Any x perpendicular to z; the source x keeps the chart stable when it is usable.
@@ -1563,11 +1556,13 @@ mod tests {
             panic!()
         };
         assert!(f.z[2] > 0.999, "{:?}", f.z);
-        // The same loop with the face normal inward bounds the complement: 1.0 rad of latitude leaves 147 degrees of cap.
-        assert!(s.localized_sphere(&[ring(1.0)], false).is_err());
+        // The same loop with the face normal inward bounds the complement: 1.0 rad of latitude leaves 147 degrees of cap, a wide
+        // face that is charted; 1.2 rad leaves 159 degrees, which is not.
+        assert!(s.localized_sphere(&[ring(1.0)], false).is_ok());
+        assert!(s.localized_sphere(&[ring(1.2)], false).is_err());
         // The equator bounds a hemisphere on either side, 90 degrees from its centre.
         assert!(s.localized_sphere(&[ring(0.)], true).is_ok());
-        // A cap wider than 120 degrees (a loop at latitude -60 degrees seen counter-clockwise from above encloses 150).
+        // A cap wider than 150 degrees (a loop at latitude -60.2 degrees seen counter-clockwise from above encloses 150.2).
         assert!(s.localized_sphere(&[ring(-1.05)], true).is_err());
         // A seam traversed twice adds nothing.
         let mut seamed = ring(1.0);
