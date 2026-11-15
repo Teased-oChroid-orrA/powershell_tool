@@ -4,6 +4,7 @@
 //! `powershell_tool` repo for the evidence and verification behind it.
 
 pub mod buckling;
+pub mod criterion_thickness;
 pub mod failure;
 pub mod geometry;
 pub mod heads;

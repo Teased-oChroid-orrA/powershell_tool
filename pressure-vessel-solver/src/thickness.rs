@@ -53,7 +53,7 @@ pub enum ThicknessSolverOutcome {
 /// real pressure-vessel design would ever need; a required MS that can't
 /// be met within this bound is reported `Infeasible`, not searched
 /// forever.
-const MAX_RADIUS_RATIO: f64 = 1000.0;
+pub(crate) const MAX_RADIUS_RATIO: f64 = 1000.0;
 
 fn governing_at(inner_radius: f64, outer_radius: f64, pressure: &PressureLoading, material: &Material) -> Option<MarginResult> {
     let geometry = CylinderGeometry::new(inner_radius, outer_radius).ok()?;
@@ -61,58 +61,74 @@ fn governing_at(inner_radius: f64, outer_radius: f64, pressure: &PressureLoading
     Some(governing(&results).clone())
 }
 
-/// Solves for the minimum outer radius (equivalently wall thickness)
-/// satisfying `inputs.required_minimum_ms` across all four v1 failure
-/// modes, via bisection - expands an upper search bound by doubling the
-/// wall thickness until it satisfies the requirement (or hits
-/// [`MAX_RADIUS_RATIO`]), then bisects between the last-infeasible lower
-/// bound and the first-feasible upper bound until `radius_tolerance` is
-/// reached or `max_iterations` is exhausted.
-pub fn solve_minimum_thickness(inputs: &ThicknessSolverInputs, max_iterations: u32, radius_tolerance: f64) -> ThicknessSolverOutcome {
-    let a = inputs.inner_radius;
+/// Outcome of [`bisect_outer_radius`].
+pub(crate) enum RadiusSearch {
+    /// `upper` satisfies the requirement; `upper - tolerance` (or the zero-wall bound) does not.
+    Feasible { upper: f64, iterations: u32 },
+    Infeasible { largest_radius_tried: f64, best_margin_found: f64 },
+}
+
+/// The bisection of [`solve_minimum_thickness`], generic over the margin being driven (`margin_at`
+/// returns `None` for an invalid geometry): expands an upper bound by doubling the outer radius
+/// until `required_ms` is met (or [`MAX_RADIUS_RATIO`]), then bisects. Sound only for a margin that
+/// does not decrease with wall thickness; each caller's tests check that for its own margin.
+pub(crate) fn bisect_outer_radius(inner_radius: f64, required_ms: f64, max_iterations: u32, radius_tolerance: f64, margin_at: impl Fn(f64) -> Option<f64>) -> RadiusSearch {
+    let a = inner_radius;
     let mut lower = a * 1.000_001; // smallest valid outer radius, effectively zero wall
     let mut upper = a * 1.01; // start the expansion search at a thin, real wall
-    let mut best_margin_found = governing_at(a, lower, &inputs.pressure, &inputs.material).map(|g| g.margin).unwrap_or(f64::NEG_INFINITY);
+    let mut best_margin_found = margin_at(lower).unwrap_or(f64::NEG_INFINITY);
 
     let mut expansions = 0;
     loop {
-        match governing_at(a, upper, &inputs.pressure, &inputs.material) {
-            Some(g) => {
-                best_margin_found = best_margin_found.max(g.margin);
-                if g.margin >= inputs.required_minimum_ms {
+        match margin_at(upper) {
+            Some(m) => {
+                best_margin_found = best_margin_found.max(m);
+                if m >= required_ms {
                     break;
                 }
             }
             None => break,
         }
         if upper >= a * MAX_RADIUS_RATIO {
-            return ThicknessSolverOutcome::Infeasible { largest_radius_tried: upper, best_margin_found };
+            return RadiusSearch::Infeasible { largest_radius_tried: upper, best_margin_found };
         }
         upper *= 2.0;
         expansions += 1;
         if expansions > 200 {
-            return ThicknessSolverOutcome::Infeasible { largest_radius_tried: upper, best_margin_found };
+            return RadiusSearch::Infeasible { largest_radius_tried: upper, best_margin_found };
         }
     }
 
     let mut iterations = 0;
     while (upper - lower) > radius_tolerance && iterations < max_iterations {
         let mid = (lower + upper) / 2.0;
-        match governing_at(a, mid, &inputs.pressure, &inputs.material) {
-            Some(g) if g.margin >= inputs.required_minimum_ms => upper = mid,
+        match margin_at(mid) {
+            Some(m) if m >= required_ms => upper = mid,
             _ => lower = mid,
         }
         iterations += 1;
     }
+    RadiusSearch::Feasible { upper, iterations }
+}
 
-    let governing_result = governing_at(a, upper, &inputs.pressure, &inputs.material)
-        .expect("upper bound was already proven valid/feasible in the expansion phase above");
-    ThicknessSolverOutcome::Converged(ThicknessSolution {
-        outer_radius: upper,
-        wall_thickness: upper - a,
-        governing: governing_result,
-        iterations,
-    })
+/// Solves for the minimum outer radius (equivalently wall thickness)
+/// satisfying `inputs.required_minimum_ms` across all four v1 failure
+/// modes, via [`bisect_outer_radius`] on the governing margin. For the
+/// minimum at each criterion separately see
+/// [`crate::criterion_thickness`].
+pub fn solve_minimum_thickness(inputs: &ThicknessSolverInputs, max_iterations: u32, radius_tolerance: f64) -> ThicknessSolverOutcome {
+    let a = inputs.inner_radius;
+    let search = bisect_outer_radius(a, inputs.required_minimum_ms, max_iterations, radius_tolerance, |ro| {
+        governing_at(a, ro, &inputs.pressure, &inputs.material).map(|g| g.margin)
+    });
+    match search {
+        RadiusSearch::Infeasible { largest_radius_tried, best_margin_found } => ThicknessSolverOutcome::Infeasible { largest_radius_tried, best_margin_found },
+        RadiusSearch::Feasible { upper, iterations } => {
+            let governing_result = governing_at(a, upper, &inputs.pressure, &inputs.material)
+                .expect("upper bound was already proven valid/feasible in the expansion phase above");
+            ThicknessSolverOutcome::Converged(ThicknessSolution { outer_radius: upper, wall_thickness: upper - a, governing: governing_result, iterations })
+        }
+    }
 }
 
 #[cfg(test)]
