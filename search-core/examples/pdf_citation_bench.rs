@@ -17,7 +17,7 @@ fn main() {
     println!("file\tlines\tcited\tcheckable\tcorrect");
     for path in &a[2..] {
         let Ok(bytes) = std::fs::read(path) else { continue };
-        let Some(lines) = search_core::extraction::eval_pdf_cited_lines(&bytes, yolow) else {
+        let Some(lines) = search_core::extraction::eval_pdf_cited_lines(&bytes, yolow, false) else {
             println!("{path}\t-\t-\t-\t-");
             continue;
         };

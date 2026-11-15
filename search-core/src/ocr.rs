@@ -100,6 +100,58 @@ pub(crate) fn ocr_image(image: &OcrCandidateImage) -> Option<Vec<String>> {
     Some(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
 }
 
+/// One recognised line and its box in the pixels of the image that was passed in (y down).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OcrBox {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+    pub text: String,
+}
+
+/// OCR of one 8-bit grayscale image (0 black, 255 white), returning each non-empty line with its box, in reading
+/// order. Shrunk to [`MAX_OCR_SIDE`] first like [`ocr_image`]; the boxes are scaled back to the given image.
+/// `None` when the engine or this image failed; no text is `Some(vec![])`.
+pub(crate) fn ocr_gray_boxes(width: u32, height: u32, gray: &[u8]) -> Option<Vec<OcrBox>> {
+    let engine = engine()?;
+    let (nw, nh) = fit_dimensions(width, height);
+    let resized;
+    let pixels: &[u8] = if (nw, nh) != (width, height) {
+        let src = image::ImageBuffer::<image::Luma<u8>, &[u8]>::from_raw(width, height, gray)?;
+        resized = image::imageops::resize(&src, nw, nh, image::imageops::FilterType::Triangle).into_raw();
+        &resized
+    } else {
+        gray
+    };
+    let input = engine.prepare_input(ImageSource::from_bytes(pixels, (nw, nh)).ok()?).ok()?;
+    let words = engine.detect_words(&input).ok()?;
+    let lines = engine.find_text_lines(&input, &words);
+    let recognised = engine.recognize_text(&input, &lines).ok()?;
+    let (sx, sy) = (width as f32 / nw as f32, height as f32 / nh as f32);
+    let mut out = Vec::new();
+    for (words, line) in lines.iter().zip(recognised) {
+        let Some(line) = line else { continue };
+        let text = line.to_string();
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for corner in words.iter().flat_map(|w| w.corners()) {
+            x0 = x0.min(corner.x);
+            y0 = y0.min(corner.y);
+            x1 = x1.max(corner.x);
+            y1 = y1.max(corner.y);
+        }
+        if x0 > x1 {
+            continue;
+        }
+        out.push(OcrBox { x0: x0 * sx, y0: y0 * sy, x1: x1 * sx, y1: y1 * sy, text: text.to_string() });
+    }
+    Some(out)
+}
+
 // --------------------------------------------------------------------
 // Recognised-text cache
 // --------------------------------------------------------------------
