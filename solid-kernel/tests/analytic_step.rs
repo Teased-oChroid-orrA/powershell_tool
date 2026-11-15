@@ -1772,3 +1772,68 @@ fn unseamed_band_with_misaligned_circle_starts_gets_a_split_vertex_and_a_generat
     let relative = (a.signed_volume_mm3 - b.signed_volume_mm3).abs() / a.signed_volume_mm3;
     assert!(relative < 2e-3, "{} vs {}", a.signed_volume_mm3, b.signed_volume_mm3);
 }
+
+/// Onshape and SolidWorks write the tip of a cone (a drill point) as one face bounded by its base circle alone, with no seam to
+/// the apex. An OpenCASCADE fixture with the seam edge removed from the loop must sample to the same shell as the seamed
+/// original, and that shell must hold the closed-form volume of the cone, pi r^2 h / 3 = 200 pi / 3 mm^3,
+/// to the sampling chord (0.05 mm on r = 5 mm costs about 1.2 %).
+#[test]
+fn unseamed_cone_tip_gets_a_seam_to_its_apex_and_samples_like_the_seamed_original() {
+    let seamed = include_str!("data/cone.step");
+    let unseamed = seamed.replace("#19 = EDGE_LOOP('',(#20,#50,#77));", "#19 = EDGE_LOOP('',(#50));");
+    assert_ne!(seamed, unseamed);
+    let sample = |text: &str| {
+        let data = inventory(text, Limits::default()).unwrap();
+        AnalyticModel::read(&data, Options::default())
+            .unwrap()
+            .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+            .unwrap()
+    };
+    let (a, b) = (sample(seamed), sample(&unseamed));
+    assert_eq!(a.mesh.triangles.len(), b.mesh.triangles.len());
+    assert_eq!(a.mesh.vertices.len(), b.mesh.vertices.len());
+    assert!((a.signed_volume_mm3 - b.signed_volume_mm3).abs() < 1e-9 * a.signed_volume_mm3);
+    let exact = std::f64::consts::PI * 25. * 8. / 3.;
+    assert!((b.signed_volume_mm3 - exact).abs() < 2e-2 * exact, "{} against {exact}", b.signed_volume_mm3);
+}
+
+/// A sphere face bounded by one circle and no seam, larger than a hemisphere (NIST FTC 06 / STC 06 write a ball segment so).
+/// The OpenCASCADE hemisphere fixture with the loop reduced to its rim circle, moved to colatitude `phi`, is the ball of radius
+/// 4 cut by the plane z = 4 cos(phi), kept above it: its volume has the closed form of a ball minus a cap. The shell must hold
+/// it to the sampling chord, and a face declared on the other side (`same_sense` false: the complementary cap, inward normal)
+/// must not read as that solid.
+#[test]
+fn unseamed_sphere_cap_beyond_a_hemisphere_holds_its_closed_form_volume() {
+    use std::f64::consts::PI;
+    let source = include_str!("data/hemisphere.step");
+    let sample = |text: &str| {
+        let data = inventory(text, Limits::default()).unwrap();
+        AnalyticModel::read(&data, Options::default())
+            .and_then(|m| m.sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true))
+    };
+    for phi_deg in [100., 130., 145.] {
+        let phi = f64::to_radians(phi_deg);
+        let (r, z0) = (4. * phi.sin(), 4. * phi.cos());
+        let text = source
+            .replace("#19 = EDGE_LOOP('',(#20,#51,#52));", "#19 = EDGE_LOOP('',(#52));")
+            .replace("#23 = CARTESIAN_POINT('',(4.,-9.797174393179E-16,-4.532431118118E-15));", &format!("#23 = CARTESIAN_POINT('',({r:?},0.,{z0:?}));"))
+            .replace("#55 = CIRCLE('',#56,4.);", &format!("#55 = CIRCLE('',#56,{r:?});"))
+            .replace("#57 = CARTESIAN_POINT('',(0.,0.,0.));", &format!("#57 = CARTESIAN_POINT('',(0.,0.,{z0:?}));"))
+            .replace("#70 = CARTESIAN_POINT('',(-5.,-5.,0.));", &format!("#70 = CARTESIAN_POINT('',(-5.,-5.,{z0:?}));"));
+        assert_ne!(text, source);
+        let cap = PI * (4. + z0).powi(2) * (3. * 4. - (4. + z0)) / 3.;
+        let exact = 4. / 3. * PI * 64. - cap;
+        let shell = sample(&text).unwrap_or_else(|e| panic!("colatitude {phi_deg}: {e}"));
+        assert!(
+            (shell.signed_volume_mm3 - exact).abs() < 2e-2 * exact,
+            "colatitude {phi_deg}: {} against {exact}",
+            shell.signed_volume_mm3
+        );
+        // the face on the other side of the same circle is the small cap: a different solid, never this volume
+        let flipped = text.replace("#17 = ADVANCED_FACE('',(#18),#33,.T.);", "#17 = ADVANCED_FACE('',(#18),#33,.F.);");
+        assert_ne!(flipped, text);
+        if let Ok(other) = sample(&flipped) {
+            assert!((other.signed_volume_mm3 - exact).abs() > 0.1 * exact, "colatitude {phi_deg}: the flipped face read as the same solid");
+        }
+    }
+}

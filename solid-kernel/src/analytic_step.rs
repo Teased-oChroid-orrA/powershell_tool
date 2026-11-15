@@ -140,6 +140,10 @@ fn frame(data: &Inventory, id: u64, scale: f64) -> Result<Frame, Error> {
                 _ => return Err(error(e, "unsupported axis")),
             };
             let x = match reference {
+                // ISO 10303-42 takes the x axis as the projection of (1, 0, 0), or of (0, 1, 0) when the axis is along x (either way:
+                // the literal rule leaves -x degenerate, and every reader picks a perpendicular). Only the angle origin of a curve
+                // or surface depends on it; its points do not.
+                Value::Omitted if z[0].abs() > 1. - 1e-9 => [0., 1., 0.],
                 Value::Omitted => [1., 0., 0.],
                 Value::Ref(id) => direction(data, *id)?,
                 _ => return Err(error(e, "unsupported reference direction")),
@@ -1909,6 +1913,7 @@ impl AnalyticModel {
         }
         self.seam_unseamed_torus_bands(&mut next);
         self.seam_unseamed_revolution_bands(&mut next);
+        self.seam_cone_tips(&mut next);
     }
     /// Join the loops `la` and `lb` of the bounds `pair` of a band face into one through a new seam edge from `ends.0` (the
     /// first vertex of `la`) to `ends.1` (the first vertex of `lb`), used once each way: the shape of an OpenCASCADE seam.
@@ -2051,6 +2056,63 @@ impl AnalyticModel {
                 continue;
             };
             self.install_band_seam(face_id, pair, la, lb, (va, vb), curve, samples, next);
+        }
+    }
+    /// A cone face bounded by one circle that winds once around the axis, with no seam (a drill point or a countersink tip as
+    /// Onshape or SolidWorks write it), is the tip: the apex is inside the face, since the other side of the circle is
+    /// unbounded. It is cut along a generator from the circle's first vertex to a new apex vertex, used once each way in one
+    /// merged loop: the shape of a cone with an explicit seam to its apex, which the chart code reads. New ids follow
+    /// [`Self::seam_unseamed_cylinder_bands`]'s rule. A cone of any other shape is left to the chart code.
+    fn seam_cone_tips(&mut self, next: &mut u64) {
+        let tolerance = self.geometry_tolerance_mm;
+        let faces: Vec<u64> = self
+            .body
+            .faces
+            .values()
+            .filter(|f| f.bounds.len() == 1 && matches!(self.surfaces.get(&f.id), Some(Surface::Cone { .. })))
+            .map(|f| f.id)
+            .collect();
+        for face_id in faces {
+            let Some(Surface::Cone { frame, radius, semi_angle, .. }) = self.surfaces.get(&face_id).cloned() else {
+                continue;
+            };
+            let angle = |p: V3| {
+                let d = sub(p, frame.origin);
+                dot(d, frame.y).atan2(dot(d, frame.x))
+            };
+            let wrap = |a: f64| a - TAU * (a / TAU).round();
+            let Some(turns) = self.bound_turns(face_id, &angle, &wrap) else {
+                continue;
+            };
+            let (uses, turn) = &turns[0];
+            if (turn.abs() - 1.).abs() > 1e-6 {
+                continue;
+            }
+            let Some(va) = uses.first().and_then(|u| self.use_start(u)) else {
+                continue;
+            };
+            let apex = add(frame.origin, mul(frame.z, -radius / semi_angle.tan()));
+            let pa = self.vertices[&va];
+            let length = norm(sub(apex, pa));
+            if length <= tolerance {
+                continue;
+            }
+            let (vertex, seam) = (*next, *next + 1);
+            *next += 5;
+            self.vertices.insert(vertex, apex);
+            self.body.vertices.insert(
+                vertex,
+                crate::step_topology::RawVertex { id: vertex, point: 0, coordinates: apex.map(|x| x / self.scale_mm) },
+            );
+            self.body.edges.insert(seam, RawEdge { id: seam, start: va, end: vertex, curve: 0, same_sense: true });
+            self.curves.insert(seam, Curve::Line { origin: pa, direction: mul(sub(apex, pa), 1. / length) });
+            self.edges.insert(seam, vec![pa, apex]);
+            let mut merged = uses.clone();
+            merged.push(EdgeUse { id: seam + 1, edge: seam, forward: true });
+            merged.push(EdgeUse { id: seam + 2, edge: seam, forward: false });
+            let face = self.body.faces.get_mut(&face_id).unwrap();
+            let first = face.bounds[0].clone();
+            face.bounds = vec![RawBound { id: first.id, loop_id: first.loop_id, forward: true, explicitly_outer: false, edges: merged }];
         }
     }
     /// Cut a revolution band between two winding circles along its bounded profile interval.
@@ -2429,6 +2491,23 @@ impl AnalyticModel {
 #[cfg(test)]
 mod conversion_tests {
     use super::*;
+    /// A placement with an axis along x (either sense) and no reference direction (NIST CTC/FTC circles are written so) has
+    /// a right-handed orthonormal frame whose axes are perpendicular to the declared axis.
+    #[test]
+    fn a_placement_with_its_axis_along_x_and_no_reference_direction_resolves() {
+        for axis in ["-1.,0.,0.", "1.,0.,0.", "0.,0.,1.", "0.,0.,-1."] {
+            let text = format!(
+                "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('','',(''),(''),'','','');\nFILE_SCHEMA(('AUTOMOTIVE_DESIGN'));\nENDSEC;\nDATA;\n#1=CARTESIAN_POINT('',(1.,2.,3.));\n#2=DIRECTION('',({axis}));\n#3=AXIS2_PLACEMENT_3D('',#1,#2,$);\nENDSEC;\nEND-ISO-10303-21;\n"
+            );
+            let data = crate::step::inventory(&text, crate::step::Limits::default()).unwrap();
+            let f = frame(&data, 3, 1.).unwrap();
+            let z = f.z;
+            assert!(dot(f.x, z).abs() < 1e-12 && dot(f.y, z).abs() < 1e-12 && dot(f.x, f.y).abs() < 1e-12);
+            assert!((norm(f.x) - 1.).abs() < 1e-12 && (norm(f.y) - 1.).abs() < 1e-12);
+            let h = cross(f.x, f.y);
+            assert!(norm(sub(h, z)) < 1e-12, "left-handed frame for axis {axis}");
+        }
+    }
     /// A wiggly degree-6 spline edge (a cross-bore intersection is one): bisecting to the whole chord tolerance and keeping
     /// every sample is what made such edges 10x denser than the face mesher needs. The decimating sampler stays within the
     /// chord of the curve with far fewer samples than the plain bisection (`split_share` 1 = no decimation budget).
