@@ -7,6 +7,7 @@ pub mod buckling;
 pub mod failure;
 pub mod geometry;
 pub mod heads;
+pub mod junction;
 mod line_beam;
 pub mod line_run;
 pub mod pressure;
