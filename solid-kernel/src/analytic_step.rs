@@ -140,6 +140,10 @@ fn frame(data: &Inventory, id: u64, scale: f64) -> Result<Frame, Error> {
                 _ => return Err(error(e, "unsupported axis")),
             };
             let x = match reference {
+                // ISO 10303-42 takes the x axis as the projection of (1, 0, 0), or of (0, 1, 0) when the axis is along x (either way:
+                // the literal rule leaves -x degenerate, and every reader picks a perpendicular). Only the angle origin of a curve
+                // or surface depends on it; its points do not.
+                Value::Omitted if z[0].abs() > 1. - 1e-9 => [0., 1., 0.],
                 Value::Omitted => [1., 0., 0.],
                 Value::Ref(id) => direction(data, *id)?,
                 _ => return Err(error(e, "unsupported reference direction")),
@@ -2487,6 +2491,23 @@ impl AnalyticModel {
 #[cfg(test)]
 mod conversion_tests {
     use super::*;
+    /// A placement with an axis along x (either sense) and no reference direction (NIST CTC/FTC circles are written so) has
+    /// a right-handed orthonormal frame whose axes are perpendicular to the declared axis.
+    #[test]
+    fn a_placement_with_its_axis_along_x_and_no_reference_direction_resolves() {
+        for axis in ["-1.,0.,0.", "1.,0.,0.", "0.,0.,1.", "0.,0.,-1."] {
+            let text = format!(
+                "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('','',(''),(''),'','','');\nFILE_SCHEMA(('AUTOMOTIVE_DESIGN'));\nENDSEC;\nDATA;\n#1=CARTESIAN_POINT('',(1.,2.,3.));\n#2=DIRECTION('',({axis}));\n#3=AXIS2_PLACEMENT_3D('',#1,#2,$);\nENDSEC;\nEND-ISO-10303-21;\n"
+            );
+            let data = crate::step::inventory(&text, crate::step::Limits::default()).unwrap();
+            let f = frame(&data, 3, 1.).unwrap();
+            let z = f.z;
+            assert!(dot(f.x, z).abs() < 1e-12 && dot(f.y, z).abs() < 1e-12 && dot(f.x, f.y).abs() < 1e-12);
+            assert!((norm(f.x) - 1.).abs() < 1e-12 && (norm(f.y) - 1.).abs() < 1e-12);
+            let h = cross(f.x, f.y);
+            assert!(norm(sub(h, z)) < 1e-12, "left-handed frame for axis {axis}");
+        }
+    }
     /// A wiggly degree-6 spline edge (a cross-bore intersection is one): bisecting to the whole chord tolerance and keeping
     /// every sample is what made such edges 10x denser than the face mesher needs. The decimating sampler stays within the
     /// chord of the curve with far fewer samples than the plain bisection (`split_share` 1 = no decimation budget).
