@@ -1,18 +1,10 @@
 //! Background solve for the editor: one job at a time, stale or cancelled results are discarded.
 //! The kernel solve itself is not interruptible, so "cancel" means "ignore the answer"; the
-//! worker thread finishes and exits on its own.
+//! worker thread finishes and exits on its own. The thread, panic and channel handling is the shared
+//! [`Worker`]; this adds the problem snapshot a result belongs to and the one-shot `Cancelled` outcome.
+use super::worker::Worker;
 use fea_problem::members::{MemberProblem, MemberSolved};
-use std::sync::mpsc::{channel, Receiver, TryRecvError};
-use std::time::{Duration, Instant};
-
-type Answer = Result<MemberSolved, String>;
-
-struct Running {
-    problem: MemberProblem,
-    started: Instant,
-    rx: Receiver<Answer>,
-    cancelled: bool,
-}
+use std::time::Duration;
 
 #[derive(Debug)]
 pub enum Outcome {
@@ -24,62 +16,61 @@ pub enum Outcome {
     Cancelled,
 }
 
-#[derive(Default)]
 pub struct Runner {
-    running: Option<Running>,
+    worker: Worker<MemberSolved>,
+    /// The snapshot of the job in flight (also while a cancelled one winds down).
+    problem: Option<MemberProblem>,
+    cancelled: bool,
+}
+
+impl Default for Runner {
+    fn default() -> Self {
+        Self { worker: Worker::new("member-solve"), problem: None, cancelled: false }
+    }
 }
 
 impl Runner {
     pub fn is_running(&self) -> bool {
-        self.running.as_ref().is_some_and(|r| !r.cancelled)
+        self.worker.is_running()
     }
     /// A cancelled job's thread may still be finishing; a new job waits for it to avoid piling up threads.
     pub fn is_busy(&self) -> bool {
-        self.running.is_some()
+        self.worker.is_busy()
     }
     pub fn elapsed(&self) -> Option<Duration> {
-        self.running.as_ref().map(|r| r.started.elapsed())
+        self.worker.elapsed()
     }
     pub fn start(&mut self, problem: MemberProblem) -> Result<(), String> {
         if self.is_busy() {
             return Err("a solve is still running".into());
         }
-        let (tx, rx) = channel();
         let snapshot = problem.clone();
-        std::thread::Builder::new()
-            .name("member-solve".into())
-            .spawn(move || {
-                let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| snapshot.solve()))
-                    .unwrap_or_else(|_| Err("the solver stopped unexpectedly".into()));
-                let _ = tx.send(answer);
-            })
-            .map_err(|e| format!("cannot start the solver thread: {e}"))?;
-        self.running = Some(Running { problem, started: Instant::now(), rx, cancelled: false });
+        self.worker.start(0, move || snapshot.solve())?;
+        self.problem = Some(problem);
+        self.cancelled = false;
         Ok(())
     }
     pub fn cancel(&mut self) -> bool {
-        match &mut self.running {
-            Some(r) if !r.cancelled => {
-                r.cancelled = true;
-                true
-            }
-            _ => false,
-        }
+        let wanted = self.worker.cancel();
+        self.cancelled |= wanted;
+        wanted
     }
     /// Non-blocking: `Some` exactly once when the job ends.
     pub fn poll(&mut self) -> Option<Outcome> {
-        let r = self.running.as_ref()?;
-        let answer = match r.rx.try_recv() {
-            Ok(a) => a,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => Err("the solver stopped unexpectedly".into()),
-        };
-        let r = self.running.take().expect("checked above");
-        Some(match (r.cancelled, answer) {
-            (true, _) => Outcome::Cancelled,
-            (false, Ok(solved)) => Outcome::Finished { problem: Box::new(r.problem), solved: Box::new(solved) },
-            (false, Err(e)) => Outcome::Failed(e),
-        })
+        if let Some((_, answer)) = self.worker.poll() {
+            let problem = self.problem.take().expect("a job in flight has its snapshot");
+            return Some(match answer {
+                Ok(solved) => Outcome::Finished { problem: Box::new(problem), solved: Box::new(solved) },
+                Err(e) => Outcome::Failed(e),
+            });
+        }
+        // `Worker::poll` drops a cancelled answer silently; report it once, when the thread is gone.
+        if self.cancelled && !self.worker.is_busy() {
+            self.cancelled = false;
+            self.problem = None;
+            return Some(Outcome::Cancelled);
+        }
+        None
     }
 }
 
@@ -87,6 +78,7 @@ impl Runner {
 mod tests {
     use super::*;
     use fea_problem::members::{templates, Edit};
+    use std::time::Instant;
 
     fn wait(r: &mut Runner) -> Outcome {
         let t = Instant::now();
