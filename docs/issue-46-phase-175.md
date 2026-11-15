@@ -54,3 +54,10 @@ The corpus test printed only the first 150 characters of a refusal, which cut th
 | one supported body (product structure) / unsupported item | ftc_08 e1-tg / stc_07 |
 
 Fixed: `CONICAL_SURFACE` with radius `0.` (the placement is the apex; NIST places cones that way) was refused as "invalid or unsupported geometric radius". `cone_radius` accepts zero for cones only (other radii stay positive). Native imports **10 of 33** (`ftc_06 e2` is new); `ctc_01 e1`, `ctc_02 e2` and `ctc_04 e1` get past it to the next refusal above. Regression: `curved_step` case "cone placed at its apex (radius 0)" (`tests/data/cone-apex-placement.step`, the `cone.step` cone re-placed at its apex, closed-form volume). The circle-endpoint refusal message now reports the offset and radius.
+
+## Increment 3: half-cone wedges (apex turns exactly half a period)
+
+Cause of the "ambiguous half-turn cylindrical trim segment" refusal on `ctc_01 e1` (found by printing the previous and next chart values): the face is a wedge of a cone whose boundary runs along one generator into the apex and leaves along the opposite generator, so the angle steps by exactly half a period there. Both branches (+ and - half a period) are the same polygon in two charts and only the loop closing tells them apart. `sampled_periodic_trims` (cone, torus) now tries the + branch and, if the loop does not close in it, the - branch (`unwrap_period_tie`); `unwrap_period` itself still refuses the tie, so the cylinder path is unchanged. The closure, single-turn extent and polygon classification checks are unchanged and decide the branch.
+
+Native imports **11 of 33** (`ctc_01 ap242-e1` new). `ctc_02 e2` moves on to "curved chord midpoint is unresolved", `ftc_10 e2` to "chart region traversal budget exceeded". Unit test: `unwrap_period_tie` (tie both ways, non-ties untouched). Limit: the branch choice is exercised end to end only by the corpus file (no hand-built wedge fixture yet), and the imported solid is not compared with OpenCASCADE here.
+
