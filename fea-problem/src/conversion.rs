@@ -101,7 +101,7 @@ impl Problem {
                 ([tx * f.area, ty * f.area, tz * f.area], Some(edge.clone()))
             }
             Load::Force { edge, fx, fy, fz } => ([*fx, *fy, *fz], Some(edge.clone())),
-            Load::Bearing { hole, fx, fy } => ([*fx, *fy, 0.0], Some(format!("hole{hole}"))),
+            Load::Bearing { hole, fx, fy } => ([*fx, *fy, 0.0], Some(self.hole_at(*hole).map_or_else(|| format!("hole{hole}"), |h| h.2))),
             Load::Point { fx, fy, fz, x, y, z } => ([*fx, *fy, *fz], nearest_face(facts, [*x, *y, *z])),
             Load::Body { .. } => unreachable!("handled above"),
         };
@@ -129,7 +129,7 @@ impl Problem {
                 Load::Pressure { edge: target.clone(), p: -normal / f.area }
             }
             LoadKind::Bearing => {
-                let Some(n) = target.strip_prefix("hole").and_then(|d| d.parse::<usize>().ok()) else { return Err("a pin load acts on a hole: pick a hole".into()) };
+                let Some(n) = self.hole_number(&target) else { return Err("a pin load acts on a hole: pick a hole".into()) };
                 if !matches!(self.analysis, crate::problem::Analysis::PlaneStress | crate::problem::Analysis::PlaneStrain) {
                     return Err("a pin load is for plane problems".into());
                 }
