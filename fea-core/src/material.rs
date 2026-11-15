@@ -42,24 +42,40 @@ pub struct J2 {
 
 impl J2 {
     pub fn small(law: Hardening) -> Self {
-        Self { law, large_strain: false, neo_hookean: false }
+        Self {
+            law,
+            large_strain: false,
+            neo_hookean: false,
+        }
     }
 
     pub fn finite(law: Hardening) -> Self {
-        Self { law, large_strain: true, neo_hookean: false }
+        Self {
+            law,
+            large_strain: true,
+            neo_hookean: false,
+        }
     }
 
     /// Hyperelastic Hencky material with no yielding (a large-strain elastic body in a finite-strain
     /// model).
     pub fn elastic_finite() -> Self {
-        Self { law: Hardening::linear(1.0e30, 0.0, 1.0).expect("valid table"), large_strain: true, neo_hookean: false }
+        Self {
+            law: Hardening::linear(1.0e30, 0.0, 1.0).expect("valid table"),
+            large_strain: true,
+            neo_hookean: false,
+        }
     }
 
     /// Compressible neo-Hookean hyperelastic material, `W = G/2 (I1 - 3) - G ln J + lambda/2 (ln J)^2` with the shear modulus
     /// `G` and `lambda = K - 2G/3` of the block's elastic constants (no yielding, finite strain; solid, plane-strain and
     /// axisymmetric analyses).
     pub fn neo_hookean() -> Self {
-        Self { law: Hardening::linear(1.0e30, 0.0, 1.0).expect("valid table"), large_strain: true, neo_hookean: true }
+        Self {
+            law: Hardening::linear(1.0e30, 0.0, 1.0).expect("valid table"),
+            large_strain: true,
+            neo_hookean: true,
+        }
     }
 
     pub fn initial_state(&self) -> GpState {
@@ -80,7 +96,10 @@ pub struct Moduli {
 
 impl Moduli {
     pub fn new(e: f64, nu: f64) -> Self {
-        Self { g: e / (2.0 * (1.0 + nu)), k: e / (3.0 * (1.0 - 2.0 * nu)) }
+        Self {
+            g: e / (2.0 * (1.0 + nu)),
+            k: e / (3.0 * (1.0 - 2.0 * nu)),
+        }
     }
 }
 
@@ -115,7 +134,9 @@ pub fn transpose(a: &M3) -> M3 {
 }
 
 pub fn det(a: &M3) -> f64 {
-    a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+    a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+        - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+        + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
 }
 
 pub fn inverse(a: &M3) -> Option<M3> {
@@ -125,9 +146,21 @@ pub fn inverse(a: &M3) -> Option<M3> {
     }
     let r = 1.0 / d;
     Some([
-        [(a[1][1] * a[2][2] - a[1][2] * a[2][1]) * r, (a[0][2] * a[2][1] - a[0][1] * a[2][2]) * r, (a[0][1] * a[1][2] - a[0][2] * a[1][1]) * r],
-        [(a[1][2] * a[2][0] - a[1][0] * a[2][2]) * r, (a[0][0] * a[2][2] - a[0][2] * a[2][0]) * r, (a[0][2] * a[1][0] - a[0][0] * a[1][2]) * r],
-        [(a[1][0] * a[2][1] - a[1][1] * a[2][0]) * r, (a[0][1] * a[2][0] - a[0][0] * a[2][1]) * r, (a[0][0] * a[1][1] - a[0][1] * a[1][0]) * r],
+        [
+            (a[1][1] * a[2][2] - a[1][2] * a[2][1]) * r,
+            (a[0][2] * a[2][1] - a[0][1] * a[2][2]) * r,
+            (a[0][1] * a[1][2] - a[0][2] * a[1][1]) * r,
+        ],
+        [
+            (a[1][2] * a[2][0] - a[1][0] * a[2][2]) * r,
+            (a[0][0] * a[2][2] - a[0][2] * a[2][0]) * r,
+            (a[0][2] * a[1][0] - a[0][0] * a[1][2]) * r,
+        ],
+        [
+            (a[1][0] * a[2][1] - a[1][1] * a[2][0]) * r,
+            (a[0][1] * a[2][0] - a[0][0] * a[2][1]) * r,
+            (a[0][0] * a[1][1] - a[0][1] * a[1][0]) * r,
+        ],
     ])
 }
 
@@ -136,7 +169,14 @@ fn sym_from_voigt(v: &[f64]) -> M3 {
 }
 
 fn voigt_from_sym(m: &M3) -> [f64; 6] {
-    [m[0][0], m[1][1], m[2][2], 0.5 * (m[0][1] + m[1][0]), 0.5 * (m[1][2] + m[2][1]), 0.5 * (m[2][0] + m[0][2])]
+    [
+        m[0][0],
+        m[1][1],
+        m[2][2],
+        0.5 * (m[0][1] + m[1][0]),
+        0.5 * (m[1][2] + m[2][1]),
+        0.5 * (m[2][0] + m[0][2]),
+    ]
 }
 
 /// Eigen-decomposition of a symmetric matrix by cyclic Jacobi: eigenvalues and eigenvectors
@@ -177,7 +217,14 @@ pub fn sym_eig(a: &M3) -> ([f64; 3], [[f64; 3]; 3]) {
             }
         }
     }
-    ([m[0][0], m[1][1], m[2][2]], [[v[0][0], v[1][0], v[2][0]], [v[0][1], v[1][1], v[2][1]], [v[0][2], v[1][2], v[2][2]]])
+    (
+        [m[0][0], m[1][1], m[2][2]],
+        [
+            [v[0][0], v[1][0], v[2][0]],
+            [v[0][1], v[1][1], v[2][1]],
+            [v[0][2], v[1][2], v[2][2]],
+        ],
+    )
 }
 
 /// `(ln a - ln b) / (a - b)` for positive `a`, `b`, stable as `a -> b` (atanh series).
@@ -215,9 +262,18 @@ fn return_principal(mo: Moduli, law: &Hardening, eps: [f64; 3], ep: f64) -> Prin
         let hp = law.slope(ep + d);
         c = 6.0 * mo.g * mo.g * (1.0 / (3.0 * mo.g + hp) - d / q);
     }
-    let n: [f64; 3] = if dn > 0.0 { std::array::from_fn(|i| dev[i] / dn) } else { [0.0; 3] };
+    let n: [f64; 3] = if dn > 0.0 {
+        std::array::from_fn(|i| dev[i] / dn)
+    } else {
+        [0.0; 3]
+    };
     let tau = std::array::from_fn(|i| 2.0 * mo.g * theta * dev[i] + mo.k * tr);
-    let a = std::array::from_fn(|i| std::array::from_fn(|j| mo.k + 2.0 * mo.g * theta * (if i == j { 1.0 } else { 0.0 } - 1.0 / 3.0) - c * n[i] * n[j]));
+    let a = std::array::from_fn(|i| {
+        std::array::from_fn(|j| {
+            mo.k + 2.0 * mo.g * theta * (if i == j { 1.0 } else { 0.0 } - 1.0 / 3.0)
+                - c * n[i] * n[j]
+        })
+    });
     let eps_e = std::array::from_fn(|i| theta * dev[i] + tr / 3.0);
     Principal { tau, a, eps_e, d }
 }
@@ -248,7 +304,11 @@ pub fn small_strain_update(mo: Moduli, law: &Hardening, eps: &M3, old: &GpState)
         theta = 1.0 - 3.0 * mo.g * d / q;
         c = 6.0 * mo.g * mo.g * (1.0 / (3.0 * mo.g + law.slope(ep + d)) - d / q);
     }
-    let n: M3 = if dn > 0.0 { std::array::from_fn(|i| std::array::from_fn(|j| dev[i][j] / dn)) } else { [[0.0; 3]; 3] };
+    let n: M3 = if dn > 0.0 {
+        std::array::from_fn(|i| std::array::from_fn(|j| dev[i][j] / dn))
+    } else {
+        [[0.0; 3]; 3]
+    };
     let mut stress = [[0.0; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
@@ -269,14 +329,25 @@ pub fn small_strain_update(mo: Moduli, law: &Hardening, eps: &M3, old: &GpState)
         for j in 0..3 {
             for k in 0..3 {
                 for l in 0..3 {
-                    let id_s = 0.5 * (if i == k && j == l { 1.0 } else { 0.0 } + if i == l && j == k { 1.0 } else { 0.0 });
-                    let (dij, dkl) = (if i == j { 1.0 } else { 0.0 }, if k == l { 1.0 } else { 0.0 });
-                    t[3 * i + j][3 * k + l] = mo.k * dij * dkl + 2.0 * mo.g * theta * (id_s - dij * dkl / 3.0) - c * n[i][j] * n[k][l];
+                    let id_s = 0.5
+                        * (if i == k && j == l { 1.0 } else { 0.0 }
+                            + if i == l && j == k { 1.0 } else { 0.0 });
+                    let (dij, dkl) = (
+                        if i == j { 1.0 } else { 0.0 },
+                        if k == l { 1.0 } else { 0.0 },
+                    );
+                    t[3 * i + j][3 * k + l] = mo.k * dij * dkl
+                        + 2.0 * mo.g * theta * (id_s - dij * dkl / 3.0)
+                        - c * n[i][j] * n[k][l];
                 }
             }
         }
     }
-    Update { stress, tangent: t, state }
+    Update {
+        stress,
+        tangent: t,
+        state,
+    }
 }
 
 // ------------------------------------------------------------------ small strain, anisotropic elasticity
@@ -285,8 +356,15 @@ pub fn small_strain_update(mo: Moduli, law: &Hardening, eps: &M3, old: &GpState)
 const PAIRS: [(usize, usize); 6] = [(0, 0), (1, 1), (2, 2), (0, 1), (1, 2), (2, 0)];
 
 /// Solve `A X = B` (`N x N`, `N x M`) by Gaussian elimination with partial pivoting; `None` if singular.
-fn lu_solve<const N: usize, const M: usize>(mut a: [[f64; N]; N], mut b: [[f64; M]; N]) -> Option<[[f64; M]; N]> {
-    let scale = a.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-300);
+fn lu_solve<const N: usize, const M: usize>(
+    mut a: [[f64; N]; N],
+    mut b: [[f64; M]; N],
+) -> Option<[[f64; M]; N]> {
+    let scale = a
+        .iter()
+        .flatten()
+        .fold(0.0f64, |m, v| m.max(v.abs()))
+        .max(1e-300);
     for c in 0..N {
         let p = (c..N).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs()))?;
         if a[p][c].abs() < 1e-14 * scale {
@@ -317,8 +395,16 @@ fn lu_solve<const N: usize, const M: usize>(mut a: [[f64; N]; N], mut b: [[f64; 
 /// plastic strain increment is `dgamma n_v`) and `M = d n_v / d sigma_v` (6 x 6) of a stress in Voigt order.
 fn flow_direction(sig: &[f64; 6]) -> (f64, [f64; 6], [[f64; 6]; 6]) {
     let tr = (sig[0] + sig[1] + sig[2]) / 3.0;
-    let s = [sig[0] - tr, sig[1] - tr, sig[2] - tr, sig[3], sig[4], sig[5]]; // tensor components s_ij (shear once)
-    let ss = s[0] * s[0] + s[1] * s[1] + s[2] * s[2] + 2.0 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]);
+    let s = [
+        sig[0] - tr,
+        sig[1] - tr,
+        sig[2] - tr,
+        sig[3],
+        sig[4],
+        sig[5],
+    ]; // tensor components s_ij (shear once)
+    let ss =
+        s[0] * s[0] + s[1] * s[1] + s[2] * s[2] + 2.0 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]);
     let vm = (1.5 * ss).sqrt().max(1e-300);
     let n: [f64; 6] = std::array::from_fn(|a| 1.5 * s[a] / vm); // tensor components n_ij
     let g: [f64; 6] = std::array::from_fn(|a| if a < 3 { n[a] } else { 2.0 * n[a] }); // d vm / d sigma_v
@@ -328,7 +414,11 @@ fn flow_direction(sig: &[f64; 6]) -> (f64, [f64; 6], [[f64; 6]; 6]) {
         let ca = if a < 3 { 1.0 } else { 2.0 };
         for b in 0..6 {
             let (k, l) = PAIRS[b];
-            let ds = if b < 3 { f64::from(u8::from(i == k && j == k)) - if i == j { 1.0 / 3.0 } else { 0.0 } } else { f64::from(u8::from(i == k && j == l)) + f64::from(u8::from(i == l && j == k)) };
+            let ds = if b < 3 {
+                f64::from(u8::from(i == k && j == k)) - if i == j { 1.0 / 3.0 } else { 0.0 }
+            } else {
+                f64::from(u8::from(i == k && j == l)) + f64::from(u8::from(i == l && j == k))
+            };
             m[a][b] = ca * (1.5 / vm * ds - n[a] * g[b] / vm);
         }
     }
@@ -340,9 +430,28 @@ fn flow_direction(sig: &[f64; 6]) -> (f64, [f64; 6], [[f64; 6]; 6]) {
 /// D (eps - eps_p)`. Unlike the isotropic law the flow direction changes during the return (`D n` is not parallel to
 /// `n`), so the return solves `sigma + dgamma D n(sigma) = sigma_trial`, `sigma_vm(sigma) = sigma_y(p + dgamma)` for the
 /// stress and the multiplier together by Newton's method; the tangent is the consistent one of that linearisation.
-pub fn small_strain_update_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: &M3, old: &GpState) -> Update {
-    let ep_v = [old[0], old[1], old[2], 2.0 * old[3], 2.0 * old[4], 2.0 * old[5]];
-    let e_v = [eps[0][0], eps[1][1], eps[2][2], 2.0 * eps[0][1], 2.0 * eps[1][2], 2.0 * eps[2][0]];
+pub fn small_strain_update_aniso(
+    d: &[[f64; 6]; 6],
+    law: &Hardening,
+    eps: &M3,
+    old: &GpState,
+) -> Update {
+    let ep_v = [
+        old[0],
+        old[1],
+        old[2],
+        2.0 * old[3],
+        2.0 * old[4],
+        2.0 * old[5],
+    ];
+    let e_v = [
+        eps[0][0],
+        eps[1][1],
+        eps[2][2],
+        2.0 * eps[0][1],
+        2.0 * eps[1][2],
+        2.0 * eps[2][0],
+    ];
     let ee: [f64; 6] = std::array::from_fn(|i| e_v[i] - ep_v[i]);
     let tr: [f64; 6] = std::array::from_fn(|i| (0..6).map(|j| d[i][j] * ee[j]).sum());
     let p0 = old[6];
@@ -353,13 +462,21 @@ pub fn small_strain_update_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: &M3, o
         let mut t = [[0.0; 9]; 9];
         for i in 0..3 {
             for j in 0..3 {
-                let a = PAIRS.iter().position(|&(p, q)| (p == i && q == j) || (p == j && q == i)).expect("pair");
+                let a = PAIRS
+                    .iter()
+                    .position(|&(p, q)| (p == i && q == j) || (p == j && q == i))
+                    .expect("pair");
                 for k in 0..3 {
                     for l in 0..3 {
                         let mut v = 0.0;
                         for b in 0..6 {
                             let (p, q) = PAIRS[b];
-                            let de = if b < 3 { f64::from(u8::from(k == p && l == p)) } else { f64::from(u8::from(k == p && l == q)) + f64::from(u8::from(k == q && l == p)) };
+                            let de = if b < 3 {
+                                f64::from(u8::from(k == p && l == p))
+                            } else {
+                                f64::from(u8::from(k == p && l == q))
+                                    + f64::from(u8::from(k == q && l == p))
+                            };
                             v += tv[a][b] * de;
                         }
                         t[3 * i + j][3 * k + l] = v;
@@ -369,9 +486,14 @@ pub fn small_strain_update_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: &M3, o
         }
         t
     };
-    let tensor = |s: &[f64; 6]| -> M3 { [[s[0], s[3], s[5]], [s[3], s[1], s[4]], [s[5], s[4], s[2]]] };
+    let tensor =
+        |s: &[f64; 6]| -> M3 { [[s[0], s[3], s[5]], [s[3], s[1], s[4]], [s[5], s[4], s[2]]] };
     if vm_tr <= sy0 {
-        return Update { stress: tensor(&tr), tangent: to_t4(d), state: *old };
+        return Update {
+            stress: tensor(&tr),
+            tangent: to_t4(d),
+            state: *old,
+        };
     }
     // Plastic: Newton on (sigma, dgamma).
     let gbar = (d[3][3] + d[4][4] + d[5][5]) / 3.0;
@@ -381,7 +503,10 @@ pub fn small_strain_update_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: &M3, o
         let (vm, _, _) = flow_direction(sig);
         let (_, g, _) = flow_direction(sig);
         let dn: [f64; 6] = std::array::from_fn(|i| (0..6).map(|j| d[i][j] * g[j]).sum());
-        (std::array::from_fn(|i| sig[i] - tr[i] + dg * dn[i]), vm - law.stress(p0 + dg))
+        (
+            std::array::from_fn(|i| sig[i] - tr[i] + dg * dn[i]),
+            vm - law.stress(p0 + dg),
+        )
     };
     let norm = |r: &[f64; 6], f: f64| (r.iter().map(|v| v * v).sum::<f64>() + f * f).sqrt();
     let (mut r, mut f) = resid(&sig, dg);
@@ -396,7 +521,8 @@ pub fn small_strain_update_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: &M3, o
         let mut jac = [[0.0; 7]; 7];
         for i in 0..6 {
             for j in 0..6 {
-                jac[i][j] = f64::from(u8::from(i == j)) + dg * (0..6).map(|k| d[i][k] * m[k][j]).sum::<f64>();
+                jac[i][j] = f64::from(u8::from(i == j))
+                    + dg * (0..6).map(|k| d[i][k] * m[k][j]).sum::<f64>();
             }
             jac[i][6] = (0..6).map(|k| d[i][k] * g[k]).sum();
             jac[6][i] = g[i];
@@ -433,7 +559,8 @@ pub fn small_strain_update_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: &M3, o
     let mut a = [[0.0; 6]; 6];
     for i in 0..6 {
         for j in 0..6 {
-            a[i][j] = f64::from(u8::from(i == j)) + dg * (0..6).map(|k| d[i][k] * m[k][j]).sum::<f64>();
+            a[i][j] =
+                f64::from(u8::from(i == j)) + dg * (0..6).map(|k| d[i][k] * m[k][j]).sum::<f64>();
         }
     }
     let mut rhs = [[0.0; 7]; 6];
@@ -460,11 +587,20 @@ pub fn small_strain_update_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: &M3, o
         state[k] += dg * 0.5 * g[k]; // tensor shear = engineering / 2; g[k] holds the engineering component
     }
     state[6] += dg;
-    Update { stress: tensor(&sig), tangent: to_t4(&tv), state }
+    Update {
+        stress: tensor(&sig),
+        tangent: to_t4(&tv),
+        state,
+    }
 }
 
 /// Plane-stress version of [`small_strain_update_aniso`]: `eps_zz` is solved so that `sigma_zz = 0`.
-pub fn small_strain_plane_stress_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: &M3, old: &GpState) -> (Update, f64) {
+pub fn small_strain_plane_stress_aniso(
+    d: &[[f64; 6]; 6],
+    law: &Hardening,
+    eps: &M3,
+    old: &GpState,
+) -> (Update, f64) {
     let mut e = *eps;
     let mut ezz = -0.3 * (e[0][0] + e[1][1]);
     let mut up = small_strain_update_aniso(d, law, &e, old);
@@ -472,7 +608,8 @@ pub fn small_strain_plane_stress_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: 
         e[2][2] = ezz;
         up = small_strain_update_aniso(d, law, &e, old);
         let szz = up.stress[2][2];
-        let scale = d[2][2].abs().max(1e-300) * (e[0][0].abs() + e[1][1].abs() + e[0][1].abs() + ezz.abs());
+        let scale =
+            d[2][2].abs().max(1e-300) * (e[0][0].abs() + e[1][1].abs() + e[0][1].abs() + ezz.abs());
         if szz.abs() <= 1e-13 * scale {
             break;
         }
@@ -496,7 +633,10 @@ pub fn neo_hookean_update(mo: Moduli, h: &M3, old: &GpState) -> Option<Update> {
     }
     let finv = inverse(&f)?;
     let tr = h[0][0] + h[1][1] + h[2][2];
-    let tr2: f64 = (0..3).flat_map(|i| (0..3).map(move |j| (i, j))).map(|(i, j)| h[i][j] * h[j][i]).sum();
+    let tr2: f64 = (0..3)
+        .flat_map(|i| (0..3).map(move |j| (i, j)))
+        .map(|(i, j)| h[i][j] * h[j][i])
+        .sum();
     let jm1 = tr + 0.5 * (tr * tr - tr2) + det(h);
     if jm1.is_nan() || jm1 <= -1.0 || !jm1.is_finite() {
         return None;
@@ -515,7 +655,8 @@ pub fn neo_hookean_update(mo: Moduli, h: &M3, old: &GpState) -> Option<Update> {
         for jj in 0..3 {
             for k in 0..3 {
                 for l in 0..3 {
-                    let mut a = (g - lam * lnj) * finv[jj][k] * finv[l][i] + lam * finv[jj][i] * finv[l][k];
+                    let mut a =
+                        (g - lam * lnj) * finv[jj][k] * finv[l][i] + lam * finv[jj][i] * finv[l][k];
                     if i == k && jj == l {
                         a += g;
                     }
@@ -524,7 +665,11 @@ pub fn neo_hookean_update(mo: Moduli, h: &M3, old: &GpState) -> Option<Update> {
             }
         }
     }
-    Some(Update { stress, tangent, state: *old })
+    Some(Update {
+        stress,
+        tangent,
+        state: *old,
+    })
 }
 
 /// Finite-strain Hencky J2 update for the deformation gradient `f` (3 x 3, `det f > 0`).
@@ -560,12 +705,22 @@ pub fn finite_strain_update(mo: Moduli, law: &Hardening, f: &M3, old: &GpState) 
     let state = [cv[0], cv[1], cv[2], cv[3], cv[4], cv[5], old[6] + pr.d];
     // Tangent dP/dF, one unit perturbation dF = e_k (x) e_L at a time.
     let mut tangent = [[0.0; 9]; 9];
-    let hs: [[f64; 3]; 3] = std::array::from_fn(|a| std::array::from_fn(|b| if a == b { 0.5 / lam[a] } else { 0.5 * dlog(lam[a], lam[b]) }));
+    let hs: [[f64; 3]; 3] = std::array::from_fn(|a| {
+        std::array::from_fn(|b| {
+            if a == b {
+                0.5 / lam[a]
+            } else {
+                0.5 * dlog(lam[a], lam[b])
+            }
+        })
+    });
     let ms: [[f64; 3]; 3] = std::array::from_fn(|a| {
         std::array::from_fn(|b| {
             if a == b {
                 0.0
-            } else if (eps_tr[a] - eps_tr[b]).abs() > 1e-9 * (1.0 + eps_tr[a].abs() + eps_tr[b].abs()) {
+            } else if (eps_tr[a] - eps_tr[b]).abs()
+                > 1e-9 * (1.0 + eps_tr[a].abs() + eps_tr[b].abs())
+            {
                 (pr.tau[a] - pr.tau[b]) / (eps_tr[a] - eps_tr[b])
             } else {
                 // Isotropic function with equal arguments: dtau_a/de_a - dtau_a/de_b.
@@ -638,7 +793,11 @@ pub fn finite_strain_update(mo: Moduli, law: &Hardening, f: &M3, old: &GpState) 
             }
         }
     }
-    Some(Update { stress: p, tangent, state })
+    Some(Update {
+        stress: p,
+        tangent,
+        state,
+    })
 }
 
 // ------------------------------------------------------------------ plane stress
@@ -656,7 +815,12 @@ pub fn condense_zz(t: &T4) -> T4 {
 
 /// Plane-stress small strain: in-plane strain tensor `eps` (the `zz` entry is solved so that
 /// `sigma_zz = 0`); returns the update with the converged `eps_zz` and the condensed tangent.
-pub fn small_strain_plane_stress(mo: Moduli, law: &Hardening, eps: &M3, old: &GpState) -> (Update, f64) {
+pub fn small_strain_plane_stress(
+    mo: Moduli,
+    law: &Hardening,
+    eps: &M3,
+    old: &GpState,
+) -> (Update, f64) {
     let mut e = *eps;
     let mut ezz = -0.3 * (e[0][0] + e[1][1]); // a typical Poisson-like start
     let mut up = small_strain_update(mo, law, &e, old);
@@ -666,7 +830,8 @@ pub fn small_strain_plane_stress(mo: Moduli, law: &Hardening, eps: &M3, old: &Gp
         let szz = up.stress[2][2];
         // Converged when sigma_zz is negligible against the elastic stress scale of this strain state
         // (never against the yield stress: an elastic law has an enormous one).
-        let scale = (mo.k + 4.0 * mo.g / 3.0) * (e[0][0].abs() + e[1][1].abs() + e[0][1].abs() + ezz.abs());
+        let scale =
+            (mo.k + 4.0 * mo.g / 3.0) * (e[0][0].abs() + e[1][1].abs() + e[0][1].abs() + ezz.abs());
         if szz.abs() <= 1e-13 * scale {
             break;
         }
@@ -678,7 +843,13 @@ pub fn small_strain_plane_stress(mo: Moduli, law: &Hardening, eps: &M3, old: &Gp
 
 /// Plane-stress finite strain: in-plane deformation gradient (the `zz` stretch is solved so that
 /// `P_zz = 0`). Returns the update and the converged stretch.
-pub fn finite_strain_plane_stress(mo: Moduli, law: &Hardening, f: &M3, old: &GpState, lambda_guess: f64) -> Option<(Update, f64)> {
+pub fn finite_strain_plane_stress(
+    mo: Moduli,
+    law: &Hardening,
+    f: &M3,
+    old: &GpState,
+    lambda_guess: f64,
+) -> Option<(Update, f64)> {
     let mut ff = *f;
     let mut lz = lambda_guess.max(1e-3);
     let mut up = None;
@@ -686,7 +857,11 @@ pub fn finite_strain_plane_stress(mo: Moduli, law: &Hardening, f: &M3, old: &GpS
         ff[2][2] = lz;
         let u = finite_strain_update(mo, law, &ff, old)?;
         let pzz = u.stress[2][2];
-        let strain_size = (ff[0][0] - 1.0).abs() + (ff[1][1] - 1.0).abs() + ff[0][1].abs() + ff[1][0].abs() + (lz - 1.0).abs();
+        let strain_size = (ff[0][0] - 1.0).abs()
+            + (ff[1][1] - 1.0).abs()
+            + ff[0][1].abs()
+            + ff[1][0].abs()
+            + (lz - 1.0).abs();
         let converged = pzz.abs() <= 1e-13 * (mo.k + mo.g) * strain_size;
         let slope = u.tangent[8][8];
         up = Some(u);
@@ -723,12 +898,23 @@ mod tests {
     }
 
     fn law() -> Hardening {
-        Hardening::table(&[(0.0, 40_000.0), (0.01, 50_000.0), (0.05, 60_000.0), (0.5, 70_000.0)]).unwrap()
+        Hardening::table(&[
+            (0.0, 40_000.0),
+            (0.01, 50_000.0),
+            (0.05, 60_000.0),
+            (0.5, 70_000.0),
+        ])
+        .unwrap()
     }
 
     #[test]
     fn symmetric_eigen_decomposition_reconstructs_the_matrix() {
-        for m in [[[2.0, 0.3, -0.1], [0.3, 1.0, 0.5], [-0.1, 0.5, 3.0]], [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [[5.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]], [[1.0, 1e-9, 0.0], [1e-9, 1.0, 0.0], [0.0, 0.0, 1.0]]] {
+        for m in [
+            [[2.0, 0.3, -0.1], [0.3, 1.0, 0.5], [-0.1, 0.5, 3.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [[5.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]],
+            [[1.0, 1e-9, 0.0], [1e-9, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        ] {
             let (l, v) = sym_eig(&m);
             for i in 0..3 {
                 for j in 0..3 {
@@ -739,7 +925,10 @@ mod tests {
             for a in 0..3 {
                 for b in 0..3 {
                     let dot: f64 = (0..3).map(|i| v[a][i] * v[b][i]).sum();
-                    assert!((dot - if a == b { 1.0 } else { 0.0 }).abs() < 1e-12, "orthonormality ({a},{b})");
+                    assert!(
+                        (dot - if a == b { 1.0 } else { 0.0 }).abs() < 1e-12,
+                        "orthonormality ({a},{b})"
+                    );
                 }
             }
         }
@@ -748,21 +937,41 @@ mod tests {
     #[test]
     fn elastic_response_is_hooke_and_small_strain_simple_shear_yields_at_sigma_y_over_root3() {
         // Elastic: uniaxial strain-controlled stress state.
-        let eps = [[1e-4, 0.0, 0.0], [0.0, -NU * 1e-4, 0.0], [0.0, 0.0, -NU * 1e-4]];
+        let eps = [
+            [1e-4, 0.0, 0.0],
+            [0.0, -NU * 1e-4, 0.0],
+            [0.0, 0.0, -NU * 1e-4],
+        ];
         let up = small_strain_update(mo(), &law(), &eps, &[0.0; 7]);
-        assert!((up.stress[0][0] - E * 1e-4).abs() < 1e-9 * E * 1e-4 && up.stress[1][1].abs() < 1e-8 && up.stress[0][1] == 0.0);
+        assert!(
+            (up.stress[0][0] - E * 1e-4).abs() < 1e-9 * E * 1e-4
+                && up.stress[1][1].abs() < 1e-8
+                && up.stress[0][1] == 0.0
+        );
         assert_eq!(up.state, [0.0; 7]);
         // Perfectly plastic simple shear: sigma_xy = sigma_y / sqrt 3 whatever the (large) shear.
         let flat = Hardening::linear(40_000.0, 0.0, 1.0).unwrap();
         for gamma in [0.02, 0.1, 0.5] {
-            let eps = [[0.0, gamma / 2.0, 0.0], [gamma / 2.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+            let eps = [
+                [0.0, gamma / 2.0, 0.0],
+                [gamma / 2.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ];
             let up = small_strain_update(mo(), &flat, &eps, &[0.0; 7]);
-            assert!((up.stress[0][1] - 40_000.0 / 3.0f64.sqrt()).abs() < 1e-8 * 40_000.0, "gamma {gamma}: {}", up.stress[0][1]);
+            assert!(
+                (up.stress[0][1] - 40_000.0 / 3.0f64.sqrt()).abs() < 1e-8 * 40_000.0,
+                "gamma {gamma}: {}",
+                up.stress[0][1]
+            );
             assert!((vm(&up.stress) - 40_000.0).abs() < 1e-8 * 40_000.0);
             // Equivalent plastic strain: (gamma - gamma_e) / sqrt 3 with gamma_e = tau / G.
             let g = mo().g;
             let want = (gamma - 40_000.0 / 3.0f64.sqrt() / g) / 3.0f64.sqrt();
-            assert!((up.state[6] - want).abs() < 1e-10, "ep {} vs {want}", up.state[6]);
+            assert!(
+                (up.state[6] - want).abs() < 1e-10,
+                "ep {} vs {want}",
+                up.state[6]
+            );
         }
     }
 
@@ -774,19 +983,36 @@ mod tests {
         for law in [law(), Hardening::linear(1.0e30, 0.0, 1.0).unwrap()] {
             let (up, ezz) = small_strain_plane_stress(mo(), &law, &h, &[0.0; 7]);
             let c = E / (1.0 - NU * NU);
-            assert!((up.stress[0][0] - c * (ex + NU * ey)).abs() < 1e-9 * c * ex, "sigma_x {} vs {}", up.stress[0][0], c * (ex + NU * ey));
+            assert!(
+                (up.stress[0][0] - c * (ex + NU * ey)).abs() < 1e-9 * c * ex,
+                "sigma_x {} vs {}",
+                up.stress[0][0],
+                c * (ex + NU * ey)
+            );
             assert!((up.stress[1][1] - c * (ey + NU * ex)).abs() < 1e-9 * c * ex);
             assert!((up.stress[0][1] - mo().g * 2.0 * exy).abs() < 1e-9 * c * ex);
-            assert!((ezz + NU / (1.0 - NU) * (ex + ey)).abs() < 1e-12, "eps_zz {ezz}");
+            assert!(
+                (ezz + NU / (1.0 - NU) * (ex + ey)).abs() < 1e-12,
+                "eps_zz {ezz}"
+            );
             assert!(up.stress[2][2].abs() < 1e-9 * c * ex);
         }
         // Finite strain with a huge yield stress: hyperelastic, P_zz = 0 and a small-deformation limit equal to the same law.
         let f = [[1.0 + ex, exy, 0.0], [exy, 1.0 + ey, 0.0], [0.0, 0.0, 1.0]];
         let flat = Hardening::linear(1.0e30, 0.0, 1.0).unwrap();
-        let (up, lz) = finite_strain_plane_stress(mo(), &flat, &f, &[1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0], 1.0).unwrap();
-        assert!(up.stress[2][2].abs() < 1e-6 && (lz - 1.0 + NU / (1.0 - NU) * (ex + ey)).abs() < 1e-5, "stretch {lz}");
+        let (up, lz) =
+            finite_strain_plane_stress(mo(), &flat, &f, &[1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0], 1.0)
+                .unwrap();
+        assert!(
+            up.stress[2][2].abs() < 1e-6 && (lz - 1.0 + NU / (1.0 - NU) * (ex + ey)).abs() < 1e-5,
+            "stretch {lz}"
+        );
         let c = E / (1.0 - NU * NU);
-        assert!((up.stress[0][0] - c * (ex + NU * ey)).abs() < 5e-3 * c * ex, "P_xx {}", up.stress[0][0]);
+        assert!(
+            (up.stress[0][0] - c * (ex + NU * ey)).abs() < 5e-3 * c * ex,
+            "P_xx {}",
+            up.stress[0][0]
+        );
     }
 
     #[test]
@@ -801,7 +1027,11 @@ mod tests {
                 let up = small_strain_update(mo(), &l, &eps, &[0.0; 7]);
                 let sy = up.stress[1][1];
                 if sy.abs() < 1e-9 {
-                    assert!((up.stress[0][0] - l.stress(up.state[6])).abs() < 1e-6 * up.stress[0][0] || up.state[6] == 0.0, "ex {ex}");
+                    assert!(
+                        (up.stress[0][0] - l.stress(up.state[6])).abs() < 1e-6 * up.stress[0][0]
+                            || up.state[6] == 0.0,
+                        "ex {ex}"
+                    );
                     break;
                 }
                 ey -= sy / up.tangent[4][4];
@@ -830,23 +1060,63 @@ mod tests {
 
     fn max_rel(a: &T4, b: &T4) -> f64 {
         let scale = a.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
-        a.iter().flatten().zip(b.iter().flatten()).fold(0.0f64, |m, (x, y)| m.max((x - y).abs())) / scale
+        a.iter()
+            .flatten()
+            .zip(b.iter().flatten())
+            .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
+            / scale
     }
 
     #[test]
     fn small_strain_consistent_tangent_matches_finite_differences_elastic_and_plastic() {
         let l = law();
-        let old_plastic: GpState = small_strain_update(mo(), &l, &[[0.012, 0.0, 0.0], [0.0, -0.004, 0.003], [0.0, 0.003, -0.004]], &[0.0; 7]).state;
+        let old_plastic: GpState = small_strain_update(
+            mo(),
+            &l,
+            &[
+                [0.012, 0.0, 0.0],
+                [0.0, -0.004, 0.003],
+                [0.0, 0.003, -0.004],
+            ],
+            &[0.0; 7],
+        )
+        .state;
         assert!(old_plastic[6] > 0.0);
         for (old, h) in [
-            ([0.0; 7], [[1e-3, 2e-4, 0.0], [-1e-4, 3e-4, 1e-4], [0.0, 2e-4, -5e-4]]),
-            ([0.0; 7], [[0.02, 0.004, 0.001], [0.002, -0.006, 0.003], [0.001, 0.001, 0.004]]),
-            ([0.0; 7], [[0.2, 0.05, 0.0], [0.05, -0.1, 0.02], [0.0, 0.02, 0.01]]),
-            (old_plastic, [[0.014, 0.001, 0.0], [0.001, -0.005, 0.002], [0.0, 0.002, -0.003]]),
+            (
+                [0.0; 7],
+                [[1e-3, 2e-4, 0.0], [-1e-4, 3e-4, 1e-4], [0.0, 2e-4, -5e-4]],
+            ),
+            (
+                [0.0; 7],
+                [
+                    [0.02, 0.004, 0.001],
+                    [0.002, -0.006, 0.003],
+                    [0.001, 0.001, 0.004],
+                ],
+            ),
+            (
+                [0.0; 7],
+                [[0.2, 0.05, 0.0], [0.05, -0.1, 0.02], [0.0, 0.02, 0.01]],
+            ),
+            (
+                old_plastic,
+                [
+                    [0.014, 0.001, 0.0],
+                    [0.001, -0.005, 0.002],
+                    [0.0, 0.002, -0.003],
+                ],
+            ),
         ] {
-            let sym = |h: &M3| -> M3 { std::array::from_fn(|i| std::array::from_fn(|j| 0.5 * (h[i][j] + h[j][i]))) };
+            let sym = |h: &M3| -> M3 {
+                std::array::from_fn(|i| std::array::from_fn(|j| 0.5 * (h[i][j] + h[j][i])))
+            };
             let up = small_strain_update(mo(), &l, &sym(&h), &old);
-            let fd = fd_tangent(&|hh: &M3| small_strain_update(mo(), &l, &sym(hh), &old).stress, &h, 1e-7);
+            let fd = fd_tangent(
+                &|hh: &M3| small_strain_update(mo(), &l, &sym(hh), &old).stress,
+                &h,
+                1e-7,
+            );
             let err = max_rel(&up.tangent, &fd);
             assert!(err < 1e-8, "tangent error {err:e} (ep = {})", up.state[6]);
         }
@@ -859,30 +1129,68 @@ mod tests {
     #[test]
     fn finite_strain_tangent_is_analytic_and_matches_finite_differences_everywhere() {
         let l = law();
-        let rot = |a: f64| -> M3 { [[a.cos(), -a.sin(), 0.0], [a.sin(), a.cos(), 0.0], [0.0, 0.0, 1.0]] };
-        let stretched = mul(&rot(0.7), &[[1.01, 0.3, 0.05], [0.0, 0.98, 0.1], [0.0, 0.0, 1.02]]);
+        let rot = |a: f64| -> M3 {
+            [
+                [a.cos(), -a.sin(), 0.0],
+                [a.sin(), a.cos(), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        };
+        let stretched = mul(
+            &rot(0.7),
+            &[[1.01, 0.3, 0.05], [0.0, 0.98, 0.1], [0.0, 0.0, 1.02]],
+        );
         // A plastic prehistory so the state is non-trivial.
-        let hist = finite_strain_update(mo(), &l, &deformation(&[[1.03, 0.2, 0.0], [0.0, 0.97, 0.0], [0.0, 0.0, 1.0]]), &[1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]).unwrap().state;
+        let hist = finite_strain_update(
+            mo(),
+            &l,
+            &deformation(&[[1.03, 0.2, 0.0], [0.0, 0.97, 0.0], [0.0, 0.0, 1.0]]),
+            &[1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        .unwrap()
+        .state;
         assert!(hist[6] > 0.0, "the history must have yielded");
         let init = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0];
         for (old, f) in [
-            (init, [[1.0001, 0.0002, 0.0], [0.0, 0.9999, 0.0001], [0.0, 0.0, 1.0001]]), // elastic, nearly isotropic Be
-            (init, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),             // exactly repeated eigenvalues
-            (init, [[1.002, 0.001, 0.0], [0.0, 1.001, 0.0], [0.0, 0.0, 1.0015]]),   // elastic
-            (init, [[1.04, 0.25, 0.0], [0.0, 0.96, 0.1], [0.0, 0.0, 1.0]]),         // plastic
-            (init, stretched),                                                       // plastic, rotated
-            (hist, [[1.05, 0.22, 0.01], [0.01, 0.95, 0.12], [0.0, 0.02, 1.03]]),   // plastic with history
-            (init, [[1.2, 0.0, 0.0], [0.0, 0.9, 0.0], [0.0, 0.0, 0.9]]),            // large uniaxial-ish
+            (
+                init,
+                [
+                    [1.0001, 0.0002, 0.0],
+                    [0.0, 0.9999, 0.0001],
+                    [0.0, 0.0, 1.0001],
+                ],
+            ), // elastic, nearly isotropic Be
+            (init, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]), // exactly repeated eigenvalues
+            (
+                init,
+                [[1.002, 0.001, 0.0], [0.0, 1.001, 0.0], [0.0, 0.0, 1.0015]],
+            ), // elastic
+            (init, [[1.04, 0.25, 0.0], [0.0, 0.96, 0.1], [0.0, 0.0, 1.0]]), // plastic
+            (init, stretched),                                           // plastic, rotated
+            (
+                hist,
+                [[1.05, 0.22, 0.01], [0.01, 0.95, 0.12], [0.0, 0.02, 1.03]],
+            ), // plastic with history
+            (init, [[1.2, 0.0, 0.0], [0.0, 0.9, 0.0], [0.0, 0.0, 0.9]]), // large uniaxial-ish
         ] {
             let up = finite_strain_update(mo(), &l, &f, &old).unwrap();
-            let fd = fd_tangent(&|ff: &M3| finite_strain_update(mo(), &l, ff, &old).unwrap().stress, &f, 1e-6);
+            let fd = fd_tangent(
+                &|ff: &M3| finite_strain_update(mo(), &l, ff, &old).unwrap().stress,
+                &f,
+                1e-6,
+            );
             let err = max_rel(&up.tangent, &fd);
-            assert!(err < 1e-8, "dP/dF error {err:e} for F = {f:?} (ep {})", up.state[6]);
+            assert!(
+                err < 1e-8,
+                "dP/dF error {err:e} for F = {f:?} (ep {})",
+                up.state[6]
+            );
         }
     }
 
     #[test]
-    fn finite_strain_is_objective_isochoric_in_plasticity_and_matches_small_strain_for_small_deformation() {
+    fn finite_strain_is_objective_isochoric_in_plasticity_and_matches_small_strain_for_small_deformation(
+    ) {
         let l = law();
         let init = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0];
         let f = [[1.05, 0.25, 0.0], [0.0, 0.96, 0.1], [0.0, 0.0, 1.0]];
@@ -894,35 +1202,65 @@ mod tests {
         let qp = mul(&q, &a.stress);
         for i in 0..3 {
             for j in 0..3 {
-                assert!((b.stress[i][j] - qp[i][j]).abs() < 1e-8 * 40_000.0, "objectivity ({i},{j})");
+                assert!(
+                    (b.stress[i][j] - qp[i][j]).abs() < 1e-8 * 40_000.0,
+                    "objectivity ({i},{j})"
+                );
             }
         }
-        assert!((a.state[6] - b.state[6]).abs() < 1e-12 && (0..6).all(|k| (a.state[k] - b.state[k]).abs() < 1e-12), "state is frame independent");
+        assert!(
+            (a.state[6] - b.state[6]).abs() < 1e-12
+                && (0..6).all(|k| (a.state[k] - b.state[k]).abs() < 1e-12),
+            "state is frame independent"
+        );
         // Plastic flow preserves the volume: det Cp^-1 = 1.
         let c = sym_from_voigt(&a.state[..6]);
         assert!((det(&c) - 1.0).abs() < 1e-12, "det Cp^-1 = {}", det(&c));
         // Kirchhoff von Mises on the yield curve.
         let tau = mul(&a.stress, &transpose(&f));
-        assert!((vm(&tau) - l.stress(a.state[6])).abs() < 1e-7 * 40_000.0, "tau vm {} vs {}", vm(&tau), l.stress(a.state[6]));
+        assert!(
+            (vm(&tau) - l.stress(a.state[6])).abs() < 1e-7 * 40_000.0,
+            "tau vm {} vs {}",
+            vm(&tau),
+            l.stress(a.state[6])
+        );
         // Small deformations: finite equals small strain (stress and ep) to O(eps^2).
-        let h = [[2e-3, 1.5e-3, 0.0], [-0.5e-3, -1e-3, 4e-4], [0.0, 1e-3, 5e-4]];
-        let ff: M3 = std::array::from_fn(|i| std::array::from_fn(|j| h[i][j] + if i == j { 1.0 } else { 0.0 }));
+        let h = [
+            [2e-3, 1.5e-3, 0.0],
+            [-0.5e-3, -1e-3, 4e-4],
+            [0.0, 1e-3, 5e-4],
+        ];
+        let ff: M3 = std::array::from_fn(|i| {
+            std::array::from_fn(|j| h[i][j] + if i == j { 1.0 } else { 0.0 })
+        });
         let big = finite_strain_update(mo(), &l, &ff, &init).unwrap();
         let eps: M3 = std::array::from_fn(|i| std::array::from_fn(|j| 0.5 * (h[i][j] + h[j][i])));
         let small = small_strain_update(mo(), &l, &eps, &[0.0; 7]);
         let scale = E * 2e-3;
         for i in 0..3 {
             for j in 0..3 {
-                assert!((big.stress[i][j] - small.stress[i][j]).abs() < 5e-3 * scale, "({i},{j}): {} vs {}", big.stress[i][j], small.stress[i][j]);
+                assert!(
+                    (big.stress[i][j] - small.stress[i][j]).abs() < 5e-3 * scale,
+                    "({i},{j}): {} vs {}",
+                    big.stress[i][j],
+                    small.stress[i][j]
+                );
             }
         }
         // Plasticity at larger but still small strain agrees on ep.
         let h = [[0.008, 0.004, 0.0], [0.0, -0.004, 0.0], [0.0, 0.0, -0.002]];
-        let ff: M3 = std::array::from_fn(|i| std::array::from_fn(|j| h[i][j] + if i == j { 1.0 } else { 0.0 }));
+        let ff: M3 = std::array::from_fn(|i| {
+            std::array::from_fn(|j| h[i][j] + if i == j { 1.0 } else { 0.0 })
+        });
         let big = finite_strain_update(mo(), &l, &ff, &init).unwrap();
         let eps: M3 = std::array::from_fn(|i| std::array::from_fn(|j| 0.5 * (h[i][j] + h[j][i])));
         let small = small_strain_update(mo(), &l, &eps, &[0.0; 7]);
-        assert!(small.state[6] > 0.0 && (big.state[6] / small.state[6] - 1.0).abs() < 0.05, "ep {} vs {}", big.state[6], small.state[6]);
+        assert!(
+            small.state[6] > 0.0 && (big.state[6] / small.state[6] - 1.0).abs() < 0.05,
+            "ep {} vs {}",
+            big.state[6],
+            small.state[6]
+        );
     }
 
     #[test]
@@ -934,26 +1272,45 @@ mod tests {
             let f = [[1.0, gamma, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
             let up = finite_strain_update(mo(), &flat, &f, &init).unwrap();
             let tau = mul(&up.stress, &transpose(&f));
-            assert!((vm(&tau) - 40_000.0).abs() < 1e-6 * 40_000.0, "gamma {gamma}: vm(tau) {}", vm(&tau));
+            assert!(
+                (vm(&tau) - 40_000.0).abs() < 1e-6 * 40_000.0,
+                "gamma {gamma}: vm(tau) {}",
+                vm(&tau)
+            );
             assert!(up.state[6] > prev_ep, "ep grows with the shear");
             prev_ep = up.state[6];
             assert!((det(&sym_from_voigt(&up.state[..6])) - 1.0).abs() < 1e-10);
         }
-        assert!(finite_strain_update(mo(), &flat, &[[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], &init).is_none(), "an inverted gradient is rejected");
+        assert!(
+            finite_strain_update(
+                mo(),
+                &flat,
+                &[[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                &init
+            )
+            .is_none(),
+            "an inverted gradient is rejected"
+        );
     }
 
     #[test]
-    fn plane_stress_returns_zero_out_of_plane_stress_and_a_condensed_tangent_matching_finite_differences() {
+    fn plane_stress_returns_zero_out_of_plane_stress_and_a_condensed_tangent_matching_finite_differences(
+    ) {
         let l = law();
         let old = [0.0; 7];
-        for h in [[[1e-3, 3e-4, 0.0], [3e-4, -2e-4, 0.0], [0.0; 3]], [[0.012, 0.004, 0.0], [0.004, -0.003, 0.0], [0.0; 3]]] {
+        for h in [
+            [[1e-3, 3e-4, 0.0], [3e-4, -2e-4, 0.0], [0.0; 3]],
+            [[0.012, 0.004, 0.0], [0.004, -0.003, 0.0], [0.0; 3]],
+        ] {
             let (up, ezz) = small_strain_plane_stress(mo(), &l, &h, &old);
             assert!(up.stress[2][2].abs() < 1e-6, "sigma_zz {}", up.stress[2][2]);
             assert!(ezz != 0.0);
             let fd = fd_tangent(
                 &|hh: &M3| {
                     // The tangent is dS/dH for the symmetric strain the gradient produces.
-                    let mut hh: M3 = std::array::from_fn(|i| std::array::from_fn(|j| 0.5 * (hh[i][j] + hh[j][i])));
+                    let mut hh: M3 = std::array::from_fn(|i| {
+                        std::array::from_fn(|j| 0.5 * (hh[i][j] + hh[j][i]))
+                    });
                     for i in 0..3 {
                         hh[i][2] = 0.0;
                         hh[2][i] = 0.0;
@@ -983,14 +1340,22 @@ mod tests {
             &|ff: &M3| {
                 let mut g = *ff;
                 g[2][2] = 1.0;
-                finite_strain_plane_stress(mo(), &l, &g, &init, lz).unwrap().0.stress
+                finite_strain_plane_stress(mo(), &l, &g, &init, lz)
+                    .unwrap()
+                    .0
+                    .stress
             },
             &f,
             1e-6,
         );
         let idx = [0usize, 1, 3, 4];
         let scale = up.tangent[0][0].abs();
-        let worst = idx.iter().flat_map(|&a| idx.iter().map(move |&b| (a, b))).fold(0.0f64, |m, (a, b)| m.max((up.tangent[a][b] - fd[a][b]).abs() / scale));
+        let worst = idx
+            .iter()
+            .flat_map(|&a| idx.iter().map(move |&b| (a, b)))
+            .fold(0.0f64, |m, (a, b)| {
+                m.max((up.tangent[a][b] - fd[a][b]).abs() / scale)
+            });
         assert!(worst < 1e-6, "finite plane stress tangent error {worst:e}");
     }
 }

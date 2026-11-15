@@ -94,11 +94,22 @@ pub trait DifferentiableMaterial {
         0
     }
     /// Solve the local system in `f64` to convergence for plain inputs; `Err` when it does not converge.
-    fn solve_local(&self, _p: &[f64], _strain: &[f64; VOIGT], _old: &[f64; STATE]) -> Result<Vec<f64>, ConstitutiveError> {
+    fn solve_local(
+        &self,
+        _p: &[f64],
+        _strain: &[f64; VOIGT],
+        _old: &[f64; STATE],
+    ) -> Result<Vec<f64>, ConstitutiveError> {
         Ok(Vec::new())
     }
     /// The update with the local unknowns `q` supplied (empty for explicit models).
-    fn update<S: Scalar>(&self, p: &[S], strain: &[S; VOIGT], old: &[S; STATE], q: &[S]) -> Update<S>;
+    fn update<S: Scalar>(
+        &self,
+        p: &[S],
+        strain: &[S; VOIGT],
+        old: &[S; STATE],
+        q: &[S],
+    ) -> Update<S>;
     /// How close the point is to a nonsmooth transition, `< 0` elastic side, `> 0` plastic side, relative to the yield stress.
     fn yield_margin(&self, _p: &[f64], _strain: &[f64; VOIGT], _old: &[f64; STATE]) -> Option<f64> {
         None
@@ -114,7 +125,9 @@ pub fn lu_solve(n: usize, m: usize, a: &[f64], b: &[f64]) -> Result<Vec<f64>, Co
     let mut x = b.to_vec();
     let scale = a.iter().fold(0.0f64, |s, v| s.max(v.abs())).max(1e-300);
     for c in 0..n {
-        let piv = (c..n).max_by(|&i, &j| a[i * n + c].abs().total_cmp(&a[j * n + c].abs())).expect("non-empty");
+        let piv = (c..n)
+            .max_by(|&i, &j| a[i * n + c].abs().total_cmp(&a[j * n + c].abs()))
+            .expect("non-empty");
         if a[piv * n + c].abs() < 1e-13 * scale {
             return Err(ConstitutiveError::SingularLocalJacobian);
         }
@@ -175,14 +188,25 @@ pub const TRANSITION_TOLERANCE: f64 = 1e-9;
 impl<M: DifferentiableMaterial> MaterialPoint<M> {
     pub fn new(model: M) -> Self {
         let params = model.parameters();
-        Self { model, params, committed: [0.0; STATE] }
+        Self {
+            model,
+            params,
+            committed: [0.0; STATE],
+        }
     }
 
     /// The stress and trial state for `strain`; leaves the committed state alone.
     pub fn trial(&self, strain: &[f64; VOIGT]) -> Result<Trial, ConstitutiveError> {
-        let q = self.model.solve_local(&self.params, strain, &self.committed)?;
-        let u = self.model.update::<f64>(&self.params, strain, &self.committed, &q);
-        Ok(Trial { stress: u.stress, new_state: u.new_state })
+        let q = self
+            .model
+            .solve_local(&self.params, strain, &self.committed)?;
+        let u = self
+            .model
+            .update::<f64>(&self.params, strain, &self.committed, &q);
+        Ok(Trial {
+            stress: u.stress,
+            new_state: u.new_state,
+        })
     }
 
     /// Accept a trial: the new state becomes the committed one.
@@ -191,23 +215,41 @@ impl<M: DifferentiableMaterial> MaterialPoint<M> {
     }
 
     /// Every first derivative of the update at `strain` from the committed state.
-    pub fn sensitivities(&self, strain: &[f64; VOIGT]) -> Result<MaterialSensitivities, ConstitutiveError> {
+    pub fn sensitivities(
+        &self,
+        strain: &[f64; VOIGT],
+    ) -> Result<MaterialSensitivities, ConstitutiveError> {
         sensitivities(&self.model, &self.params, strain, &self.committed)
     }
 
     /// The tangent on the elastic and the plastic side of a transition point, `None` if the model has no yield surface.
-    pub fn one_sided(&self, strain: &[f64; VOIGT]) -> Result<Option<(MaterialSensitivities, MaterialSensitivities)>, ConstitutiveError> {
+    pub fn one_sided(
+        &self,
+        strain: &[f64; VOIGT],
+    ) -> Result<Option<(MaterialSensitivities, MaterialSensitivities)>, ConstitutiveError> {
         // step the strain a hair toward each side along the radial direction of the current strain increment
-        let base = self.model.yield_margin(&self.params, strain, &self.committed);
+        let base = self
+            .model
+            .yield_margin(&self.params, strain, &self.committed);
         let Some(m0) = base else { return Ok(None) };
         let scale = strain.iter().fold(0.0f64, |a, v| a.max(v.abs())).max(1e-12);
         let mut best: Option<(MaterialSensitivities, MaterialSensitivities)> = None;
         for &t in &[1e-6, 1e-4] {
             let lo: [f64; VOIGT] = std::array::from_fn(|i| strain[i] * (1.0 - t));
             let hi: [f64; VOIGT] = std::array::from_fn(|i| strain[i] * (1.0 + t));
-            let (ml, mh) = (self.model.yield_margin(&self.params, &lo, &self.committed).unwrap_or(m0), self.model.yield_margin(&self.params, &hi, &self.committed).unwrap_or(m0));
+            let (ml, mh) = (
+                self.model
+                    .yield_margin(&self.params, &lo, &self.committed)
+                    .unwrap_or(m0),
+                self.model
+                    .yield_margin(&self.params, &hi, &self.committed)
+                    .unwrap_or(m0),
+            );
             if ml < 0.0 && mh > 0.0 {
-                best = Some((sensitivities(&self.model, &self.params, &lo, &self.committed)?, sensitivities(&self.model, &self.params, &hi, &self.committed)?));
+                best = Some((
+                    sensitivities(&self.model, &self.params, &lo, &self.committed)?,
+                    sensitivities(&self.model, &self.params, &hi, &self.committed)?,
+                ));
                 break;
             }
         }
@@ -217,18 +259,33 @@ impl<M: DifferentiableMaterial> MaterialPoint<M> {
 }
 
 /// The derivatives of the update of `model` (see [`MaterialSensitivities`]).
-pub fn sensitivities<M: DifferentiableMaterial>(model: &M, p: &[f64], strain: &[f64; VOIGT], old: &[f64; STATE]) -> Result<MaterialSensitivities, ConstitutiveError> {
+pub fn sensitivities<M: DifferentiableMaterial>(
+    model: &M,
+    p: &[f64],
+    strain: &[f64; VOIGT],
+    old: &[f64; STATE],
+) -> Result<MaterialSensitivities, ConstitutiveError> {
     let np = p.len();
     let nq = model.n_local();
     let q = model.solve_local(p, strain, old)?;
     // plain evaluation and convergence check of the local system
     let plain = model.update::<f64>(p, strain, old, &q);
     if nq > 0 {
-        let scale = q.iter().fold(1e-300f64, |m, v| m.max(v.abs())).max(plain.stress.iter().fold(0.0f64, |m, v| m.max(v.abs())) * 1e-3).max(1e-300);
+        let scale = q
+            .iter()
+            .fold(1e-300f64, |m, v| m.max(v.abs()))
+            .max(plain.stress.iter().fold(0.0f64, |m, v| m.max(v.abs())) * 1e-3)
+            .max(1e-300);
         let rn = plain.residual.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-        let ref_scale = plain.stress.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(scale);
+        let ref_scale = plain
+            .stress
+            .iter()
+            .fold(0.0f64, |m, v| m.max(v.abs()))
+            .max(scale);
         if !(rn <= 1e-8 * ref_scale) {
-            return Err(ConstitutiveError::LocalSolveFailed(format!("residual {rn:e} against stress scale {ref_scale:e}")));
+            return Err(ConstitutiveError::LocalSolveFailed(format!(
+                "residual {rn:e} against stress scale {ref_scale:e}"
+            )));
         }
     }
     // inputs ordered [strain(6), state(7), params(np), q(nq)]
@@ -283,8 +340,14 @@ pub fn sensitivities<M: DifferentiableMaterial>(model: &M, p: &[f64], strain: &[
     }
     if nq > 0 {
         // F_q (nq x nq), F_x (nq x n_x), out_q (n_o x nq): total = out_x - out_q F_q^-1 F_x
-        let fq: Vec<f64> = (0..nq).flat_map(|r| (0..nq).map(move |c| (r, c))).map(|(r, c)| j(n_o + r, n_x + c)).collect();
-        let fx: Vec<f64> = (0..nq).flat_map(|r| (0..n_x).map(move |c| (r, c))).map(|(r, c)| j(n_o + r, c)).collect();
+        let fq: Vec<f64> = (0..nq)
+            .flat_map(|r| (0..nq).map(move |c| (r, c)))
+            .map(|(r, c)| j(n_o + r, n_x + c))
+            .collect();
+        let fx: Vec<f64> = (0..nq)
+            .flat_map(|r| (0..n_x).map(move |c| (r, c)))
+            .map(|(r, c)| j(n_o + r, c))
+            .collect();
         let dq = lu_solve(nq, n_x, &fq, &fx)?; // F_q^-1 F_x
         for r in 0..n_o {
             for c in 0..n_x {
@@ -296,7 +359,11 @@ pub fn sensitivities<M: DifferentiableMaterial>(model: &M, p: &[f64], strain: &[
             }
         }
     }
-    let take = |rows: std::ops::Range<usize>, cols: std::ops::Range<usize>| -> Vec<f64> { rows.flat_map(|r| cols.clone().map(move |c| (r, c))).map(|(r, c)| total[r * n_x + c]).collect() };
+    let take = |rows: std::ops::Range<usize>, cols: std::ops::Range<usize>| -> Vec<f64> {
+        rows.flat_map(|r| cols.clone().map(move |c| (r, c)))
+            .map(|(r, c)| total[r * n_x + c])
+            .collect()
+    };
     let margin = model.yield_margin(p, strain, old);
     let branch = match margin {
         Some(m) if m.abs() <= TRANSITION_TOLERANCE => Branch::Transition,
@@ -333,7 +400,13 @@ impl DifferentiableMaterial for Hooke {
     fn parameters(&self) -> Vec<f64> {
         vec![self.e, self.nu]
     }
-    fn update<S: Scalar>(&self, p: &[S], strain: &[S; VOIGT], old: &[S; STATE], _q: &[S]) -> Update<S> {
+    fn update<S: Scalar>(
+        &self,
+        p: &[S],
+        strain: &[S; VOIGT],
+        old: &[S; STATE],
+        _q: &[S],
+    ) -> Update<S> {
         let (e, nu) = (p[0], p[1]);
         let g = e / (S::cst(2.0) * (S::cst(1.0) + nu));
         let lam = e * nu / ((S::cst(1.0) + nu) * (S::cst(1.0) - nu.scale(2.0)));
@@ -343,7 +416,11 @@ impl DifferentiableMaterial for Hooke {
             s[i] = lam * tr + g.scale(2.0) * strain[i];
             s[3 + i] = g.scale(2.0) * strain[3 + i];
         }
-        Update { stress: s, new_state: *old, residual: Vec::new() }
+        Update {
+            stress: s,
+            new_state: *old,
+            residual: Vec::new(),
+        }
     }
 }
 
@@ -379,12 +456,19 @@ pub struct J2Table {
 
 impl J2Table {
     pub fn new(e: f64, nu: f64, law: &Hardening) -> Self {
-        Self { e, nu, law: law.points().to_vec() }
+        Self {
+            e,
+            nu,
+            law: law.points().to_vec(),
+        }
     }
 
     fn stresses<S: Scalar>(&self, sy: S, sh: S) -> Vec<S> {
         let s0 = self.law[0].1;
-        self.law.iter().map(|&(_, s)| sy * (S::cst(s0) + sh * S::cst(s - s0))).collect()
+        self.law
+            .iter()
+            .map(|&(_, s)| sy * (S::cst(s0) + sh * S::cst(s - s0)))
+            .collect()
     }
 }
 
@@ -395,7 +479,8 @@ fn table_stress<S: Scalar>(eps: &[f64], sig: &[S], ep: S) -> S {
     }
     for k in 0..eps.len() - 1 {
         if ep.le(&S::cst(eps[k + 1])) {
-            return sig[k] + (sig[k + 1] - sig[k]) * (ep - S::cst(eps[k])) / S::cst(eps[k + 1] - eps[k]);
+            return sig[k]
+                + (sig[k + 1] - sig[k]) * (ep - S::cst(eps[k])) / S::cst(eps[k + 1] - eps[k]);
         }
     }
     sig[eps.len() - 1]
@@ -407,9 +492,18 @@ fn table_increment<S: Scalar>(eps: &[f64], sig: &[S], ep: S, q: S, g: S) -> S {
     let n = eps.len();
     let mut e = ep;
     let mut y = table_stress(eps, sig, ep);
-    let mut k = (0..n - 1).position(|k| ep.lt(&S::cst(eps[k + 1]))).unwrap_or(n - 1);
+    let mut k = (0..n - 1)
+        .position(|k| ep.lt(&S::cst(eps[k + 1])))
+        .unwrap_or(n - 1);
     loop {
-        let (slope, end) = if k + 1 < n { ((sig[k + 1] - sig[k]) / S::cst(eps[k + 1] - eps[k]), eps[k + 1]) } else { (S::cst(0.0), f64::INFINITY) };
+        let (slope, end) = if k + 1 < n {
+            (
+                (sig[k + 1] - sig[k]) / S::cst(eps[k + 1] - eps[k]),
+                eps[k + 1],
+            )
+        } else {
+            (S::cst(0.0), f64::INFINITY)
+        };
         let three_g = g.scale(3.0);
         let t = (q - y - three_g * (e - ep)) / (three_g + slope);
         if (e + t).le(&S::cst(end)) || k + 1 >= n {
@@ -424,9 +518,24 @@ fn table_increment<S: Scalar>(eps: &[f64], sig: &[S], ep: S, q: S, g: S) -> S {
 /// Shared radial-return algebra of the two J2 models: from the trial deviatoric strain, the plastic increment `d` (a scalar, zero when
 /// elastic) and the moduli, the stress and the state update.
 #[allow(clippy::too_many_arguments)]
-fn j2_stress_and_state<S: Scalar>(g: S, k: S, strain: &[S; VOIGT], old: &[S; STATE], d: S, plastic: bool, dn: S, dev: &[S; VOIGT], tr: S, q: S) -> ([S; VOIGT], [S; STATE]) {
+fn j2_stress_and_state<S: Scalar>(
+    g: S,
+    k: S,
+    strain: &[S; VOIGT],
+    old: &[S; STATE],
+    d: S,
+    plastic: bool,
+    dn: S,
+    dev: &[S; VOIGT],
+    tr: S,
+    q: S,
+) -> ([S; VOIGT], [S; STATE]) {
     let one = S::cst(1.0);
-    let theta = if plastic { one - g.scale(3.0) * d / q } else { one };
+    let theta = if plastic {
+        one - g.scale(3.0) * d / q
+    } else {
+        one
+    };
     let mut stress = [S::cst(0.0); VOIGT];
     for i in 0..3 {
         stress[i] = g.scale(2.0) * theta * dev[i] + k * tr;
@@ -450,8 +559,19 @@ fn deviator<S: Scalar>(strain: &[S; VOIGT], old: &[S; STATE]) -> ([S; VOIGT], S,
     let tr = e[0] + e[1] + e[2];
     let third = tr / S::cst(3.0);
     let dev: [S; VOIGT] = [e[0] - third, e[1] - third, e[2] - third, e[3], e[4], e[5]];
-    let sq = dev[0] * dev[0] + dev[1] * dev[1] + dev[2] * dev[2] + (dev[3] * dev[3] + dev[4] * dev[4] + dev[5] * dev[5]).scale(2.0);
-    (dev, tr, if sq.gt(&S::cst(0.0)) { sq.sqrt() } else { S::cst(0.0) })
+    let sq = dev[0] * dev[0]
+        + dev[1] * dev[1]
+        + dev[2] * dev[2]
+        + (dev[3] * dev[3] + dev[4] * dev[4] + dev[5] * dev[5]).scale(2.0);
+    (
+        dev,
+        tr,
+        if sq.gt(&S::cst(0.0)) {
+            sq.sqrt()
+        } else {
+            S::cst(0.0)
+        },
+    )
 }
 
 impl DifferentiableMaterial for J2Table {
@@ -461,7 +581,13 @@ impl DifferentiableMaterial for J2Table {
     fn parameters(&self) -> Vec<f64> {
         vec![self.e, self.nu, 1.0, 1.0]
     }
-    fn update<S: Scalar>(&self, p: &[S], strain: &[S; VOIGT], old: &[S; STATE], _q: &[S]) -> Update<S> {
+    fn update<S: Scalar>(
+        &self,
+        p: &[S],
+        strain: &[S; VOIGT],
+        old: &[S; STATE],
+        _q: &[S],
+    ) -> Update<S> {
         let (e, nu) = (p[0], p[1]);
         let g = e / (S::cst(2.0) * (S::cst(1.0) + nu));
         let k = e / (S::cst(3.0) * (S::cst(1.0) - nu.scale(2.0)));
@@ -471,9 +597,18 @@ impl DifferentiableMaterial for J2Table {
         let (dev, tr, dn) = deviator(strain, old);
         let q = S::cst(1.5f64.sqrt()) * g.scale(2.0) * dn;
         let plastic = q.gt(&table_stress(&eps, &sig, ep)) && dn.gt(&S::cst(0.0));
-        let d = if plastic { table_increment(&eps, &sig, ep, q, g) } else { S::cst(0.0) };
-        let (stress, new_state) = j2_stress_and_state(g, k, strain, old, d, plastic, dn, &dev, tr, q);
-        Update { stress, new_state, residual: Vec::new() }
+        let d = if plastic {
+            table_increment(&eps, &sig, ep, q, g)
+        } else {
+            S::cst(0.0)
+        };
+        let (stress, new_state) =
+            j2_stress_and_state(g, k, strain, old, d, plastic, dn, &dev, tr, q);
+        Update {
+            stress,
+            new_state,
+            residual: Vec::new(),
+        }
     }
     fn yield_margin(&self, p: &[f64], strain: &[f64; VOIGT], old: &[f64; STATE]) -> Option<f64> {
         let eps: Vec<f64> = self.law.iter().map(|l| l.0).collect();
@@ -507,7 +642,15 @@ pub struct J2Voce {
 
 impl J2Voce {
     pub fn new(e: f64, nu: f64, s0: f64, h: f64, q: f64, b: f64) -> Self {
-        Self { e, nu, s0, h, q, b, max_iter: 50 }
+        Self {
+            e,
+            nu,
+            s0,
+            h,
+            q,
+            b,
+            max_iter: 50,
+        }
     }
 }
 
@@ -529,7 +672,12 @@ impl DifferentiableMaterial for J2Voce {
     fn n_local(&self) -> usize {
         1
     }
-    fn solve_local(&self, p: &[f64], strain: &[f64; VOIGT], old: &[f64; STATE]) -> Result<Vec<f64>, ConstitutiveError> {
+    fn solve_local(
+        &self,
+        p: &[f64],
+        strain: &[f64; VOIGT],
+        old: &[f64; STATE],
+    ) -> Result<Vec<f64>, ConstitutiveError> {
         let g = p[0] / (2.0 * (1.0 + p[1]));
         let (_, _, dn) = deviator(strain, old);
         let q = 1.5f64.sqrt() * 2.0 * g * dn;
@@ -550,9 +698,18 @@ impl DifferentiableMaterial for J2Voce {
         if f.abs() <= 1e-9 * q.abs().max(1.0) {
             return Ok(vec![d]);
         }
-        Err(ConstitutiveError::LocalSolveFailed(format!("{} Newton iterations, residual {f:e}", self.max_iter)))
+        Err(ConstitutiveError::LocalSolveFailed(format!(
+            "{} Newton iterations, residual {f:e}",
+            self.max_iter
+        )))
     }
-    fn update<S: Scalar>(&self, p: &[S], strain: &[S; VOIGT], old: &[S; STATE], q: &[S]) -> Update<S> {
+    fn update<S: Scalar>(
+        &self,
+        p: &[S],
+        strain: &[S; VOIGT],
+        old: &[S; STATE],
+        q: &[S],
+    ) -> Update<S> {
         let g = p[0] / (S::cst(2.0) * (S::cst(1.0) + p[1]));
         let k = p[0] / (S::cst(3.0) * (S::cst(1.0) - p[1].scale(2.0)));
         let (dev, tr, dn) = deviator(strain, old);
@@ -560,9 +717,28 @@ impl DifferentiableMaterial for J2Voce {
         let ep = old[6];
         let plastic = qtr.gt(&voce(p, ep)) && dn.gt(&S::cst(0.0));
         let d = q[0];
-        let residual = if plastic { vec![qtr - g.scale(3.0) * d - voce(p, ep + d)] } else { vec![d] };
-        let (stress, new_state) = j2_stress_and_state(g, k, strain, old, if plastic { d } else { S::cst(0.0) }, plastic, dn, &dev, tr, qtr);
-        Update { stress, new_state, residual }
+        let residual = if plastic {
+            vec![qtr - g.scale(3.0) * d - voce(p, ep + d)]
+        } else {
+            vec![d]
+        };
+        let (stress, new_state) = j2_stress_and_state(
+            g,
+            k,
+            strain,
+            old,
+            if plastic { d } else { S::cst(0.0) },
+            plastic,
+            dn,
+            &dev,
+            tr,
+            qtr,
+        );
+        Update {
+            stress,
+            new_state,
+            residual,
+        }
     }
     fn yield_margin(&self, p: &[f64], strain: &[f64; VOIGT], old: &[f64; STATE]) -> Option<f64> {
         let g = p[0] / (2.0 * (1.0 + p[1]));
@@ -575,7 +751,12 @@ impl DifferentiableMaterial for J2Voce {
 
 /// The tangent of `J2Voce` by differentiating *through* `iterations` Newton steps from `d = 0` (the thing the implicit route avoids).
 /// With enough iterations it equals the implicit result; with too few it is wrong, which is the point of the comparison.
-pub fn voce_tangent_through_iterations(m: &J2Voce, strain: &[f64; VOIGT], old: &[f64; STATE], iterations: usize) -> Vec<f64> {
+pub fn voce_tangent_through_iterations(
+    m: &J2Voce,
+    strain: &[f64; VOIGT],
+    old: &[f64; STATE],
+    iterations: usize,
+) -> Vec<f64> {
     type D = Dual<f64, 6>;
     let p: Vec<D> = m.parameters().into_iter().map(D::cst).collect();
     let eps: [D; VOIGT] = std::array::from_fn(|i| Dual::var(strain[i], i));
@@ -594,13 +775,18 @@ pub fn voce_tangent_through_iterations(m: &J2Voce, strain: &[f64; VOIGT], old: &
         }
     }
     let (stress, _) = j2_stress_and_state(g, k, &eps, &st, d, plastic, dn, &dev, tr, qtr);
-    (0..VOIGT).flat_map(|r| (0..VOIGT).map(move |c| (r, c))).map(|(r, c)| stress[r].d[c]).collect()
+    (0..VOIGT)
+        .flat_map(|r| (0..VOIGT).map(move |c| (r, c)))
+        .map(|(r, c)| stress[r].d[c])
+        .collect()
 }
 
 // ----------------------------------------------------------------------------------------------- hyperelastic (neo-Hookean)
 
 fn det3<S: Scalar>(a: &[[S; 3]; 3]) -> S {
-    a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+    a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+        - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+        + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
 }
 
 fn inverse3<S: Scalar>(a: &[[S; 3]; 3]) -> [[S; 3]; 3] {
@@ -616,7 +802,9 @@ fn inverse3<S: Scalar>(a: &[[S; 3]; 3]) -> [[S; 3]; 3] {
 /// First Piola-Kirchhoff stress of the compressible neo-Hookean law `W = G/2 (I1 - 3) - G ln J + lambda/2 (ln J)^2` for the
 /// displacement gradient `h` (row-major `3 x 3`), against any scalar: `P = G (F - F^-T) + lambda ln J F^-T`.
 pub fn neo_hookean_pk1<S: Scalar>(g: S, lam: S, h: &[S; 9]) -> [S; 9] {
-    let f: [[S; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| h[3 * i + j] + S::cst(if i == j { 1.0 } else { 0.0 })));
+    let f: [[S; 3]; 3] = std::array::from_fn(|i| {
+        std::array::from_fn(|j| h[3 * i + j] + S::cst(if i == j { 1.0 } else { 0.0 }))
+    });
     let finv = inverse3(&f);
     let lnj = det3(&f).ln();
     std::array::from_fn(|n| {
@@ -645,7 +833,12 @@ impl<M: DifferentiableMaterial> DifferentiableMaterial for PlaneStress<M> {
     fn n_local(&self) -> usize {
         1
     }
-    fn solve_local(&self, p: &[f64], strain: &[f64; VOIGT], old: &[f64; STATE]) -> Result<Vec<f64>, ConstitutiveError> {
+    fn solve_local(
+        &self,
+        p: &[f64],
+        strain: &[f64; VOIGT],
+        old: &[f64; STATE],
+    ) -> Result<Vec<f64>, ConstitutiveError> {
         type D = Dual<f64, 1>;
         let pd: Vec<D> = p.iter().map(|&v| D::cst(v)).collect();
         let od: [D; STATE] = std::array::from_fn(|i| D::cst(old[i]));
@@ -665,14 +858,24 @@ impl<M: DifferentiableMaterial> DifferentiableMaterial for PlaneStress<M> {
                 return Ok(vec![ezz]);
             }
             if szz.d[0] == 0.0 || !szz.d[0].is_finite() {
-                return Err(ConstitutiveError::LocalSolveFailed("the out-of-plane stiffness vanished".into()));
+                return Err(ConstitutiveError::LocalSolveFailed(
+                    "the out-of-plane stiffness vanished".into(),
+                ));
             }
             ezz -= szz.v / szz.d[0];
             let _ = it;
         }
-        Err(ConstitutiveError::LocalSolveFailed("the plane-stress condensation did not converge".into()))
+        Err(ConstitutiveError::LocalSolveFailed(
+            "the plane-stress condensation did not converge".into(),
+        ))
     }
-    fn update<S: Scalar>(&self, p: &[S], strain: &[S; VOIGT], old: &[S; STATE], q: &[S]) -> Update<S> {
+    fn update<S: Scalar>(
+        &self,
+        p: &[S],
+        strain: &[S; VOIGT],
+        old: &[S; STATE],
+        q: &[S],
+    ) -> Update<S> {
         let mut e = *strain;
         e[2] = q[0];
         e[4] = S::cst(0.0);
@@ -697,11 +900,20 @@ impl<M: DifferentiableMaterial> DifferentiableMaterial for PlaneStress<M> {
 /// `d stress = C : d strain` for one strain increment, without forming `C`: one forward-mode evaluation of the update with the strain
 /// seeded along `dstrain` and the local unknowns seeded along their own axes, then the implicit correction
 /// `dq = -F_q^-1 F_eps dstrain`. This is the matrix-free tangent action of the constitutive law.
-pub fn stress_jvp<M: DifferentiableMaterial>(model: &M, p: &[f64], strain: &[f64; VOIGT], old: &[f64; STATE], dstrain: &[f64; VOIGT]) -> Result<[f64; VOIGT], ConstitutiveError> {
+pub fn stress_jvp<M: DifferentiableMaterial>(
+    model: &M,
+    p: &[f64],
+    strain: &[f64; VOIGT],
+    old: &[f64; STATE],
+    dstrain: &[f64; VOIGT],
+) -> Result<[f64; VOIGT], ConstitutiveError> {
     type D = Dual<f64, 8>;
     let nq = model.n_local();
     if nq > 7 {
-        return Err(ConstitutiveError::Invalid("a local system of more than 7 unknowns is not supported by the matrix-free product".into()));
+        return Err(ConstitutiveError::Invalid(
+            "a local system of more than 7 unknowns is not supported by the matrix-free product"
+                .into(),
+        ));
     }
     let q = model.solve_local(p, strain, old)?;
     let ps: Vec<D> = p.iter().map(|&v| D::cst(v)).collect();
@@ -715,9 +927,15 @@ pub fn stress_jvp<M: DifferentiableMaterial>(model: &M, p: &[f64], strain: &[f64
     let out = model.update::<D>(&ps, &eps, &st, &qs);
     let mut dq = vec![0.0; nq];
     if nq > 0 {
-        let fq: Vec<f64> = (0..nq).flat_map(|r| (0..nq).map(move |c| (r, c))).map(|(r, c)| out.residual[r].d[c + 1]).collect();
+        let fq: Vec<f64> = (0..nq)
+            .flat_map(|r| (0..nq).map(move |c| (r, c)))
+            .map(|(r, c)| out.residual[r].d[c + 1])
+            .collect();
         let rhs: Vec<f64> = (0..nq).map(|r| out.residual[r].d[0]).collect();
-        dq = lu_solve(nq, 1, &fq, &rhs)?.into_iter().map(|v| -v).collect();
+        dq = lu_solve(nq, 1, &fq, &rhs)?
+            .into_iter()
+            .map(|v| -v)
+            .collect();
     }
     Ok(std::array::from_fn(|i| {
         let mut s = out.stress[i].d[0];

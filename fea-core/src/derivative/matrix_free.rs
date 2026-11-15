@@ -35,18 +35,35 @@ pub struct MatrixFreeTangent<'m> {
 
 impl<'m> MatrixFreeTangent<'m> {
     /// The tangent at displacements `u` from the committed state `old` (the state at the start of the step `u` belongs to).
-    pub fn new(model: &'m Model, bc: &Dirichlet, u: &[f64], old: &NlState, mode: MatrixFreeMode) -> Result<Self, String> {
+    pub fn new(
+        model: &'m Model,
+        bc: &Dirichlet,
+        u: &[f64],
+        old: &NlState,
+        mode: MatrixFreeMode,
+    ) -> Result<Self, String> {
         let free: Vec<usize> = (0..model.mesh.n_dofs()).filter(|&d| !bc.fixed[d]).collect();
         let setup = Setup::new(model, Vec::new(), free)?;
         let old_gp = setup.gp_states(old);
         let mut c = Vec::new();
         let mut symmetric = true;
         {
-            let all: Result<Vec<[f64; 36]>, String> = setup.gps.par_iter().zip(old_gp.par_iter()).map(|(gp, o)| setup.sens(gp, u, o).map(|s| std::array::from_fn(|i| s.d_stress_d_strain[i]))).collect();
+            let all: Result<Vec<[f64; 36]>, String> = setup
+                .gps
+                .par_iter()
+                .zip(old_gp.par_iter())
+                .map(|(gp, o)| {
+                    setup
+                        .sens(gp, u, o)
+                        .map(|s| std::array::from_fn(|i| s.d_stress_d_strain[i]))
+                })
+                .collect();
             let all = all?;
             // the tangent is symmetric in the work-conjugate pairing when W C is
             for t in &all {
-                let scale = (0..36).fold(0.0f64, |m, k| m.max((W[k / 6] * t[k]).abs())).max(1e-300);
+                let scale = (0..36)
+                    .fold(0.0f64, |m, k| m.max((W[k / 6] * t[k]).abs()))
+                    .max(1e-300);
                 for i in 0..VOIGT {
                     for j in 0..VOIGT {
                         if (W[i] * t[i * 6 + j] - W[j] * t[j * 6 + i]).abs() > 1e-9 * scale {
@@ -59,7 +76,14 @@ impl<'m> MatrixFreeTangent<'m> {
                 c = all;
             }
         }
-        Ok(Self { setup, u: u.to_vec(), old: old_gp, mode, c, symmetric })
+        Ok(Self {
+            setup,
+            u: u.to_vec(),
+            old: old_gp,
+            mode,
+            c,
+            symmetric,
+        })
     }
 
     pub fn mode(&self) -> MatrixFreeMode {
@@ -78,7 +102,10 @@ impl<'m> MatrixFreeTangent<'m> {
         while i < self.setup.gps.len() {
             let (b, e) = (self.setup.gps[i].block, self.setup.gps[i].elem);
             let mut j = i;
-            while j < self.setup.gps.len() && self.setup.gps[j].block == b && self.setup.gps[j].elem == e {
+            while j < self.setup.gps.len()
+                && self.setup.gps[j].block == b
+                && self.setup.gps[j].elem == e
+            {
                 j += 1;
             }
             out.push((i, j));
@@ -96,19 +123,50 @@ impl<'m> MatrixFreeTangent<'m> {
             }
             MatrixFreeMode::Recompute => {
                 let strain = self.setup.strain(gp, &self.u);
-                self.jvp(gp, &strain, &self.old[gi], &dstrain).expect("a converged state differentiates")
+                self.jvp(gp, &strain, &self.old[gi], &dstrain)
+                    .expect("a converged state differentiates")
             }
         }
     }
 
-    fn jvp(&self, gp: &Gp, strain: &[f64; VOIGT], old: &[f64; STATE], d: &[f64; VOIGT]) -> Result<[f64; VOIGT], ConstitutiveError> {
+    fn jvp(
+        &self,
+        gp: &Gp,
+        strain: &[f64; VOIGT],
+        old: &[f64; STATE],
+        d: &[f64; VOIGT],
+    ) -> Result<[f64; VOIGT], ConstitutiveError> {
         let blk = &self.setup.model.mesh.blocks[gp.block];
         let (e, nu) = (blk.material.e, blk.material.nu);
         match &self.setup.laws[gp.block] {
-            Law::Elastic { plane_stress: false } => stress_jvp(&Hooke { e, nu }, &[e, nu], strain, old, d),
-            Law::Elastic { plane_stress: true } => stress_jvp(&PlaneStress { inner: Hooke { e, nu } }, &[e, nu], strain, old, d),
-            Law::Plastic { plane_stress: false, table } => stress_jvp(table, &table.parameters(), strain, old, d),
-            Law::Plastic { plane_stress: true, table } => stress_jvp(&PlaneStress { inner: table.clone() }, &table.parameters(), strain, old, d),
+            Law::Elastic {
+                plane_stress: false,
+            } => stress_jvp(&Hooke { e, nu }, &[e, nu], strain, old, d),
+            Law::Elastic { plane_stress: true } => stress_jvp(
+                &PlaneStress {
+                    inner: Hooke { e, nu },
+                },
+                &[e, nu],
+                strain,
+                old,
+                d,
+            ),
+            Law::Plastic {
+                plane_stress: false,
+                table,
+            } => stress_jvp(table, &table.parameters(), strain, old, d),
+            Law::Plastic {
+                plane_stress: true,
+                table,
+            } => stress_jvp(
+                &PlaneStress {
+                    inner: table.clone(),
+                },
+                &table.parameters(),
+                strain,
+                old,
+                d,
+            ),
         }
     }
 
@@ -193,7 +251,10 @@ impl LinearOperator for MatrixFreeTangent<'_> {
         if self.symmetric {
             return self.apply(x, y);
         }
-        assert!(self.mode == MatrixFreeMode::Cached, "the transposed product of an unsymmetric tangent needs the cached tangents");
+        assert!(
+            self.mode == MatrixFreeMode::Cached,
+            "the transposed product of an unsymmetric tangent needs the cached tangents"
+        );
         let mut v = vec![0.0; self.setup.model.mesh.n_dofs()];
         for (j, &d) in self.setup.free.iter().enumerate() {
             v[d] = x[j];
@@ -205,7 +266,8 @@ impl LinearOperator for MatrixFreeTangent<'_> {
             let c = &self.c[gi];
             // (B^T W C B)^T = B^T C^T W B
             let we: Vec<f64> = (0..VOIGT).map(|i| W[i] * e[i]).collect();
-            let ds: [f64; VOIGT] = std::array::from_fn(|j| (0..VOIGT).map(|i| c[i * 6 + j] * we[i]).sum());
+            let ds: [f64; VOIGT] =
+                std::array::from_fn(|j| (0..VOIGT).map(|i| c[i * 6 + j] * we[i]).sum());
             for (k, col) in gp.b.iter().enumerate() {
                 let mut s = 0.0;
                 for cidx in 0..VOIGT {

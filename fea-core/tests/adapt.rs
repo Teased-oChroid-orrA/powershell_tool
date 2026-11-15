@@ -24,11 +24,21 @@ fn kirsch(x: f64, y: f64) -> [f64; 6] {
     let st = 0.5 * SIG * (1.0 + q) - 0.5 * SIG * (1.0 + 3.0 * q2) * c2;
     let tr = -0.5 * SIG * (1.0 + 2.0 * q - 3.0 * q2) * s2;
     let (c, s) = (th.cos(), th.sin());
-    [sr * c * c + st * s * s - 2.0 * tr * s * c, sr * s * s + st * c * c + 2.0 * tr * s * c, 0.0, (sr - st) * s * c + tr * (c * c - s * s), 0.0, 0.0]
+    [
+        sr * c * c + st * s * s - 2.0 * tr * s * c,
+        sr * s * s + st * c * c + 2.0 * tr * s * c,
+        0.0,
+        (sr - st) * s * c + tr * (c * c - s * s),
+        0.0,
+        0.0,
+    ]
 }
 
 fn plate_region() -> Region {
-    let seg = |curve, name: &str| Segment { curve, name: name.to_string() };
+    let seg = |curve, name: &str| Segment {
+        curve,
+        name: name.to_string(),
+    };
     let outer = Loop::new(vec![
         seg(Curve::line([A, 0.0], [HALF, 0.0]), "xaxis"),
         seg(Curve::line([HALF, 0.0], [HALF, HALF]), "right"),
@@ -54,9 +64,26 @@ fn solve_kirsch(mesh: Mesh) -> (Model, Solution, f64) {
         let s = kirsch(x[0], x[1]);
         [s[0] * n[0] + s[3] * n[1], s[3] * n[0] + s[1] * n[1], 0.0]
     });
-    let faces: Vec<_> = ["right", "top"].iter().flat_map(|nm| model.mesh.surfaces[*nm].iter().map(|f| (f.clone(), field.clone()))).collect();
-    let sol = model.solve_static(&Loads { field_faces: faces, ..Loads::default() }, &bc).unwrap();
-    let err = model.stress_error_energy(&sol.u, 0.0, |x| kirsch(x[0], x[1])).unwrap();
+    let faces: Vec<_> = ["right", "top"]
+        .iter()
+        .flat_map(|nm| {
+            model.mesh.surfaces[*nm]
+                .iter()
+                .map(|f| (f.clone(), field.clone()))
+        })
+        .collect();
+    let sol = model
+        .solve_static(
+            &Loads {
+                field_faces: faces,
+                ..Loads::default()
+            },
+            &bc,
+        )
+        .unwrap();
+    let err = model
+        .stress_error_energy(&sol.u, 0.0, |x| kirsch(x[0], x[1]))
+        .unwrap();
     (model, sol, err)
 }
 
@@ -65,7 +92,9 @@ fn size_field_interpolates_a_linear_field_exactly_and_degrades_gracefully_outsid
     // Unit square split into triangles with nodal size h(x, y) = 0.1 + 0.3 x + 0.2 y.
     let f = |p: [f64; 2]| 0.1 + 0.3 * p[0] + 0.2 * p[1];
     let n = 6;
-    let pts: Vec<[f64; 2]> = (0..=n).flat_map(|j| (0..=n).map(move |i| [i as f64 / n as f64, j as f64 / n as f64])).collect();
+    let pts: Vec<[f64; 2]> = (0..=n)
+        .flat_map(|j| (0..=n).map(move |i| [i as f64 / n as f64, j as f64 / n as f64]))
+        .collect();
     let mut tris = Vec::new();
     for j in 0..n {
         for i in 0..n {
@@ -76,8 +105,16 @@ fn size_field_interpolates_a_linear_field_exactly_and_degrades_gracefully_outsid
     }
     let sf = SizeField::new(pts.clone(), tris, pts.iter().map(|p| f(*p)).collect());
     for k in 0..200 {
-        let p = [((k * 37) % 101) as f64 / 101.0, ((k * 53) % 97) as f64 / 97.0];
-        assert!((sf.at(p) - f(p)).abs() < 1e-12, "{p:?}: {} vs {}", sf.at(p), f(p));
+        let p = [
+            ((k * 37) % 101) as f64 / 101.0,
+            ((k * 53) % 97) as f64 / 97.0,
+        ];
+        assert!(
+            (sf.at(p) - f(p)).abs() < 1e-12,
+            "{p:?}: {} vs {}",
+            sf.at(p),
+            f(p)
+        );
     }
     // A hair outside: clamped to the edge value; far outside: the nearest vertex.
     assert!((sf.at([1.0 + 1e-6, 0.5]) - f([1.0, 0.5])).abs() < 1e-3);
@@ -91,20 +128,58 @@ fn adaptive_refinement_beats_uniform_refinement_on_the_kirsch_plate() {
     // Uniform reference series (error against degrees of freedom).
     let mut uniform: Vec<(usize, f64)> = Vec::new();
     for h in [1.2, 0.8, 0.55, 0.38, 0.26, 0.18] {
-        let mesh = mesh_region(&region, Physics::PlaneStress { thickness: 1.0 }, ElementKind::Tri6, &|_| h, opt).unwrap();
+        let mesh = mesh_region(
+            &region,
+            Physics::PlaneStress { thickness: 1.0 },
+            ElementKind::Tri6,
+            &|_| h,
+            opt,
+        )
+        .unwrap();
         let (m, _, err) = solve_kirsch(mesh);
         uniform.push((m.mesh.n_dofs(), err));
     }
     // Adaptive passes starting from a coarse uniform mesh.
-    let mut mesh = mesh_region(&region, Physics::PlaneStress { thickness: 1.0 }, ElementKind::Tri6, &|_| 1.2, opt).unwrap();
+    let mut mesh = mesh_region(
+        &region,
+        Physics::PlaneStress { thickness: 1.0 },
+        ElementKind::Tri6,
+        &|_| 1.2,
+        opt,
+    )
+    .unwrap();
     let mut adaptive: Vec<(usize, f64, f64)> = Vec::new();
     for pass in 0..6 {
         let (model, sol, err) = solve_kirsch(mesh);
         let zz = model.zz_error(&sol.u, 0.0).unwrap();
         adaptive.push((model.mesh.n_dofs(), err, zz.total));
-        eprintln!("pass {pass}: {} dofs, true error {err:.4e}, ZZ eta {:.4e} (effectivity {:.2})", model.mesh.n_dofs(), zz.total, zz.total / err);
-        let sf = adapted_size_field(&model.mesh, &zz, false, &AdaptOptions { target_rel_error: 0.005, order: 2.0, h_min: 0.02, h_max: 2.0, ..AdaptOptions::default() }).unwrap();
-        mesh = mesh_region(&region, Physics::PlaneStress { thickness: 1.0 }, ElementKind::Tri6, &|x| sf.at(x), opt).unwrap();
+        eprintln!(
+            "pass {pass}: {} dofs, true error {err:.4e}, ZZ eta {:.4e} (effectivity {:.2})",
+            model.mesh.n_dofs(),
+            zz.total,
+            zz.total / err
+        );
+        let sf = adapted_size_field(
+            &model.mesh,
+            &zz,
+            false,
+            &AdaptOptions {
+                target_rel_error: 0.005,
+                order: 2.0,
+                h_min: 0.02,
+                h_max: 2.0,
+                ..AdaptOptions::default()
+            },
+        )
+        .unwrap();
+        mesh = mesh_region(
+            &region,
+            Physics::PlaneStress { thickness: 1.0 },
+            ElementKind::Tri6,
+            &|x| sf.at(x),
+            opt,
+        )
+        .unwrap();
     }
     for (n, e) in &uniform {
         eprintln!("uniform: {n} dofs, true error {e:.4e}");
@@ -115,7 +190,12 @@ fn adaptive_refinement_beats_uniform_refinement_on_the_kirsch_plate() {
             let ((n0, e0), (n1, e1)) = (w[0], w[1]);
             if target <= e0 && target >= e1 {
                 let t = (target.ln() - e0.ln()) / (e1.ln() - e0.ln());
-                return Some((n0 as f64).ln().mul_add(1.0 - t, (n1 as f64).ln() * t).exp());
+                return Some(
+                    (n0 as f64)
+                        .ln()
+                        .mul_add(1.0 - t, (n1 as f64).ln() * t)
+                        .exp(),
+                );
             }
         }
         None
@@ -123,27 +203,57 @@ fn adaptive_refinement_beats_uniform_refinement_on_the_kirsch_plate() {
     let mut compared = 0;
     for &(n, e, _) in adaptive.iter().skip(2) {
         if let Some(nu) = dofs_for(e) {
-            eprintln!("error {e:.3e}: adaptive {n} dofs vs uniform {nu:.0} dofs ({:.2}x fewer)", nu / n as f64);
+            eprintln!(
+                "error {e:.3e}: adaptive {n} dofs vs uniform {nu:.0} dofs ({:.2}x fewer)",
+                nu / n as f64
+            );
             assert!(nu > 1.25 * n as f64, "adaptive ({n} dofs) should need clearly fewer dofs than uniform ({nu:.0}) for error {e:e}");
             compared += 1;
         }
     }
-    assert!(compared >= 1, "no adaptive pass fell inside the uniform error range");
+    assert!(
+        compared >= 1,
+        "no adaptive pass fell inside the uniform error range"
+    );
     // The estimator tracks the true error (effectivity near one) once the mesh resolves the hole.
     // The refinement loop is not bit-reproducible across platforms (the last pass alone gave 1.27 on
     // macOS and 1.50 on Linux), so the check is the mean over the passes after the first two.
     let tail: Vec<f64> = adaptive.iter().skip(2).map(|&(_, e, zz)| zz / e).collect();
     let mean = tail.iter().sum::<f64>() / tail.len() as f64;
-    assert!((0.7..1.6).contains(&mean), "mean effectivity {mean} over {tail:?}");
-    assert!(adaptive.last().unwrap().1 < adaptive[0].1 / 3.0, "adaptive error must fall");
+    assert!(
+        (0.7..1.6).contains(&mean),
+        "mean effectivity {mean} over {tail:?}"
+    );
+    assert!(
+        adaptive.last().unwrap().1 < adaptive[0].1 / 3.0,
+        "adaptive error must fall"
+    );
 }
 
 #[test]
 fn an_l_shaped_plate_refines_toward_the_reentrant_corner() {
     // Re-entrant corner at (1, 1): the stress singularity concentrates the ZZ error there.
-    let l = Loop::polygon_named(&[[0.0, 0.0], [3.0, 0.0], [3.0, 1.0], [1.0, 1.0], [1.0, 3.0], [0.0, 3.0]], &["bottom", "right", "inner_h", "inner_v", "top", "left"]).unwrap();
+    let l = Loop::polygon_named(
+        &[
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [0.0, 3.0],
+        ],
+        &["bottom", "right", "inner_h", "inner_v", "top", "left"],
+    )
+    .unwrap();
     let region = Region::new(l, vec![], Elastic::new(E, NU)).unwrap();
-    let mut mesh = mesh_region(&region, Physics::PlaneStress { thickness: 1.0 }, ElementKind::Tri6, &|_| 0.5, MeshOptions::default()).unwrap();
+    let mut mesh = mesh_region(
+        &region,
+        Physics::PlaneStress { thickness: 1.0 },
+        ElementKind::Tri6,
+        &|_| 0.5,
+        MeshOptions::default(),
+    )
+    .unwrap();
     let mut sizes: Vec<(f64, f64)> = Vec::new();
     for _ in 0..5 {
         let model = Model::new(mesh).unwrap();
@@ -151,7 +261,13 @@ fn an_l_shaped_plate_refines_toward_the_reentrant_corner() {
         for &n in model.mesh.node_set("left").unwrap() {
             bc.fix_node(n);
         }
-        let loads = Loads { faces: model.mesh.surfaces["right"].iter().map(|f| (f.clone(), SurfaceLoad::Traction([0.0, 500.0, 0.0]))).collect(), ..Loads::default() };
+        let loads = Loads {
+            faces: model.mesh.surfaces["right"]
+                .iter()
+                .map(|f| (f.clone(), SurfaceLoad::Traction([0.0, 500.0, 0.0])))
+                .collect(),
+            ..Loads::default()
+        };
         let sol = model.solve_static(&loads, &bc).unwrap();
         let zz = model.zz_error(&sol.u, 0.0).unwrap();
         // Mean element size within 0.3 of the corner vs. beyond 1.5 of it.
@@ -159,8 +275,17 @@ fn an_l_shaped_plate_refines_toward_the_reentrant_corner() {
         let blk = &model.mesh.blocks[0];
         for e in 0..blk.n_elems() {
             let c = blk.elem(e);
-            let cen = [(0..3).map(|k| model.mesh.nodes[c[k]][0]).sum::<f64>() / 3.0, (0..3).map(|k| model.mesh.nodes[c[k]][1]).sum::<f64>() / 3.0];
-            let size = (0..3).map(|k| (model.mesh.nodes[c[k]][0] - model.mesh.nodes[c[(k + 1) % 3]][0]).hypot(model.mesh.nodes[c[k]][1] - model.mesh.nodes[c[(k + 1) % 3]][1])).sum::<f64>() / 3.0;
+            let cen = [
+                (0..3).map(|k| model.mesh.nodes[c[k]][0]).sum::<f64>() / 3.0,
+                (0..3).map(|k| model.mesh.nodes[c[k]][1]).sum::<f64>() / 3.0,
+            ];
+            let size = (0..3)
+                .map(|k| {
+                    (model.mesh.nodes[c[k]][0] - model.mesh.nodes[c[(k + 1) % 3]][0])
+                        .hypot(model.mesh.nodes[c[k]][1] - model.mesh.nodes[c[(k + 1) % 3]][1])
+                })
+                .sum::<f64>()
+                / 3.0;
             let d = (cen[0] - 1.0).hypot(cen[1] - 1.0);
             if d < 0.3 {
                 near = (near.0 + size, near.1 + 1);
@@ -171,15 +296,39 @@ fn an_l_shaped_plate_refines_toward_the_reentrant_corner() {
         if near.1 > 0 && far.1 > 0 {
             sizes.push((near.0 / near.1 as f64, far.0 / far.1 as f64));
         }
-        let sf = adapted_size_field(&model.mesh, &zz, false, &AdaptOptions { target_rel_error: 0.01, h_min: 0.01, h_max: 1.0, ..AdaptOptions::default() }).unwrap();
-        mesh = mesh_region(&region, Physics::PlaneStress { thickness: 1.0 }, ElementKind::Tri6, &|x| sf.at(x), MeshOptions::default()).unwrap();
+        let sf = adapted_size_field(
+            &model.mesh,
+            &zz,
+            false,
+            &AdaptOptions {
+                target_rel_error: 0.01,
+                h_min: 0.01,
+                h_max: 1.0,
+                ..AdaptOptions::default()
+            },
+        )
+        .unwrap();
+        mesh = mesh_region(
+            &region,
+            Physics::PlaneStress { thickness: 1.0 },
+            ElementKind::Tri6,
+            &|x| sf.at(x),
+            MeshOptions::default(),
+        )
+        .unwrap();
     }
     let (near, far) = *sizes.last().unwrap();
     eprintln!("L plate: element size near the corner {near:.3}, far {far:.3} (ratio {:.1}); history {sizes:?}", far / near);
     // The corner ends up clearly finer than the far field, and far finer than where it started
     // (equidistribution against a 1 % target also shrinks the far field, so a fixed ratio is not the law).
-    assert!(far / near > 2.5, "the singular corner must be finer than the far field: {sizes:?}");
-    assert!(sizes[0].0 / near > 5.0, "the corner size must drop strongly over the passes: {sizes:?}");
+    assert!(
+        far / near > 2.5,
+        "the singular corner must be finer than the far field: {sizes:?}"
+    );
+    assert!(
+        sizes[0].0 / near > 5.0,
+        "the corner size must drop strongly over the passes: {sizes:?}"
+    );
 }
 
 struct LPass {
@@ -202,7 +351,13 @@ fn solve_l(mesh: Mesh) -> Result<LPass, String> {
     for &n in model.mesh.node_set("left").unwrap() {
         bc.fix_node(n);
     }
-    let loads = Loads { faces: model.mesh.surfaces["right"].iter().map(|f| (f.clone(), SurfaceLoad::Traction([0.0, 500.0, 0.0]))).collect(), ..Loads::default() };
+    let loads = Loads {
+        faces: model.mesh.surfaces["right"]
+            .iter()
+            .map(|f| (f.clone(), SurfaceLoad::Traction([0.0, 500.0, 0.0])))
+            .collect(),
+        ..Loads::default()
+    };
     let sol = model.solve_static(&loads, &bc)?;
     let zz = model.zz_error(&sol.u, 0.0)?;
     Ok(LPass { model, zz })
@@ -210,23 +365,72 @@ fn solve_l(mesh: Mesh) -> Result<LPass, String> {
 
 #[test]
 fn the_shared_refine_loop_refines_above_the_target_and_coarsens_below_it() {
-    let l = Loop::polygon_named(&[[0.0, 0.0], [3.0, 0.0], [3.0, 1.0], [1.0, 1.0], [1.0, 3.0], [0.0, 3.0]], &["bottom", "right", "inner_h", "inner_v", "top", "left"]).unwrap();
+    let l = Loop::polygon_named(
+        &[
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [0.0, 3.0],
+        ],
+        &["bottom", "right", "inner_h", "inner_v", "top", "left"],
+    )
+    .unwrap();
     let region = Region::new(l, vec![], Elastic::new(E, NU)).unwrap();
-    let mesh_at = |h: &dyn Fn([f64; 2]) -> f64| mesh_region(&region, Physics::PlaneStress { thickness: 1.0 }, ElementKind::Tri6, h, MeshOptions::default()).unwrap();
-    let opt = |target: f64| AdaptOptions { target_rel_error: target, h_min: 0.02, h_max: 1.0, ..AdaptOptions::default() };
+    let mesh_at = |h: &dyn Fn([f64; 2]) -> f64| {
+        mesh_region(
+            &region,
+            Physics::PlaneStress { thickness: 1.0 },
+            ElementKind::Tri6,
+            h,
+            MeshOptions::default(),
+        )
+        .unwrap()
+    };
+    let opt = |target: f64| AdaptOptions {
+        target_rel_error: target,
+        h_min: 0.02,
+        h_max: 1.0,
+        ..AdaptOptions::default()
+    };
     // Above the target: refined, every kept pass lowers the estimate, every pass is reported.
     let first = solve_l(mesh_at(&|_| 0.5)).unwrap();
     let e0 = first.zz.relative();
     let mut seen = Vec::new();
-    let best = fea_core::adapt::refine(first, 4, false, &opt(0.005), |sf| solve_l(mesh_at(&|x| sf.at(x))), |p| seen.push((p.model.mesh.n_dofs(), p.zz.relative()))).unwrap();
+    let best = fea_core::adapt::refine(
+        first,
+        4,
+        false,
+        &opt(0.005),
+        |sf| solve_l(mesh_at(&|x| sf.at(x))),
+        |p| seen.push((p.model.mesh.n_dofs(), p.zz.relative())),
+    )
+    .unwrap();
     assert!(seen.len() >= 2 && best.zz.relative() < e0, "{seen:?}");
-    assert!(seen.iter().any(|s| s.1 == best.zz.relative()), "the returned pass is one of the reported ones: {seen:?}");
+    assert!(
+        seen.iter().any(|s| s.1 == best.zz.relative()),
+        "the returned pass is one of the reported ones: {seen:?}"
+    );
     // Already finer than a loose target: the field coarsens and a kept pass has clearly fewer unknowns and still meets it.
     let fine = solve_l(mesh_at(&|_| 0.1)).unwrap();
     let (n0, e0) = (fine.model.mesh.n_dofs(), fine.zz.relative());
     let target = (3.0 * e0).max(0.02);
-    let best = fea_core::adapt::refine(fine, 3, false, &opt(target), |sf| solve_l(mesh_at(&|x| sf.at(x))), |_| {}).unwrap();
-    assert!(best.model.mesh.n_dofs() < n0 && best.zz.relative() <= target, "{} vs {n0}, {} vs {target}", best.model.mesh.n_dofs(), best.zz.relative());
+    let best = fea_core::adapt::refine(
+        fine,
+        3,
+        false,
+        &opt(target),
+        |sf| solve_l(mesh_at(&|x| sf.at(x))),
+        |_| {},
+    )
+    .unwrap();
+    assert!(
+        best.model.mesh.n_dofs() < n0 && best.zz.relative() <= target,
+        "{} vs {n0}, {} vs {target}",
+        best.model.mesh.n_dofs(),
+        best.zz.relative()
+    );
 }
 
 /// The grading limit `|h(x) - h(y)| <= grading |x - y|` must hold however far a small size has to spread: a strip of 600
@@ -240,8 +444,15 @@ fn the_grading_limit_spreads_along_any_number_of_elements() {
     let opt = AdaptOptions::default();
     for kind in [ElementKind::Quad4, ElementKind::Tri3, ElementKind::Tet4] {
         let three_d = kind == ElementKind::Tet4;
-        let phys = if three_d { Physics::Solid } else { Physics::PlaneStress { thickness: 1.0 } };
-        let mesh = grid(phys, kind, Elastic::new(E, NU), [n, 1, 1], &|p| [n as f64 * p[0], p[1], p[2]]).unwrap();
+        let phys = if three_d {
+            Physics::Solid
+        } else {
+            Physics::PlaneStress { thickness: 1.0 }
+        };
+        let mesh = grid(phys, kind, Elastic::new(E, NU), [n, 1, 1], &|p| {
+            [n as f64 * p[0], p[1], p[2]]
+        })
+        .unwrap();
         // Target 1 on the elements touching the right end, 1000 elsewhere.
         let mut h_elem = Vec::new();
         for blk in &mesh.blocks {
@@ -252,16 +463,23 @@ fn the_grading_limit_spreads_along_any_number_of_elements() {
         }
         let at = |x: [f64; 3]| -> f64 {
             if three_d {
-                size_field_at_nodes_3d(&mesh, &h_elem, &opt, NodalSize::Min).unwrap().at(x)
+                size_field_at_nodes_3d(&mesh, &h_elem, &opt, NodalSize::Min)
+                    .unwrap()
+                    .at(x)
             } else {
-                size_field_at_nodes(&mesh, &h_elem, &opt, NodalSize::Min).unwrap().at([x[0], x[1]])
+                size_field_at_nodes(&mesh, &h_elem, &opt, NodalSize::Min)
+                    .unwrap()
+                    .at([x[0], x[1]])
             }
         };
         // Along the bottom edge the graph distance to the right end is the Euclidean one.
         for x in [0.0, 100.0, 300.0, 599.0] {
             let exact = 1.0 + opt.grading * (n as f64 - 1.0 - x); // the nodes at x = n - 1 carry 1
             let h = at([x, 0.0, 0.0]);
-            assert!((h - exact).abs() < 1e-9 * exact, "{kind:?}: h({x}) = {h}, the grading limit gives {exact}");
+            assert!(
+                (h - exact).abs() < 1e-9 * exact,
+                "{kind:?}: h({x}) = {h}, the grading limit gives {exact}"
+            );
         }
     }
 }

@@ -27,7 +27,10 @@ impl<'a> Probe<'a> {
         Self { v, log: Some(log) }
     }
     fn join(a: Self, b: Self, v: f64) -> Self {
-        Self { v, log: a.log.or(b.log) }
+        Self {
+            v,
+            log: a.log.or(b.log),
+        }
     }
     fn un(self, v: f64) -> Self {
         Self { v, log: self.log }
@@ -165,7 +168,9 @@ pub fn classify_smoothness<K: SmoothKernel>(k: &K, x: &[f64], radius: f64) -> su
     let base = branch_signature(k, x).0;
     let n = x.len();
     let probe = |dir: &dyn Fn(usize) -> f64, sign: f64| {
-        let xp: Vec<f64> = (0..n).map(|i| x[i] + sign * radius * dir(i) * x[i].abs().max(1.0)).collect();
+        let xp: Vec<f64> = (0..n)
+            .map(|i| x[i] + sign * radius * dir(i) * x[i].abs().max(1.0))
+            .collect();
         branch_signature(k, &xp).0
     };
     for s in [-1.0, 1.0] {
@@ -228,30 +233,60 @@ pub struct TaylorReport {
 /// Directional Taylor test of a Jacobian action: `f(x + e v) = f(x) + e Jv + O(e^2)`. `jv` returns `J(x) v`. The order is fitted over
 /// the steps whose remainder is above `floor` times the scale of `f` (below it the rounding of `f` dominates), so a correct `Jv`
 /// shows order near 2 and a wrong one near 1, whatever the conditioning.
-pub fn taylor_test(f: &dyn Fn(&[f64]) -> Vec<f64>, jv: &dyn Fn(&[f64], &[f64]) -> Vec<f64>, x: &[f64], v: &[f64], steps: &[f64], floor: f64) -> TaylorReport {
+pub fn taylor_test(
+    f: &dyn Fn(&[f64]) -> Vec<f64>,
+    jv: &dyn Fn(&[f64], &[f64]) -> Vec<f64>,
+    x: &[f64],
+    v: &[f64],
+    steps: &[f64],
+    floor: f64,
+) -> TaylorReport {
     let f0 = f(x);
     let j = jv(x, v);
     // the scale of the rounding floor: the values of `f`, and the size of the action tested (`f` is ~0 at a solution)
-    let scale = f0.iter().chain(&j).fold(0.0f64, |m, a| m.max(a.abs())).max(1e-300);
+    let scale = f0
+        .iter()
+        .chain(&j)
+        .fold(0.0f64, |m, a| m.max(a.abs()))
+        .max(1e-300);
     let (mut zeroth, mut first) = (Vec::new(), Vec::new());
     for &e in steps {
         let xe: Vec<f64> = x.iter().zip(v).map(|(a, b)| a + e * b).collect();
         let fe = f(&xe);
-        let z = fe.iter().zip(&f0).fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
-        let r = fe.iter().zip(&f0).zip(&j).fold(0.0f64, |m, ((a, b), c)| m.max((a - b - e * c).abs()));
+        let z = fe
+            .iter()
+            .zip(&f0)
+            .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+        let r = fe
+            .iter()
+            .zip(&f0)
+            .zip(&j)
+            .fold(0.0f64, |m, ((a, b), c)| m.max((a - b - e * c).abs()));
         zeroth.push(z);
         first.push(r);
     }
-    let pts: Vec<(f64, f64)> = steps.iter().zip(&first).filter(|(_, r)| **r > floor * scale).map(|(e, r)| (e.ln(), r.ln())).collect();
+    let pts: Vec<(f64, f64)> = steps
+        .iter()
+        .zip(&first)
+        .filter(|(_, r)| **r > floor * scale)
+        .map(|(e, r)| (e.ln(), r.ln()))
+        .collect();
     let observed_order = if pts.len() >= 2 {
         let n = pts.len() as f64;
         let (sx, sy): (f64, f64) = pts.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
-        let (sxx, sxy): (f64, f64) = pts.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0 * p.0, a.1 + p.0 * p.1));
+        let (sxx, sxy): (f64, f64) = pts
+            .iter()
+            .fold((0.0, 0.0), |a, p| (a.0 + p.0 * p.0, a.1 + p.0 * p.1));
         (n * sxy - sx * sy) / (n * sxx - sx * sx)
     } else {
         f64::INFINITY // the remainder is below the rounding floor at every step: exact to working precision
     };
-    TaylorReport { steps: steps.to_vec(), zeroth, first, observed_order }
+    TaylorReport {
+        steps: steps.to_vec(),
+        zeroth,
+        first,
+        observed_order,
+    }
 }
 
 /// `w^T (J v)` against `(J^T w)^T v`, relative: the forward and transpose actions of one operator must be adjoint.
@@ -264,5 +299,12 @@ pub fn adjoint_consistency(jv: &[f64], w: &[f64], jtw: &[f64], v: &[f64]) -> f64
 /// Check the forward-mode Jacobian of `k` at `x` by a Taylor sweep along `v`.
 pub fn taylor_check_kernel<K: SmoothKernel>(k: &K, x: &[f64], v: &[f64]) -> TaylorReport {
     let steps: Vec<f64> = (1..=7).map(|p| 10f64.powi(-p)).collect();
-    taylor_test(&|y| evaluate(k, y), &|y, d| jacobian_forward(k, y).apply(d), x, v, &steps, 1e-13)
+    taylor_test(
+        &|y| evaluate(k, y),
+        &|y, d| jacobian_forward(k, y).apply(d),
+        x,
+        v,
+        &steps,
+        1e-13,
+    )
 }

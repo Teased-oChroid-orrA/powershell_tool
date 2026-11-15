@@ -15,13 +15,18 @@ use super::dwr::DwrEstimator;
 use super::enrich::EnrichedDwrEstimator;
 use super::equilibrated::EquilibratedEstimator;
 use super::estimator::{ErrorEstimator, ErrorField, EstimatorContext, Reliability, ZzEstimator};
-use super::fusion::{fuse, FusionConfig, FusionInput, Fused};
+use super::fusion::{fuse, Fused, FusionConfig, FusionInput};
 use super::goal::LinearFunctional;
 use super::marking::{dorfler, trim_to_budget, Budget};
 use super::snapshot::SolverSnapshot;
 use super::transfer::{NodalInterpolation, StateTransferOperator};
-use super::zones::{DefaultZoneResolver, PhysicsEstimator, PhysicsZoneResolver, Zone, ZoneMap, ZoneSpec};
-use crate::adapt::{element_sizes_3d, size_field_at_nodes, size_field_at_nodes_3d, AdaptOptions, NodalSize, SizeField, SizeField3};
+use super::zones::{
+    DefaultZoneResolver, PhysicsEstimator, PhysicsZoneResolver, Zone, ZoneMap, ZoneSpec,
+};
+use crate::adapt::{
+    element_sizes_3d, size_field_at_nodes, size_field_at_nodes_3d, AdaptOptions, NodalSize,
+    SizeField, SizeField3,
+};
 use crate::analysis::Model;
 use crate::linear::Dirichlet;
 use crate::loads::{self, Loads};
@@ -74,8 +79,17 @@ pub struct GoalSpec {
 }
 
 impl GoalSpec {
-    pub fn new(name: &str, tolerance: Option<f64>, build: impl Fn(&Model, &Loads) -> Result<LinearFunctional, MeshError> + Send + Sync + 'static) -> Self {
-        Self { name: name.to_string(), build: Arc::new(build), tolerance, weight: 1.0 }
+    pub fn new(
+        name: &str,
+        tolerance: Option<f64>,
+        build: impl Fn(&Model, &Loads) -> Result<LinearFunctional, MeshError> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            build: Arc::new(build),
+            tolerance,
+            weight: 1.0,
+        }
     }
 
     pub fn compliance(tolerance: Option<f64>) -> Self {
@@ -83,15 +97,31 @@ impl GoalSpec {
     }
 
     /// Mean of a stress component over the elements whose centroid satisfies `inside`.
-    pub fn average_stress(name: &str, comp: usize, inside: impl Fn(&[f64; 3]) -> bool + Send + Sync + 'static, tolerance: Option<f64>) -> Self {
-        Self::new(name, tolerance, move |m, _| LinearFunctional::average_stress(m, comp, &inside))
+    pub fn average_stress(
+        name: &str,
+        comp: usize,
+        inside: impl Fn(&[f64; 3]) -> bool + Send + Sync + 'static,
+        tolerance: Option<f64>,
+    ) -> Self {
+        Self::new(name, tolerance, move |m, _| {
+            LinearFunctional::average_stress(m, comp, &inside)
+        })
     }
 
     /// Mean of a displacement component over the nodes of a named node set.
-    pub fn mean_displacement(name: &str, node_set: &str, comp: usize, tolerance: Option<f64>) -> Self {
+    pub fn mean_displacement(
+        name: &str,
+        node_set: &str,
+        comp: usize,
+        tolerance: Option<f64>,
+    ) -> Self {
         let set = node_set.to_string();
         Self::new(name, tolerance, move |m, _| {
-            let nodes = m.mesh.node_sets.get(&set).ok_or_else(|| MeshError::Failed(format!("no node set '{set}'")))?;
+            let nodes = m
+                .mesh
+                .node_sets
+                .get(&set)
+                .ok_or_else(|| MeshError::Failed(format!("no node set '{set}'")))?;
             LinearFunctional::mean_displacement(m, nodes, comp)
         })
     }
@@ -100,7 +130,11 @@ impl GoalSpec {
     pub fn reaction(name: &str, node_set: &str, comp: usize, tolerance: Option<f64>) -> Self {
         let set = node_set.to_string();
         Self::new(name, tolerance, move |m, l| {
-            let nodes = m.mesh.node_sets.get(&set).ok_or_else(|| MeshError::Failed(format!("no node set '{set}'")))?;
+            let nodes = m
+                .mesh
+                .node_sets
+                .get(&set)
+                .ok_or_else(|| MeshError::Failed(format!("no node set '{set}'")))?;
             LinearFunctional::reaction(m, l, nodes, comp)
         })
     }
@@ -184,10 +218,21 @@ impl Default for AmrConfig {
             budget: Budget::default(),
             refine_ratio: 0.5,
             max_growth: 3.0,
-            adapt: AdaptOptions { target_rel_error: 0.0, order: 2.0, min_factor: 0.0, max_factor: 1.0, grading: 0.4, h_min: 0.0, h_max: f64::INFINITY },
+            adapt: AdaptOptions {
+                target_rel_error: 0.0,
+                order: 2.0,
+                min_factor: 0.0,
+                max_factor: 1.0,
+                grading: 0.4,
+                h_min: 0.0,
+                h_max: f64::INFINITY,
+            },
             zones: ZoneSpec::default(),
             singular_h_min: None,
-            stagnation: StagnationRule { window: 2, gain: 0.9 },
+            stagnation: StagnationRule {
+                window: 2,
+                gain: 0.9,
+            },
             quality: QualityThresholds::default(),
             state_tolerance: 0.02,
             keep_fields: FieldRetention::Last,
@@ -287,7 +332,12 @@ struct Evaluation {
 
 pub(crate) fn element_sizes(problem: &MeshedProblem) -> Result<Vec<f64>, MeshError> {
     let mesh = &problem.model.mesh;
-    if mesh.dim() == 3 && mesh.blocks.iter().all(|b| matches!(b.kind, crate::ElementKind::Tet4 | crate::ElementKind::Tet10)) {
+    if mesh.dim() == 3
+        && mesh
+            .blocks
+            .iter()
+            .all(|b| matches!(b.kind, crate::ElementKind::Tet4 | crate::ElementKind::Tet10))
+    {
         return element_sizes_3d(mesh).map_err(MeshError::Failed);
     }
     // size-function units: a simplex edge is about 0.87 of the size it was asked for, a structured quadrilateral about
@@ -296,7 +346,11 @@ pub(crate) fn element_sizes(problem: &MeshedProblem) -> Result<Vec<f64>, MeshErr
     let mut out = Vec::with_capacity(mesh.n_elems());
     let mut g = 0;
     for blk in &mesh.blocks {
-        let unit = if blk.kind.is_simplex() { 0.87 } else { problem.quad_scale };
+        let unit = if blk.kind.is_simplex() {
+            0.87
+        } else {
+            problem.quad_scale
+        };
         for _ in 0..blk.n_elems() {
             out.push(q.elements[g].size / unit);
             g += 1;
@@ -305,13 +359,23 @@ pub(crate) fn element_sizes(problem: &MeshedProblem) -> Result<Vec<f64>, MeshErr
     Ok(out)
 }
 
-fn evaluate(problem: &MeshedProblem, goals: &[GoalSpec], cfg: &AmrConfig, adj: &crate::meshing::adjacency::Adjacency) -> Result<Evaluation, MeshError> {
+fn evaluate(
+    problem: &MeshedProblem,
+    goals: &[GoalSpec],
+    cfg: &AmrConfig,
+    adj: &crate::meshing::adjacency::Adjacency,
+) -> Result<Evaluation, MeshError> {
     let mut seconds = StageSeconds::default();
     let t = Instant::now();
     let model = &problem.model;
-    let sol = model.solve_static(&problem.loads, &problem.bc).map_err(MeshError::Failed)?;
+    let sol = model
+        .solve_static(&problem.loads, &problem.bc)
+        .map_err(MeshError::Failed)?;
     if !sol.rel_residual.is_finite() || sol.rel_residual >= 1e-6 {
-        return Err(MeshError::Failed(format!("the solve left a relative residual of {:.2e}", sol.rel_residual)));
+        return Err(MeshError::Failed(format!(
+            "the solve left a relative residual of {:.2e}",
+            sol.rel_residual
+        )));
     }
     seconds.solve = t.elapsed().as_secs_f64();
     let mut ctx = EstimatorContext::new(model, &problem.loads, &problem.bc, &sol.u, adj)?;
@@ -320,12 +384,18 @@ fn evaluate(problem: &MeshedProblem, goals: &[GoalSpec], cfg: &AmrConfig, adj: &
     }
 
     let t = Instant::now();
-    let functionals: Vec<LinearFunctional> = goals.iter().map(|g| (g.build)(model, &problem.loads)).collect::<Result<_, _>>()?;
+    let functionals: Vec<LinearFunctional> = goals
+        .iter()
+        .map(|g| (g.build)(model, &problem.loads))
+        .collect::<Result<_, _>>()?;
     let refs: Vec<&LinearFunctional> = functionals.iter().collect();
     // h-enriched dual where the mesh can be refined (2D triangles and quadrilaterals), else the recovery-based estimate
     let builders: Vec<&GoalFn> = goals.iter().map(|g| &*g.build).collect();
     let enriched = EnrichedDwrEstimator.estimate_goals(&ctx, &refs, &builders)?;
-    let (dwr, goal_estimator) = if enriched.iter().any(|r| matches!(r.field.reliability, Reliability::Unsupported(_))) {
+    let (dwr, goal_estimator) = if enriched
+        .iter()
+        .any(|r| matches!(r.field.reliability, Reliability::Unsupported(_)))
+    {
         (DwrEstimator.estimate_goals(&ctx, &refs)?, "recovery-dwr")
     } else {
         (enriched, "enriched-dwr")
@@ -333,13 +403,18 @@ fn evaluate(problem: &MeshedProblem, goals: &[GoalSpec], cfg: &AmrConfig, adj: &
     seconds.goals = t.elapsed().as_secs_f64();
 
     let t = Instant::now();
-    let zz = model.zz_error_field(&sol.u, problem.loads.delta_t, None).map_err(MeshError::Failed);
+    let zz = model
+        .zz_error_field(&sol.u, problem.loads.delta_t, None)
+        .map_err(MeshError::Failed);
     let zz_field = ZzEstimator.estimate(&ctx)?;
     let eq_field = EquilibratedEstimator.estimate(&ctx)?;
     seconds.physics = t.elapsed().as_secs_f64();
     let zz_norm = zz.as_ref().map(|z| z.norm).unwrap_or(0.0);
 
-    let zones = DefaultZoneResolver { spec: cfg.zones.clone() }.resolve(&model.mesh, adj)?;
+    let zones = DefaultZoneResolver {
+        spec: cfg.zones.clone(),
+    }
+    .resolve(&model.mesh, adj)?;
 
     let t = Instant::now();
     let mut physics: Vec<(PhysicsEstimator, &ErrorField)> = Vec::new();
@@ -352,7 +427,11 @@ fn evaluate(problem: &MeshedProblem, goals: &[GoalSpec], cfg: &AmrConfig, adj: &
     if zz_field.reliability.usable() {
         physics.push((PhysicsEstimator::SprPlus, &zz_field));
     }
-    let adjoint: Vec<(f64, &ErrorField)> = goals.iter().zip(&dwr).map(|(g, r)| (g.weight, &r.field)).collect();
+    let adjoint: Vec<(f64, &ErrorField)> = goals
+        .iter()
+        .zip(&dwr)
+        .map(|(g, r)| (g.weight, &r.field))
+        .collect();
 
     // sizes, caps and the physics allowance
     let h_elem = element_sizes(problem)?;
@@ -374,24 +453,67 @@ fn evaluate(problem: &MeshedProblem, goals: &[GoalSpec], cfg: &AmrConfig, adj: &
         let allowed_total = tol * zz_norm.hypot(physics_total);
         fcfg.physics_allowance = Some(allowed_total / (n as f64).sqrt());
     }
-    let fused = fuse(&FusionInput { adjoint: &adjoint, physics: &physics, zones: Some(&zones), capped: Some(&capped), protected: None }, &fcfg)?;
+    let fused = fuse(
+        &FusionInput {
+            adjoint: &adjoint,
+            physics: &physics,
+            zones: Some(&zones),
+            capped: Some(&capped),
+            protected: None,
+        },
+        &fcfg,
+    )?;
     seconds.fusion = t.elapsed().as_secs_f64();
 
-    let goal_fields: Vec<(String, Vec<f64>)> = dwr.iter().map(|r| (r.goal.clone(), r.field.values.clone())).collect();
-    let physics_values: Vec<f64> = if eq_field.reliability.usable() { eq_field.values.clone() } else { zz_field.values.clone() };
+    let goal_fields: Vec<(String, Vec<f64>)> = dwr
+        .iter()
+        .map(|r| (r.goal.clone(), r.field.values.clone()))
+        .collect();
+    let physics_values: Vec<f64> = if eq_field.reliability.usable() {
+        eq_field.values.clone()
+    } else {
+        zz_field.values.clone()
+    };
     let outcomes: Vec<GoalOutcome> = goals
         .iter()
         .zip(&dwr)
-        .map(|(g, r)| GoalOutcome { name: g.name.clone(), value: r.value, estimated_error: r.estimated_error, corrected: r.corrected, tolerance: g.tolerance, reliability: r.field.reliability.clone() })
+        .map(|(g, r)| GoalOutcome {
+            name: g.name.clone(),
+            value: r.value,
+            estimated_error: r.estimated_error,
+            corrected: r.corrected,
+            tolerance: g.tolerance,
+            reliability: r.field.reliability.clone(),
+        })
         .collect();
-    let physics_rel = if physics_total.is_finite() { physics_total / zz_norm.hypot(physics_total).max(1e-300) } else { f64::NAN };
+    let physics_rel = if physics_total.is_finite() {
+        physics_total / zz_norm.hypot(physics_total).max(1e-300)
+    } else {
+        f64::NAN
+    };
     let cost = MeshCost::of(&model.mesh)?;
-    Ok(Evaluation { u: sol.u, goal_fields, physics_values, zones, goals: outcomes, physics_rel, physics_name: physics_name.to_string(), fused, capped, cost, goal_estimator, seconds, h_elem })
+    Ok(Evaluation {
+        u: sol.u,
+        goal_fields,
+        physics_values,
+        zones,
+        goals: outcomes,
+        physics_rel,
+        physics_name: physics_name.to_string(),
+        fused,
+        capped,
+        cost,
+        goal_estimator,
+        seconds,
+        h_elem,
+    })
 }
 
 fn converged(goals: &[GoalOutcome], physics_rel: f64, cfg: &AmrConfig) -> (bool, bool, bool) {
     let any_tol = goals.iter().any(|g| g.tolerance.is_some()) || cfg.physics_tolerance.is_some();
-    let qoi = goals.iter().all(|g| g.tolerance.is_none_or(|t| g.estimated_error.abs() <= t));
+    let qoi = goals
+        .iter()
+        .all(|g| g.tolerance.is_none_or(|t| g.estimated_error.abs() <= t));
     let phys = cfg.physics_tolerance.is_none_or(|t| physics_rel <= t);
     (qoi, phys, any_tol && qoi && phys)
 }
@@ -423,8 +545,16 @@ fn measure(mesh: &Mesh) -> f64 {
             } else if nc == 4 {
                 let p = |i: usize| mesh.nodes[c[i]];
                 let (a, b, cc, d) = (p(0), p(1), p(2), p(3));
-                let (u, v, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
-                total += ((u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6.0).abs();
+                let (u, v, w) = (
+                    [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                    [cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]],
+                    [d[0] - a[0], d[1] - a[1], d[2] - a[2]],
+                );
+                total += ((u[0] * (v[1] * w[2] - v[2] * w[1])
+                    - u[1] * (v[0] * w[2] - v[2] * w[0])
+                    + u[2] * (v[0] * w[1] - v[1] * w[0]))
+                    / 6.0)
+                    .abs();
             }
         }
     }
@@ -443,12 +573,24 @@ fn materials(mesh: &Mesh) -> Vec<Elastic> {
 
 /// Everything the adaptation must preserve from `old` to `new`: the applied load resultant, the material set, the measure of the
 /// domain and the presence of restraints. A silent loss of a load or a restraint would otherwise look like a good solve.
-pub(crate) fn state_check(old: &MeshedProblem, new: &MeshedProblem, tol: f64) -> Result<(), String> {
-    state_check_parts((&old.model, &old.loads, &old.bc), (&new.model, &new.loads, &new.bc), tol)
+pub(crate) fn state_check(
+    old: &MeshedProblem,
+    new: &MeshedProblem,
+    tol: f64,
+) -> Result<(), String> {
+    state_check_parts(
+        (&old.model, &old.loads, &old.bc),
+        (&new.model, &new.loads, &new.bc),
+        tol,
+    )
 }
 
 /// [`state_check`] on the parts of a problem (the nonlinear loop has contact specifications besides).
-pub(crate) fn state_check_parts(old: (&Model, &Loads, &Dirichlet), new: (&Model, &Loads, &Dirichlet), tol: f64) -> Result<(), String> {
+pub(crate) fn state_check_parts(
+    old: (&Model, &Loads, &Dirichlet),
+    new: (&Model, &Loads, &Dirichlet),
+    tol: f64,
+) -> Result<(), String> {
     let force = |p: (&Model, &Loads, &Dirichlet)| -> Result<[f64; 3], MeshError> {
         let f = loads::assemble(&p.0.mesh, p.1).map_err(MeshError::Failed)?;
         let d = p.0.mesh.dim();
@@ -458,16 +600,24 @@ pub(crate) fn state_check_parts(old: (&Model, &Loads, &Dirichlet), new: (&Model,
         }
         Ok(out)
     };
-    let (fo, fn_) = (force(old).map_err(|e| e.to_string())?, force(new).map_err(|e| e.to_string())?);
+    let (fo, fn_) = (
+        force(old).map_err(|e| e.to_string())?,
+        force(new).map_err(|e| e.to_string())?,
+    );
     let scale = fo.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     for c in 0..3 {
         if (fo[c] - fn_[c]).abs() > tol * scale.max(1e-300) {
-            return Err(format!("the applied load resultant changed in component {c}: {} -> {}", fo[c], fn_[c]));
+            return Err(format!(
+                "the applied load resultant changed in component {c}: {} -> {}",
+                fo[c], fn_[c]
+            ));
         }
     }
     let (mo, mn) = (measure(&old.0.mesh), measure(&new.0.mesh));
     if mo > 0.0 && (mo - mn).abs() > tol * mo {
-        return Err(format!("the measure of the domain changed from {mo} to {mn}"));
+        return Err(format!(
+            "the measure of the domain changed from {mo} to {mn}"
+        ));
     }
     for m in materials(&old.0.mesh) {
         if !materials(&new.0.mesh).contains(&m) {
@@ -480,12 +630,22 @@ pub(crate) fn state_check_parts(old: (&Model, &Loads, &Dirichlet), new: (&Model,
     Ok(())
 }
 
-fn record(cycle: usize, p: &MeshedProblem, ev: &Evaluation, cfg: &AmrConfig, marked: usize, solution_change: Option<f64>, q_min: f64) -> CycleRecord {
+fn record(
+    cycle: usize,
+    p: &MeshedProblem,
+    ev: &Evaluation,
+    cfg: &AmrConfig,
+    marked: usize,
+    solution_change: Option<f64>,
+    q_min: f64,
+) -> CycleRecord {
     let (qoi, phys, _) = converged(&ev.goals, ev.physics_rel, cfg);
     let labels = p.labels.as_ref();
     let mut rel = Vec::new();
     for g in &ev.goals {
-        if let Reliability::Degraded(w) | Reliability::Failed(w) | Reliability::Unsupported(w) = &g.reliability {
+        if let Reliability::Degraded(w) | Reliability::Failed(w) | Reliability::Unsupported(w) =
+            &g.reliability
+        {
             rel.push(format!("{}: {w}", g.name));
         }
     }
@@ -533,12 +693,20 @@ fn cycle_fields(cycle: usize, p: &MeshedProblem, ev: &Evaluation, marked: &[bool
 }
 
 /// Run the adaptive loop from `initial`. `mesher` turns a size field into the next meshed problem.
-pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMut(&AdaptSize) -> Result<MeshedProblem, String>, cfg: &AmrConfig) -> Result<AmrResult, MeshError> {
+pub fn run_amr(
+    initial: MeshedProblem,
+    goals: &[GoalSpec],
+    mesher: &mut dyn FnMut(&AdaptSize) -> Result<MeshedProblem, String>,
+    cfg: &AmrConfig,
+) -> Result<AmrResult, MeshError> {
     if goals.is_empty() {
         return Err(MeshError::Failed("at least one goal is required".into()));
     }
     if !(cfg.refine_ratio > 0.0 && cfg.refine_ratio < 1.0) {
-        return Err(MeshError::Failed(format!("the refinement ratio {} must be in (0, 1)", cfg.refine_ratio)));
+        return Err(MeshError::Failed(format!(
+            "the refinement ratio {} must be in (0, 1)",
+            cfg.refine_ratio
+        )));
     }
     let dim = initial.model.mesh.dim();
     let children = (1.0 / cfg.refine_ratio).powi(dim as i32);
@@ -555,7 +723,14 @@ pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMu
         metrics.push(progress(&ev.goals, ev.physics_rel, cfg));
         let mut rec = record(cycle, &current, &ev, cfg, 0, change, q_min);
         let mut marked_flags = vec![false; current.model.mesh.n_elems()];
-        let finish = |history: &mut Vec<CycleRecord>, acc: &mut Vec<CycleFields>, marked: &[bool], rec: CycleRecord, stop: Stop, current: MeshedProblem, ev: Evaluation| -> Result<AmrResult, MeshError> {
+        let finish = |history: &mut Vec<CycleRecord>,
+                      acc: &mut Vec<CycleFields>,
+                      marked: &[bool],
+                      rec: CycleRecord,
+                      stop: Stop,
+                      current: MeshedProblem,
+                      ev: Evaluation|
+         -> Result<AmrResult, MeshError> {
             if cfg.keep_fields != FieldRetention::None {
                 if cfg.keep_fields == FieldRetention::Last {
                     acc.clear();
@@ -563,55 +738,144 @@ pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMu
                 acc.push(cycle_fields(rec.cycle, &current, &ev, marked));
             }
             history.push(rec);
-            Ok(AmrResult { problem: current, u: ev.u, stop, history: std::mem::take(history), fields: std::mem::take(acc) })
+            Ok(AmrResult {
+                problem: current,
+                u: ev.u,
+                stop,
+                history: std::mem::take(history),
+                fields: std::mem::take(acc),
+            })
         };
         if done {
-            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::Converged, current, ev);
+            return finish(
+                &mut history,
+                &mut fields_acc,
+                &marked_flags,
+                rec,
+                Stop::Converged,
+                current,
+                ev,
+            );
         }
         if cycle == cfg.max_cycles {
-            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::MaxCycles, current, ev);
+            return finish(
+                &mut history,
+                &mut fields_acc,
+                &marked_flags,
+                rec,
+                Stop::MaxCycles,
+                current,
+                ev,
+            );
         }
         // stagnation: the progress metric has not fallen enough over the window
         let w = cfg.stagnation.window;
-        if metrics.len() > w && metrics[metrics.len() - 1] > cfg.stagnation.gain * metrics[metrics.len() - 1 - w] {
+        if metrics.len() > w
+            && metrics[metrics.len() - 1] > cfg.stagnation.gain * metrics[metrics.len() - 1 - w]
+        {
             let why = format!("the progress metric went {:.3e} -> {:.3e} over {w} cycles (qoi converged: {}, physics converged: {})", metrics[metrics.len() - 1 - w], metrics[metrics.len() - 1], rec.qoi_converged, rec.physics_converged);
-            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::Stagnated(why), current, ev);
+            return finish(
+                &mut history,
+                &mut fields_acc,
+                &marked_flags,
+                rec,
+                Stop::Stagnated(why),
+                current,
+                ev,
+            );
         }
 
         // ---- mark, within the budget
         let t = Instant::now();
         let n = current.model.mesh.n_elems();
-        let mut marked = match dorfler(&ev.fused.score, cfg.theta, &ev.fused.mandatory, cfg.squared) {
+        let mut marked = match dorfler(&ev.fused.score, cfg.theta, &ev.fused.mandatory, cfg.squared)
+        {
             Ok(m) => m,
-            Err(e) => return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::EstimatorUnavailable(e.to_string()), current, ev),
+            Err(e) => {
+                return finish(
+                    &mut history,
+                    &mut fields_acc,
+                    &marked_flags,
+                    rec,
+                    Stop::EstimatorUnavailable(e.to_string()),
+                    current,
+                    ev,
+                )
+            }
         };
         let cap = cfg.budget.element_cap(ev.cost.dofs, n);
-        if !trim_to_budget(&mut marked.marked, &ev.fused.score, &ev.fused.mandatory, n, cap, children) {
-            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::BudgetExhausted, current, ev);
+        if !trim_to_budget(
+            &mut marked.marked,
+            &ev.fused.score,
+            &ev.fused.mandatory,
+            n,
+            cap,
+            children,
+        ) {
+            return finish(
+                &mut history,
+                &mut fields_acc,
+                &marked_flags,
+                rec,
+                Stop::BudgetExhausted,
+                current,
+                ev,
+            );
         }
         // growth per cycle: even mandatory elements are limited, the highest ranked first
         let growth_cap = (cfg.max_growth.max(1.0) * n as f64).floor() as usize;
-        trim_to_budget(&mut marked.marked, &ev.fused.score, &vec![false; n], n, growth_cap, children);
+        trim_to_budget(
+            &mut marked.marked,
+            &ev.fused.score,
+            &vec![false; n],
+            n,
+            growth_cap,
+            children,
+        );
         marked.n_marked = marked.marked.iter().filter(|&&m| m).count();
         marked_flags = marked.marked.clone();
         rec.marked = marked.n_marked;
         if marked.n_marked == 0 {
-            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::NothingToRefine, current, ev);
+            return finish(
+                &mut history,
+                &mut fields_acc,
+                &marked_flags,
+                rec,
+                Stop::NothingToRefine,
+                current,
+                ev,
+            );
         }
         let h_new: Vec<f64> = (0..n)
             .map(|e| {
-                let h = if marked.marked[e] { ev.h_elem[e] * cfg.refine_ratio } else { ev.h_elem[e] };
+                let h = if marked.marked[e] {
+                    ev.h_elem[e] * cfg.refine_ratio
+                } else {
+                    ev.h_elem[e]
+                };
                 h.clamp(cfg.adapt.h_min.max(f64::MIN_POSITIVE), cfg.adapt.h_max)
             })
             .collect();
         let size = if dim == 2 {
-            size_field_at_nodes(&current.model.mesh, &h_new, &cfg.adapt, NodalSize::Min).map(AdaptSize::D2)
+            size_field_at_nodes(&current.model.mesh, &h_new, &cfg.adapt, NodalSize::Min)
+                .map(AdaptSize::D2)
         } else {
-            size_field_at_nodes_3d(&current.model.mesh, &h_new, &cfg.adapt, NodalSize::Min).map(AdaptSize::D3)
+            size_field_at_nodes_3d(&current.model.mesh, &h_new, &cfg.adapt, NodalSize::Min)
+                .map(AdaptSize::D3)
         };
         let size = match size {
             Ok(s) => s,
-            Err(e) => return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::RolledBack(format!("size field: {e}")), current, ev),
+            Err(e) => {
+                return finish(
+                    &mut history,
+                    &mut fields_acc,
+                    &marked_flags,
+                    rec,
+                    Stop::RolledBack(format!("size field: {e}")),
+                    current,
+                    ev,
+                )
+            }
         };
         rec.seconds.marking_and_sizing = t.elapsed().as_secs_f64();
 
@@ -623,34 +887,99 @@ pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMu
             Ok(p) => p,
             Err(e) => {
                 rec.seconds.meshing = meshing;
-                return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::RolledBack(format!("the mesher failed: {e}")), current, ev);
+                return finish(
+                    &mut history,
+                    &mut fields_acc,
+                    &marked_flags,
+                    rec,
+                    Stop::RolledBack(format!("the mesher failed: {e}")),
+                    current,
+                    ev,
+                );
             }
         };
         let t = Instant::now();
         let checks = (|| -> Result<(), String> {
-            next.model.mesh.quality().require(&cfg.quality).map_err(|e| e.to_string())?;
-            next.model.mesh.conformity().require_conforming().map_err(|e| e.to_string())?;
+            next.model
+                .mesh
+                .quality()
+                .require(&cfg.quality)
+                .map_err(|e| e.to_string())?;
+            next.model
+                .mesh
+                .conformity()
+                .require_conforming()
+                .map_err(|e| e.to_string())?;
             state_check(&current, &next, cfg.state_tolerance)
         })();
         let checks_s = t.elapsed().as_secs_f64();
         rec.seconds.meshing = meshing;
         rec.seconds.checks = checks_s;
         if let Err(why) = checks {
-            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::RolledBack(why), current, ev);
+            return finish(
+                &mut history,
+                &mut fields_acc,
+                &marked_flags,
+                rec,
+                Stop::RolledBack(why),
+                current,
+                ev,
+            );
         }
         let next_adj = next.model.mesh.adjacency();
         let next_ev = match evaluate(&next, goals, cfg, &next_adj) {
             Ok(e) => e,
-            Err(e) => return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::RolledBack(format!("the new mesh could not be solved or estimated: {e}")), current, ev),
+            Err(e) => {
+                return finish(
+                    &mut history,
+                    &mut fields_acc,
+                    &marked_flags,
+                    rec,
+                    Stop::RolledBack(format!(
+                        "the new mesh could not be solved or estimated: {e}"
+                    )),
+                    current,
+                    ev,
+                )
+            }
         };
-        if !cfg.budget.allows(next.model.mesh.n_dofs(), next.model.mesh.n_elems(), 8 * next_ev.cost.factor_nnz) {
-            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::BudgetExhausted, current, ev);
+        if !cfg.budget.allows(
+            next.model.mesh.n_dofs(),
+            next.model.mesh.n_elems(),
+            8 * next_ev.cost.factor_nnz,
+        ) {
+            return finish(
+                &mut history,
+                &mut fields_acc,
+                &marked_flags,
+                rec,
+                Stop::BudgetExhausted,
+                current,
+                ev,
+            );
         }
         // how far did the solution move: previous displacement carried onto the new mesh
         change = (|| {
-            let snap = SolverSnapshot::new(&current.model.mesh, ev.u.clone(), current.loads.delta_t, "previous").ok()?;
-            let t = NodalInterpolation { max_unlocated_fraction: 0.2 }.transfer(&current.model, &snap, &next.model.mesh).ok()?;
-            let num: f64 = t.snapshot.u.iter().zip(&next_ev.u).map(|(a, b)| (a - b).powi(2)).sum::<f64>().sqrt();
+            let snap = SolverSnapshot::new(
+                &current.model.mesh,
+                ev.u.clone(),
+                current.loads.delta_t,
+                "previous",
+            )
+            .ok()?;
+            let t = NodalInterpolation {
+                max_unlocated_fraction: 0.2,
+            }
+            .transfer(&current.model, &snap, &next.model.mesh)
+            .ok()?;
+            let num: f64 = t
+                .snapshot
+                .u
+                .iter()
+                .zip(&next_ev.u)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f64>()
+                .sqrt();
             let den: f64 = next_ev.u.iter().map(|b| b * b).sum::<f64>().sqrt();
             (den > 0.0).then_some(num / den)
         })();
@@ -667,6 +996,8 @@ pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMu
 impl ZoneMap {
     /// Elements of the zone.
     pub fn elements_of(&self, z: Zone) -> Vec<usize> {
-        (0..self.zones.len()).filter(|&e| self.zones[e] == z).collect()
+        (0..self.zones.len())
+            .filter(|&e| self.zones[e] == z)
+            .collect()
     }
 }

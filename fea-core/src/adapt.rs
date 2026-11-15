@@ -29,7 +29,15 @@ pub struct AdaptOptions {
 
 impl Default for AdaptOptions {
     fn default() -> Self {
-        Self { target_rel_error: 0.02, order: 2.0, min_factor: 0.25, max_factor: 2.0, grading: 0.4, h_min: 0.0, h_max: f64::INFINITY }
+        Self {
+            target_rel_error: 0.02,
+            order: 2.0,
+            min_factor: 0.25,
+            max_factor: 2.0,
+            grading: 0.4,
+            h_min: 0.0,
+            h_max: f64::INFINITY,
+        }
     }
 }
 
@@ -57,7 +65,10 @@ impl SizeField {
         }
         let n = (tris.len() as f64).sqrt().ceil().max(1.0);
         let cell = ((hi[0] - lo[0]).max(hi[1] - lo[1]) / n).max(1e-300);
-        let (nx, ny) = (((hi[0] - lo[0]) / cell).floor() as usize + 1, ((hi[1] - lo[1]) / cell).floor() as usize + 1);
+        let (nx, ny) = (
+            ((hi[0] - lo[0]) / cell).floor() as usize + 1,
+            ((hi[1] - lo[1]) / cell).floor() as usize + 1,
+        );
         let mut bins = vec![Vec::new(); nx * ny];
         for (t, tr) in tris.iter().enumerate() {
             let (mut tlo, mut thi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
@@ -67,15 +78,30 @@ impl SizeField {
                     thi[i] = thi[i].max(pts[v][i]);
                 }
             }
-            let (i0, i1) = (((tlo[0] - lo[0]) / cell).floor() as usize, ((thi[0] - lo[0]) / cell).floor() as usize);
-            let (j0, j1) = (((tlo[1] - lo[1]) / cell).floor() as usize, ((thi[1] - lo[1]) / cell).floor() as usize);
+            let (i0, i1) = (
+                ((tlo[0] - lo[0]) / cell).floor() as usize,
+                ((thi[0] - lo[0]) / cell).floor() as usize,
+            );
+            let (j0, j1) = (
+                ((tlo[1] - lo[1]) / cell).floor() as usize,
+                ((thi[1] - lo[1]) / cell).floor() as usize,
+            );
             for j in j0..=j1.min(ny - 1) {
                 for i in i0..=i1.min(nx - 1) {
                     bins[j * nx + i].push(t as u32);
                 }
             }
         }
-        Self { pts, tris, h, lo, cell, nx, ny, bins }
+        Self {
+            pts,
+            tris,
+            h,
+            lo,
+            cell,
+            nx,
+            ny,
+            bins,
+        }
     }
 
     /// Size at `x`: linear interpolation in the containing triangle. A point just outside the
@@ -83,7 +109,10 @@ impl SizeField {
     /// uses the closest nearby triangle with its barycentric weights clamped; far outside, the
     /// nearest vertex.
     pub fn at(&self, x: [f64; 2]) -> f64 {
-        let (ci, cj) = (((x[0] - self.lo[0]) / self.cell).floor() as i64, ((x[1] - self.lo[1]) / self.cell).floor() as i64);
+        let (ci, cj) = (
+            ((x[0] - self.lo[0]) / self.cell).floor() as i64,
+            ((x[1] - self.lo[1]) / self.cell).floor() as i64,
+        );
         let mut best: Option<(f64, [f64; 3], [usize; 3])> = None;
         for dj in -1..=1i64 {
             for di in -1..=1i64 {
@@ -144,7 +173,10 @@ fn corner_triangles(mesh: &Mesh) -> (Vec<[usize; 3]>, Vec<usize>) {
             let c = &conn[..nc];
             tris.push([c[0], c[1], c[2]]);
             owner.push(e);
-            if matches!(blk.kind, ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9) {
+            if matches!(
+                blk.kind,
+                ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9
+            ) {
                 tris.push([c[0], c[2], c[3]]);
                 owner.push(e);
             }
@@ -168,11 +200,25 @@ pub fn element_sizes_2d(mesh: &Mesh, quad_split: bool) -> Result<Vec<f64>, Strin
         for conn in blk.conn.chunks_exact(blk.kind.n_nodes()) {
             let c = &conn[..nc];
             let mut tris = vec![[c[0], c[1], c[2]]];
-            if matches!(blk.kind, ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9) {
+            if matches!(
+                blk.kind,
+                ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9
+            ) {
                 tris.push([c[0], c[2], c[3]]);
             }
-            let area: f64 = tris.iter().map(|t| 0.5 * ((pts[t[1]][0] - pts[t[0]][0]) * (pts[t[2]][1] - pts[t[0]][1]) - (pts[t[1]][1] - pts[t[0]][1]) * (pts[t[2]][0] - pts[t[0]][0])).abs()).sum();
-            let a_tri = if quad_split && nc == 4 { 3.0 * area } else { area };
+            let area: f64 = tris
+                .iter()
+                .map(|t| {
+                    0.5 * ((pts[t[1]][0] - pts[t[0]][0]) * (pts[t[2]][1] - pts[t[0]][1])
+                        - (pts[t[1]][1] - pts[t[0]][1]) * (pts[t[2]][0] - pts[t[0]][0]))
+                        .abs()
+                })
+                .sum();
+            let a_tri = if quad_split && nc == 4 {
+                3.0 * area
+            } else {
+                area
+            };
             out.push(edge_of_area(a_tri));
         }
     }
@@ -182,19 +228,33 @@ pub fn element_sizes_2d(mesh: &Mesh, quad_split: bool) -> Result<Vec<f64>, Strin
 /// Build the size field of the next mesh from the ZZ estimate of the current one. `quad_split` marks quadrilateral meshes
 /// produced by the three-quads-per-triangle split (each quad is a third of a triangle, so its area is tripled to recover the
 /// triangle size the mesher asks for).
-pub fn adapted_size_field(mesh: &Mesh, zz: &ZzEstimate, quad_split: bool, opt: &AdaptOptions) -> Result<SizeField, String> {
+pub fn adapted_size_field(
+    mesh: &Mesh,
+    zz: &ZzEstimate,
+    quad_split: bool,
+    opt: &AdaptOptions,
+) -> Result<SizeField, String> {
     if mesh.dim() != 2 {
         return Err("adaptive remeshing is for 2D meshes".into());
     }
     let n_elems = mesh.n_elems();
     if zz.eta.len() != n_elems {
-        return Err(format!("{} error values for {} elements", zz.eta.len(), n_elems));
+        return Err(format!(
+            "{} error values for {} elements",
+            zz.eta.len(),
+            n_elems
+        ));
     }
-    let target = opt.target_rel_error * (zz.norm * zz.norm + zz.total * zz.total).sqrt() / (n_elems as f64).sqrt();
+    let target = opt.target_rel_error * (zz.norm * zz.norm + zz.total * zz.total).sqrt()
+        / (n_elems as f64).sqrt();
     let h_old = element_sizes_2d(mesh, quad_split)?;
     let h_elem: Vec<f64> = (0..n_elems)
         .map(|e| {
-            let ratio = if zz.eta[e] > 0.0 { (target / zz.eta[e]).powf(1.0 / opt.order) } else { opt.max_factor };
+            let ratio = if zz.eta[e] > 0.0 {
+                (target / zz.eta[e]).powf(1.0 / opt.order)
+            } else {
+                opt.max_factor
+            };
             (h_old[e] * ratio.clamp(opt.min_factor, opt.max_factor)).clamp(opt.h_min, opt.h_max)
         })
         .collect();
@@ -203,7 +263,11 @@ pub fn adapted_size_field(mesh: &Mesh, zz: &ZzEstimate, quad_split: bool, opt: &
 
 /// The size field of a 2D mesh from a target size per element (global element order): geometric mean at the nodes, then the
 /// grading limit of `opt` along the corner edges (`opt.h_min`, `h_max` bound the result of the caller's sizes only).
-pub fn size_field_from_element_sizes(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions) -> Result<SizeField, String> {
+pub fn size_field_from_element_sizes(
+    mesh: &Mesh,
+    h_elem: &[f64],
+    opt: &AdaptOptions,
+) -> Result<SizeField, String> {
     size_field_at_nodes(mesh, h_elem, opt, NodalSize::GeometricMean)
 }
 
@@ -217,12 +281,21 @@ pub enum NodalSize {
 }
 
 /// [`size_field_from_element_sizes`] with a choice of the nodal combination.
-pub fn size_field_at_nodes(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions, combine: NodalSize) -> Result<SizeField, String> {
+pub fn size_field_at_nodes(
+    mesh: &Mesh,
+    h_elem: &[f64],
+    opt: &AdaptOptions,
+    combine: NodalSize,
+) -> Result<SizeField, String> {
     if mesh.dim() != 2 {
         return Err("adaptive remeshing is for 2D meshes".into());
     }
     if h_elem.len() != mesh.n_elems() {
-        return Err(format!("{} sizes for {} elements", h_elem.len(), mesh.n_elems()));
+        return Err(format!(
+            "{} sizes for {} elements",
+            h_elem.len(),
+            mesh.n_elems()
+        ));
     }
     if let Some(i) = h_elem.iter().position(|h| !(h.is_finite() && *h > 0.0)) {
         return Err(format!("the target size of element {i} is {}", h_elem[i]));
@@ -263,7 +336,19 @@ pub fn size_field_at_nodes(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions, comb
     grade(&mut h, &edges, opt.grading);
     // Midside and interior nodes carry no size (infinite here): the background triangles reference corner nodes only (the
     // vertices of `tris`), so their placeholder value `h_max` is never interpolated.
-    Ok(SizeField::new(pts, tris, h.into_iter().map(|v| if v.is_finite() { v } else { opt.h_max.min(1e30) }).collect()))
+    Ok(SizeField::new(
+        pts,
+        tris,
+        h.into_iter()
+            .map(|v| {
+                if v.is_finite() {
+                    v
+                } else {
+                    opt.h_max.min(1e30)
+                }
+            })
+            .collect(),
+    ))
 }
 
 /// Impose the grading limit `h[i] <= h[j] + grading * d_ij` over the edges `(i, j, d_ij)`: the largest field below the
@@ -291,7 +376,10 @@ fn grade(h: &mut [f64], edges: &[(usize, usize, f64)], grading: f64) {
         fill[j] += 1;
     }
     // Sizes are positive (or infinite), so their bit patterns order like the values.
-    let mut heap: BinaryHeap<Reverse<(u64, usize)>> = (0..n).filter(|&i| h[i].is_finite()).map(|i| Reverse((h[i].to_bits(), i))).collect();
+    let mut heap: BinaryHeap<Reverse<(u64, usize)>> = (0..n)
+        .filter(|&i| h[i].is_finite())
+        .map(|i| Reverse((h[i].to_bits(), i)))
+        .collect();
     while let Some(Reverse((bits, i))) = heap.pop() {
         if bits != h[i].to_bits() {
             continue; // stale entry
@@ -339,7 +427,12 @@ impl SizeField3 {
                     thi[i] = thi[i].max(pts[v][i]);
                 }
             }
-            let r: [(usize, usize); 3] = std::array::from_fn(|i| (((tlo[i] - lo[i]) / cell).floor() as usize, (((thi[i] - lo[i]) / cell).floor() as usize).min(n[i] - 1)));
+            let r: [(usize, usize); 3] = std::array::from_fn(|i| {
+                (
+                    ((tlo[i] - lo[i]) / cell).floor() as usize,
+                    (((thi[i] - lo[i]) / cell).floor() as usize).min(n[i] - 1),
+                )
+            });
             for k in r[2].0..=r[2].1 {
                 for j in r[1].0..=r[1].1 {
                     for i in r[0].0..=r[0].1 {
@@ -348,7 +441,15 @@ impl SizeField3 {
                 }
             }
         }
-        Self { pts, tets, h, lo, cell, n, bins }
+        Self {
+            pts,
+            tets,
+            h,
+            lo,
+            cell,
+            n,
+            bins,
+        }
     }
 
     /// Barycentric coordinates of `x` in tetrahedron `t` (`None` for a flat one).
@@ -356,8 +457,16 @@ impl SizeField3 {
         let tr = self.tets[t];
         let p = |i: usize| self.pts[tr[i]];
         let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-        let det = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
-        let (e1, e2, e3, r) = (sub(p(1), p(0)), sub(p(2), p(0)), sub(p(3), p(0)), sub(x, p(0)));
+        let det = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+            a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0])
+        };
+        let (e1, e2, e3, r) = (
+            sub(p(1), p(0)),
+            sub(p(2), p(0)),
+            sub(p(3), p(0)),
+            sub(x, p(0)),
+        );
         let d = det(e1, e2, e3);
         if d.abs() < 1e-300 {
             return None;
@@ -376,11 +485,21 @@ impl SizeField3 {
             for dj in -1..=1i64 {
                 for di in -1..=1i64 {
                     let (i, j, k) = (c[0] + di, c[1] + dj, c[2] + dk);
-                    if i < 0 || j < 0 || k < 0 || i as usize >= self.n[0] || j as usize >= self.n[1] || k as usize >= self.n[2] {
+                    if i < 0
+                        || j < 0
+                        || k < 0
+                        || i as usize >= self.n[0]
+                        || j as usize >= self.n[1]
+                        || k as usize >= self.n[2]
+                    {
                         continue;
                     }
-                    for &t in &self.bins[(k as usize * self.n[1] + j as usize) * self.n[0] + i as usize] {
-                        let Some(l) = self.bary(t as usize, x) else { continue };
+                    for &t in
+                        &self.bins[(k as usize * self.n[1] + j as usize) * self.n[0] + i as usize]
+                    {
+                        let Some(l) = self.bary(t as usize, x) else {
+                            continue;
+                        };
                         let tr = self.tets[t as usize];
                         let m = l.iter().cloned().fold(f64::INFINITY, f64::min);
                         if m >= -1e-9 {
@@ -400,7 +519,17 @@ impl SizeField3 {
                 return (0..4).map(|i| w[i] / sum * self.h[tr[i]]).sum();
             }
         }
-        let near = self.pts.iter().enumerate().map(|(k, p)| ((p[0] - x[0]).powi(2) + (p[1] - x[1]).powi(2) + (p[2] - x[2]).powi(2), k)).fold((f64::INFINITY, 0), |a, b| if b.0 < a.0 { b } else { a });
+        let near = self
+            .pts
+            .iter()
+            .enumerate()
+            .map(|(k, p)| {
+                (
+                    (p[0] - x[0]).powi(2) + (p[1] - x[1]).powi(2) + (p[2] - x[2]).powi(2),
+                    k,
+                )
+            })
+            .fold((f64::INFINITY, 0), |a, b| if b.0 < a.0 { b } else { a });
         self.h[near.1]
     }
 }
@@ -412,7 +541,12 @@ fn edge_of_volume(v: f64) -> f64 {
 
 /// Edge length of the regular tetrahedron of the volume of every element of a tetrahedral mesh (global element order).
 pub fn element_sizes_3d(mesh: &Mesh) -> Result<Vec<f64>, String> {
-    if mesh.dim() != 3 || !mesh.blocks.iter().all(|b| matches!(b.kind, ElementKind::Tet4 | ElementKind::Tet10)) {
+    if mesh.dim() != 3
+        || !mesh
+            .blocks
+            .iter()
+            .all(|b| matches!(b.kind, ElementKind::Tet4 | ElementKind::Tet10))
+    {
         return Err("3D adaptive remeshing needs a tetrahedral mesh".into());
     }
     let mut out = Vec::with_capacity(mesh.n_elems());
@@ -420,8 +554,15 @@ pub fn element_sizes_3d(mesh: &Mesh) -> Result<Vec<f64>, String> {
         for conn in blk.conn.chunks_exact(blk.kind.n_nodes()) {
             let p = |i: usize| mesh.nodes[conn[i]];
             let (a, b, c, d) = (p(0), p(1), p(2), p(3));
-            let (u, v, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
-            let vol = ((u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6.0).abs();
+            let (u, v, w) = (
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+                [d[0] - a[0], d[1] - a[1], d[2] - a[2]],
+            );
+            let vol = ((u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0])
+                + u[2] * (v[0] * w[1] - v[1] * w[0]))
+                / 6.0)
+                .abs();
             out.push(edge_of_volume(vol));
         }
     }
@@ -430,16 +571,29 @@ pub fn element_sizes_3d(mesh: &Mesh) -> Result<Vec<f64>, String> {
 
 /// Build the size field of the next tetrahedral mesh from the ZZ estimate of the current one (error equidistribution as
 /// in [`adapted_size_field`]; `quad_split` does not apply). Works on `Tet4` and `Tet10` meshes.
-pub fn adapted_size_field_3d(mesh: &Mesh, zz: &ZzEstimate, opt: &AdaptOptions) -> Result<SizeField3, String> {
+pub fn adapted_size_field_3d(
+    mesh: &Mesh,
+    zz: &ZzEstimate,
+    opt: &AdaptOptions,
+) -> Result<SizeField3, String> {
     let h_old = element_sizes_3d(mesh)?;
     let n_elems = mesh.n_elems();
     if zz.eta.len() != n_elems {
-        return Err(format!("{} error values for {} elements", zz.eta.len(), n_elems));
+        return Err(format!(
+            "{} error values for {} elements",
+            zz.eta.len(),
+            n_elems
+        ));
     }
-    let target = opt.target_rel_error * (zz.norm * zz.norm + zz.total * zz.total).sqrt() / (n_elems as f64).sqrt();
+    let target = opt.target_rel_error * (zz.norm * zz.norm + zz.total * zz.total).sqrt()
+        / (n_elems as f64).sqrt();
     let h_elem: Vec<f64> = (0..n_elems)
         .map(|e| {
-            let ratio = if zz.eta[e] > 0.0 { (target / zz.eta[e]).powf(1.0 / opt.order) } else { opt.max_factor };
+            let ratio = if zz.eta[e] > 0.0 {
+                (target / zz.eta[e]).powf(1.0 / opt.order)
+            } else {
+                opt.max_factor
+            };
             (h_old[e] * ratio.clamp(opt.min_factor, opt.max_factor)).clamp(opt.h_min, opt.h_max)
         })
         .collect();
@@ -447,17 +601,35 @@ pub fn adapted_size_field_3d(mesh: &Mesh, zz: &ZzEstimate, opt: &AdaptOptions) -
 }
 
 /// The size field of a tetrahedral mesh from a target size per element (see [`size_field_from_element_sizes`]).
-pub fn size_field_from_element_sizes_3d(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions) -> Result<SizeField3, String> {
+pub fn size_field_from_element_sizes_3d(
+    mesh: &Mesh,
+    h_elem: &[f64],
+    opt: &AdaptOptions,
+) -> Result<SizeField3, String> {
     size_field_at_nodes_3d(mesh, h_elem, opt, NodalSize::GeometricMean)
 }
 
 /// [`size_field_from_element_sizes_3d`] with a choice of the nodal combination.
-pub fn size_field_at_nodes_3d(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions, combine: NodalSize) -> Result<SizeField3, String> {
-    if mesh.dim() != 3 || !mesh.blocks.iter().all(|b| matches!(b.kind, ElementKind::Tet4 | ElementKind::Tet10)) {
+pub fn size_field_at_nodes_3d(
+    mesh: &Mesh,
+    h_elem: &[f64],
+    opt: &AdaptOptions,
+    combine: NodalSize,
+) -> Result<SizeField3, String> {
+    if mesh.dim() != 3
+        || !mesh
+            .blocks
+            .iter()
+            .all(|b| matches!(b.kind, ElementKind::Tet4 | ElementKind::Tet10))
+    {
         return Err("3D adaptive remeshing needs a tetrahedral mesh".into());
     }
     if h_elem.len() != mesh.n_elems() {
-        return Err(format!("{} sizes for {} elements", h_elem.len(), mesh.n_elems()));
+        return Err(format!(
+            "{} sizes for {} elements",
+            h_elem.len(),
+            mesh.n_elems()
+        ));
     }
     if let Some(i) = h_elem.iter().position(|h| !(h.is_finite() && *h > 0.0)) {
         return Err(format!("the target size of element {i} is {}", h_elem[i]));
@@ -499,7 +671,19 @@ pub fn size_field_at_nodes_3d(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions, c
     }
     grade(&mut h, &edges, opt.grading);
     let pts: Vec<[f64; 3]> = mesh.nodes.iter().map(|x| [x[0], x[1], x[2]]).collect();
-    Ok(SizeField3::new(pts, tets, h.into_iter().map(|v| if v.is_finite() { v } else { opt.h_max.min(1e30) }).collect()))
+    Ok(SizeField3::new(
+        pts,
+        tets,
+        h.into_iter()
+            .map(|v| {
+                if v.is_finite() {
+                    v
+                } else {
+                    opt.h_max.min(1e30)
+                }
+            })
+            .collect(),
+    ))
 }
 
 /// One meshed and solved pass of an adaptive run: what the driver needs to judge it and to size the next mesh.
@@ -516,7 +700,14 @@ pub trait Pass {
 ///   fewer than 90 % of the unknowns.
 ///
 /// The run stops at the first pass that is not kept. `seen` is called with every pass computed, kept or not (history).
-pub fn refine<T: Pass>(first: T, passes: usize, quad_split: bool, opt: &AdaptOptions, mut next: impl FnMut(&SizeField) -> Result<T, String>, mut seen: impl FnMut(&T)) -> Result<T, String> {
+pub fn refine<T: Pass>(
+    first: T,
+    passes: usize,
+    quad_split: bool,
+    opt: &AdaptOptions,
+    mut next: impl FnMut(&SizeField) -> Result<T, String>,
+    mut seen: impl FnMut(&T),
+) -> Result<T, String> {
     seen(&first);
     let mut best = first;
     for _ in 0..passes {
@@ -524,7 +715,12 @@ pub fn refine<T: Pass>(first: T, passes: usize, quad_split: bool, opt: &AdaptOpt
         let cand = next(&field)?;
         seen(&cand);
         let (now, then) = (best.zz().relative(), cand.zz().relative());
-        let better = if now > opt.target_rel_error { then < now } else { then <= opt.target_rel_error && (cand.mesh().n_dofs() as f64) < 0.9 * best.mesh().n_dofs() as f64 };
+        let better = if now > opt.target_rel_error {
+            then < now
+        } else {
+            then <= opt.target_rel_error
+                && (cand.mesh().n_dofs() as f64) < 0.9 * best.mesh().n_dofs() as f64
+        };
         if !better {
             break;
         }

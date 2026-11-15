@@ -9,7 +9,14 @@ use fea_core::*;
 use mechanics_core::hardening::Hardening;
 
 fn clamped_plate(n: usize) -> (Model, Dirichlet) {
-    let mesh = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad4, Elastic::new(1.0e7, 0.3), [n, n, 1], &|p| [p[0] * 2.0, p[1], 0.0]).unwrap();
+    let mesh = grid(
+        Physics::PlaneStress { thickness: 1.0 },
+        ElementKind::Quad4,
+        Elastic::new(1.0e7, 0.3),
+        [n, n, 1],
+        &|p| [p[0] * 2.0, p[1], 0.0],
+    )
+    .unwrap();
     let model = Model::new(mesh).unwrap();
     let mut bc = model.dirichlet();
     for n in 0..model.mesh.nodes.len() {
@@ -44,8 +51,15 @@ fn the_condition_estimate_matches_a_dense_eigen_decomposition() {
     let exact = val[m - 1] / val[0];
     let est = model.condition_estimate(&bc, 1e-10, 2000).unwrap();
     assert!(est.converged, "{est:?}");
-    assert!((est.cond / exact - 1.0).abs() < 2e-3, "estimate {} vs dense {exact}", est.cond);
-    assert!(est.lambda_max <= val[m - 1] * (1.0 + 1e-9) && est.lambda_min >= val[0] * (1.0 - 1e-9), "bounds: {est:?}");
+    assert!(
+        (est.cond / exact - 1.0).abs() < 2e-3,
+        "estimate {} vs dense {exact}",
+        est.cond
+    );
+    assert!(
+        est.lambda_max <= val[m - 1] * (1.0 + 1e-9) && est.lambda_min >= val[0] * (1.0 - 1e-9),
+        "bounds: {est:?}"
+    );
 }
 
 #[test]
@@ -64,7 +78,10 @@ fn conditioning_worsens_with_refinement_at_the_expected_rate() {
 fn a_linear_solve_reports_its_method_and_a_roundoff_residual() {
     let (model, bc) = clamped_plate(6);
     let n_nodes = model.mesh.nodes.len();
-    let loads = Loads { nodal: vec![(n_nodes - 1, [0.0, -1000.0, 0.0])], ..Loads::default() };
+    let loads = Loads {
+        nodal: vec![(n_nodes - 1, [0.0, -1000.0, 0.0])],
+        ..Loads::default()
+    };
     let sol = model.solve_static(&loads, &bc).unwrap();
     assert_eq!(sol.method, SolveMethod::Direct);
     assert!(sol.rel_residual < 1e-10, "{}", sol.rel_residual);
@@ -75,8 +92,19 @@ fn a_linear_solve_reports_its_method_and_a_roundoff_residual() {
 const CUT_ITERS: usize = 2;
 
 fn plastic_bar(max_iter: usize) -> NlSolution {
-    let mut mesh = grid(Physics::PlaneStress { thickness: 0.5 }, ElementKind::Quad4, Elastic::new(10.0e6, 0.3), [4, 2, 1], &|p| [2.0 * p[0], p[1], 0.0]).unwrap();
-    mesh.set_plasticity(0, J2::small(Hardening::linear(40_000.0, 2.0e5, 5.0).unwrap())).unwrap();
+    let mut mesh = grid(
+        Physics::PlaneStress { thickness: 0.5 },
+        ElementKind::Quad4,
+        Elastic::new(10.0e6, 0.3),
+        [4, 2, 1],
+        &|p| [2.0 * p[0], p[1], 0.0],
+    )
+    .unwrap();
+    mesh.set_plasticity(
+        0,
+        J2::small(Hardening::linear(40_000.0, 2.0e5, 5.0).unwrap()),
+    )
+    .unwrap();
     let model = Model::new(mesh).unwrap();
     let mut bc = model.dirichlet();
     for n in 0..model.mesh.nodes.len() {
@@ -91,7 +119,17 @@ fn plastic_bar(max_iter: usize) -> NlSolution {
             bc.fix(n, 0, 0.02);
         }
     }
-    model.solve_nonlinear(&Loads::default(), &bc, &NlOptions { steps: 1, max_iter, ..NlOptions::default() }).unwrap()
+    model
+        .solve_nonlinear(
+            &Loads::default(),
+            &bc,
+            &NlOptions {
+                steps: 1,
+                max_iter,
+                ..NlOptions::default()
+            },
+        )
+        .unwrap()
 }
 
 #[test]
@@ -101,9 +139,17 @@ fn every_step_cut_is_logged_and_the_report_is_deterministic() {
     assert!(cuts > 0, "the test needs a run with cuts");
     assert!(sol.complete());
     assert_eq!(sol.count_events(EventKind::StepCut), cuts);
-    assert!(sol.events.iter().all(|e| e.kind != EventKind::StepCut || e.lambda > 0.0 && !e.detail.is_empty()));
+    assert!(sol
+        .events
+        .iter()
+        .all(|e| e.kind != EventKind::StepCut || e.lambda > 0.0 && !e.detail.is_empty()));
     let json = sol.report_json();
-    for key in ["\"stop\":\"Completed\"", "\"events\":[{\"kind\":\"step_cut\"", "\"steps\":[", "\"residuals\":["] {
+    for key in [
+        "\"stop\":\"Completed\"",
+        "\"events\":[{\"kind\":\"step_cut\"",
+        "\"steps\":[",
+        "\"residuals\":[",
+    ] {
         assert!(json.contains(key), "{key} missing in {json}");
     }
     // Balanced braces / brackets (a cheap well-formedness check; no JSON parser in the dependency set).

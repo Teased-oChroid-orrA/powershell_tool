@@ -14,7 +14,13 @@ use crate::mesh::{Mesh, Physics};
 use std::collections::HashMap;
 
 /// Mesh `region` with target edge length `size(x)`.
-pub fn mesh_region(region: &Region, physics: Physics, kind: ElementKind, size: &dyn Fn([f64; 2]) -> f64, opt: MeshOptions) -> Result<Mesh, String> {
+pub fn mesh_region(
+    region: &Region,
+    physics: Physics,
+    kind: ElementKind,
+    size: &dyn Fn([f64; 2]) -> f64,
+    opt: MeshOptions,
+) -> Result<Mesh, String> {
     let tm = triangulate(region, size, opt)?;
     convert(&tm, region, physics, kind)
 }
@@ -34,7 +40,11 @@ impl Ctx<'_> {
     /// a boundary edge, straight otherwise.
     fn along(&self, x: usize, y: usize, f: f64) -> [f64; 3] {
         if let Some(e) = self.boundary.get(&key(x, y)) {
-            let (t_x, t_y) = if e.a == x { (e.t_a, e.t_b) } else { (e.t_b, e.t_a) };
+            let (t_x, t_y) = if e.a == x {
+                (e.t_a, e.t_b)
+            } else {
+                (e.t_b, e.t_a)
+            };
             let p = self.tm.segments[e.seg].0.point(t_x + f * (t_y - t_x));
             return [p[0], p[1], 0.0];
         }
@@ -44,11 +54,29 @@ impl Ctx<'_> {
 }
 
 /// Convert a triangulation to a mesh of `kind` (Tri3, Tri6, Quad4, Quad8 or Quad9).
-pub fn convert(tm: &TriMesh, region: &Region, physics: Physics, kind: ElementKind) -> Result<Mesh, String> {
-    if !matches!(kind, ElementKind::Tri3 | ElementKind::Tri6 | ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9) || physics.dim() != 2 {
-        return Err(format!("{kind:?} is not a 2D element for this analysis type"));
+pub fn convert(
+    tm: &TriMesh,
+    region: &Region,
+    physics: Physics,
+    kind: ElementKind,
+) -> Result<Mesh, String> {
+    if !matches!(
+        kind,
+        ElementKind::Tri3
+            | ElementKind::Tri6
+            | ElementKind::Quad4
+            | ElementKind::Quad8
+            | ElementKind::Quad9
+    ) || physics.dim() != 2
+    {
+        return Err(format!(
+            "{kind:?} is not a 2D element for this analysis type"
+        ));
     }
-    let ctx = Ctx { tm, boundary: tm.boundary.iter().map(|e| (key(e.a, e.b), e)).collect() };
+    let ctx = Ctx {
+        tm,
+        boundary: tm.boundary.iter().map(|e| (key(e.a, e.b), e)).collect(),
+    };
     let mut mesh = Mesh::new(physics);
     for p in &tm.pts {
         mesh.add_node([p[0], p[1], 0.0]);
@@ -56,7 +84,10 @@ pub fn convert(tm: &TriMesh, region: &Region, physics: Physics, kind: ElementKin
     let mut mid: HashMap<(usize, usize), usize> = HashMap::new(); // midside node of an original edge
     let mut quarter: HashMap<(usize, usize), usize> = HashMap::new(); // node of the half edge of (x, y) next to x
     let mut conn: Vec<usize> = Vec::new();
-    let mut edge_mid = |mesh: &mut Mesh, x: usize, y: usize| -> usize { *mid.entry(key(x, y)).or_insert_with(|| mesh.add_node(ctx.along(x, y, 0.5))) };
+    let mut edge_mid = |mesh: &mut Mesh, x: usize, y: usize| -> usize {
+        *mid.entry(key(x, y))
+            .or_insert_with(|| mesh.add_node(ctx.along(x, y, 0.5)))
+    };
     match kind {
         ElementKind::Tri3 => {
             for t in &tm.tris {
@@ -74,8 +105,16 @@ pub fn convert(tm: &TriMesh, region: &Region, physics: Physics, kind: ElementKin
         _ => {
             for t in &tm.tris {
                 let (a, b, c) = (t[0], t[1], t[2]);
-                let (mab, mbc, mca) = (edge_mid(&mut mesh, a, b), edge_mid(&mut mesh, b, c), edge_mid(&mut mesh, c, a));
-                let cen = [(tm.pts[a][0] + tm.pts[b][0] + tm.pts[c][0]) / 3.0, (tm.pts[a][1] + tm.pts[b][1] + tm.pts[c][1]) / 3.0, 0.0];
+                let (mab, mbc, mca) = (
+                    edge_mid(&mut mesh, a, b),
+                    edge_mid(&mut mesh, b, c),
+                    edge_mid(&mut mesh, c, a),
+                );
+                let cen = [
+                    (tm.pts[a][0] + tm.pts[b][0] + tm.pts[c][0]) / 3.0,
+                    (tm.pts[a][1] + tm.pts[b][1] + tm.pts[c][1]) / 3.0,
+                    0.0,
+                ];
                 let g = mesh.add_node(cen);
                 // Quads (A, Mab, G, Mca), (B, Mbc, G, Mab), (C, Mca, G, Mbc), counter-clockwise.
                 let corners = [[a, mab, g, mca], [b, mbc, g, mab], [c, mca, g, mbc]];
@@ -87,9 +126,21 @@ pub fn convert(tm: &TriMesh, region: &Region, physics: Physics, kind: ElementKin
                 }
                 // Quad8 / Quad9 midsides, in the order (0,1), (1,2), (2,3), (3,0). The quarter points of
                 // the original edges sit on the geometry; the three spokes (Mxy-G) are straight.
-                let mut near = |mesh: &mut Mesh, x: usize, y: usize| -> usize { *quarter.entry((x, y)).or_insert_with(|| mesh.add_node(ctx.along(x, y, 0.25))) };
-                let (spab, spbc, spca) = (avg(&mesh.nodes[mab], &mesh.nodes[g]), avg(&mesh.nodes[mbc], &mesh.nodes[g]), avg(&mesh.nodes[mca], &mesh.nodes[g]));
-                let (spab, spbc, spca) = (mesh.add_node(spab), mesh.add_node(spbc), mesh.add_node(spca));
+                let mut near = |mesh: &mut Mesh, x: usize, y: usize| -> usize {
+                    *quarter
+                        .entry((x, y))
+                        .or_insert_with(|| mesh.add_node(ctx.along(x, y, 0.25)))
+                };
+                let (spab, spbc, spca) = (
+                    avg(&mesh.nodes[mab], &mesh.nodes[g]),
+                    avg(&mesh.nodes[mbc], &mesh.nodes[g]),
+                    avg(&mesh.nodes[mca], &mesh.nodes[g]),
+                );
+                let (spab, spbc, spca) = (
+                    mesh.add_node(spab),
+                    mesh.add_node(spbc),
+                    mesh.add_node(spca),
+                );
                 let sides = [
                     [near(&mut mesh, a, b), spab, spca, near(&mut mesh, a, c)],
                     [near(&mut mesh, b, c), spbc, spab, near(&mut mesh, b, a)],
@@ -101,7 +152,10 @@ pub fn convert(tm: &TriMesh, region: &Region, physics: Physics, kind: ElementKin
                     if kind == ElementKind::Quad9 {
                         let n = &mesh.nodes;
                         // Bilinear-blend centre of the serendipity geometry.
-                        let cq: [f64; 3] = std::array::from_fn(|i| 0.5 * m.iter().map(|&k| n[k][i]).sum::<f64>() - 0.25 * q.iter().map(|&k| n[k][i]).sum::<f64>());
+                        let cq: [f64; 3] = std::array::from_fn(|i| {
+                            0.5 * m.iter().map(|&k| n[k][i]).sum::<f64>()
+                                - 0.25 * q.iter().map(|&k| n[k][i]).sum::<f64>()
+                        });
                         let cn = mesh.add_node(cq);
                         conn.push(cn);
                     }
@@ -114,7 +168,10 @@ pub fn convert(tm: &TriMesh, region: &Region, physics: Physics, kind: ElementKin
     for e in &tm.boundary {
         let name = tm.segments[e.seg].1.clone();
         let m = mid.get(&key(e.a, e.b)).copied();
-        let (qa, qb) = (quarter.get(&(e.a, e.b)).copied(), quarter.get(&(e.b, e.a)).copied());
+        let (qa, qb) = (
+            quarter.get(&(e.a, e.b)).copied(),
+            quarter.get(&(e.b, e.a)).copied(),
+        );
         let set = mesh.node_sets.entry(name.clone()).or_default();
         set.extend([e.a, e.b]);
         set.extend(m);

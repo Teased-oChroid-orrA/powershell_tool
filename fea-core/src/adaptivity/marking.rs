@@ -17,17 +17,34 @@ pub struct Marked {
 }
 
 /// Dorfler marking (see the module docs). `theta` in `(0, 1]`.
-pub fn dorfler(score: &[f64], theta: f64, mandatory: &[bool], squared: bool) -> Result<Marked, MeshError> {
+pub fn dorfler(
+    score: &[f64],
+    theta: f64,
+    mandatory: &[bool],
+    squared: bool,
+) -> Result<Marked, MeshError> {
     if !(theta > 0.0 && theta <= 1.0) {
-        return Err(MeshError::Failed(format!("the Dorfler fraction {theta} is outside (0, 1]")));
+        return Err(MeshError::Failed(format!(
+            "the Dorfler fraction {theta} is outside (0, 1]"
+        )));
     }
     if mandatory.len() != score.len() {
-        return Err(MeshError::Failed(format!("{} mandatory flags for {} scores", mandatory.len(), score.len())));
+        return Err(MeshError::Failed(format!(
+            "{} mandatory flags for {} scores",
+            mandatory.len(),
+            score.len()
+        )));
     }
     if let Some(i) = score.iter().position(|s| !s.is_finite() || *s < 0.0) {
-        return Err(MeshError::Failed(format!("score {i} is {} (scores must be finite and non-negative)", score[i])));
+        return Err(MeshError::Failed(format!(
+            "score {i} is {} (scores must be finite and non-negative)",
+            score[i]
+        )));
     }
-    let q: Vec<f64> = score.iter().map(|s| if squared { s * s } else { *s }).collect();
+    let q: Vec<f64> = score
+        .iter()
+        .map(|s| if squared { s * s } else { *s })
+        .collect();
     let total: f64 = q.iter().sum();
     let mut marked = vec![false; score.len()];
     let mut acc = 0.0;
@@ -37,7 +54,9 @@ pub fn dorfler(score: &[f64], theta: f64, mandatory: &[bool], squared: bool) -> 
             acc += q[e];
         }
     }
-    let mut order: Vec<usize> = (0..score.len()).filter(|&e| !marked[e] && q[e] > 0.0).collect();
+    let mut order: Vec<usize> = (0..score.len())
+        .filter(|&e| !marked[e] && q[e] > 0.0)
+        .collect();
     order.sort_by(|&a, &b| q[b].total_cmp(&q[a]).then(a.cmp(&b)));
     for e in order {
         if acc >= theta * total {
@@ -47,7 +66,15 @@ pub fn dorfler(score: &[f64], theta: f64, mandatory: &[bool], squared: bool) -> 
         acc += q[e];
     }
     let n_marked = marked.iter().filter(|&&m| m).count();
-    Ok(Marked { marked, n_marked, covered: if total > 0.0 { (acc / total).min(1.0) } else { 1.0 } })
+    Ok(Marked {
+        marked,
+        n_marked,
+        covered: if total > 0.0 {
+            (acc / total).min(1.0)
+        } else {
+            1.0
+        },
+    })
 }
 
 /// Resource limits of an adaptive run.
@@ -62,13 +89,17 @@ pub struct Budget {
 impl Budget {
     /// Whether a mesh of this size is within the limits.
     pub fn allows(&self, dofs: usize, elements: usize, bytes: usize) -> bool {
-        self.max_dofs.is_none_or(|m| dofs <= m) && self.max_elements.is_none_or(|m| elements <= m) && self.max_bytes.is_none_or(|m| bytes <= m)
+        self.max_dofs.is_none_or(|m| dofs <= m)
+            && self.max_elements.is_none_or(|m| elements <= m)
+            && self.max_bytes.is_none_or(|m| bytes <= m)
     }
 
     /// Most elements a mesh of `dofs` unknowns on `elements` elements may grow to under the dof and element limits (the bytes
     /// limit is checked on the real mesh: it depends on the fill-in).
     pub fn element_cap(&self, dofs: usize, elements: usize) -> usize {
-        let by_dofs = self.max_dofs.map_or(usize::MAX, |m| ((m as f64) / dofs.max(1) as f64 * elements as f64).floor() as usize);
+        let by_dofs = self.max_dofs.map_or(usize::MAX, |m| {
+            ((m as f64) / dofs.max(1) as f64 * elements as f64).floor() as usize
+        });
         by_dofs.min(self.max_elements.unwrap_or(usize::MAX))
     }
 }
@@ -76,14 +107,23 @@ impl Budget {
 /// Reduce `marked` so that the predicted element count stays within `cap`: every marked element is replaced by
 /// `children = (1 / ratio)^dim` elements. Mandatory elements stay; the rest are dropped from the lowest score up. Returns
 /// `false` when the mandatory elements alone exceed the cap (the budget is exhausted).
-pub fn trim_to_budget(marked: &mut [bool], score: &[f64], mandatory: &[bool], elements: usize, cap: usize, children: f64) -> bool {
+pub fn trim_to_budget(
+    marked: &mut [bool],
+    score: &[f64],
+    mandatory: &[bool],
+    elements: usize,
+    cap: usize,
+    children: f64,
+) -> bool {
     // The marked count is kept as elements are dropped (recounting the flags per drop was quadratic in the mesh size).
     let predicted = |count: usize| elements as f64 + count as f64 * (children - 1.0);
     let mut count = marked.iter().filter(|&&x| x).count();
     if predicted(count) <= cap as f64 {
         return true;
     }
-    let mut droppable: Vec<usize> = (0..marked.len()).filter(|&e| marked[e] && !mandatory[e]).collect();
+    let mut droppable: Vec<usize> = (0..marked.len())
+        .filter(|&e| marked[e] && !mandatory[e])
+        .collect();
     droppable.sort_by(|&a, &b| score[a].total_cmp(&score[b]).then(b.cmp(&a)));
     for e in droppable {
         if predicted(count) <= cap as f64 {
@@ -114,13 +154,25 @@ mod tests {
         assert_eq!(m.marked, vec![true, false, false, false]);
         // the marked sum always reaches theta (property over a pseudo-random field)
         let mut s = 0x9e37_79b9_7f4a_7c15u64;
-        let r: Vec<f64> = (0..200).map(|_| { s ^= s << 13; s ^= s >> 7; s ^= s << 17; (s % 1000) as f64 / 100.0 }).collect();
+        let r: Vec<f64> = (0..200)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                (s % 1000) as f64 / 100.0
+            })
+            .collect();
         for theta in [0.1, 0.33, 0.5, 0.9] {
             let m = dorfler(&r, theta, &vec![false; r.len()], false).unwrap();
             let sum: f64 = r.iter().zip(&m.marked).filter(|p| *p.1).map(|p| p.0).sum();
             assert!(sum >= theta * r.iter().sum::<f64>() - 1e-12 && m.covered >= theta - 1e-12);
             // minimality: dropping the smallest marked element breaks the bound
-            let min_marked = r.iter().zip(&m.marked).filter(|p| *p.1).map(|p| *p.0).fold(f64::INFINITY, f64::min);
+            let min_marked = r
+                .iter()
+                .zip(&m.marked)
+                .filter(|p| *p.1)
+                .map(|p| *p.0)
+                .fold(f64::INFINITY, f64::min);
             assert!(sum - min_marked < theta * r.iter().sum::<f64>() + 1e-12);
         }
     }
@@ -142,8 +194,16 @@ mod tests {
 
     #[test]
     fn the_budget_trims_the_lowest_ranked_unmandated_elements() {
-        let b = Budget { max_dofs: Some(2000), max_elements: None, max_bytes: Some(1_000_000) };
-        assert!(b.allows(2000, 100, 1_000_000) && !b.allows(2001, 100, 0) && !b.allows(10, 10, 1_000_001));
+        let b = Budget {
+            max_dofs: Some(2000),
+            max_elements: None,
+            max_bytes: Some(1_000_000),
+        };
+        assert!(
+            b.allows(2000, 100, 1_000_000)
+                && !b.allows(2001, 100, 0)
+                && !b.allows(10, 10, 1_000_001)
+        );
         assert_eq!(b.element_cap(1000, 500), 1000);
         assert_eq!(Budget::default().element_cap(1000, 500), usize::MAX);
         // 100 elements, 4 children each: 10 marked would give 130; cap 118 allows 6 marked
@@ -155,7 +215,14 @@ mod tests {
         }
         let mut mandatory = vec![false; 100];
         mandatory[0] = true; // the lowest score, but protected
-        assert!(trim_to_budget(&mut marked, &score, &mandatory, 100, 118, 4.0));
+        assert!(trim_to_budget(
+            &mut marked,
+            &score,
+            &mandatory,
+            100,
+            118,
+            4.0
+        ));
         assert_eq!(marked.iter().filter(|&&m| m).count(), 6);
         assert!(marked[0] && marked[9] && !marked[1] && !marked[2] && !marked[3] && !marked[4]);
         // mandatory alone over the cap: exhausted

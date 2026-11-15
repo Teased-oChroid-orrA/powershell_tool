@@ -12,10 +12,16 @@ const NU: f64 = 0.3;
 #[test]
 fn extruded_plane_strain_ring_reproduces_the_2d_solution_exactly() {
     let (a, b, p, h) = (1.0f64, 2.0f64, 1000.0, 1.0);
-    let mesh2 = grid(Physics::PlaneStrain { thickness: h }, ElementKind::Quad9, Elastic::new(E, NU), [4, 6, 1], &move |q| {
-        let (r, th) = (a + (b - a) * q[0], 0.5 * std::f64::consts::PI * q[1]);
-        [r * th.cos(), r * th.sin(), 0.0]
-    })
+    let mesh2 = grid(
+        Physics::PlaneStrain { thickness: h },
+        ElementKind::Quad9,
+        Elastic::new(E, NU),
+        [4, 6, 1],
+        &move |q| {
+            let (r, th) = (a + (b - a) * q[0], 0.5 * std::f64::consts::PI * q[1]);
+            [r * th.cos(), r * th.sin(), 0.0]
+        },
+    )
     .unwrap();
     let solve2 = |mesh: &Mesh| -> Vec<f64> {
         let model = Model::new(mesh.clone()).unwrap();
@@ -26,7 +32,13 @@ fn extruded_plane_strain_ring_reproduces_the_2d_solution_exactly() {
         for &n in model.mesh.node_set("v1").unwrap() {
             bc.fix(n, 0, 0.0);
         }
-        let loads = Loads { faces: model.mesh.surfaces["u0"].iter().map(|f| (f.clone(), SurfaceLoad::Pressure(p))).collect(), ..Loads::default() };
+        let loads = Loads {
+            faces: model.mesh.surfaces["u0"]
+                .iter()
+                .map(|f| (f.clone(), SurfaceLoad::Pressure(p)))
+                .collect(),
+            ..Loads::default()
+        };
         model.solve_static(&loads, &bc).unwrap().u
     };
     let u2 = solve2(&mesh2);
@@ -45,23 +57,51 @@ fn extruded_plane_strain_ring_reproduces_the_2d_solution_exactly() {
             bc.fix(n, 2, 0.0);
         }
     }
-    let loads = Loads { faces: model.mesh.surfaces["u0"].iter().map(|f| (f.clone(), SurfaceLoad::Pressure(p))).collect(), ..Loads::default() };
+    let loads = Loads {
+        faces: model.mesh.surfaces["u0"]
+            .iter()
+            .map(|f| (f.clone(), SurfaceLoad::Pressure(p)))
+            .collect(),
+        ..Loads::default()
+    };
     let sol = model.solve_static(&loads, &bc).unwrap();
     // Match 3D nodes to 2D nodes by (x, y).
     let scale = u2.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     let mut worst = 0.0f64;
     for (n3, x3) in model.mesh.nodes.iter().enumerate() {
-        let n2 = mesh2.nodes.iter().position(|x2| (x2[0] - x3[0]).abs() < 1e-12 && (x2[1] - x3[1]).abs() < 1e-12).expect("matching 2D node");
-        worst = worst.max((sol.u[n3 * 3] - u2[n2 * 2]).abs()).max((sol.u[n3 * 3 + 1] - u2[n2 * 2 + 1]).abs()).max(sol.u[n3 * 3 + 2].abs());
+        let n2 = mesh2
+            .nodes
+            .iter()
+            .position(|x2| (x2[0] - x3[0]).abs() < 1e-12 && (x2[1] - x3[1]).abs() < 1e-12)
+            .expect("matching 2D node");
+        worst = worst
+            .max((sol.u[n3 * 3] - u2[n2 * 2]).abs())
+            .max((sol.u[n3 * 3 + 1] - u2[n2 * 2 + 1]).abs())
+            .max(sol.u[n3 * 3 + 2].abs());
     }
-    eprintln!("extruded Hex27 vs plane strain Quad9: max difference {:.2e} of {scale:.2e}", worst);
-    assert!(worst < 1e-9 * scale, "3D extrusion differs from the 2D solution by {worst:e}");
+    eprintln!(
+        "extruded Hex27 vs plane strain Quad9: max difference {:.2e} of {scale:.2e}",
+        worst
+    );
+    assert!(
+        worst < 1e-9 * scale,
+        "3D extrusion differs from the 2D solution by {worst:e}"
+    );
 }
 
 /// Revolved Lame cylinder sector against the axisymmetric solution of the same 2D mesh.
 fn revolved_cylinder_error(layers: usize, sector: f64) -> f64 {
     let (a, b, p, hgt) = (1.0f64, 2.0f64, 1000.0, 0.6);
-    let m2 = |physics| grid(physics, ElementKind::Quad9, Elastic::new(E, NU), [4, 1, 1], &move |q| [a + (b - a) * q[0], hgt * q[1], 0.0]).unwrap();
+    let m2 = |physics| {
+        grid(
+            physics,
+            ElementKind::Quad9,
+            Elastic::new(E, NU),
+            [4, 1, 1],
+            &move |q| [a + (b - a) * q[0], hgt * q[1], 0.0],
+        )
+        .unwrap()
+    };
     // Axisymmetric reference (plane strain: u_z = 0 on both ends).
     let ax = m2(Physics::Axisymmetric);
     let model = Model::new(ax.clone()).unwrap();
@@ -72,10 +112,18 @@ fn revolved_cylinder_error(layers: usize, sector: f64) -> f64 {
         }
     }
     // Pressure on the inner radius (u0 edge), full 360 degrees.
-    let loads = Loads { faces: model.mesh.surfaces["u0"].iter().map(|f| (f.clone(), SurfaceLoad::Pressure(p))).collect(), ..Loads::default() };
+    let loads = Loads {
+        faces: model.mesh.surfaces["u0"]
+            .iter()
+            .map(|f| (f.clone(), SurfaceLoad::Pressure(p)))
+            .collect(),
+        ..Loads::default()
+    };
     let u_ax = model.solve_static(&loads, &bc).unwrap().u;
     // 3D sector by revolution: (r, z) -> (r cos phi, z, r sin phi).
-    let angles: Vec<f64> = (0..=layers).map(|k| sector * k as f64 / layers as f64).collect();
+    let angles: Vec<f64> = (0..=layers)
+        .map(|k| sector * k as f64 / layers as f64)
+        .collect();
     let m3 = revolve(&m2(Physics::PlaneStrain { thickness: 1.0 }), &angles).unwrap();
     let model = Model::new(m3).unwrap();
     let mut bc = model.dirichlet();
@@ -98,14 +146,26 @@ fn revolved_cylinder_error(layers: usize, sector: f64) -> f64 {
             cons.add_equation(uz, vec![(ux, s / c)], 0.0);
         }
     }
-    let loads = Loads { faces: model.mesh.surfaces["u0"].iter().map(|f| (f.clone(), SurfaceLoad::Pressure(p))).collect(), ..Loads::default() };
-    let sol = model.solve_static_constrained(&loads, &bc, &cons, &[]).unwrap();
+    let loads = Loads {
+        faces: model.mesh.surfaces["u0"]
+            .iter()
+            .map(|f| (f.clone(), SurfaceLoad::Pressure(p)))
+            .collect(),
+        ..Loads::default()
+    };
+    let sol = model
+        .solve_static_constrained(&loads, &bc, &cons, &[])
+        .unwrap();
     // Radial displacement against the axisymmetric field at the same (r, y).
     let scale = u_ax.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     let mut worst = 0.0f64;
     for (n3, x3) in model.mesh.nodes.iter().enumerate() {
         let r = x3[0].hypot(x3[2]);
-        let n2 = ax.nodes.iter().position(|x2| (x2[0] - r).abs() < 1e-12 && (x2[1] - x3[1]).abs() < 1e-12).expect("matching axisymmetric node");
+        let n2 = ax
+            .nodes
+            .iter()
+            .position(|x2| (x2[0] - r).abs() < 1e-12 && (x2[1] - x3[1]).abs() < 1e-12)
+            .expect("matching axisymmetric node");
         let ur = (sol.u[n3 * 3] * x3[0] + sol.u[n3 * 3 + 2] * x3[2]) / r;
         worst = worst.max((ur - u_ax[n2 * 2]).abs());
     }
@@ -119,15 +179,30 @@ fn revolved_sector_converges_to_the_axisymmetric_solution() {
     let layered = revolved_cylinder_error(3, std::f64::consts::PI / 6.0);
     eprintln!("revolved sector u_r error vs axisymmetric: 30 deg x1 layer {coarse:.2e}, 15 deg x1 {fine:.2e}, 30 deg x3 layers {layered:.2e}");
     assert!(coarse < 5e-3, "30 degree sector: {coarse:e}");
-    assert!(fine < coarse / 4.0, "halving the sector angle must cut the hoop-representation error: {coarse:e} -> {fine:e}");
-    assert!(layered < coarse / 4.0, "more layers across the same sector: {coarse:e} -> {layered:e}");
+    assert!(
+        fine < coarse / 4.0,
+        "halving the sector angle must cut the hoop-representation error: {coarse:e} -> {fine:e}"
+    );
+    assert!(
+        layered < coarse / 4.0,
+        "more layers across the same sector: {coarse:e} -> {layered:e}"
+    );
 }
 
 #[test]
 fn a_closed_revolution_shares_the_seam_nodes() {
-    let m2 = grid(Physics::PlaneStrain { thickness: 1.0 }, ElementKind::Quad9, Elastic::new(E, NU), [2, 1, 1], &|q| [1.0 + q[0], q[1], 0.0]).unwrap();
+    let m2 = grid(
+        Physics::PlaneStrain { thickness: 1.0 },
+        ElementKind::Quad9,
+        Elastic::new(E, NU),
+        [2, 1, 1],
+        &|q| [1.0 + q[0], q[1], 0.0],
+    )
+    .unwrap();
     let layers = 6;
-    let angles: Vec<f64> = (0..=layers).map(|k| std::f64::consts::TAU * k as f64 / layers as f64).collect();
+    let angles: Vec<f64> = (0..=layers)
+        .map(|k| std::f64::consts::TAU * k as f64 / layers as f64)
+        .collect();
     let m3 = revolve(&m2, &angles).unwrap();
     // 2D has 5 x 3 = 15 nodes; the ring has 2*layers distinct half-levels.
     assert_eq!(m3.nodes.len(), 15 * 2 * layers);
@@ -150,7 +225,9 @@ fn a_closed_revolution_shares_the_seam_nodes() {
     };
     let exact = 1.0 * std::f64::consts::TAU * 1.5;
     let e6 = (volume(&m3) / exact - 1.0).abs();
-    let angles12: Vec<f64> = (0..=12).map(|k| std::f64::consts::TAU * k as f64 / 12.0).collect();
+    let angles12: Vec<f64> = (0..=12)
+        .map(|k| std::f64::consts::TAU * k as f64 / 12.0)
+        .collect();
     let e12 = (volume(&revolve(&m2, &angles12).unwrap()) / exact - 1.0).abs();
     eprintln!("ring volume error vs Pappus: 6 layers {e6:.2e}, 12 layers {e12:.2e}");
     assert!(e6 < 5e-3 && e12 < e6 / 10.0, "{e6:e} -> {e12:e}");
@@ -158,12 +235,26 @@ fn a_closed_revolution_shares_the_seam_nodes() {
 
 /// Volume of a 3D mesh: the total of a unit body force per unit volume.
 fn volume(mesh: &Mesh) -> f64 {
-    let loads = Loads { body: Some([0.0, 0.0, 1.0]), ..Loads::default() };
-    fea_core::loads::assemble(mesh, &loads).unwrap().chunks(3).map(|f| f[2]).sum()
+    let loads = Loads {
+        body: Some([0.0, 0.0, 1.0]),
+        ..Loads::default()
+    };
+    fea_core::loads::assemble(mesh, &loads)
+        .unwrap()
+        .chunks(3)
+        .map(|f| f[2])
+        .sum()
 }
 
 fn unit_square(kind: ElementKind) -> Mesh {
-    grid(Physics::PlaneStress { thickness: 1.0 }, kind, Elastic::new(E, NU), [2, 2, 1], &|q| [q[0], q[1], 0.0]).unwrap()
+    grid(
+        Physics::PlaneStress { thickness: 1.0 },
+        kind,
+        Elastic::new(E, NU),
+        [2, 2, 1],
+        &|q| [q[0], q[1], 0.0],
+    )
+    .unwrap()
 }
 
 /// An extrusion whose depth is exactly 2 pi is an open extrusion, not a closed revolution: the end layer must not be
@@ -173,7 +264,11 @@ fn an_extrusion_of_depth_two_pi_is_not_treated_as_a_full_turn() {
     let m2 = unit_square(ElementKind::Quad9);
     let tau = std::f64::consts::TAU;
     let m3 = extrude(&m2, &[0.0, 0.5 * tau, tau]).unwrap();
-    assert_eq!(m3.nodes.len(), m2.nodes.len() * 5, "three layer boundaries and two mid-layers, none merged");
+    assert_eq!(
+        m3.nodes.len(),
+        m2.nodes.len() * 5,
+        "three layer boundaries and two mid-layers, none merged"
+    );
     assert!((volume(&m3) - tau).abs() < 1e-12 * tau, "{}", volume(&m3));
 }
 
@@ -182,7 +277,14 @@ fn an_extrusion_of_depth_two_pi_is_not_treated_as_a_full_turn() {
 #[test]
 fn a_swept_profile_matches_the_extrusion_and_pappus() {
     use fea_core::sweep::sweep_along;
-    let m2 = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad9, Elastic::new(E, NU), [3, 2, 1], &|q| [q[0], q[1], 0.0]).unwrap();
+    let m2 = grid(
+        Physics::PlaneStress { thickness: 1.0 },
+        ElementKind::Quad9,
+        Elastic::new(E, NU),
+        [3, 2, 1],
+        &|q| [q[0], q[1], 0.0],
+    )
+    .unwrap();
     // Straight path along +z.
     let straight = sweep_along(&m2, &[0.0, 1.0, 2.5], &|x, s| [x[0], x[1], s]).unwrap();
     let ext = extrude(&m2, &[0.0, 1.0, 2.5]).unwrap();
@@ -204,7 +306,10 @@ fn a_swept_profile_matches_the_extrusion_and_pappus() {
     assert!((v - pappus).abs() < 1e-5 * pappus, "{v} vs {pappus}");
     for n in &bent.nodes {
         let rr = (cx - n[0]).hypot(n[2]);
-        assert!((r0..=r0 + 1.0).contains(&(rr + 1e-12)) || (rr - r0 - 1.0).abs() < 1e-12, "node {n:?} at radius {rr} is outside the swept band");
+        assert!(
+            (r0..=r0 + 1.0).contains(&(rr + 1e-12)) || (rr - r0 - 1.0).abs() < 1e-12,
+            "node {n:?} at radius {rr} is outside the swept band"
+        );
     }
 }
 
@@ -214,10 +319,27 @@ fn a_swept_profile_matches_the_extrusion_and_pappus() {
 #[test]
 fn a_revolution_touching_the_axis_has_one_node_per_axis_point() {
     let (rad, len) = (0.5f64, 4.0f64);
-    for kind in [ElementKind::Quad9, ElementKind::Quad4, ElementKind::Quad8, ElementKind::Tri6] {
-        let m2 = grid(Physics::PlaneStrain { thickness: 1.0 }, kind, Elastic::new(E, NU), [2, 8, 1], &move |q| [rad * q[0], len * q[1], 0.0]).unwrap();
-        for (segments, sector) in [(8usize, std::f64::consts::TAU), (3, std::f64::consts::FRAC_PI_2)] {
-            let angles: Vec<f64> = (0..=segments).map(|k| sector * k as f64 / segments as f64).collect();
+    for kind in [
+        ElementKind::Quad9,
+        ElementKind::Quad4,
+        ElementKind::Quad8,
+        ElementKind::Tri6,
+    ] {
+        let m2 = grid(
+            Physics::PlaneStrain { thickness: 1.0 },
+            kind,
+            Elastic::new(E, NU),
+            [2, 8, 1],
+            &move |q| [rad * q[0], len * q[1], 0.0],
+        )
+        .unwrap();
+        for (segments, sector) in [
+            (8usize, std::f64::consts::TAU),
+            (3, std::f64::consts::FRAC_PI_2),
+        ] {
+            let angles: Vec<f64> = (0..=segments)
+                .map(|k| sector * k as f64 / segments as f64)
+                .collect();
             let m3 = revolve(&m2, &angles).unwrap();
             // A cantilever shaft under a tip shear: the axis deflects as one line (Timoshenko within the mesh error).
             if segments == 8 && kind == ElementKind::Quad9 {
@@ -230,40 +352,95 @@ fn a_revolution_touching_the_axis_has_one_node_per_axis_point() {
                 }
                 let area = std::f64::consts::PI * rad * rad;
                 let p = 100.0;
-                let loads = Loads { faces: model.mesh.surfaces["v1"].iter().map(|f| (f.clone(), SurfaceLoad::Traction([p / area, 0.0, 0.0]))).collect(), ..Loads::default() };
+                let loads = Loads {
+                    faces: model.mesh.surfaces["v1"]
+                        .iter()
+                        .map(|f| (f.clone(), SurfaceLoad::Traction([p / area, 0.0, 0.0])))
+                        .collect(),
+                    ..Loads::default()
+                };
                 let u = model.solve_static(&loads, &bc).unwrap().u;
                 let i = std::f64::consts::PI * rad.powi(4) / 4.0;
                 let g = E / (2.0 * (1.0 + NU));
                 let kappa = 6.0 * (1.0 + NU) / (7.0 + 6.0 * NU);
                 let beam = p * len.powi(3) / (3.0 * E * i) + p * len / (kappa * g * area);
-                let tip: Vec<f64> = model.mesh.node_set("v1").unwrap().iter().map(|&n| u[n * 3]).collect();
+                let tip: Vec<f64> = model
+                    .mesh
+                    .node_set("v1")
+                    .unwrap()
+                    .iter()
+                    .map(|&n| u[n * 3])
+                    .collect();
                 let mean = tip.iter().sum::<f64>() / tip.len() as f64;
                 // Spread of the displacement among coincident nodes (a split axis moves apart).
                 let mut spread = 0.0f64;
                 for a in 0..model.mesh.nodes.len() {
                     for b in 0..a {
-                        if (0..3).all(|c| (model.mesh.nodes[a][c] - model.mesh.nodes[b][c]).abs() < 1e-12) {
-                            spread = spread.max((0..3).map(|c| (u[a * 3 + c] - u[b * 3 + c]).abs()).fold(0.0, f64::max));
+                        if (0..3).all(|c| {
+                            (model.mesh.nodes[a][c] - model.mesh.nodes[b][c]).abs() < 1e-12
+                        }) {
+                            spread = spread.max(
+                                (0..3)
+                                    .map(|c| (u[a * 3 + c] - u[b * 3 + c]).abs())
+                                    .fold(0.0, f64::max),
+                            );
                         }
                     }
                 }
                 eprintln!("revolved shaft tip deflection {mean:.6e} vs Timoshenko {beam:.6e}; coincident-node displacement spread {spread:.3e}");
-                assert!((mean / beam - 1.0).abs() < 0.02, "tip deflection {mean} vs {beam}");
+                assert!(
+                    (mean / beam - 1.0).abs() < 0.02,
+                    "tip deflection {mean} vs {beam}"
+                );
             }
-            let mut keys: Vec<[i64; 3]> = m3.nodes.iter().map(|x| x.map(|v| (v * 1e9).round() as i64)).collect();
+            let mut keys: Vec<[i64; 3]> = m3
+                .nodes
+                .iter()
+                .map(|x| x.map(|v| (v * 1e9).round() as i64))
+                .collect();
             keys.sort_unstable();
             let distinct = keys.windows(2).filter(|w| w[0] != w[1]).count() + 1;
-            assert_eq!(distinct, m3.nodes.len(), "{kind:?}, {segments} segments: coincident nodes");
+            assert_eq!(
+                distinct,
+                m3.nodes.len(),
+                "{kind:?}, {segments} segments: coincident nodes"
+            );
             // The axis is not a surface: no zero-area faces there.
-            let axis_faces = m3.boundary_faces().into_iter().filter(|f| f.nodes.iter().all(|&n| m3.nodes[n][0].hypot(m3.nodes[n][2]) < 1e-12)).count();
+            let axis_faces = m3
+                .boundary_faces()
+                .into_iter()
+                .filter(|f| {
+                    f.nodes
+                        .iter()
+                        .all(|&n| m3.nodes[n][0].hypot(m3.nodes[n][2]) < 1e-12)
+                })
+                .count();
             assert_eq!(axis_faces, 0, "{kind:?}: faces on the axis");
-            assert!(m3.surfaces["u0"].is_empty(), "{kind:?}: the axis edge became a surface");
+            assert!(
+                m3.surfaces["u0"].is_empty(),
+                "{kind:?}: the axis edge became a surface"
+            );
             if segments == 3 {
                 // The end planes of a sector still own the axis: its nodes are in both end sets and the faces that touch it.
-                let axis: Vec<usize> = (0..m3.nodes.len()).filter(|&n| m3.nodes[n][0].hypot(m3.nodes[n][2]) < 1e-12).collect();
-                assert!(!axis.is_empty() && axis.iter().all(|n| m3.node_sets["start"].contains(n) && m3.node_sets["end"].contains(n)), "{kind:?}: axis nodes missing from the end sets");
-                assert_eq!(m3.surfaces["start"].len(), m2.n_elems(), "{kind:?}: start faces");
-                assert_eq!(m3.surfaces["end"].len(), m2.n_elems(), "{kind:?}: end faces");
+                let axis: Vec<usize> = (0..m3.nodes.len())
+                    .filter(|&n| m3.nodes[n][0].hypot(m3.nodes[n][2]) < 1e-12)
+                    .collect();
+                assert!(
+                    !axis.is_empty()
+                        && axis.iter().all(|n| m3.node_sets["start"].contains(n)
+                            && m3.node_sets["end"].contains(n)),
+                    "{kind:?}: axis nodes missing from the end sets"
+                );
+                assert_eq!(
+                    m3.surfaces["start"].len(),
+                    m2.n_elems(),
+                    "{kind:?}: start faces"
+                );
+                assert_eq!(
+                    m3.surfaces["end"].len(),
+                    m2.n_elems(),
+                    "{kind:?}: end faces"
+                );
             }
         }
     }

@@ -20,7 +20,9 @@ impl SmoothKernel for Mixed {
     }
     fn eval<S: Scalar>(&self, x: &[S], out: &mut [S]) {
         out[0] = x[0] * x[1].exp() + x[2].sin() * x[0].powi(2);
-        out[1] = (S::cst(1.0) + x[0] * x[0] + x[1] * x[1]).sqrt() / (S::cst(1.0) + x[2].atan()) + (x[1] * x[2]).tanh() + x[2].powf(1.5);
+        out[1] = (S::cst(1.0) + x[0] * x[0] + x[1] * x[1]).sqrt() / (S::cst(1.0) + x[2].atan())
+            + (x[1] * x[2]).tanh()
+            + x[2].powf(1.5);
     }
 }
 
@@ -54,11 +56,26 @@ fn every_mode_reproduces_the_analytic_jacobian() {
     let (rev, used) = jacobian_reverse(&Mixed, &X, &mut ws).unwrap();
     let cs = jacobian_complex_step(&Mixed, &X, 1e-30);
     let fd = jacobian_central_difference(&Mixed, &X, 1e-6);
-    assert!(fwd.relative_difference(&want) < 1e-14, "forward {:e}", fwd.relative_difference(&want));
-    assert!(rev.relative_difference(&want) < 1e-14, "reverse {:e}", rev.relative_difference(&want));
-    assert!(cs.relative_difference(&want) < 1e-14, "complex step {:e}", cs.relative_difference(&want));
+    assert!(
+        fwd.relative_difference(&want) < 1e-14,
+        "forward {:e}",
+        fwd.relative_difference(&want)
+    );
+    assert!(
+        rev.relative_difference(&want) < 1e-14,
+        "reverse {:e}",
+        rev.relative_difference(&want)
+    );
+    assert!(
+        cs.relative_difference(&want) < 1e-14,
+        "complex step {:e}",
+        cs.relative_difference(&want)
+    );
     // the difference reference is only as good as its step: much worse than the others
-    assert!(fd.relative_difference(&want) < 1e-8 && fd.relative_difference(&want) > cs.relative_difference(&want));
+    assert!(
+        fd.relative_difference(&want) < 1e-8
+            && fd.relative_difference(&want) > cs.relative_difference(&want)
+    );
     assert!(used.ops > 10 && used.bytes == used.ops * 24, "{used:?}");
 }
 
@@ -94,8 +111,15 @@ fn chunked_forward_mode_matches_reverse_for_every_input_dimension() {
         let k = Wide(n);
         let fwd = jacobian_forward(&k, &x);
         let (rev, _) = jacobian_reverse(&k, &x, &mut DerivativeWorkspace::new(10_000)).unwrap();
-        assert!(fwd.relative_difference(&rev) < 1e-13, "n = {n}: {:e}", fwd.relative_difference(&rev));
-        assert!(fwd.relative_difference(&jacobian_central_difference(&k, &x, 1e-6)) < 1e-7, "n = {n}");
+        assert!(
+            fwd.relative_difference(&rev) < 1e-13,
+            "n = {n}: {:e}",
+            fwd.relative_difference(&rev)
+        );
+        assert!(
+            fwd.relative_difference(&jacobian_central_difference(&k, &x, 1e-6)) < 1e-7,
+            "n = {n}"
+        );
     }
 }
 
@@ -120,7 +144,20 @@ fn the_taylor_test_sees_order_two_for_a_correct_action_and_order_one_for_a_wrong
     let good = taylor_check_kernel(&Mixed, &X, &v);
     assert!(good.observed_order > 1.8, "{}", good.observed_order);
     let steps: Vec<f64> = (1..=7).map(|p| 10f64.powi(-p)).collect();
-    let bad = taylor_test(&|y| evaluate(&Mixed, y), &|y, d| jacobian_forward(&Mixed, y).apply(d).iter().map(|a| a * 1.001).collect(), &X, &v, &steps, 1e-13);
+    let bad = taylor_test(
+        &|y| evaluate(&Mixed, y),
+        &|y, d| {
+            jacobian_forward(&Mixed, y)
+                .apply(d)
+                .iter()
+                .map(|a| a * 1.001)
+                .collect()
+        },
+        &X,
+        &v,
+        &steps,
+        1e-13,
+    );
     assert!(bad.observed_order < 1.3, "{}", bad.observed_order);
 }
 
@@ -142,7 +179,11 @@ impl SmoothKernel for Cubic {
 fn cubic_hessian(x: &[f64]) -> [[f64; 3]; 3] {
     let (a, b, c) = (x[0], x[1], x[2]);
     let e = (a * c).exp();
-    [[6.0 * a * b + c * c * e, 3.0 * a * a, e + a * c * e], [3.0 * a * a, -b.sin() * c * c, 2.0 * b.cos() * c], [e + a * c * e, 2.0 * b.cos() * c, a * a * e + 2.0 * b.sin()]]
+    [
+        [6.0 * a * b + c * c * e, 3.0 * a * a, e + a * c * e],
+        [3.0 * a * a, -b.sin() * c * c, 2.0 * b.cos() * c],
+        [e + a * c * e, 2.0 * b.cos() * c, a * a * e + 2.0 * b.sin()],
+    ]
 }
 
 #[test]
@@ -150,15 +191,30 @@ fn hessian_vector_products_agree_across_forward_over_reverse_reverse_over_forwar
     let x = [0.6, -0.8, 0.5];
     let v = [1.0, 0.3, -0.7];
     let h = cubic_hessian(&x);
-    let want: Vec<f64> = (0..3).map(|i| (0..3).map(|j| h[i][j] * v[j]).sum()).collect();
+    let want: Vec<f64> = (0..3)
+        .map(|i| (0..3).map(|j| h[i][j] * v[j]).sum())
+        .collect();
     let for_ = hvp_forward_over_reverse(&Cubic, &x, &[1.0], &v, 1000).unwrap();
     let rof = hvp_reverse_over_forward(&Cubic, &x, &[1.0], &v, 1000).unwrap();
     let hd = hessian_hyperdual(&Cubic, &x, 0);
     for i in 0..3 {
-        assert!((for_[i] - want[i]).abs() < 1e-13, "forward-over-reverse {} vs {}", for_[i], want[i]);
-        assert!((rof[i] - want[i]).abs() < 1e-13, "reverse-over-forward {} vs {}", rof[i], want[i]);
+        assert!(
+            (for_[i] - want[i]).abs() < 1e-13,
+            "forward-over-reverse {} vs {}",
+            for_[i],
+            want[i]
+        );
+        assert!(
+            (rof[i] - want[i]).abs() < 1e-13,
+            "reverse-over-forward {} vs {}",
+            rof[i],
+            want[i]
+        );
         for j in 0..3 {
-            assert!((hd[i * 3 + j] - h[i][j]).abs() < 1e-13, "hyper-dual H[{i}][{j}]");
+            assert!(
+                (hd[i * 3 + j] - h[i][j]).abs() < 1e-13,
+                "hyper-dual H[{i}][{j}]"
+            );
         }
     }
     // the Hessian is symmetric and the product is consistent with a Taylor test of the gradient
@@ -167,8 +223,19 @@ fn hessian_vector_products_agree_across_forward_over_reverse_reverse_over_forwar
             assert!((hd[i * 3 + j] - hd[j * 3 + i]).abs() < 1e-14);
         }
     }
-    let grad = |y: &[f64]| vjp(&Cubic, y, &[1.0], &mut DerivativeWorkspace::new(1000)).unwrap().0;
-    let t = taylor_test(&grad, &|y, d| hvp_forward_over_reverse(&Cubic, y, &[1.0], d, 1000).unwrap(), &x, &v, &[1e-1, 1e-2, 1e-3, 1e-4], 1e-13);
+    let grad = |y: &[f64]| {
+        vjp(&Cubic, y, &[1.0], &mut DerivativeWorkspace::new(1000))
+            .unwrap()
+            .0
+    };
+    let t = taylor_test(
+        &grad,
+        &|y, d| hvp_forward_over_reverse(&Cubic, y, &[1.0], d, 1000).unwrap(),
+        &x,
+        &v,
+        &[1e-1, 1e-2, 1e-3, 1e-4],
+        1e-13,
+    );
     assert!(t.observed_order > 1.8, "{}", t.observed_order);
 }
 
@@ -178,9 +245,16 @@ fn a_weighted_hessian_vector_product_of_a_vector_kernel_is_the_hessian_of_the_we
     let a = hvp_forward_over_reverse(&Mixed, &x, &w, &v, 4000).unwrap();
     let b = hvp_reverse_over_forward(&Mixed, &x, &w, &v, 4000).unwrap();
     // central difference of the weighted gradient along v
-    let g = |y: &[f64]| vjp(&Mixed, y, &w, &mut DerivativeWorkspace::new(4000)).unwrap().0;
+    let g = |y: &[f64]| {
+        vjp(&Mixed, y, &w, &mut DerivativeWorkspace::new(4000))
+            .unwrap()
+            .0
+    };
     let h = 1e-6;
-    let (gp, gm) = (g(&[x[0] + h * v[0], x[1] + h * v[1], x[2] + h * v[2]]), g(&[x[0] - h * v[0], x[1] - h * v[1], x[2] - h * v[2]]));
+    let (gp, gm) = (
+        g(&[x[0] + h * v[0], x[1] + h * v[1], x[2] + h * v[2]]),
+        g(&[x[0] - h * v[0], x[1] - h * v[1], x[2] - h * v[2]]),
+    );
     for i in 0..3 {
         assert!((a[i] - b[i]).abs() < 1e-12, "{} vs {}", a[i], b[i]);
         assert!((a[i] - (gp[i] - gm[i]) / (2.0 * h)).abs() < 1e-7);
@@ -190,14 +264,21 @@ fn a_weighted_hessian_vector_product_of_a_vector_kernel_is_the_hessian_of_the_we
 #[test]
 fn a_tape_that_overflows_is_an_error_and_a_reused_workspace_keeps_its_memory() {
     let mut small = DerivativeWorkspace::new(5);
-    assert_eq!(jacobian_reverse(&Mixed, &X, &mut small).unwrap_err(), TapeError::Overflow { limit: 5 });
+    assert_eq!(
+        jacobian_reverse(&Mixed, &X, &mut small).unwrap_err(),
+        TapeError::Overflow { limit: 5 }
+    );
     let mut ws = DerivativeWorkspace::new(1000);
     jacobian_reverse(&Mixed, &X, &mut ws).unwrap();
     let cap = ws.tape.capacity_bytes();
     for _ in 0..50 {
         jacobian_reverse(&Mixed, &X, &mut ws).unwrap();
     }
-    assert_eq!(ws.tape.capacity_bytes(), cap, "the tape is reused, not regrown");
+    assert_eq!(
+        ws.tape.capacity_bytes(),
+        cap,
+        "the tape is reused, not regrown"
+    );
 }
 
 /// A branching kernel: f = x0 > 1 ? x0^2 : 2 x0 - 1 (continuous, kinked in the derivative at 1).
@@ -211,7 +292,11 @@ impl SmoothKernel for Branchy {
         1
     }
     fn eval<S: Scalar>(&self, x: &[S], out: &mut [S]) {
-        out[0] = if x[0].gt(&S::cst(1.0)) { x[0] * x[0] } else { x[0].scale(2.0) - S::cst(1.0) };
+        out[0] = if x[0].gt(&S::cst(1.0)) {
+            x[0] * x[0]
+        } else {
+            x[0].scale(2.0) - S::cst(1.0)
+        };
     }
 }
 
@@ -239,12 +324,24 @@ fn derivatives_follow_the_branch_taken_and_smoothness_is_checked_not_assumed() {
     assert!((r.at(0, 0) - 3.0).abs() < 1e-15);
     // the probe records the comparison, and classifies a point near the boundary as piecewise smooth
     assert_eq!(branch_signature(&Branchy, &[1.5]).0, vec![true]);
-    assert_eq!(classify_smoothness(&Branchy, &[1.5], 1e-3), Smoothness::Smooth);
-    assert_eq!(classify_smoothness(&Branchy, &[1.0005], 1e-3), Smoothness::PiecewiseSmooth);
+    assert_eq!(
+        classify_smoothness(&Branchy, &[1.5], 1e-3),
+        Smoothness::Smooth
+    );
+    assert_eq!(
+        classify_smoothness(&Branchy, &[1.0005], 1e-3),
+        Smoothness::PiecewiseSmooth
+    );
     // complex step / hyper-dual are refused through a kink and through any abs / max / min
-    assert_eq!(check_analytic(&Branchy, &[1.0005], 1e-3), Err(Incompatible::BranchBoundary));
+    assert_eq!(
+        check_analytic(&Branchy, &[1.0005], 1e-3),
+        Err(Incompatible::BranchBoundary)
+    );
     assert!(check_analytic(&Branchy, &[1.5], 1e-3).is_ok());
-    assert_eq!(check_analytic(&Absolute, &[0.4, 1.0], 1e-3), Err(Incompatible::NonAnalyticOperation(1)));
+    assert_eq!(
+        check_analytic(&Absolute, &[0.4, 1.0], 1e-3),
+        Err(Incompatible::NonAnalyticOperation(1))
+    );
     // still, away from the kink the abs kernel has a valid derivative in the AD modes
     assert!((jacobian_forward(&Absolute, &[-0.4, 2.0]).at(0, 0) + 2.0).abs() < 1e-15);
 }
@@ -256,13 +353,23 @@ fn the_hyper_dual_mixed_second_derivative_is_exact_and_the_complex_step_has_no_c
     for i in 0..3 {
         for j in 0..3 {
             let m = mixed_second_hyperdual(&Cubic, &x, i, j)[0];
-            assert!((m - h[i][j]).abs() < 1e-13, "d2f/dx{i}dx{j}: {m} vs {}", h[i][j]);
+            assert!(
+                (m - h[i][j]).abs() < 1e-13,
+                "d2f/dx{i}dx{j}: {m} vs {}",
+                h[i][j]
+            );
         }
     }
     // an absurdly small step is fine for the complex step and ruins a real difference quotient
     let want = mixed_jacobian(&X);
     assert!(jacobian_complex_step(&Mixed, &X, 1e-100).relative_difference(&want) < 1e-14);
-    assert!(jacobian_central_difference(&Mixed, &X, 1e-100).relative_difference(&want) > 1e-2 || jacobian_central_difference(&Mixed, &X, 1e-100).data.iter().all(|v| *v == 0.0));
+    assert!(
+        jacobian_central_difference(&Mixed, &X, 1e-100).relative_difference(&want) > 1e-2
+            || jacobian_central_difference(&Mixed, &X, 1e-100)
+                .data
+                .iter()
+                .all(|v| *v == 0.0)
+    );
 }
 
 // ---------------------------------------------------------------------------------------------- the policy engine
@@ -297,34 +404,64 @@ fn the_policy_selects_the_documented_strategy_for_each_context() {
     // small smooth constitutive law without a closed form: forward AD (6 inputs, 6 outputs)
     assert_eq!(pick("smooth_material", ctx(Jacobian, 6, 6)), Ok(ForwardAd));
     // many parameters, one output: reverse; few parameters, many outputs: forward
-    assert_eq!(pick("smooth_material", ctx(ParameterGradient, 500, 1)), Ok(ReverseAd));
-    assert_eq!(pick("smooth_material", ctx(Jacobian, 2, 400)), Ok(ForwardAd));
+    assert_eq!(
+        pick("smooth_material", ctx(ParameterGradient, 500, 1)),
+        Ok(ReverseAd)
+    );
+    assert_eq!(
+        pick("smooth_material", ctx(Jacobian, 2, 400)),
+        Ok(ForwardAd)
+    );
     // directional actions: JVP forward, VJP reverse
-    assert_eq!(pick("smooth_material", ctx(JacobianVectorProduct, 500, 40)), Ok(ForwardAd));
-    assert_eq!(pick("smooth_material", ctx(VectorJacobianProduct, 500, 1)), Ok(ReverseAd));
+    assert_eq!(
+        pick("smooth_material", ctx(JacobianVectorProduct, 500, 40)),
+        Ok(ForwardAd)
+    );
+    assert_eq!(
+        pick("smooth_material", ctx(VectorJacobianProduct, 500, 1)),
+        Ok(ReverseAd)
+    );
     // second order: a Hessian-vector product is a single pass in forward-over-forward, never a dense Hessian
-    assert_eq!(pick("smooth_material", ctx(HessianVectorProduct, 500, 1)), Ok(ForwardAd));
+    assert_eq!(
+        pick("smooth_material", ctx(HessianVectorProduct, 500, 1)),
+        Ok(ForwardAd)
+    );
     // verification uses a method independent of the ones verified: complex step (exact) against forward and reverse AD
     let mut v = ctx(Jacobian, 4, 2);
     v.purpose = Purpose::Verification;
     v.verify_against = vec![ForwardAd, ReverseAd];
     assert_eq!(pick("smooth_material", v.clone()), Ok(ComplexStep));
     // complex step is a verification method: not chosen for production, but an explicit override is honoured on a smooth map...
-    assert_ne!(pick("smooth_material", ctx(Jacobian, 4, 2)), Ok(ComplexStep));
+    assert_ne!(
+        pick("smooth_material", ctx(Jacobian, 4, 2)),
+        Ok(ComplexStep)
+    );
     let mut forced = ctx(Jacobian, 4, 2);
     forced.override_method = Some(ComplexStep);
     assert_eq!(pick("smooth_material", forced.clone()), Ok(ComplexStep));
     // ...and refused, with the reason, where the map is not analytic
     forced.smoothness = Smoothness::PiecewiseSmooth;
     let err = e.select("smooth_material", &forced).unwrap_err();
-    assert!(matches!(err, DerivativeError::Incompatible { method: ComplexStep, .. }) && err.to_string().contains("analytic"), "{err}");
+    assert!(
+        matches!(
+            err,
+            DerivativeError::Incompatible {
+                method: ComplexStep,
+                ..
+            }
+        ) && err.to_string().contains("analytic"),
+        "{err}"
+    );
     // a memory budget is enforced: forward mode needs 8 lanes per live value here, reverse mode one tape node per operation
     let mut tight = ctx(ParameterGradient, 500, 1);
     tight.memory_budget_bytes = 6000;
     assert_eq!(pick("smooth_material", tight.clone()), Ok(ReverseAd));
     tight.memory_budget_bytes = 1000;
     let err = e.select("smooth_material", &tight).unwrap_err();
-    assert!(matches!(err, DerivativeError::NoCandidate { .. }) && err.to_string().contains("budget"), "{err}");
+    assert!(
+        matches!(err, DerivativeError::NoCandidate { .. }) && err.to_string().contains("budget"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -336,30 +473,62 @@ fn nonsmooth_and_contact_contexts_select_generalized_derivatives_or_say_why_not(
     let mut pw = ctx(Jacobian, 6, 6);
     pw.smoothness = Smoothness::PiecewiseSmooth;
     let plan = e.select("plastic_return", &pw).unwrap();
-    assert_eq!((plan.method, plan.semantics), (ForwardAd, DerivativeSemantics::ActiveBranch));
-    assert!(plan.rejected.iter().any(|r| r.method == ComplexStep) && plan.rejected.iter().any(|r| r.method == HyperDual));
+    assert_eq!(
+        (plan.method, plan.semantics),
+        (ForwardAd, DerivativeSemantics::ActiveBranch)
+    );
+    assert!(
+        plan.rejected.iter().any(|r| r.method == ComplexStep)
+            && plan.rejected.iter().any(|r| r.method == HyperDual)
+    );
     // a fixed contact active set is smooth on its branch; a transition needs the generalized derivative
     let mut fixed = ctx(Jacobian, 12, 12);
     fixed.contact = ContactStatus::FixedActiveSet;
-    assert_eq!(e.select("smooth_material", &fixed).unwrap().semantics, DerivativeSemantics::ActiveBranch);
+    assert_eq!(
+        e.select("smooth_material", &fixed).unwrap().semantics,
+        DerivativeSemantics::ActiveBranch
+    );
     let mut trans = ctx(Jacobian, 12, 12);
     trans.contact = ContactStatus::Transition;
     trans.smoothness = Smoothness::Semismooth;
     let plan = e.select("contact_law", &trans).unwrap();
-    assert_eq!((plan.method, plan.semantics), (Generalized, DerivativeSemantics::Generalized));
+    assert_eq!(
+        (plan.method, plan.semantics),
+        (Generalized, DerivativeSemantics::Generalized)
+    );
     // AD kernels refuse a changing active set, with the reason
     let err = e.select("smooth_material", &trans).unwrap_err();
-    assert!(matches!(err, DerivativeError::NoCandidate { .. }) && err.to_string().contains("generalized") || err.to_string().contains("semismooth") || err.to_string().contains("Semismooth"), "{err}");
+    assert!(
+        matches!(err, DerivativeError::NoCandidate { .. })
+            && err.to_string().contains("generalized")
+            || err.to_string().contains("semismooth")
+            || err.to_string().contains("Semismooth"),
+        "{err}"
+    );
     // nondifferentiable and unknown maps get no derivative, the unknown one is told to classify first
     let mut nd = ctx(Jacobian, 3, 3);
     nd.smoothness = Smoothness::Nondifferentiable;
-    assert!(e.select("smooth_material", &nd).unwrap_err().to_string().contains("nondifferentiable"));
+    assert!(e
+        .select("smooth_material", &nd)
+        .unwrap_err()
+        .to_string()
+        .contains("nondifferentiable"));
     let mut unk = ctx(Jacobian, 3, 3);
     unk.smoothness = Smoothness::Unknown;
-    assert!(e.select("smooth_material", &unk).unwrap_err().to_string().contains("classify"));
+    assert!(e
+        .select("smooth_material", &unk)
+        .unwrap_err()
+        .to_string()
+        .contains("classify"));
     // an unsupported request and an unknown kernel are explicit errors
-    assert!(matches!(e.select("only_jacobian", &ctx(HessianVectorProduct, 3, 1)), Err(DerivativeError::NoCandidate { .. })));
-    assert_eq!(e.select("missing", &ctx(Jacobian, 3, 3)), Err(DerivativeError::UnknownKernel("missing".into())));
+    assert!(matches!(
+        e.select("only_jacobian", &ctx(HessianVectorProduct, 3, 1)),
+        Err(DerivativeError::NoCandidate { .. })
+    ));
+    assert_eq!(
+        e.select("missing", &ctx(Jacobian, 3, 3)),
+        Err(DerivativeError::UnknownKernel("missing".into()))
+    );
     // a difference fallback is used only when allowed, and is labelled approximate
     let mut p = engine();
     let mut fd_only = DerivativeCapabilities::new("opaque", FiniteDifferenceVerification);
@@ -371,7 +540,13 @@ fn nonsmooth_and_contact_contexts_select_generalized_derivatives_or_say_why_not(
     let mut allowed = ctx(Jacobian, 3, 3);
     allowed.allow_difference_fallback = true;
     let plan = p.select("opaque", &allowed).unwrap();
-    assert_eq!((plan.method, plan.semantics), (FiniteDifferenceVerification, DerivativeSemantics::Approximate));
+    assert_eq!(
+        (plan.method, plan.semantics),
+        (
+            FiniteDifferenceVerification,
+            DerivativeSemantics::Approximate
+        )
+    );
 }
 
 #[test]
@@ -383,10 +558,22 @@ fn decisions_are_cached_traced_and_independent_of_anything_but_the_context() {
     assert_eq!(first, second);
     let trace = e.drain_trace();
     assert_eq!(trace.len(), 2);
-    assert!(!trace[0].cached && trace[1].cached && trace[0].message.contains("ForwardAd"), "{trace:?}");
+    assert!(
+        !trace[0].cached && trace[1].cached && trace[0].message.contains("ForwardAd"),
+        "{trace:?}"
+    );
     assert!(e.drain_trace().is_empty());
     assert!(first.report().contains("because"));
-    assert_eq!(e.kernels(), vec!["contact_law", "hooke", "only_jacobian", "plastic_return", "smooth_material"]);
+    assert_eq!(
+        e.kernels(),
+        vec![
+            "contact_law",
+            "hooke",
+            "only_jacobian",
+            "plastic_return",
+            "smooth_material"
+        ]
+    );
 }
 
 #[test]
@@ -412,29 +599,53 @@ fn the_sensitivity_policy_picks_direct_adjoint_or_matrix_free_from_the_dimension
 }
 
 #[test]
-fn the_fea_kernel_registry_selects_a_method_per_kernel_and_the_generalized_one_across_a_contact_transition() {
+fn the_fea_kernel_registry_selects_a_method_per_kernel_and_the_generalized_one_across_a_contact_transition(
+) {
     use fea_core::derivative::kernels::*;
     use fea_core::derivative::*;
     let engine = DerivativePolicyEngine::with_fea_kernels();
     // smooth constitutive tangent: the analytic derivative is cheapest
     let ctx = DerivativeContext::new(DerivativeRequest::Jacobian, 6, 6);
-    assert_eq!(engine.select(CONSTITUTIVE_J2, &ctx).unwrap().method, DerivativeMethod::Analytic);
+    assert_eq!(
+        engine.select(CONSTITUTIVE_J2, &ctx).unwrap().method,
+        DerivativeMethod::Analytic
+    );
     // an element stiffness has no closed form registered: AD is chosen, and which direction depends on the shape of the map
     let wide = DerivativeContext::new(DerivativeRequest::Jacobian, 400, 2);
     let tall = DerivativeContext::new(DerivativeRequest::Jacobian, 2, 400);
     let a = engine.select(ELEMENT_STIFFNESS, &wide).unwrap().method;
     let b = engine.select(ELEMENT_STIFFNESS, &tall).unwrap().method;
-    assert_eq!((a, b), (DerivativeMethod::ReverseAd, DerivativeMethod::ForwardAd));
+    assert_eq!(
+        (a, b),
+        (DerivativeMethod::ReverseAd, DerivativeMethod::ForwardAd)
+    );
     // contact across a transition: the smooth methods are refused, the generalized derivative is chosen and says so
     let mut transition = DerivativeContext::new(DerivativeRequest::JacobianVectorProduct, 10, 10);
     transition.smoothness = Smoothness::Semismooth;
     transition.contact = ContactStatus::Transition;
     let plan = engine.select(CONTACT_UNILATERAL, &transition).unwrap();
-    assert_eq!((plan.method, plan.semantics), (DerivativeMethod::Generalized, DerivativeSemantics::Generalized));
+    assert_eq!(
+        (plan.method, plan.semantics),
+        (
+            DerivativeMethod::Generalized,
+            DerivativeSemantics::Generalized
+        )
+    );
     // a kernel nobody registered is an explicit error, not a silent finite difference
-    assert!(matches!(engine.select("nonexistent.kernel", &ctx), Err(DerivativeError::UnknownKernel(_))));
+    assert!(matches!(
+        engine.select("nonexistent.kernel", &ctx),
+        Err(DerivativeError::UnknownKernel(_))
+    ));
     let names = engine.kernels();
-    for k in [ELEMENT_STIFFNESS, ELEMENT_MASS, ELEMENT_GEOMETRY, CONSTITUTIVE_J2, CONSTITUTIVE_HYPERELASTIC, CONTACT_PENALTY, CONTACT_UNILATERAL] {
+    for k in [
+        ELEMENT_STIFFNESS,
+        ELEMENT_MASS,
+        ELEMENT_GEOMETRY,
+        CONSTITUTIVE_J2,
+        CONSTITUTIVE_HYPERELASTIC,
+        CONTACT_PENALTY,
+        CONTACT_UNILATERAL,
+    ] {
         assert!(names.iter().any(|n| n == k), "{k} is registered");
     }
 }

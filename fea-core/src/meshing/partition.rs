@@ -43,7 +43,11 @@ pub struct PartitionOptions2d {
 
 impl Default for PartitionOptions2d {
     fn default() -> Self {
-        Self { margin: 2.5, span: 6.0, extra_boxes: Vec::new() }
+        Self {
+            margin: 2.5,
+            span: 6.0,
+            extra_boxes: Vec::new(),
+        }
     }
 }
 
@@ -74,7 +78,10 @@ impl CellGrid {
         }
     }
     pub fn cell_box(&self, ci: usize, cj: usize) -> ([f64; 2], [f64; 2]) {
-        ([self.xs[ci], self.ys[cj]], [self.xs[ci + 1], self.ys[cj + 1]])
+        (
+            [self.xs[ci], self.ys[cj]],
+            [self.xs[ci + 1], self.ys[cj + 1]],
+        )
     }
     pub fn set(&mut self, ci: usize, cj: usize, s: CellState) {
         let nx = self.nx();
@@ -106,13 +113,19 @@ impl CellGrid {
     /// vertex, and a region whose boundary does so cannot be meshed. The smaller cell of the two is given up.
     pub fn remove_pinches(&mut self) {
         let (nx, ny) = (self.nx(), self.ny());
-        let area = |g: &Self, ci: usize, cj: usize| (g.xs[ci + 1] - g.xs[ci]) * (g.ys[cj + 1] - g.ys[cj]);
+        let area =
+            |g: &Self, ci: usize, cj: usize| (g.xs[ci + 1] - g.xs[ci]) * (g.ys[cj + 1] - g.ys[cj]);
         loop {
             let mut changed = false;
             for j in 1..ny {
                 for i in 1..nx {
                     let (a, b, c, d) = ((i - 1, j - 1), (i, j - 1), (i, j), (i - 1, j));
-                    let (sa, sb, sc, sd) = (self.at(a.0, a.1), self.at(b.0, b.1), self.at(c.0, c.1), self.at(d.0, d.1));
+                    let (sa, sb, sc, sd) = (
+                        self.at(a.0, a.1),
+                        self.at(b.0, b.1),
+                        self.at(c.0, c.1),
+                        self.at(d.0, d.1),
+                    );
                     let (u, s) = (CellState::Unstructured, CellState::Structured);
                     let give_up = if sa == u && sc == u && sb == s && sd == s {
                         Some([b, d])
@@ -122,7 +135,11 @@ impl CellGrid {
                         None
                     };
                     if let Some([p, q]) = give_up {
-                        let smaller = if area(self, p.0, p.1) <= area(self, q.0, q.1) { p } else { q };
+                        let smaller = if area(self, p.0, p.1) <= area(self, q.0, q.1) {
+                            p
+                        } else {
+                            q
+                        };
                         self.state[smaller.1 * nx + smaller.0] = u;
                         changed = true;
                     }
@@ -177,10 +194,15 @@ pub fn crossings(c: &Curve, axis: usize, v: f64) -> Vec<f64> {
             let sweep = a1 - a0;
             // the two angles with this cosine (axis 0) or sine (axis 1)
             let base = if axis == 0 { q.acos() } else { q.asin() };
-            let angles = if axis == 0 { [base, -base] } else { [base, std::f64::consts::PI - base] };
+            let angles = if axis == 0 {
+                [base, -base]
+            } else {
+                [base, std::f64::consts::PI - base]
+            };
             let mut out = Vec::new();
             for th in angles {
-                let delta = if sweep >= 0.0 { th - a0 } else { a0 - th }.rem_euclid(std::f64::consts::TAU);
+                let delta =
+                    if sweep >= 0.0 { th - a0 } else { a0 - th }.rem_euclid(std::f64::consts::TAU);
                 let t = delta / sweep.abs();
                 if t > 0.0 && t < 1.0 {
                     out.push(t);
@@ -193,7 +215,9 @@ pub fn crossings(c: &Curve, axis: usize, v: f64) -> Vec<f64> {
 
 /// Whether `c` has a point in the open box `(lo, hi)`; running along or touching the box boundary does not count.
 pub fn enters_open_box(c: &Curve, lo: [f64; 2], hi: [f64; 2], tol: f64) -> bool {
-    let strictly_inside = |p: [f64; 2]| p[0] > lo[0] + tol && p[0] < hi[0] - tol && p[1] > lo[1] + tol && p[1] < hi[1] - tol;
+    let strictly_inside = |p: [f64; 2]| {
+        p[0] > lo[0] + tol && p[0] < hi[0] - tol && p[1] > lo[1] + tol && p[1] < hi[1] - tol
+    };
     match *c {
         Curve::Line { a, b } => {
             // clip to the closed box (Liang-Barsky); the part inside is a line segment, so its midpoint is inside the open box
@@ -227,7 +251,8 @@ pub fn enters_open_box(c: &Curve, lo: [f64; 2], hi: [f64; 2], tol: f64) -> bool 
                 }
             }
             ts.sort_by(f64::total_cmp);
-            ts.windows(2).any(|w| w[1] > w[0] && strictly_inside(c.point(0.5 * (w[0] + w[1]))))
+            ts.windows(2)
+                .any(|w| w[1] > w[0] && strictly_inside(c.point(0.5 * (w[0] + w[1]))))
         }
     }
 }
@@ -250,7 +275,11 @@ fn merge_lines(mut lines: Vec<(f64, bool)>, eps: f64) -> Vec<f64> {
 }
 
 /// Classify `region` into cells (see the module docs). `size` is the target element size at a point.
-pub fn classify_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &PartitionOptions2d) -> Result<CellGrid, MeshError> {
+pub fn classify_2d(
+    region: &Region,
+    size: &dyn Fn([f64; 2]) -> f64,
+    opt: &PartitionOptions2d,
+) -> Result<CellGrid, MeshError> {
     let segs = &region.outer.segments;
     let verts: Vec<[f64; 2]> = segs.iter().map(|s| s.curve.start()).collect();
     let (lo, hi) = region.bounds();
@@ -260,17 +289,25 @@ pub fn classify_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &Partit
     let mut h_ref = f64::INFINITY;
     for i in 0..9 {
         for j in 0..9 {
-            let p = [lo[0] + (hi[0] - lo[0]) * i as f64 / 8.0, lo[1] + (hi[1] - lo[1]) * j as f64 / 8.0];
+            let p = [
+                lo[0] + (hi[0] - lo[0]) * i as f64 / 8.0,
+                lo[1] + (hi[1] - lo[1]) * j as f64 / 8.0,
+            ];
             let h = size(p);
             if !(h.is_finite() && h > 0.0) {
-                return Err(MeshError::Failed(format!("the size function returned {h} at ({}, {})", p[0], p[1])));
+                return Err(MeshError::Failed(format!(
+                    "the size function returned {h} at ({}, {})",
+                    p[0], p[1]
+                )));
             }
             h_ref = h_ref.min(h);
         }
     }
     // padded feature boxes
     let mut boxes: Vec<([f64; 2], [f64; 2])> = Vec::new();
-    let pad_of = |b: &([f64; 2], [f64; 2])| opt.margin * size([0.5 * (b.0[0] + b.1[0]), 0.5 * (b.0[1] + b.1[1])]);
+    let pad_of = |b: &([f64; 2], [f64; 2])| {
+        opt.margin * size([0.5 * (b.0[0] + b.1[0]), 0.5 * (b.0[1] + b.1[1])])
+    };
     for h in &region.holes {
         boxes.push(loop_bounds(h));
     }
@@ -278,18 +315,30 @@ pub fn classify_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &Partit
     let n = segs.len();
     for k in 0..n {
         // the outer loop is counter-clockwise: turning clockwise at a junction is a reflex corner
-        let (t_in, t_out) = (segs[(k + n - 1) % n].curve.tangent(1.0), segs[k].curve.tangent(0.0));
+        let (t_in, t_out) = (
+            segs[(k + n - 1) % n].curve.tangent(1.0),
+            segs[k].curve.tangent(0.0),
+        );
         if t_in[0] * t_out[1] - t_in[1] * t_out[0] < -1e-9 {
             boxes.push((verts[k], verts[k])); // reflex corner
         }
     }
     // Pieces of the outer boundary that are not on a grid line: the cells next to them cannot be regular.
-    let free: Vec<Curve> = segs.iter().map(|s| s.curve).filter(|c| !is_axis_aligned(c, scale_tol)).collect();
+    let free: Vec<Curve> = segs
+        .iter()
+        .map(|s| s.curve)
+        .filter(|c| !is_axis_aligned(c, scale_tol))
+        .collect();
     // The padding must cover the transition: a block starts where the element size has grown to about `1/margin` of the
     // distance to the feature, so the pad is the fixed point of `pad = margin * (largest size on the padded boundary)`. Where
     // the size grows faster than `1/margin` per unit length the fixed point does not exist and the box grows over the whole
     // domain (no structured cells: the unstructured mesh is the right answer there).
-    let pad_box = |b: &([f64; 2], [f64; 2]), pad: f64| ([(b.0[0] - pad).max(lo[0]), (b.0[1] - pad).max(lo[1])], [(b.1[0] + pad).min(hi[0]), (b.1[1] + pad).min(hi[1])]);
+    let pad_box = |b: &([f64; 2], [f64; 2]), pad: f64| {
+        (
+            [(b.0[0] - pad).max(lo[0]), (b.0[1] - pad).max(lo[1])],
+            [(b.1[0] + pad).min(hi[0]), (b.1[1] + pad).min(hi[1])],
+        )
+    };
     let padded: Vec<([f64; 2], [f64; 2])> = boxes
         .iter()
         .map(|b| {
@@ -298,8 +347,20 @@ pub fn classify_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &Partit
                 let q = pad_box(b, pad);
                 // sizes along the padded boundary (corners and edge midpoints)
                 let mut h_edge = 0.0f64;
-                for (fx, fy) in [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (0.0, 0.5), (1.0, 0.5), (0.0, 1.0), (0.5, 1.0), (1.0, 1.0)] {
-                    h_edge = h_edge.max(size([q.0[0] + fx * (q.1[0] - q.0[0]), q.0[1] + fy * (q.1[1] - q.0[1])]));
+                for (fx, fy) in [
+                    (0.0, 0.0),
+                    (0.5, 0.0),
+                    (1.0, 0.0),
+                    (0.0, 0.5),
+                    (1.0, 0.5),
+                    (0.0, 1.0),
+                    (0.5, 1.0),
+                    (1.0, 1.0),
+                ] {
+                    h_edge = h_edge.max(size([
+                        q.0[0] + fx * (q.1[0] - q.0[0]),
+                        q.0[1] + fy * (q.1[1] - q.0[1]),
+                    ]));
                 }
                 let next = opt.margin * h_edge;
                 if (next - pad).abs() <= 1e-3 * pad || pad > diag {
@@ -334,11 +395,17 @@ pub fn classify_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &Partit
     let cell_state = |a: [f64; 2], b: [f64; 2]| -> (CellState, bool) {
         let centre = [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])];
         let pad = BOUNDARY_PAD * size(centre);
-        let near = free.iter().any(|c| enters_open_box(c, [a[0] - pad, a[1] - pad], [b[0] + pad, b[1] + pad], e));
+        let near = free
+            .iter()
+            .any(|c| enters_open_box(c, [a[0] - pad, a[1] - pad], [b[0] + pad, b[1] + pad], e));
         let through = near && free.iter().any(|c| enters_open_box(c, a, b, e));
         if !through && !region.outer.contains(centre) {
             (CellState::Void, false)
-        } else if near || padded.iter().any(|f| a[0] < f.1[0] - e && b[0] > f.0[0] + e && a[1] < f.1[1] - e && b[1] > f.0[1] + e) {
+        } else if near
+            || padded.iter().any(|f| {
+                a[0] < f.1[0] - e && b[0] > f.0[0] + e && a[1] < f.1[1] - e && b[1] > f.0[1] + e
+            })
+        {
             (CellState::Unstructured, near)
         } else {
             (CellState::Structured, false)
@@ -372,7 +439,14 @@ pub fn classify_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &Partit
         }
         h
     };
-    fn bisect(a: f64, b: f64, depth: usize, size_at: &dyn Fn(f64) -> f64, span: f64, out: &mut Vec<f64>) {
+    fn bisect(
+        a: f64,
+        b: f64,
+        depth: usize,
+        size_at: &dyn Fn(f64) -> f64,
+        span: f64,
+        out: &mut Vec<f64>,
+    ) {
         let (ha, hm, hb) = (size_at(a), size_at(0.5 * (a + b)), size_at(b));
         let (lo, hi) = (ha.min(hm).min(hb), ha.max(hm).max(hb));
         if depth < 12 && ((b - a) > span * lo || hi > SIZE_RATIO * lo) {
@@ -384,7 +458,10 @@ pub fn classify_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &Partit
         }
     }
     // `cells(k)`: the cells of strip `k` as (extent along the other axis, next to the boundary).
-    let split = |lines: &[f64], cells: &dyn Fn(usize) -> Vec<((f64, f64), bool)>, horizontal: bool| -> Vec<f64> {
+    let split = |lines: &[f64],
+                 cells: &dyn Fn(usize) -> Vec<((f64, f64), bool)>,
+                 horizontal: bool|
+     -> Vec<f64> {
         let mut out = vec![lines[0]];
         for (k, w) in lines.windows(2).enumerate() {
             let c = cells(k);
@@ -392,18 +469,48 @@ pub fn classify_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &Partit
                 out.push(w[1]);
             } else {
                 let others: Vec<(f64, f64)> = c.iter().map(|x| x.0).collect();
-                let span = if c.iter().any(|x| x.1) { opt.span.min(BOUNDARY_SPAN) } else { opt.span };
-                bisect(w[0], w[1], 0, &|t| size_along(t, &others, horizontal), span, &mut out);
+                let span = if c.iter().any(|x| x.1) {
+                    opt.span.min(BOUNDARY_SPAN)
+                } else {
+                    opt.span
+                };
+                bisect(
+                    w[0],
+                    w[1],
+                    0,
+                    &|t| size_along(t, &others, horizontal),
+                    span,
+                    &mut out,
+                );
             }
         }
         out
     };
-    let carries = |st: &(CellState, bool)| st.0 == CellState::Structured || (st.0 == CellState::Unstructured && st.1);
-    let columns = |ci: usize| -> Vec<((f64, f64), bool)> { (0..cny).filter(|&cj| carries(&coarse[cj * cnx + ci])).map(|cj| ((ys[cj], ys[cj + 1]), coarse[cj * cnx + ci].1)).collect() };
-    let rows = |cj: usize| -> Vec<((f64, f64), bool)> { (0..cnx).filter(|&ci| carries(&coarse[cj * cnx + ci])).map(|ci| ((xs[ci], xs[ci + 1]), coarse[cj * cnx + ci].1)).collect() };
+    let carries = |st: &(CellState, bool)| {
+        st.0 == CellState::Structured || (st.0 == CellState::Unstructured && st.1)
+    };
+    let columns = |ci: usize| -> Vec<((f64, f64), bool)> {
+        (0..cny)
+            .filter(|&cj| carries(&coarse[cj * cnx + ci]))
+            .map(|cj| ((ys[cj], ys[cj + 1]), coarse[cj * cnx + ci].1))
+            .collect()
+    };
+    let rows = |cj: usize| -> Vec<((f64, f64), bool)> {
+        (0..cnx)
+            .filter(|&ci| carries(&coarse[cj * cnx + ci]))
+            .map(|ci| ((xs[ci], xs[ci + 1]), coarse[cj * cnx + ci].1))
+            .collect()
+    };
     let (new_xs, new_ys) = (split(&xs, &columns, true), split(&ys, &rows, false));
-    let state = states_of(&new_xs, &new_ys).into_iter().map(|s| s.0).collect();
-    let mut grid = CellGrid { xs: new_xs, ys: new_ys, state };
+    let state = states_of(&new_xs, &new_ys)
+        .into_iter()
+        .map(|s| s.0)
+        .collect();
+    let mut grid = CellGrid {
+        xs: new_xs,
+        ys: new_ys,
+        state,
+    };
     grid.remove_pinches();
     Ok(grid)
 }
@@ -414,19 +521,32 @@ mod tests {
     use crate::mesh::Elastic;
 
     fn plate_with_hole() -> Region {
-        Region::new(Loop::rectangle(0.0, 0.0, 10.0, 4.0).unwrap(), vec![Loop::circle([5.0, 2.0], 0.5, "hole").unwrap()], Elastic::new(1e7, 0.3)).unwrap()
+        Region::new(
+            Loop::rectangle(0.0, 0.0, 10.0, 4.0).unwrap(),
+            vec![Loop::circle([5.0, 2.0], 0.5, "hole").unwrap()],
+            Elastic::new(1e7, 0.3),
+        )
+        .unwrap()
     }
 
     #[test]
     fn the_cells_around_a_hole_are_unstructured_and_the_ends_structured() {
-        let g = classify_2d(&plate_with_hole(), &|_| 0.25, &PartitionOptions2d::default()).unwrap();
+        let g = classify_2d(
+            &plate_with_hole(),
+            &|_| 0.25,
+            &PartitionOptions2d::default(),
+        )
+        .unwrap();
         assert!(g.count(CellState::Structured) > 0 && g.count(CellState::Unstructured) > 0);
         assert_eq!(g.count(CellState::Void), 0);
         // the hole is at x in [4.5, 5.5]: with 2.5 * 0.25 = 0.625 padding every cell touching [3.875, 6.125] x [0.875, 3.125] is unstructured
         for cj in 0..g.ny() {
             for ci in 0..g.nx() {
                 let (a, b) = g.cell_box(ci, cj);
-                let overlaps = a[0] < 6.125 - 1e-9 && b[0] > 3.875 + 1e-9 && a[1] < 3.125 - 1e-9 && b[1] > 0.875 + 1e-9;
+                let overlaps = a[0] < 6.125 - 1e-9
+                    && b[0] > 3.875 + 1e-9
+                    && a[1] < 3.125 - 1e-9
+                    && b[1] > 0.875 + 1e-9;
                 if overlaps {
                     assert_eq!(g.at(ci, cj), CellState::Unstructured);
                 }
@@ -442,17 +562,37 @@ mod tests {
 
     #[test]
     fn an_l_shaped_plate_has_void_cells_and_a_reflex_corner_box() {
-        let outer = Loop::polygon(&[[0.0, 0.0], [6.0, 0.0], [6.0, 2.0], [2.0, 2.0], [2.0, 6.0], [0.0, 6.0]], "o").unwrap();
+        let outer = Loop::polygon(
+            &[
+                [0.0, 0.0],
+                [6.0, 0.0],
+                [6.0, 2.0],
+                [2.0, 2.0],
+                [2.0, 6.0],
+                [0.0, 6.0],
+            ],
+            "o",
+        )
+        .unwrap();
         let r = Region::new(outer, vec![], Elastic::new(1e7, 0.3)).unwrap();
         let g = classify_2d(&r, &|_| 0.5, &PartitionOptions2d::default()).unwrap();
         assert!(g.count(CellState::Void) > 0);
         assert!((g.structured_area() + g.unstructured_area() - 20.0).abs() < 1e-9);
         // the reflex corner (2, 2) is padded by 2.5 * 0.5 = 1.25: the cell right at the corner is unstructured
-        let corner_cell = (0..g.nx()).flat_map(|ci| (0..g.ny()).map(move |cj| (ci, cj))).find(|&(ci, cj)| {
-            let (a, b) = g.cell_box(ci, cj);
-            a[0] < 2.0 && b[0] > 1.5 && a[1] < 2.0 && b[1] > 1.5 && g.at(ci, cj) != CellState::Void
-        });
-        assert_eq!(g.at(corner_cell.unwrap().0, corner_cell.unwrap().1), CellState::Unstructured);
+        let corner_cell = (0..g.nx())
+            .flat_map(|ci| (0..g.ny()).map(move |cj| (ci, cj)))
+            .find(|&(ci, cj)| {
+                let (a, b) = g.cell_box(ci, cj);
+                a[0] < 2.0
+                    && b[0] > 1.5
+                    && a[1] < 2.0
+                    && b[1] > 1.5
+                    && g.at(ci, cj) != CellState::Void
+            });
+        assert_eq!(
+            g.at(corner_cell.unwrap().0, corner_cell.unwrap().1),
+            CellState::Unstructured
+        );
         // the arm ends are structured
         assert!(g.count(CellState::Structured) > 0);
     }
@@ -462,7 +602,12 @@ mod tests {
         // The size shrinks to 1/20 of the base next to the hole. The grid lines that resolve that belong to the cells around the
         // hole; the regular end blocks keep their coarse cells (they used to be cut along the strip into slivers 20 times thinner
         // than they are wide, which the size-jump gate then rejected).
-        let r = Region::new(Loop::rectangle(0.0, 0.0, 12.0, 4.0).unwrap(), vec![Loop::circle([6.0, 2.0], 0.5, "hole").unwrap()], Elastic::new(1e7, 0.3)).unwrap();
+        let r = Region::new(
+            Loop::rectangle(0.0, 0.0, 12.0, 4.0).unwrap(),
+            vec![Loop::circle([6.0, 2.0], 0.5, "hole").unwrap()],
+            Elastic::new(1e7, 0.3),
+        )
+        .unwrap();
         let size = |p: [f64; 2]| {
             let d = ((p[0] - 6.0).hypot(p[1] - 2.0) - 0.5).max(0.0);
             0.5 * (0.05 + 0.95 * (d / 1.0).min(1.0))
@@ -483,17 +628,35 @@ mod tests {
 
     #[test]
     fn a_circular_boundary_keeps_the_regular_cells_a_margin_inside() {
-        let r = Region::new(Loop::circle([0.0, 0.0], 5.0, "o").unwrap(), vec![], Elastic::new(1e7, 0.3)).unwrap();
+        let r = Region::new(
+            Loop::circle([0.0, 0.0], 5.0, "o").unwrap(),
+            vec![],
+            Elastic::new(1e7, 0.3),
+        )
+        .unwrap();
         let g = classify_2d(&r, &|_| 0.25, &PartitionOptions2d::default()).unwrap();
-        assert!(g.count(CellState::Structured) > 0 && g.count(CellState::Unstructured) > 0 && g.count(CellState::Void) > 0);
+        assert!(
+            g.count(CellState::Structured) > 0
+                && g.count(CellState::Unstructured) > 0
+                && g.count(CellState::Void) > 0
+        );
         for cj in 0..g.ny() {
             for ci in 0..g.nx() {
                 let (a, b) = g.cell_box(ci, cj);
-                let far = [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]].iter().map(|c| c[0].hypot(c[1])).fold(0.0f64, f64::max);
-                let near = [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]].iter().map(|c| c[0].hypot(c[1])).fold(f64::INFINITY, f64::min);
+                let far = [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]]
+                    .iter()
+                    .map(|c| c[0].hypot(c[1]))
+                    .fold(0.0f64, f64::max);
+                let near = [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]]
+                    .iter()
+                    .map(|c| c[0].hypot(c[1]))
+                    .fold(f64::INFINITY, f64::min);
                 match g.at(ci, cj) {
                     // a regular cell is a full pad (one local size) inside the circle
-                    CellState::Structured => assert!(far <= 5.0 - 0.25 + 1e-9, "structured cell reaching radius {far}"),
+                    CellState::Structured => assert!(
+                        far <= 5.0 - 0.25 + 1e-9,
+                        "structured cell reaching radius {far}"
+                    ),
                     // a void cell has no part of the disc
                     CellState::Void => assert!(near >= 5.0 - 1e-9, "void cell at radius {near}"),
                     CellState::Unstructured => {}
@@ -501,7 +664,11 @@ mod tests {
             }
         }
         // the strips next to the circle are subdivided to a few local sizes, so the unstructured layer is thin
-        assert!(g.xs.windows(2).all(|w| w[1] - w[0] <= 2.5 * 0.25 + 1e-9), "{:?}", g.xs);
+        assert!(
+            g.xs.windows(2).all(|w| w[1] - w[0] <= 2.5 * 0.25 + 1e-9),
+            "{:?}",
+            g.xs
+        );
     }
 
     #[test]
@@ -523,7 +690,10 @@ mod tests {
                         // left leg x = y / 2, right leg x = 10 - y / 2
                         let d_left = (c[0] - c[1] / 2.0) * 2.0 / 5.0f64.sqrt();
                         let d_right = (10.0 - c[1] / 2.0 - c[0]) * 2.0 / 5.0f64.sqrt();
-                        assert!(d_left >= 0.4 - 1e-9 && d_right >= 0.4 - 1e-9, "structured corner {c:?} is {d_left}/{d_right} from the legs");
+                        assert!(
+                            d_left >= 0.4 - 1e-9 && d_right >= 0.4 - 1e-9,
+                            "structured corner {c:?} is {d_left}/{d_right} from the legs"
+                        );
                     }
                 }
             }
@@ -535,29 +705,50 @@ mod tests {
         // Unstructured cells at (0, 0) and (1, 1) meet the structured ones at (1, 0) and (0, 1) in a single grid vertex: the
         // unstructured boundary would touch itself there.
         use CellState::{Structured as S, Unstructured as U};
-        let mut g = CellGrid { xs: vec![0.0, 1.0, 3.0], ys: vec![0.0, 2.0, 3.0], state: vec![U, S, S, U] };
+        let mut g = CellGrid {
+            xs: vec![0.0, 1.0, 3.0],
+            ys: vec![0.0, 2.0, 3.0],
+            state: vec![U, S, S, U],
+        };
         g.remove_pinches();
         // (1, 0) is 2 x 2, (0, 1) is 1 x 1: the small one goes
         assert_eq!(g.state, vec![U, S, U, U]);
         // a grid without a pinch is left alone
-        let mut ok = CellGrid { xs: vec![0.0, 1.0, 2.0], ys: vec![0.0, 1.0, 2.0], state: vec![U, U, S, S] };
+        let mut ok = CellGrid {
+            xs: vec![0.0, 1.0, 2.0],
+            ys: vec![0.0, 1.0, 2.0],
+            state: vec![U, U, S, S],
+        };
         ok.remove_pinches();
         assert_eq!(ok.state, vec![U, U, S, S]);
     }
 
     #[test]
     fn extra_boxes_force_unstructured_cells() {
-        let r = Region::new(Loop::rectangle(0.0, 0.0, 10.0, 2.0).unwrap(), vec![], Elastic::new(1e7, 0.3)).unwrap();
+        let r = Region::new(
+            Loop::rectangle(0.0, 0.0, 10.0, 2.0).unwrap(),
+            vec![],
+            Elastic::new(1e7, 0.3),
+        )
+        .unwrap();
         let none = classify_2d(&r, &|_| 0.5, &PartitionOptions2d::default()).unwrap();
         assert_eq!(none.count(CellState::Unstructured), 0);
-        let opt = PartitionOptions2d { extra_boxes: vec![([9.5, 0.0], [10.0, 2.0])], ..Default::default() };
+        let opt = PartitionOptions2d {
+            extra_boxes: vec![([9.5, 0.0], [10.0, 2.0])],
+            ..Default::default()
+        };
         let g = classify_2d(&r, &|_| 0.5, &opt).unwrap();
         assert!(g.count(CellState::Unstructured) > 0 && g.at(0, 0) == CellState::Structured);
     }
 
     #[test]
     fn a_bad_size_function_is_reported() {
-        let r = Region::new(Loop::rectangle(0.0, 0.0, 1.0, 1.0).unwrap(), vec![], Elastic::new(1e7, 0.3)).unwrap();
+        let r = Region::new(
+            Loop::rectangle(0.0, 0.0, 1.0, 1.0).unwrap(),
+            vec![],
+            Elastic::new(1e7, 0.3),
+        )
+        .unwrap();
         assert!(classify_2d(&r, &|_| 0.0, &PartitionOptions2d::default()).is_err());
         assert!(classify_2d(&r, &|_| f64::NAN, &PartitionOptions2d::default()).is_err());
     }

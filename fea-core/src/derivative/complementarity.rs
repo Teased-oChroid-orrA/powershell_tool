@@ -93,7 +93,11 @@ pub struct ObstacleOptions {
 
 impl Default for ObstacleOptions {
     fn default() -> Self {
-        Self { c: 1.0, max_iter: 60, tol: 1e-9 }
+        Self {
+            c: 1.0,
+            max_iter: 60,
+            tol: 1e-9,
+        }
     }
 }
 
@@ -131,8 +135,17 @@ pub struct ObstacleAnalysis<'a> {
 
 impl<'a> ObstacleAnalysis<'a> {
     /// `f` is the full load vector; constrained dofs of `red` keep zero displacement.
-    pub fn new(red: &'a Reduced, pattern: &'a Pattern, k: &'a BlockMatrix, n_total: usize, free: &'a [usize], f: &[f64], constraints: Vec<Constraint>) -> Result<Self, String> {
-        let solver = TangentSolver::new(red, pattern, k, n_total, free, &[]).map_err(|e| e.to_string())?;
+    pub fn new(
+        red: &'a Reduced,
+        pattern: &'a Pattern,
+        k: &'a BlockMatrix,
+        n_total: usize,
+        free: &'a [usize],
+        f: &[f64],
+        constraints: Vec<Constraint>,
+    ) -> Result<Self, String> {
+        let solver =
+            TangentSolver::new(red, pattern, k, n_total, free, &[]).map_err(|e| e.to_string())?;
         let rhs: Vec<f64> = free.iter().map(|&d| f[d]).collect();
         let x = solver.solve(&rhs)?;
         let mut u0 = vec![0.0; n_total];
@@ -140,7 +153,14 @@ impl<'a> ObstacleAnalysis<'a> {
             u0[d] = x[j];
         }
         let m = constraints.len();
-        Ok(Self { solver, n_total, free, constraints, u0, columns: RefCell::new(vec![None; m]) })
+        Ok(Self {
+            solver,
+            n_total,
+            free,
+            constraints,
+            u0,
+            columns: RefCell::new(vec![None; m]),
+        })
     }
 
     pub fn constraints(&self) -> &[Constraint] {
@@ -177,8 +197,13 @@ impl<'a> ObstacleAnalysis<'a> {
 
     /// `S_ab = C_a . W_b` for index sets `a`, `b` (row-major `|a| x |b|`).
     fn schur(&self, a: &[usize], b: &[usize]) -> Result<Vec<f64>, String> {
-        let wb: Vec<Vec<f64>> = b.iter().map(|&j| self.column(j)).collect::<Result<_, _>>()?;
-        Ok(a.iter().flat_map(|&i| wb.iter().map(move |w| self.constraints[i].dot(w))).collect())
+        let wb: Vec<Vec<f64>> = b
+            .iter()
+            .map(|&j| self.column(j))
+            .collect::<Result<_, _>>()?;
+        Ok(a.iter()
+            .flat_map(|&i| wb.iter().map(move |w| self.constraints[i].dot(w)))
+            .collect())
     }
 
     fn assemble_u(&self, lambda: &[f64], active: &[usize]) -> Result<Vec<f64>, String> {
@@ -192,11 +217,26 @@ impl<'a> ObstacleAnalysis<'a> {
         Ok(u)
     }
 
-    fn finish(&self, lambda: Vec<f64>, active: &[usize], opt: &ObstacleOptions, iterations: usize, changes: Vec<usize>, fallback: bool, f: Option<&[f64]>) -> Result<ObstacleSolution, String> {
+    fn finish(
+        &self,
+        lambda: Vec<f64>,
+        active: &[usize],
+        opt: &ObstacleOptions,
+        iterations: usize,
+        changes: Vec<usize>,
+        fallback: bool,
+        f: Option<&[f64]>,
+    ) -> Result<ObstacleSolution, String> {
         let u = self.assemble_u(&lambda, active)?;
         let gap: Vec<f64> = self.constraints.iter().map(|c| c.gap(&u)).collect();
         let lmax = lambda.iter().cloned().fold(0.0f64, f64::max);
-        let gscale = self.constraints.iter().map(|c| c.g0.abs()).chain(gap.iter().map(|g| g.abs())).fold(0.0f64, f64::max).max(1e-300);
+        let gscale = self
+            .constraints
+            .iter()
+            .map(|c| c.g0.abs())
+            .chain(gap.iter().map(|g| g.abs()))
+            .fold(0.0f64, f64::max)
+            .max(1e-300);
         let (lt, gt) = (opt.tol * lmax.max(1e-300), opt.tol * gscale);
         let status: Vec<Complementarity> = (0..lambda.len())
             .map(|i| match (lambda[i] > lt, gap[i].abs() <= gt) {
@@ -207,33 +247,54 @@ impl<'a> ObstacleAnalysis<'a> {
             .collect();
         let mut v = 0.0f64;
         for i in 0..lambda.len() {
-            v = v.max((-lambda[i]).max(0.0) / lmax.max(1e-300)).max((-gap[i]).max(0.0) / gscale).max((lambda[i] * gap[i]).abs() / (lmax.max(1e-300) * gscale));
+            v = v
+                .max((-lambda[i]).max(0.0) / lmax.max(1e-300))
+                .max((-gap[i]).max(0.0) / gscale)
+                .max((lambda[i] * gap[i]).abs() / (lmax.max(1e-300) * gscale));
         }
         let _ = f;
-        Ok(ObstacleSolution { u, lambda, gap, status, iterations, changes, used_dual_fallback: fallback, kkt_violation: v })
+        Ok(ObstacleSolution {
+            u,
+            lambda,
+            gap,
+            status,
+            iterations,
+            changes,
+            used_dual_fallback: fallback,
+            kkt_violation: v,
+        })
     }
 
     /// Solve the unilateral problem by the primal-dual active-set method.
     pub fn solve(&self, opt: &ObstacleOptions) -> Result<ObstacleSolution, String> {
         let m = self.constraints.len();
         let g_of = |u: &[f64]| -> Vec<f64> { self.constraints.iter().map(|c| c.gap(u)).collect() };
-        let mut active: Vec<usize> = (0..m).filter(|&i| self.constraints[i].gap(&self.u0) < 0.0).collect();
+        let mut active: Vec<usize> = (0..m)
+            .filter(|&i| self.constraints[i].gap(&self.u0) < 0.0)
+            .collect();
         let mut seen: Vec<Vec<usize>> = Vec::new();
         let mut changes = Vec::new();
         for it in 0..opt.max_iter {
             let mut lambda = vec![0.0; m];
             if !active.is_empty() {
                 let s = self.schur(&active, &active).map_err(|e| e.to_string())?;
-                let rhs: Vec<f64> = active.iter().map(|&i| -self.constraints[i].gap(&self.u0)).collect();
-                let l = lu_solve(active.len(), 1, &s, &rhs).map_err(|e: ConstitutiveError| e.to_string())?;
+                let rhs: Vec<f64> = active
+                    .iter()
+                    .map(|&i| -self.constraints[i].gap(&self.u0))
+                    .collect();
+                let l = lu_solve(active.len(), 1, &s, &rhs)
+                    .map_err(|e: ConstitutiveError| e.to_string())?;
                 for (k, &i) in active.iter().enumerate() {
                     lambda[i] = l[k];
                 }
             }
             let u = self.assemble_u(&lambda, &active)?;
             let gap = g_of(&u);
-            let next: Vec<usize> = (0..m).filter(|&i| lambda[i] - opt.c * gap[i] > 0.0).collect();
-            let diff = next.iter().filter(|i| !active.contains(i)).count() + active.iter().filter(|i| !next.contains(i)).count();
+            let next: Vec<usize> = (0..m)
+                .filter(|&i| lambda[i] - opt.c * gap[i] > 0.0)
+                .collect();
+            let diff = next.iter().filter(|i| !active.contains(i)).count()
+                + active.iter().filter(|i| !next.contains(i)).count();
             changes.push(diff);
             if next == active {
                 return self.finish(lambda, &active, opt, it + 1, changes, false, None);
@@ -256,10 +317,19 @@ impl<'a> ObstacleAnalysis<'a> {
     /// Sensitivity of the solution to a parameter `p` whose derivatives are `rhs = df/dp - (dK/dp) u` (full vector) and `dg0` (per
     /// constraint). With no biactive constraint this is the classical derivative of the active branch; with biactive ones it is the
     /// directional derivative in `+dp` (a linear complementarity problem), and `du_opposite` the one in `-dp`.
-    pub fn sensitivity(&self, sol: &ObstacleSolution, rhs: &[f64], dg0: &[f64]) -> Result<ObstacleSensitivity, String> {
+    pub fn sensitivity(
+        &self,
+        sol: &ObstacleSolution,
+        rhs: &[f64],
+        dg0: &[f64],
+    ) -> Result<ObstacleSensitivity, String> {
         let m = self.constraints.len();
-        let a: Vec<usize> = (0..m).filter(|&i| sol.status[i] == Complementarity::Active).collect();
-        let b: Vec<usize> = (0..m).filter(|&i| sol.status[i] == Complementarity::Biactive).collect();
+        let a: Vec<usize> = (0..m)
+            .filter(|&i| sol.status[i] == Complementarity::Active)
+            .collect();
+        let b: Vec<usize> = (0..m)
+            .filter(|&i| sol.status[i] == Complementarity::Biactive)
+            .collect();
         let one_direction = |sign: f64| -> Result<(Vec<f64>, Vec<f64>), String> {
             let r: Vec<f64> = rhs.iter().map(|v| sign * v).collect();
             let u1 = self.k_inverse(&r)?;
@@ -268,8 +338,16 @@ impl<'a> ObstacleAnalysis<'a> {
             let (saa, sab) = (self.schur(&a, &a)?, self.schur(&a, &b)?);
             let rhs_a: Vec<f64> = a.iter().map(|&i| -sign * dg0[i] - c_u1(i)).collect();
             // dl_A = S_AA^-1 (rhs_a - S_AB dl_B): solve for the columns we need
-            let sinv_rhs = if a.is_empty() { Vec::new() } else { lu_solve(a.len(), 1, &saa, &rhs_a).map_err(|e| e.to_string())? };
-            let sinv_sab = if a.is_empty() || b.is_empty() { Vec::new() } else { lu_solve(a.len(), b.len(), &saa, &sab).map_err(|e| e.to_string())? };
+            let sinv_rhs = if a.is_empty() {
+                Vec::new()
+            } else {
+                lu_solve(a.len(), 1, &saa, &rhs_a).map_err(|e| e.to_string())?
+            };
+            let sinv_sab = if a.is_empty() || b.is_empty() {
+                Vec::new()
+            } else {
+                lu_solve(a.len(), b.len(), &saa, &sab).map_err(|e| e.to_string())?
+            };
             let mut dlb = vec![0.0; b.len()];
             if !b.is_empty() {
                 // dg_B = q + M dl_B with M = S_BB - S_BA S_AA^-1 S_AB, q = C_B u1 + dg0_B + S_BA S_AA^-1 (-dg0_A - C_A u1)
@@ -328,12 +406,33 @@ impl<'a> ObstacleAnalysis<'a> {
         };
         let (du, dlambda) = one_direction(1.0)?;
         if b.is_empty() {
-            return Ok(ObstacleSensitivity { du, dlambda, semantics: DerivativeSemantics::ActiveBranch, biactive: 0, differentiable: true, du_opposite: None });
+            return Ok(ObstacleSensitivity {
+                du,
+                dlambda,
+                semantics: DerivativeSemantics::ActiveBranch,
+                biactive: 0,
+                differentiable: true,
+                du_opposite: None,
+            });
         }
         let (dum, _) = one_direction(-1.0)?;
-        let scale = du.iter().chain(&dum).fold(0.0f64, |m, v| m.max(v.abs())).max(1e-300);
-        let differentiable = du.iter().zip(&dum).all(|(p, q)| (p + q).abs() <= 1e-9 * scale);
-        Ok(ObstacleSensitivity { du, dlambda, semantics: DerivativeSemantics::Generalized, biactive: b.len(), differentiable, du_opposite: Some(dum.iter().map(|v| -v).collect()) })
+        let scale = du
+            .iter()
+            .chain(&dum)
+            .fold(0.0f64, |m, v| m.max(v.abs()))
+            .max(1e-300);
+        let differentiable = du
+            .iter()
+            .zip(&dum)
+            .all(|(p, q)| (p + q).abs() <= 1e-9 * scale);
+        Ok(ObstacleSensitivity {
+            du,
+            dlambda,
+            semantics: DerivativeSemantics::Generalized,
+            biactive: b.len(),
+            differentiable,
+            du_opposite: Some(dum.iter().map(|v| -v).collect()),
+        })
     }
 
     /// Adjoint sensitivities of `J = grad . u` on the strictly active set (no biactive constraint): `dJ/dp = psi . rhs - mu . dg0_A`
@@ -342,7 +441,9 @@ impl<'a> ObstacleAnalysis<'a> {
         if sol.count(Complementarity::Biactive) > 0 {
             return Err("an adjoint needs a differentiable branch: there are biactive constraints (use the directional derivatives)".into());
         }
-        let a: Vec<usize> = (0..self.constraints.len()).filter(|&i| sol.status[i] == Complementarity::Active).collect();
+        let a: Vec<usize> = (0..self.constraints.len())
+            .filter(|&i| sol.status[i] == Complementarity::Active)
+            .collect();
         let v = self.k_inverse(grad)?;
         let mut psi = v.clone();
         let mut mu = vec![0.0; self.constraints.len()];
@@ -372,7 +473,8 @@ pub struct AdjointFields {
 impl AdjointFields {
     /// `dJ/dp` for the parameter with `rhs = df/dp - (dK/dp) u` and gap derivatives `dg0`.
     pub fn gradient(&self, rhs: &[f64], dg0: &[f64]) -> f64 {
-        self.psi.iter().zip(rhs).map(|(a, b)| a * b).sum::<f64>() - self.mu.iter().zip(dg0).map(|(a, b)| a * b).sum::<f64>()
+        self.psi.iter().zip(rhs).map(|(a, b)| a * b).sum::<f64>()
+            - self.mu.iter().zip(dg0).map(|(a, b)| a * b).sum::<f64>()
     }
 }
 
@@ -423,8 +525,26 @@ pub struct RegularisedObstacle<'a> {
 }
 
 impl<'a> RegularisedObstacle<'a> {
-    pub fn new(red: &'a Reduced, pattern: &'a Pattern, k: &'a BlockMatrix, n_total: usize, free: &'a [usize], f: Vec<f64>, constraints: Vec<Constraint>, law: SoftplusLaw) -> Self {
-        Self { red, pattern, k, n_total, free, f, constraints, law }
+    pub fn new(
+        red: &'a Reduced,
+        pattern: &'a Pattern,
+        k: &'a BlockMatrix,
+        n_total: usize,
+        free: &'a [usize],
+        f: Vec<f64>,
+        constraints: Vec<Constraint>,
+        law: SoftplusLaw,
+    ) -> Self {
+        Self {
+            red,
+            pattern,
+            k,
+            n_total,
+            free,
+            f,
+            constraints,
+            law,
+        }
     }
 
     fn blocks(&self, gaps: &[f64]) -> Vec<(Vec<usize>, Vec<f64>)> {
@@ -452,7 +572,10 @@ impl<'a> RegularisedObstacle<'a> {
         let mut ku = vec![0.0; self.n_total];
         self.k.matvec_add(self.pattern, u, &mut ku);
         let gaps: Vec<f64> = self.constraints.iter().map(|c| c.gap(u)).collect();
-        let mut scale = self.free.iter().fold(0.0f64, |m, &d| m.max(ku[d].abs()).max(self.f[d].abs()));
+        let mut scale = self
+            .free
+            .iter()
+            .fold(0.0f64, |m, &d| m.max(ku[d].abs()).max(self.f[d].abs()));
         let mut r: Vec<f64> = ku.iter().zip(&self.f).map(|(a, b)| a - b).collect();
         for (c, &g) in self.constraints.iter().zip(&gaps) {
             let (p, _) = self.law.with_derivative(g);
@@ -470,15 +593,32 @@ impl<'a> RegularisedObstacle<'a> {
             let (r, gaps, fscale) = self.residual(&u);
             let rn = self.free.iter().fold(0.0f64, |m, &d| m.max(r[d].abs()));
             if rn <= tol * fscale {
-                let pressure = gaps.iter().map(|&g| self.law.with_derivative(g).0).collect();
+                let pressure = gaps
+                    .iter()
+                    .map(|&g| self.law.with_derivative(g).0)
+                    .collect();
                 let max_penetration = gaps.iter().fold(0.0f64, |m, &g| m.max(-g));
-                return Ok(RegularisedSolution { u, gap: gaps, pressure, newton_iterations: it, max_penetration });
+                return Ok(RegularisedSolution {
+                    u,
+                    gap: gaps,
+                    pressure,
+                    newton_iterations: it,
+                    max_penetration,
+                });
             }
             if it == max_iter {
                 break;
             }
             let blocks = self.blocks(&gaps);
-            let solver = TangentSolver::new(self.red, self.pattern, self.k, self.n_total, self.free, &blocks).map_err(|e| e.to_string())?;
+            let solver = TangentSolver::new(
+                self.red,
+                self.pattern,
+                self.k,
+                self.n_total,
+                self.free,
+                &blocks,
+            )
+            .map_err(|e| e.to_string())?;
             let dx = solver.solve(&self.free.iter().map(|&d| r[d]).collect::<Vec<_>>())?;
             let mut alpha = 1.0;
             loop {
@@ -499,9 +639,22 @@ impl<'a> RegularisedObstacle<'a> {
     }
 
     /// `du/dp` for `rhs = df/dp - (dK/dp) u` and `dg0/dp`: `(K - C^T p' C) du = rhs + C^T p' dg0`.
-    pub fn sensitivity(&self, sol: &RegularisedSolution, rhs: &[f64], dg0: &[f64]) -> Result<Vec<f64>, String> {
+    pub fn sensitivity(
+        &self,
+        sol: &RegularisedSolution,
+        rhs: &[f64],
+        dg0: &[f64],
+    ) -> Result<Vec<f64>, String> {
         let blocks = self.blocks(&sol.gap);
-        let solver = TangentSolver::new(self.red, self.pattern, self.k, self.n_total, self.free, &blocks).map_err(|e| e.to_string())?;
+        let solver = TangentSolver::new(
+            self.red,
+            self.pattern,
+            self.k,
+            self.n_total,
+            self.free,
+            &blocks,
+        )
+        .map_err(|e| e.to_string())?;
         let mut b = rhs.to_vec();
         for (c, (&g, &d0)) in self.constraints.iter().zip(sol.gap.iter().zip(dg0)) {
             let (_, dp) = self.law.with_derivative(g);

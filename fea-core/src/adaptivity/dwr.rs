@@ -45,19 +45,41 @@ pub struct Dual {
 }
 
 /// Solve `K z = g` for several goals with one factorisation.
-pub fn solve_duals(ctx: &EstimatorContext, goals: &[&LinearFunctional]) -> Result<Vec<Dual>, MeshError> {
+pub fn solve_duals(
+    ctx: &EstimatorContext,
+    goals: &[&LinearFunctional],
+) -> Result<Vec<Dual>, MeshError> {
     let model = ctx.model;
     for g in goals {
         if g.gradient.len() != model.mesh.n_dofs() {
-            return Err(MeshError::Failed(format!("goal '{}' has {} gradient entries for {} dofs", g.name, g.gradient.len(), model.mesh.n_dofs())));
+            return Err(MeshError::Failed(format!(
+                "goal '{}' has {} gradient entries for {} dofs",
+                g.name,
+                g.gradient.len(),
+                model.mesh.n_dofs()
+            )));
         }
     }
     model.check_constrained(ctx.bc).map_err(MeshError::Failed)?;
     let k = model.assemble().map_err(MeshError::Failed)?;
-    let red = Reduced::with_ordering(&model.pattern, ctx.bc, Some(&model.mesh.nodes), Ordering::Auto).map_err(|e| MeshError::Failed(e.to_string()))?;
+    let red = Reduced::with_ordering(
+        &model.pattern,
+        ctx.bc,
+        Some(&model.mesh.nodes),
+        Ordering::Auto,
+    )
+    .map_err(|e| MeshError::Failed(e.to_string()))?;
     let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
     // the shared tangent solver of the derivative engine: the adjoint equation `K^T z = g` is solved there for every consumer
-    let solver = crate::derivative::linalg::TangentSolver::new(&red, &model.pattern, &k, model.mesh.n_dofs(), &free, &[]).map_err(|e| MeshError::Failed(e.to_string()))?;
+    let solver = crate::derivative::linalg::TangentSolver::new(
+        &red,
+        &model.pattern,
+        &k,
+        model.mesh.n_dofs(),
+        &free,
+        &[],
+    )
+    .map_err(|e| MeshError::Failed(e.to_string()))?;
     let mut out = Vec::new();
     for g in goals {
         let rhs: Vec<f64> = free.iter().map(|&d| g.gradient[d]).collect();
@@ -74,13 +96,22 @@ pub fn solve_duals(ctx: &EstimatorContext, goals: &[&LinearFunctional]) -> Resul
             num += (kz[d] - g.gradient[d]).powi(2);
             den += g.gradient[d].powi(2);
         }
-        out.push(Dual { z, residual: if den > 0.0 { (num / den).sqrt() } else { 0.0 } });
+        out.push(Dual {
+            z,
+            residual: if den > 0.0 { (num / den).sqrt() } else { 0.0 },
+        });
     }
     Ok(out)
 }
 
 /// Per-element `int (sigma*(a) - sigma_h(a)) : C^-1 : (sigma*(b) - sigma_h(b))` in global element order.
-fn local_products(model: &Model, ga: &[Vec<GaussStress>], ra: &SprRecovery, gb: &[Vec<GaussStress>], rb: &SprRecovery) -> Result<Vec<f64>, MeshError> {
+fn local_products(
+    model: &Model,
+    ga: &[Vec<GaussStress>],
+    ra: &SprRecovery,
+    gb: &[Vec<GaussStress>],
+    rb: &SprRecovery,
+) -> Result<Vec<f64>, MeshError> {
     let mut out = Vec::with_capacity(model.mesh.n_elems());
     for (bi, blk) in model.mesh.blocks.iter().enumerate() {
         let t = blk.kind.table();
@@ -90,7 +121,8 @@ fn local_products(model: &Model, ga: &[Vec<GaussStress>], ra: &SprRecovery, gb: 
             for (a, &nd) in conn.iter().enumerate() {
                 xyz[a] = model.mesh.nodes[nd];
             }
-            kernel::geometry(blk.kind, model.mesh.physics, xyz, work).map_err(|er| er.to_string())?;
+            kernel::geometry(blk.kind, model.mesh.physics, xyz, work)
+                .map_err(|er| er.to_string())?;
             let mut sum = 0.0;
             for g in 0..t.ngp {
                 let nsh = t.n_at(g);
@@ -111,10 +143,17 @@ fn local_products(model: &Model, ga: &[Vec<GaussStress>], ra: &SprRecovery, gb: 
         };
         let init = || (Work::new(), vec![[0.0; 3]; nn]);
         let per: Vec<f64> = if blk.n_elems() >= PARALLEL_ELEMS {
-            (0..blk.n_elems()).into_par_iter().map_init(init, |st, e| one(st, e)).collect::<Result<_, _>>().map_err(MeshError::Failed)?
+            (0..blk.n_elems())
+                .into_par_iter()
+                .map_init(init, |st, e| one(st, e))
+                .collect::<Result<_, _>>()
+                .map_err(MeshError::Failed)?
         } else {
             let mut st = init();
-            (0..blk.n_elems()).map(|e| one(&mut st, e)).collect::<Result<_, _>>().map_err(MeshError::Failed)?
+            (0..blk.n_elems())
+                .map(|e| one(&mut st, e))
+                .collect::<Result<_, _>>()
+                .map_err(MeshError::Failed)?
         };
         out.extend(per);
     }
@@ -140,7 +179,11 @@ pub struct DwrEstimator;
 
 impl DwrEstimator {
     /// Estimate the error of every goal (one factorisation, one primal recovery).
-    pub fn estimate_goals(&self, ctx: &EstimatorContext, goals: &[&LinearFunctional]) -> Result<Vec<DwrResult>, MeshError> {
+    pub fn estimate_goals(
+        &self,
+        ctx: &EstimatorContext,
+        goals: &[&LinearFunctional],
+    ) -> Result<Vec<DwrResult>, MeshError> {
         let t0 = Instant::now();
         let model = ctx.model;
         let name = |g: &LinearFunctional| format!("dwr:{}", g.name);
@@ -148,25 +191,49 @@ impl DwrEstimator {
             return Ok(goals.iter().map(|g| unsupported(g, &name(g), "a plastic block needs the tangent-transpose adjoint of the nonlinear problem", ctx.n_elems(), ctx.u)).collect());
         }
         if ctx.loads.temperature.is_some() {
-            return Ok(goals.iter().map(|g| unsupported(g, &name(g), "nodal temperature fields are not supported by the dual-weighted estimate", ctx.n_elems(), ctx.u)).collect());
+            return Ok(goals
+                .iter()
+                .map(|g| {
+                    unsupported(
+                        g,
+                        &name(g),
+                        "nodal temperature fields are not supported by the dual-weighted estimate",
+                        ctx.n_elems(),
+                        ctx.u,
+                    )
+                })
+                .collect());
         }
         let duals = solve_duals(ctx, goals)?;
-        let gauss_u = model.gauss_stresses(ctx.u, ctx.loads.delta_t).map_err(MeshError::Failed)?;
-        let rec_u = model.recover_spr_by_material(&gauss_u).map_err(MeshError::Failed)?;
+        let gauss_u = model
+            .gauss_stresses(ctx.u, ctx.loads.delta_t)
+            .map_err(MeshError::Failed)?;
+        let rec_u = model
+            .recover_spr_by_material(&gauss_u)
+            .map_err(MeshError::Failed)?;
         let mut results = Vec::new();
         for (goal, dual) in goals.iter().zip(&duals) {
-            let gauss_z = model.gauss_stresses(&dual.z, 0.0).map_err(MeshError::Failed)?;
-            let rec_z = model.recover_spr_by_material(&gauss_z).map_err(MeshError::Failed)?;
+            let gauss_z = model
+                .gauss_stresses(&dual.z, 0.0)
+                .map_err(MeshError::Failed)?;
+            let rec_z = model
+                .recover_spr_by_material(&gauss_z)
+                .map_err(MeshError::Failed)?;
             let eta = local_products(model, &gauss_u, &rec_u, &gauss_z, &rec_z)?;
             let estimated: f64 = eta.iter().sum();
             let value = goal.value(ctx.u);
             let mut reliability = Reliability::Reliable;
             let mut notes = vec![format!("dual residual {:.2e}", dual.residual)];
             if dual.residual > 1e-6 {
-                reliability = Reliability::Failed(format!("the dual solve left a relative residual of {:.2e}", dual.residual));
+                reliability = Reliability::Failed(format!(
+                    "the dual solve left a relative residual of {:.2e}",
+                    dual.residual
+                ));
             } else if !goal.regularised {
                 reliability = Reliability::Degraded("point functional: its dual solution is singular at the point, the recovered estimate is unreliable".into());
-            } else if rec_u.diagnostics.averaged_fraction() > 0.05 || rec_z.diagnostics.averaged_fraction() > 0.05 {
+            } else if rec_u.diagnostics.averaged_fraction() > 0.05
+                || rec_z.diagnostics.averaged_fraction() > 0.05
+            {
                 reliability = Reliability::Degraded(format!(
                     "{:.0} % (primal) / {:.0} % (dual) of the recovery patches are undetermined and use plain averages",
                     100.0 * rec_u.diagnostics.averaged_fraction(),
@@ -174,9 +241,22 @@ impl DwrEstimator {
                 ));
             }
             notes.push(format!("recovery: {} corner nodes, {} own fits, {} borrowed, {} lower-degree, {} averaged; {} interface nodes", rec_u.diagnostics.corner_nodes, rec_u.diagnostics.fitted, rec_u.diagnostics.borrowed, rec_u.diagnostics.lower_degree, rec_u.diagnostics.averaged, rec_u.interface_nodes));
-            let mut field = ErrorField::new(&name(goal), Indicator::Signed, eta, estimated, reliability, t0.elapsed().as_secs_f64());
+            let mut field = ErrorField::new(
+                &name(goal),
+                Indicator::Signed,
+                eta,
+                estimated,
+                reliability,
+                t0.elapsed().as_secs_f64(),
+            );
             field.notes.append(&mut notes);
-            results.push(DwrResult { goal: goal.name.clone(), value, estimated_error: estimated, corrected: value + estimated, field });
+            results.push(DwrResult {
+                goal: goal.name.clone(),
+                value,
+                estimated_error: estimated,
+                corrected: value + estimated,
+                field,
+            });
         }
         Ok(results)
     }
@@ -184,7 +264,13 @@ impl DwrEstimator {
 
 fn unsupported(goal: &LinearFunctional, name: &str, why: &str, n: usize, u: &[f64]) -> DwrResult {
     let value = goal.value(u);
-    DwrResult { goal: goal.name.clone(), value, estimated_error: 0.0, corrected: value, field: ErrorField::unsupported(name, why, n) }
+    DwrResult {
+        goal: goal.name.clone(),
+        value,
+        estimated_error: 0.0,
+        corrected: value,
+        field: ErrorField::unsupported(name, why, n),
+    }
 }
 
 /// Single-goal estimator for use through the common interface.
@@ -222,16 +308,27 @@ mod tests {
         let (model, loads, bc, u) = solved_strip(3);
         let adj = Adjacency::new(&model.mesh);
         let ctx = EstimatorContext::new(&model, &loads, &bc, &u, &adj).unwrap();
-        let tip = LinearFunctional::mean_displacement(&model, model.mesh.node_set("u1").unwrap(), 1).unwrap();
+        let tip =
+            LinearFunctional::mean_displacement(&model, model.mesh.node_set("u1").unwrap(), 1)
+                .unwrap();
         let comp = LinearFunctional::compliance(&model, &loads).unwrap();
         let duals = solve_duals(&ctx, &[&tip, &comp]).unwrap();
         let f = crate::loads::assemble(&model.mesh, &loads).unwrap();
         for (goal, dual) in [&tip, &comp].into_iter().zip(&duals) {
-            assert!(dual.residual < 1e-10, "{} residual {:e}", goal.name, dual.residual);
+            assert!(
+                dual.residual < 1e-10,
+                "{} residual {:e}",
+                goal.name,
+                dual.residual
+            );
             // reciprocity: f . z = g . u = J(u_h)
             let fz: f64 = f.iter().zip(&dual.z).map(|(a, b)| a * b).sum();
             let ju = goal.value(&u);
-            assert!((fz - ju).abs() < 1e-9 * ju.abs().max(1e-12), "{}: f.z = {fz}, J(u) = {ju}", goal.name);
+            assert!(
+                (fz - ju).abs() < 1e-9 * ju.abs().max(1e-12),
+                "{}: f.z = {fz}, J(u) = {ju}",
+                goal.name
+            );
             // the dual vanishes where the primal is constrained
             for &n in model.mesh.node_set("u0").unwrap() {
                 assert_eq!(dual.z[2 * n], 0.0);
@@ -239,8 +336,16 @@ mod tests {
             }
         }
         // the dual of the compliance is the primal solution itself
-        let diff = duals[1].z.iter().zip(&u).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
-        assert!(diff < 1e-9 * u.iter().fold(0.0f64, |m, v| m.max(v.abs())), "{diff:e}");
+        let diff = duals[1]
+            .z
+            .iter()
+            .zip(&u)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            diff < 1e-9 * u.iter().fold(0.0f64, |m, v| m.max(v.abs())),
+            "{diff:e}"
+        );
     }
 
     #[test]
@@ -248,7 +353,12 @@ mod tests {
         let (model, loads, bc, u) = solved_strip(2);
         let adj = Adjacency::new(&model.mesh);
         let ctx = EstimatorContext::new(&model, &loads, &bc, &u, &adj).unwrap();
-        let bad = LinearFunctional { name: "bad".into(), gradient: vec![1.0; 3], offset: 0.0, regularised: true };
+        let bad = LinearFunctional {
+            name: "bad".into(),
+            gradient: vec![1.0; 3],
+            offset: 0.0,
+            regularised: true,
+        };
         assert!(solve_duals(&ctx, &[&bad]).is_err());
     }
 
@@ -261,12 +371,18 @@ mod tests {
         {
             let ctx = EstimatorContext::new(&model, &loads, &bc, &u, &adj).unwrap();
             let r = DwrEstimator.estimate_goals(&ctx, &[&comp]).unwrap();
-            assert!(matches!(r[0].field.reliability, Reliability::Unsupported(_)));
+            assert!(matches!(
+                r[0].field.reliability,
+                Reliability::Unsupported(_)
+            ));
         }
         model.mesh.blocks[0].plasticity = None;
         loads.temperature = Some(vec![0.0; model.mesh.nodes.len()]);
         let ctx = EstimatorContext::new(&model, &loads, &bc, &u, &adj).unwrap();
         let r = DwrEstimator.estimate_goals(&ctx, &[&comp]).unwrap();
-        assert!(matches!(r[0].field.reliability, Reliability::Unsupported(_)));
+        assert!(matches!(
+            r[0].field.reliability,
+            Reliability::Unsupported(_)
+        ));
     }
 }

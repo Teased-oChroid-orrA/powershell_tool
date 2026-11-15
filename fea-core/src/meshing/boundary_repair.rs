@@ -31,7 +31,9 @@ type V3 = [f64; 3];
 fn flat_convex_quad(a: V3, b: V3, c: V3, d: V3) -> bool {
     use super::tet_topology::{orientation, orientation_2d};
     use std::cmp::Ordering::Equal;
-    if orientation(a, b, c, d).ok() != Some(Equal) { return false; }
+    if orientation(a, b, c, d).ok() != Some(Equal) {
+        return false;
+    }
     (0..3).any(|k| {
         let q = |x: V3| [x[(k + 1) % 3], x[(k + 2) % 3]];
         let side = |u, v, w| orientation_2d(q(u), q(v), q(w));
@@ -46,10 +48,15 @@ fn embedded_positive_cells(p: &[V3], cells: &[[usize; 4]]) -> bool {
     cells.iter().all(|&t| {
         let mut key = t;
         key.sort_unstable();
-        unique.insert(key) && orientation(p[t[0]], p[t[1]], p[t[2]], p[t[3]]).ok() == Some(std::cmp::Ordering::Greater)
-    }) && cells.iter().enumerate().all(|(i, &a)| cells[i + 1..].iter().all(|&b| cavity_contact::compatible(p, a, b).unwrap_or(false)))
+        unique.insert(key)
+            && orientation(p[t[0]], p[t[1]], p[t[2]], p[t[3]]).ok()
+                == Some(std::cmp::Ordering::Greater)
+    }) && cells.iter().enumerate().all(|(i, &a)| {
+        cells[i + 1..]
+            .iter()
+            .all(|&b| cavity_contact::compatible(p, a, b).unwrap_or(false))
+    })
 }
-
 
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -64,7 +71,11 @@ fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 fn norm(a: V3) -> f64 {
     dot(a, a).sqrt()
@@ -85,7 +96,10 @@ pub fn scaled_jacobian(p: &[V3], t: [usize; 4]) -> f64 {
     let six_v = dot(cross(sub(b, a), sub(c, a)), sub(d, a));
     let l = |x: V3, y: V3| norm(sub(x, y));
     let (l01, l02, l03, l12, l13, l23) = (l(a, b), l(a, c), l(a, d), l(b, c), l(b, d), l(c, d));
-    let m = (l01 * l02 * l03).max(l01 * l12 * l13).max(l02 * l12 * l23).max(l03 * l13 * l23);
+    let m = (l01 * l02 * l03)
+        .max(l01 * l12 * l13)
+        .max(l02 * l12 * l23)
+        .max(l03 * l13 * l23);
     if m <= 0.0 {
         return -1.0;
     }
@@ -147,7 +161,12 @@ pub struct RepairOptions {
 }
 impl Default for RepairOptions {
     fn default() -> Self {
-        Self { target: 0.12, max_rounds: 100, max_growth: 0.10, allow_split: true }
+        Self {
+            target: 0.12,
+            max_rounds: 100,
+            max_growth: 0.10,
+            allow_split: true,
+        }
     }
 }
 
@@ -258,7 +277,10 @@ const MIN_GAIN: f64 = 0.01;
 const RELAX_DEPTH: f64 = 0.08;
 /// The surface may move by at most this fraction of the local size when a repair changes it (an edge collapse or a peel).
 fn max_dev() -> f64 {
-    std::env::var("REPAIR_DEV").ok().and_then(|s| s.parse().ok()).unwrap_or(0.1)
+    std::env::var("REPAIR_DEV")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.1)
 }
 const GHOST: usize = usize::MAX;
 
@@ -274,24 +296,32 @@ impl<'a> Work<'a> {
         scaled_jacobian(&self.p, t)
     }
     fn min_sj(&self, ts: &[usize]) -> f64 {
-        ts.iter().map(|&t| self.sj(self.tets[t])).fold(f64::INFINITY, f64::min)
+        ts.iter()
+            .map(|&t| self.sj(self.tets[t]))
+            .fold(f64::INFINITY, f64::min)
     }
     /// Sum over elements of the squared shortfall below twice the target: smooth, so a move that helps the second-worst element
     /// of a cavity counts even when the worst one is held by something else.
     fn penalty_cells(&self, cs: &[[usize; 4]]) -> f64 {
         let cap = 2.0 * self.target;
-        cs.iter().map(|&t| (cap - self.sj(t)).max(0.0).powi(2)).sum()
+        cs.iter()
+            .map(|&t| (cap - self.sj(t)).max(0.0).powi(2))
+            .sum()
     }
     fn penalty_ids(&self, ts: &[usize]) -> f64 {
         let cap = 2.0 * self.target;
-        ts.iter().map(|&t| (cap - self.sj(self.tets[t])).max(0.0).powi(2)).sum()
+        ts.iter()
+            .map(|&t| (cap - self.sj(self.tets[t])).max(0.0).powi(2))
+            .sum()
     }
     /// Is replacing the cavity `old` (ids) by `new` (cells) an improvement: the worst element better by a margin or over the
     /// target, or the worst no worse and the penalty clearly lower.
     fn better(&self, old: &[usize], new: &[[usize; 4]]) -> bool {
         // never more elements under the gate than the cavity had: lifting its worst element while spoiling others left the
         // count rising over the rounds (the t-junction ended with more sub-gate elements than it had passed through)
-        if self.under_gate(new) > self.under_gate_ids(old) { return false; }
+        if self.under_gate(new) > self.under_gate_ids(old) {
+            return false;
+        }
         self.better_than(self.stats(old), new)
     }
     /// The elements a round works on, worst first: those under `target`, and every cell on a boundary face turned more than 60
@@ -305,7 +335,11 @@ impl<'a> Work<'a> {
                 folded.extend(self.tets_with(&f));
             }
         }
-        let mut bad: Vec<(f64, usize)> = live.into_iter().map(|t| (self.sj(self.tets[t]), t)).filter(|&(s, t)| s < target || folded.contains(&t)).collect();
+        let mut bad: Vec<(f64, usize)> = live
+            .into_iter()
+            .map(|t| (self.sj(self.tets[t]), t))
+            .filter(|&(s, t)| s < target || folded.contains(&t))
+            .collect();
         bad.sort_by(|a, b| a.0.total_cmp(&b.0));
         (bad, folded)
     }
@@ -325,7 +359,17 @@ impl<'a> Work<'a> {
     }
     /// Return to `s`; the failure memory refers to the abandoned mesh and is dropped.
     fn restore(&mut self, s: Snapshot) {
-        Snapshot { p: self.p, tets: self.tets, alive: self.alive, vt: self.vt, bnd: self.bnd, state: self.state, hv: self.hv, ver: self.ver, live: self.live } = s;
+        Snapshot {
+            p: self.p,
+            tets: self.tets,
+            alive: self.alive,
+            vt: self.vt,
+            bnd: self.bnd,
+            state: self.state,
+            hv: self.hv,
+            ver: self.ver,
+            live: self.live,
+        } = s;
         self.clock += 1;
         self.failed.clear();
         self.log.clear();
@@ -342,7 +386,8 @@ impl<'a> Work<'a> {
         if new_min <= 1e-6 {
             return false;
         }
-        self.gains(old.0, new_min) || (new_min >= old.0 - 1e-12 && self.penalty_cells(new) < 0.98 * old.1 - 1e-9)
+        self.gains(old.0, new_min)
+            || (new_min >= old.0 - 1e-12 && self.penalty_cells(new) < 0.98 * old.1 - 1e-9)
     }
     fn under_gate(&self, cs: &[[usize; 4]]) -> usize {
         let gate = QualityThresholds::default().min_scaled_jacobian;
@@ -461,7 +506,11 @@ impl<'a> Work<'a> {
     }
     fn tets_with(&self, vs: &[usize]) -> Vec<usize> {
         let base = *vs.iter().min_by_key(|&&v| self.vt[v].len()).unwrap();
-        self.vt[base].iter().copied().filter(|&t| vs.iter().all(|v| self.tets[t].contains(v))).collect()
+        self.vt[base]
+            .iter()
+            .copied()
+            .filter(|&t| vs.iter().all(|v| self.tets[t].contains(v)))
+            .collect()
     }
     fn is_bface(&self, a: usize, b: usize, c: usize) -> bool {
         self.tets_with(&[a, b, c]).len() == 1
@@ -510,8 +559,15 @@ impl<'a> Work<'a> {
     }
     /// Outward unit normal of the boundary face `f` whose tetrahedron has the fourth vertex `apex`.
     fn outward(&self, f: [usize; 3], apex: usize) -> V3 {
-        let n = cross(sub(self.p[f[1]], self.p[f[0]]), sub(self.p[f[2]], self.p[f[0]]));
-        let n = if dot(n, sub(self.p[apex], self.p[f[0]])) > 0.0 { scale(n, -1.0) } else { n };
+        let n = cross(
+            sub(self.p[f[1]], self.p[f[0]]),
+            sub(self.p[f[2]], self.p[f[0]]),
+        );
+        let n = if dot(n, sub(self.p[apex], self.p[f[0]])) > 0.0 {
+            scale(n, -1.0)
+        } else {
+            n
+        };
         unit(n)
     }
     /// Boundary faces (sorted vertex triples, with the apex of their tetrahedron) among the given tetrahedra.
@@ -535,17 +591,35 @@ impl<'a> Work<'a> {
         let c = scale(add(add(x[0], x[1]), x[2]), 1.0 / 3.0);
         let area = 0.5 * norm(cross(sub(x[1], x[0]), sub(x[2], x[0])));
         let owner = self.ctx.triangle_face.map(|classify| classify(x));
-        let mut normal = if owner.is_some() && self.ctx.face_dists.is_some() { None } else { Some(self.gradient_dir(c, 1e-3 * h)) };
+        let mut normal = if owner.is_some() && self.ctx.face_dists.is_some() {
+            None
+        } else {
+            Some(self.gradient_dir(c, 1e-3 * h))
+        };
         let mut max_surface_error = 0.0_f64;
-        let samples = [c, scale(add(x[0], x[1]), 0.5), scale(add(x[1], x[2]), 0.5), scale(add(x[2], x[0]), 0.5)];
+        let samples = [
+            c,
+            scale(add(x[0], x[1]), 0.5),
+            scale(add(x[1], x[2]), 0.5),
+            scale(add(x[2], x[0]), 0.5),
+        ];
         for (i, sample) in samples.into_iter().enumerate() {
             let error = (self.ctx.sdf)(sample).abs();
-            max_surface_error = if error.is_finite() { max_surface_error.max(error) } else { f64::INFINITY };
+            max_surface_error = if error.is_finite() {
+                max_surface_error.max(error)
+            } else {
+                f64::INFINITY
+            };
             if let (Some(face), Some(fd)) = (owner, self.ctx.face_dists) {
-                match fd(sample).into_iter().find(|hit| hit.face == face && hit.dist.is_finite()) {
+                match fd(sample)
+                    .into_iter()
+                    .find(|hit| hit.face == face && hit.dist.is_finite())
+                {
                     Some(hit) => {
                         max_surface_error = max_surface_error.max(hit.dist.abs());
-                        if i == 0 { normal = self.face_normal(sample, &hit, h); }
+                        if i == 0 {
+                            normal = self.face_normal(sample, &hit, h);
+                        }
                     }
                     None => max_surface_error = f64::INFINITY,
                 }
@@ -555,11 +629,16 @@ impl<'a> Work<'a> {
             area,
             max_surface_error,
             owner,
-            normal_alignment: normal.map(|n| dot(self.outward(f, apex), n)).unwrap_or(f64::NAN),
+            normal_alignment: normal
+                .map(|n| dot(self.outward(f, apex), n))
+                .unwrap_or(f64::NAN),
         }
     }
     fn boundary_snapshot(&self, ts: &[usize], h: f64) -> BTreeMap<[usize; 3], BoundaryFaceState> {
-        self.boundary_faces(ts).into_iter().map(|(f, apex)| (f, self.boundary_face_state(f, apex, h))).collect()
+        self.boundary_faces(ts)
+            .into_iter()
+            .map(|(f, apex)| (f, self.boundary_face_state(f, apex, h)))
+            .collect()
     }
     fn gradient_dir(&self, x: V3, eps: f64) -> V3 {
         let mut g = [0.0; 3];
@@ -571,44 +650,84 @@ impl<'a> Work<'a> {
         }
         unit(g)
     }
-    fn new_faces_follow_surface(&self, ts: &[usize], before: &BTreeMap<[usize; 3], BoundaryFaceState>, h: f64) -> bool {
+    fn new_faces_follow_surface(
+        &self,
+        ts: &[usize],
+        before: &BTreeMap<[usize; 3], BoundaryFaceState>,
+        h: f64,
+    ) -> bool {
         self.surface_refusal(ts, before, h).is_none()
     }
     /// The first surface contract that the boundary of `ts` breaks against `before` (`None`: it follows the surface); the
     /// reasons name the checks of [`Self::new_faces_follow_surface`] for the trace.
-    fn surface_refusal(&self, ts: &[usize], before: &BTreeMap<[usize; 3], BoundaryFaceState>, h: f64) -> Option<&'static str> {
+    fn surface_refusal(
+        &self,
+        ts: &[usize],
+        before: &BTreeMap<[usize; 3], BoundaryFaceState>,
+        h: f64,
+    ) -> Option<&'static str> {
         self.surface_refusal_on(ts, before, h, &[])
     }
     /// [`Self::surface_refusal`]; a new face classified to a patch the replaced surface did not have is also admitted when that
     /// patch is one of `crossed` and each of its corners lies on one of them (a crease split re-tiles the facets bridging two
     /// patches with faces on them, or with smaller bridges, named after either patch).
-    fn surface_refusal_on(&self, ts: &[usize], before: &BTreeMap<[usize; 3], BoundaryFaceState>, h: f64, crossed: &[usize]) -> Option<&'static str> {
+    fn surface_refusal_on(
+        &self,
+        ts: &[usize],
+        before: &BTreeMap<[usize; 3], BoundaryFaceState>,
+        h: f64,
+        crossed: &[usize],
+    ) -> Option<&'static str> {
         let after = self.boundary_faces(ts);
         // Surface fidelity is bounded by the region's own: no face of the result may deviate from its CAD patch by more than
         // the worst face of the replaced surface (or the tolerance). A flat triangle on a tight fillet carries a chord error
         // above the tolerance however it is tiled; bounding each face by its own old error, and new faces by the tolerance
         // alone, refused nearly every slide and re-tiling there (a vertex moved along the surface trades chord error between
         // its faces), and left flat cells on the cross-bore fillet that the unsampled guard used to clear.
-        let region_error = before.values().map(|s| s.max_surface_error).fold(max_dev() * h, f64::max);
+        let region_error = before
+            .values()
+            .map(|s| s.max_surface_error)
+            .fold(max_dev() * h, f64::max);
         let mut added = Vec::new();
         for (&f, &apex) in &after {
             let now = self.boundary_face_state(f, apex, h);
-            if !now.area.is_finite() || !now.max_surface_error.is_finite() || !now.normal_alignment.is_finite() { return Some("surface: not finite"); }
+            if !now.area.is_finite()
+                || !now.max_surface_error.is_finite()
+                || !now.normal_alignment.is_finite()
+            {
+                return Some("surface: not finite");
+            }
             match before.get(&f) {
                 Some(old) => {
-                    if old.area <= 0.0 || now.area <= 0.0 || now.area > 2.0 * old.area || old.area > 2.0 * now.area {
+                    if old.area <= 0.0
+                        || now.area <= 0.0
+                        || now.area > 2.0 * old.area
+                        || old.area > 2.0 * now.area
+                    {
                         return Some("surface: kept face area");
                     }
-                    if now.max_surface_error > region_error + 1e-9 * h { return Some("surface: kept face error"); }
-                    if now.normal_alignment + 0.1 < old.normal_alignment || now.normal_alignment + EPS < old.normal_alignment.min(0.5) {
+                    if now.max_surface_error > region_error + 1e-9 * h {
+                        return Some("surface: kept face error");
+                    }
+                    if now.normal_alignment + 0.1 < old.normal_alignment
+                        || now.normal_alignment + EPS < old.normal_alignment.min(0.5)
+                    {
                         return Some("surface: kept face turned");
                     }
-                    if now.owner != old.owner { return Some("surface: kept face owner"); }
+                    if now.owner != old.owner {
+                        return Some("surface: kept face owner");
+                    }
                 }
                 None => {
-                    if now.normal_alignment < 0.5 { return Some("surface: new face turned"); }
-                    if now.max_surface_error > region_error + 1e-9 * h { return Some("surface: new face error"); }
-                    if let Some(owner) = now.owner { added.push((f, apex, owner)); }
+                    if now.normal_alignment < 0.5 {
+                        return Some("surface: new face turned");
+                    }
+                    if now.max_surface_error > region_error + 1e-9 * h {
+                        return Some("surface: new face error");
+                    }
+                    if let Some(owner) = now.owner {
+                        added.push((f, apex, owner));
+                    }
                 }
             }
         }
@@ -617,23 +736,45 @@ impl<'a> Work<'a> {
         // A face classified to another patch is still admitted when it also touches, and faces like, a patch that lost faces:
         // along a tangent seam (a fillet meeting its flat face or the next fillet) the classification of a face straddling
         // the seam is arbitrary, while across a sharp edge no face faces like both patches.
-        let removed_owners: BTreeSet<_> = before.iter().filter(|(f, _)| !after.contains_key(*f)).filter_map(|(_, s)| s.owner).collect();
+        let removed_owners: BTreeSet<_> = before
+            .iter()
+            .filter(|(f, _)| !after.contains_key(*f))
+            .filter_map(|(_, s)| s.owner)
+            .collect();
         let ok = added.into_iter().all(|(f, apex, owner)| {
             removed_owners.contains(&owner)
-                || removed_owners.iter().any(|&r| self.face_touches_patch(f, apex, r, h))
-                || (crossed.contains(&owner) && f.iter().all(|&v| self.on_faces(v, h).iter().any(|g| crossed.contains(g))))
+                || removed_owners
+                    .iter()
+                    .any(|&r| self.face_touches_patch(f, apex, r, h))
+                || (crossed.contains(&owner)
+                    && f.iter()
+                        .all(|&v| self.on_faces(v, h).iter().any(|g| crossed.contains(g))))
         });
-        if ok { None } else { Some("surface: new patch") }
+        if ok {
+            None
+        } else {
+            Some("surface: new patch")
+        }
     }
     /// Does boundary face `f` touch CAD patch `face`: its centroid within the deviation bound of the patch, and its outward
     /// normal within 60 degrees of the patch normal there. A face straddling a tangent seam does (its edges may run beyond
     /// the seam, onto its own patch); a face across a sharp edge does not.
     fn face_touches_patch(&self, f: [usize; 3], apex: usize, face: usize, h: f64) -> bool {
-        let Some(fd) = self.ctx.face_dists else { return false };
+        let Some(fd) = self.ctx.face_dists else {
+            return false;
+        };
         let x = f.map(|v| self.p[v]);
         let c = scale(add(add(x[0], x[1]), x[2]), 1.0 / 3.0);
-        let Some(hit) = fd(c).into_iter().find(|hit| hit.face == face && hit.dist.is_finite()) else { return false };
-        hit.dist.abs() <= max_dev() * h && self.face_normal(c, &hit, h).is_some_and(|n| dot(self.outward(f, apex), n) >= 0.5)
+        let Some(hit) = fd(c)
+            .into_iter()
+            .find(|hit| hit.face == face && hit.dist.is_finite())
+        else {
+            return false;
+        };
+        hit.dist.abs() <= max_dev() * h
+            && self
+                .face_normal(c, &hit, h)
+                .is_some_and(|n| dot(self.outward(f, apex), n) >= 0.5)
     }
     fn volume_of(&self, ts: &[usize]) -> f64 {
         ts.iter().map(|&t| vol6(&self.p, self.tets[t]) / 6.0).sum()
@@ -664,15 +805,23 @@ impl<'a> Work<'a> {
             // two or more faces within half the size, whose normals differ by more than 25 degrees (a tangent seam, where a
             // fillet meets its neighbour, is smooth: the vertex may move across it)
             let hits = fd(self.p[v]);
-            let near: Vec<&FaceHit> = hits.iter().filter(|h| h.dist.abs() < 0.5 * self.hv[v]).collect();
+            let near: Vec<&FaceHit> = hits
+                .iter()
+                .filter(|h| h.dist.abs() < 0.5 * self.hv[v])
+                .collect();
             if near.len() >= 2 {
-                let normals: Option<Vec<_>> = near.iter().map(|hit| self.face_normal(self.p[v], hit, self.hv[v])).collect();
+                let normals: Option<Vec<_>> = near
+                    .iter()
+                    .map(|hit| self.face_normal(self.p[v], hit, self.hv[v]))
+                    .collect();
                 match normals {
                     None => fixed = true,
                     Some(normals) => {
                         for i in 0..normals.len() {
                             for j in i + 1..normals.len() {
-                                if dot(normals[i], normals[j]) < 0.9 { fixed = true; }
+                                if dot(normals[i], normals[j]) < 0.9 {
+                                    fixed = true;
+                                }
                             }
                         }
                     }
@@ -683,7 +832,11 @@ impl<'a> Work<'a> {
             // without model faces: where two neighbouring incident faces turn by more than 50 degrees (a coarse mesh of a
             // smooth surface turns by about its size over its radius per face, a ridge by far more)
             let ts = self.vt[v].clone();
-            let faces: Vec<([usize; 3], usize)> = self.boundary_faces(&ts).into_iter().filter(|(f, _)| f.contains(&v)).collect();
+            let faces: Vec<([usize; 3], usize)> = self
+                .boundary_faces(&ts)
+                .into_iter()
+                .filter(|(f, _)| f.contains(&v))
+                .collect();
             let ns: Vec<V3> = faces.iter().map(|&(f, a)| self.outward(f, a)).collect();
             'o: for i in 0..ns.len() {
                 for j in i + 1..ns.len() {
@@ -707,16 +860,23 @@ impl<'a> Work<'a> {
     /// The model edge through feature vertex `v`: its two faces (the faces within half the size) and its unit tangent there.
     /// A corner (three or more faces) or two faces meeting nearly tangentially is not an edge a vertex can move along.
     fn feature_edge(&self, v: usize) -> Result<(Vec<usize>, V3), &'static str> {
-        let Some(fd) = self.ctx.face_dists else { return Err("feature_edge#faces") };
+        let Some(fd) = self.ctx.face_dists else {
+            return Err("feature_edge#faces");
+        };
         let hits = fd(self.p[v]);
-        let near: Vec<&FaceHit> = hits.iter().filter(|h| h.dist.abs() < 0.5 * self.hv[v]).collect();
+        let near: Vec<&FaceHit> = hits
+            .iter()
+            .filter(|h| h.dist.abs() < 0.5 * self.hv[v])
+            .collect();
         if near.len() != 2 {
             return Err("optimise_vertex#1");
         }
         let (Some(n0), Some(n1)) = (
             self.face_normal(self.p[v], near[0], self.hv[v]),
             self.face_normal(self.p[v], near[1], self.hv[v]),
-        ) else { return Err("optimise_vertex#normal") };
+        ) else {
+            return Err("optimise_vertex#normal");
+        };
         let t = cross(n0, n1);
         if norm(t) < 0.3 {
             return Err("optimise_vertex#2");
@@ -729,7 +889,11 @@ impl<'a> Work<'a> {
     /// `None`.
     fn corner_faces(&self, v: usize) -> Option<Vec<usize>> {
         let fd = self.ctx.face_dists?;
-        let mut faces: Vec<usize> = fd(self.p[v]).iter().filter(|h| h.dist.abs() < 0.5 * self.hv[v]).map(|h| h.face).collect();
+        let mut faces: Vec<usize> = fd(self.p[v])
+            .iter()
+            .filter(|h| h.dist.abs() < 0.5 * self.hv[v])
+            .map(|h| h.face)
+            .collect();
         faces.sort_unstable();
         faces.dedup();
         (faces.len() >= 3).then_some(faces)
@@ -780,7 +944,16 @@ impl<'a> Work<'a> {
                     if det.abs() < 1e-3 {
                         return None;
                     }
-                    scale(add(add(scale(cross(a[1], a[2]), b[0]), scale(cross(a[2], a[0]), b[1])), scale(cross(a[0], a[1]), b[2])), 1.0 / det)
+                    scale(
+                        add(
+                            add(
+                                scale(cross(a[1], a[2]), b[0]),
+                                scale(cross(a[2], a[0]), b[1]),
+                            ),
+                            scale(cross(a[0], a[1]), b[2]),
+                        ),
+                        1.0 / det,
+                    )
                 }
             };
             y = add(y, step);
@@ -800,7 +973,10 @@ impl<'a> Work<'a> {
         let old = self.p[v];
         // the corner of faces each within half the size is within about 0.87 of it; one much farther (faces meeting at a
         // shallow angle) is not this vertex's corner
-        let Some(y) = self.surface_point(Some(v), old, h, Some(faces)).filter(|&y| norm(sub(y, old)) <= h) else {
+        let Some(y) = self
+            .surface_point(Some(v), old, h, Some(faces))
+            .filter(|&y| norm(sub(y, old)) <= h)
+        else {
             return self.why("corner#1");
         };
         if norm(sub(y, old)) < 1e-9 * h {
@@ -833,18 +1009,36 @@ impl<'a> Work<'a> {
     }
     /// A point of the surface near `x` for the boundary vertex `v` (its own model face when faces can be asked), `None` when
     /// the point would leave the face or come too close to another one.
-    fn surface_point(&self, v: Option<usize>, x: V3, h: f64, active: Option<&[usize]>) -> Option<V3> {
+    fn surface_point(
+        &self,
+        v: Option<usize>,
+        x: V3,
+        h: f64,
+        active: Option<&[usize]>,
+    ) -> Option<V3> {
         match self.ctx.face_dists {
             Some(fd) => {
                 let ref_pos = v.map(|v| self.p[v]).unwrap_or(x);
                 let hits = fd(ref_pos);
                 let faces: Vec<usize> = match active {
                     Some(a) => a.to_vec(),
-                    None => vec![hits.iter().min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?.face],
+                    None => vec![
+                        hits.iter()
+                            .min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?
+                            .face,
+                    ],
                 };
-                let others_before = hits.iter().filter(|h| !faces.contains(&h.face)).map(|h| h.dist.abs()).fold(f64::INFINITY, f64::min);
+                let others_before = hits
+                    .iter()
+                    .filter(|h| !faces.contains(&h.face))
+                    .map(|h| h.dist.abs())
+                    .fold(f64::INFINITY, f64::min);
                 // several faces: start from the point on all of them (the face-by-face sweep below then only confirms it)
-                let mut y = if faces.len() >= 2 { self.point_on_faces(x, &faces, h).unwrap_or(x) } else { x };
+                let mut y = if faces.len() >= 2 {
+                    self.point_on_faces(x, &faces, h).unwrap_or(x)
+                } else {
+                    x
+                };
                 let mut here = fd(y);
                 for _ in 0..12 {
                     let mut moved = 0.0f64;
@@ -870,18 +1064,27 @@ impl<'a> Work<'a> {
                 // vertex farther out of the solid merely because its selected face is still satisfied.
                 let reference_sdf = (self.ctx.sdf)(ref_pos);
                 let candidate_sdf = (self.ctx.sdf)(y);
-                if !reference_sdf.is_finite() || !candidate_sdf.is_finite()
+                if !reference_sdf.is_finite()
+                    || !candidate_sdf.is_finite()
                     || candidate_sdf > reference_sdf.max(0.02 * h) + 1e-9 * h
-                { return None; }
+                {
+                    return None;
+                }
                 // A trimmed neighbour's supporting-side sign is not a body constraint at a concave rim.
                 if candidate_sdf.abs() > 1e-6 * h {
                     for hit in &here {
                         if let Some(old) = hits.iter().find(|old| old.face == hit.face) {
-                            if hit.dist > old.dist.max(0.02 * h) + 1e-9 * h { return None; }
+                            if hit.dist > old.dist.max(0.02 * h) + 1e-9 * h {
+                                return None;
+                            }
                         }
                     }
                 }
-                let others_after = here.iter().filter(|h| !faces.contains(&h.face)).map(|h| h.dist.abs()).fold(f64::INFINITY, f64::min);
+                let others_after = here
+                    .iter()
+                    .filter(|h| !faces.contains(&h.face))
+                    .map(|h| h.dist.abs())
+                    .fold(f64::INFINITY, f64::min);
                 if others_after < (0.6 * h).min(others_before) {
                     return None;
                 }
@@ -930,12 +1133,18 @@ impl<'a> Work<'a> {
             match self.feature_edge(v) {
                 Ok(f) => {
                     let hits = self.ctx.face_dists.unwrap()(self.p[v]);
-                    let distances: Vec<_> = f.0.iter().filter_map(|face| hits.iter().find(|hit| hit.face == *face))
-                        .map(|hit| hit.dist.abs()).collect();
+                    let distances: Vec<_> =
+                        f.0.iter()
+                            .filter_map(|face| hits.iter().find(|hit| hit.face == *face))
+                            .map(|hit| hit.dist.abs())
+                            .collect();
                     // A point on one face, but farther from the other than the snap error, may slide away from the crease.
-                    off_edge_slide = distances.len() == 2 && distances[0].min(distances[1]) < 0.02 * self.hv[v]
+                    off_edge_slide = distances.len() == 2
+                        && distances[0].min(distances[1]) < 0.02 * self.hv[v]
                         && (distances[0] - distances[1]).abs() > 0.02 * self.hv[v];
-                    if !off_edge_slide { feature = Some(f); }
+                    if !off_edge_slide {
+                        feature = Some(f);
+                    }
                 }
                 Err(k) => {
                     if let Some(faces) = self.corner_faces(v) {
@@ -953,11 +1162,18 @@ impl<'a> Work<'a> {
         let old = self.p[v];
         let old_min = self.min_sj(&star);
         let old_volume = off_edge_slide.then(|| self.volume_of(&star));
-        let old_faces = if boundary { Some(self.boundary_snapshot(&star, h)) } else { None };
+        let old_faces = if boundary {
+            Some(self.boundary_snapshot(&star, h))
+        } else {
+            None
+        };
         let old_under = self.under_gate_ids(&star);
         // candidate refusals by reason, for the verbose trace
         let mut refused: BTreeMap<&'static str, usize> = BTreeMap::new();
-        let eval = |this: &mut Work, x: V3, refused: &mut BTreeMap<&'static str, usize>| -> (f64, f64) {
+        let eval = |this: &mut Work,
+                    x: V3,
+                    refused: &mut BTreeMap<&'static str, usize>|
+         -> (f64, f64) {
             let keep = this.p[v];
             this.p[v] = x;
             let why = if !push && this.under_gate_ids(&star) > old_under {
@@ -970,24 +1186,41 @@ impl<'a> Work<'a> {
                         let was = this.sj(this.tets[t]);
                         this.p[v] = x;
                         if now < gate && was >= gate {
-                            let k = if was < 0.11 { "pushed under: was 0.10-0.11" } else if was < 0.15 { "pushed under: was 0.11-0.15" } else { "pushed under: was >= 0.15" };
+                            let k = if was < 0.11 {
+                                "pushed under: was 0.10-0.11"
+                            } else if was < 0.15 {
+                                "pushed under: was 0.11-0.15"
+                            } else {
+                                "pushed under: was >= 0.15"
+                            };
                             *refused.entry(k).or_default() += 1;
                         }
                     }
                 }
                 Some("more under the gate")
             } else if this.verbose {
-                old_faces.as_ref().and_then(|before| this.surface_refusal(&star, before, h))
-            } else if old_faces.as_ref().is_none_or(|before| this.new_faces_follow_surface(&star, before, h)) {
+                old_faces
+                    .as_ref()
+                    .and_then(|before| this.surface_refusal(&star, before, h))
+            } else if old_faces
+                .as_ref()
+                .is_none_or(|before| this.new_faces_follow_surface(&star, before, h))
+            {
                 None
             } else {
                 Some("surface")
             };
-            let why = why.or_else(|| old_volume.filter(|&volume| (this.volume_of(&star) - volume).abs() > 1e-10 * volume.abs()).map(|_| "volume"));
+            let why = why.or_else(|| {
+                old_volume
+                    .filter(|&volume| (this.volume_of(&star) - volume).abs() > 1e-10 * volume.abs())
+                    .map(|_| "volume")
+            });
             let (m, pen) = match why {
                 None => (this.min_sj(&star), this.penalty_ids(&star)),
                 Some(k) => {
-                    if this.verbose { *refused.entry(k).or_default() += 1; }
+                    if this.verbose {
+                        *refused.entry(k).or_default() += 1;
+                    }
                     (f64::NEG_INFINITY, f64::INFINITY)
                 }
             };
@@ -1005,7 +1238,11 @@ impl<'a> Work<'a> {
             dirs.push(scale(*t, -1.0));
         } else if boundary {
             let n = self.gradient_dir(old, 1e-3 * h);
-            let a = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+            let a = if n[0].abs() < 0.9 {
+                [1.0, 0.0, 0.0]
+            } else {
+                [0.0, 1.0, 0.0]
+            };
             let u1 = unit(cross(n, a));
             let u2 = cross(n, u1);
             for k in 0..8 {
@@ -1031,10 +1268,23 @@ impl<'a> Work<'a> {
         for &t in &star {
             let c = self.tets[t];
             let f: Vec<usize> = c.iter().copied().filter(|&y| y != v).collect();
-            let g = scale(add(add(self.p[f[0]], self.p[f[1]]), self.p[f[2]]), 1.0 / 3.0);
-            let n = unit(cross(sub(self.p[f[1]], self.p[f[0]]), sub(self.p[f[2]], self.p[f[0]])));
-            let n = if dot(n, sub(old, g)) < 0.0 { scale(n, -1.0) } else { n };
-            let l = (norm(sub(self.p[f[0]], self.p[f[1]])) + norm(sub(self.p[f[1]], self.p[f[2]])) + norm(sub(self.p[f[2]], self.p[f[0]]))) / 3.0;
+            let g = scale(
+                add(add(self.p[f[0]], self.p[f[1]]), self.p[f[2]]),
+                1.0 / 3.0,
+            );
+            let n = unit(cross(
+                sub(self.p[f[1]], self.p[f[0]]),
+                sub(self.p[f[2]], self.p[f[0]]),
+            ));
+            let n = if dot(n, sub(old, g)) < 0.0 {
+                scale(n, -1.0)
+            } else {
+                n
+            };
+            let l = (norm(sub(self.p[f[0]], self.p[f[1]]))
+                + norm(sub(self.p[f[1]], self.p[f[2]]))
+                + norm(sub(self.p[f[2]], self.p[f[0]])))
+                / 3.0;
             let apex = add(g, scale(n, l * (2.0f64 / 3.0).sqrt()));
             ideal = add(ideal, apex);
             count += 1.0;
@@ -1058,7 +1308,8 @@ impl<'a> Work<'a> {
         }
         let place = |this: &Work, x: V3| -> Option<V3> {
             if boundary {
-                let y = this.surface_point(Some(v), x, h, feature.as_ref().map(|f| f.0.as_slice()))?;
+                let y =
+                    this.surface_point(Some(v), x, h, feature.as_ref().map(|f| f.0.as_slice()))?;
                 if norm(sub(y, old)) > 0.7 * h {
                     return None;
                 }
@@ -1070,7 +1321,11 @@ impl<'a> Work<'a> {
         let good = 1.25 * self.target;
         // Relaxation: a free boundary vertex may sit a little inside the surface (never outside), within `RELAX_DEPTH` of the
         // local size, when that is what lifts a flat element; the three offsets are tried only in this last-resort mode.
-        let offsets: &[f64] = if relax && boundary && feature.is_none() { &[0.0, 0.5 * RELAX_DEPTH, RELAX_DEPTH] } else { &[0.0] };
+        let offsets: &[f64] = if relax && boundary && feature.is_none() {
+            &[0.0, 0.5 * RELAX_DEPTH, RELAX_DEPTH]
+        } else {
+            &[0.0]
+        };
         let sink = |this: &Work, y: V3, off: f64| -> V3 {
             if off == 0.0 {
                 y
@@ -1083,16 +1338,27 @@ impl<'a> Work<'a> {
                 break;
             }
             for &off in offsets {
-              let Some(y0) = place(self, s) else { *refused.entry("no surface point").or_default() += 1; break };
-              let y = sink(self, y0, off);
-              {
-                let (val, pen) = eval(self, y, &mut refused);
-                if val > 1e-6 && if use_pen { val >= old_min - 1e-9 && (val > best_val + 1e-4 || (val >= best_val - 1e-4 && pen < best_pen - 1e-9)) } else { val > best_val + 1e-4 } {
-                    best_val = val;
-                    best_pen = pen;
-                    best = y;
+                let Some(y0) = place(self, s) else {
+                    *refused.entry("no surface point").or_default() += 1;
+                    break;
+                };
+                let y = sink(self, y0, off);
+                {
+                    let (val, pen) = eval(self, y, &mut refused);
+                    if val > 1e-6
+                        && if use_pen {
+                            val >= old_min - 1e-9
+                                && (val > best_val + 1e-4
+                                    || (val >= best_val - 1e-4 && pen < best_pen - 1e-9))
+                        } else {
+                            val > best_val + 1e-4
+                        }
+                    {
+                        best_val = val;
+                        best_pen = pen;
+                        best = y;
+                    }
                 }
-              }
             }
         }
         let mut r = 0.3 * h;
@@ -1106,17 +1372,28 @@ impl<'a> Work<'a> {
                     break;
                 }
                 for &off in offsets {
-                  let Some(y0) = place(self, add(centre, scale(*d, r))) else { *refused.entry("no surface point").or_default() += 1; break };
-                  let y = sink(self, y0, off);
-                  {
-                    let (val, pen) = eval(self, y, &mut refused);
-                    if val > 1e-6 && if use_pen { val >= old_min - 1e-9 && (val > best_val + 1e-4 || (val >= best_val - 1e-4 && pen < best_pen - 1e-9)) } else { val > best_val + 1e-4 } {
-                        best_val = val;
-                        best_pen = pen;
-                        best = y;
-                        improved = true;
+                    let Some(y0) = place(self, add(centre, scale(*d, r))) else {
+                        *refused.entry("no surface point").or_default() += 1;
+                        break;
+                    };
+                    let y = sink(self, y0, off);
+                    {
+                        let (val, pen) = eval(self, y, &mut refused);
+                        if val > 1e-6
+                            && if use_pen {
+                                val >= old_min - 1e-9
+                                    && (val > best_val + 1e-4
+                                        || (val >= best_val - 1e-4 && pen < best_pen - 1e-9))
+                            } else {
+                                val > best_val + 1e-4
+                            }
+                        {
+                            best_val = val;
+                            best_pen = pen;
+                            best = y;
+                            improved = true;
+                        }
                     }
-                  }
                 }
             }
             if !improved {
@@ -1126,7 +1403,9 @@ impl<'a> Work<'a> {
         if self.verbose {
             eprintln!("      vertex {v} (bnd {boundary}, feature {}, relax {relax}, pen {use_pen}): star {} min {old_min:.4} -> {best_val:.4}, pen {old_pen:.5} -> {best_pen:.5}, moved {:.4}, refused {refused:?}", feature.is_some(), star.len(), norm(sub(best, old)));
         }
-        if !(self.gains(old_min, best_val) || (use_pen && best_pen < 0.98 * old_pen - 1e-9)) || best == old {
+        if !(self.gains(old_min, best_val) || (use_pen && best_pen < 0.98 * old_pen - 1e-9))
+            || best == old
+        {
             return self.why("optimise_vertex#4");
         }
         let m = self.mark();
@@ -1160,11 +1439,19 @@ impl<'a> Work<'a> {
         }
         let mut adj: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for &t in &ts {
-            let o: Vec<usize> = self.tets[t].iter().copied().filter(|&v| v != a && v != b).collect();
+            let o: Vec<usize> = self.tets[t]
+                .iter()
+                .copied()
+                .filter(|&v| v != a && v != b)
+                .collect();
             adj.entry(o[0]).or_default().push(o[1]);
             adj.entry(o[1]).or_default().push(o[0]);
         }
-        let ends: Vec<usize> = adj.iter().filter(|(_, l)| l.len() == 1).map(|(&v, _)| v).collect();
+        let ends: Vec<usize> = adj
+            .iter()
+            .filter(|(_, l)| l.len() == 1)
+            .map(|(&v, _)| v)
+            .collect();
         if adj.values().any(|l| l.is_empty() || l.len() > 2) {
             return None;
         }
@@ -1172,12 +1459,18 @@ impl<'a> Work<'a> {
         if !closed && ends.len() != 2 {
             return None;
         }
-        let start = if closed { *adj.keys().next().unwrap() } else { ends[0] };
+        let start = if closed {
+            *adj.keys().next().unwrap()
+        } else {
+            ends[0]
+        };
         let mut path = vec![start];
         let mut prev = usize::MAX;
         let mut cur = start;
         loop {
-            let Some(next) = adj[&cur].iter().copied().find(|&w| w != prev) else { break };
+            let Some(next) = adj[&cur].iter().copied().find(|&w| w != prev) else {
+                break;
+            };
             if next == start {
                 break;
             }
@@ -1196,12 +1489,20 @@ impl<'a> Work<'a> {
     }
 
     fn same_owner_flat_quad(&self, a: usize, b: usize, c: usize, d: usize) -> bool {
-        let Some(classify) = self.ctx.triangle_face else { return false };
-        if !self.is_bface(a, b, c) || !self.is_bface(a, b, d) { return false; }
+        let Some(classify) = self.ctx.triangle_face else {
+            return false;
+        };
+        if !self.is_bface(a, b, c) || !self.is_bface(a, b, d) {
+            return false;
+        }
         let [pa, pb, pc, pd] = [a, b, c, d].map(|v| self.p[v]);
-        if !flat_convex_quad(pa, pb, pc, pd) { return false; }
+        if !flat_convex_quad(pa, pb, pc, pd) {
+            return false;
+        }
         let owner = classify([pa, pb, pc]);
-        [[pa, pb, pd], [pa, pc, pd], [pb, pc, pd]].into_iter().all(|t| classify(t) == owner)
+        [[pa, pb, pd], [pa, pc, pd], [pb, pc, pd]]
+            .into_iter()
+            .all(|t| classify(t) == owner)
     }
 
     /// Remove the edge `a-b`: the best triangulation of its link polygon. An interior edge (a closed link) leaves the surface
@@ -1209,7 +1510,9 @@ impl<'a> Work<'a> {
     /// quadrilateral's other diagonal), which moves the surface by at most [`MAX_DEVIATION`] of the local size. Accepted when
     /// the worst scaled Jacobian of the cavity improves.
     fn remove_edge(&mut self, a: usize, b: usize) -> bool {
-        let Some((ring, closed)) = self.link_path(a, b) else { return false };
+        let Some((ring, closed)) = self.link_path(a, b) else {
+            return false;
+        };
         let nv = ring.len();
         let ts = self.tets_with(&[a, b]);
         let n = ts.len();
@@ -1230,7 +1533,9 @@ impl<'a> Work<'a> {
             let (c, d) = (ring[0], ring[nv - 1]);
             let (ab, cd) = (sub(self.p[b], self.p[a]), sub(self.p[d], self.p[c]));
             let nrm = cross(ab, cd);
-            if norm(nrm) <= 0.0 || dot(nrm, sub(self.p[c], self.p[a])).abs() / norm(nrm) > max_dev() * h {
+            if norm(nrm) <= 0.0
+                || dot(nrm, sub(self.p[c], self.p[a])).abs() / norm(nrm) > max_dev() * h
+            {
                 return self.why("remove_edge#7");
             }
             // the chord must be new
@@ -1239,21 +1544,29 @@ impl<'a> Work<'a> {
             }
         }
         // sign pattern of the pair of tetrahedra on a triangle of the link polygon, fixed by the fan from its first vertex
-        let sign_a = (1..nv - 1).map(|i| vol6(&self.p, [ring[0], ring[i], ring[i + 1], a])).sum::<f64>().signum();
-        let pair = |this: &Work, i: usize, j: usize, k: usize| -> Option<(f64, [usize; 4], [usize; 4])> {
-            let ta = [ring[i], ring[j], ring[k], a];
-            let tb = [ring[i], ring[k], ring[j], b];
-            let (va, vb) = (vol6(&this.p, ta), vol6(&this.p, tb));
-            if va.signum() != sign_a || vb.signum() != sign_a {
-                return None;
-            }
-            let (ta, tb) = if sign_a > 0.0 { (ta, tb) } else { ([ta[1], ta[0], ta[2], ta[3]], [tb[1], tb[0], tb[2], tb[3]]) };
-            let q = this.sj(ta).min(this.sj(tb));
-            if q <= 1e-6 {
-                return None;
-            }
-            Some((q, ta, tb))
-        };
+        let sign_a = (1..nv - 1)
+            .map(|i| vol6(&self.p, [ring[0], ring[i], ring[i + 1], a]))
+            .sum::<f64>()
+            .signum();
+        let pair =
+            |this: &Work, i: usize, j: usize, k: usize| -> Option<(f64, [usize; 4], [usize; 4])> {
+                let ta = [ring[i], ring[j], ring[k], a];
+                let tb = [ring[i], ring[k], ring[j], b];
+                let (va, vb) = (vol6(&this.p, ta), vol6(&this.p, tb));
+                if va.signum() != sign_a || vb.signum() != sign_a {
+                    return None;
+                }
+                let (ta, tb) = if sign_a > 0.0 {
+                    (ta, tb)
+                } else {
+                    ([ta[1], ta[0], ta[2], ta[3]], [tb[1], tb[0], tb[2], tb[3]])
+                };
+                let q = this.sj(ta).min(this.sj(tb));
+                if q <= 1e-6 {
+                    return None;
+                }
+                Some((q, ta, tb))
+            };
         // best[i][j]: best worst-quality triangulation of the polygon ring[i..=j]
         let mut best = vec![vec![f64::NEG_INFINITY; nv]; nv];
         let mut split = vec![vec![usize::MAX; nv]; nv];
@@ -1312,8 +1625,16 @@ impl<'a> Work<'a> {
                 return self.why("remove_edge#5");
             }
         }
-        let region = if closed { Vec::new() } else { self.region(&[a, b, ring[0], ring[nv - 1]]) };
-        let before = if closed { BTreeMap::new() } else { self.boundary_snapshot(&region, h) };
+        let region = if closed {
+            Vec::new()
+        } else {
+            self.region(&[a, b, ring[0], ring[nv - 1]])
+        };
+        let before = if closed {
+            BTreeMap::new()
+        } else {
+            self.boundary_snapshot(&region, h)
+        };
         if closed {
             let new_vol: f64 = cells.iter().map(|&c| vol6(&self.p, c)).sum();
             if (new_vol - old_vol).abs() > 1e-7 * old_vol.abs() {
@@ -1354,7 +1675,13 @@ impl<'a> Work<'a> {
         if ts.len() != 2 || self.live + 1 > self.max_live {
             return self.why("flip_face#1");
         }
-        let apex = |this: &Work, t: usize| this.tets[t].iter().copied().find(|v| ![a, b, c].contains(v)).unwrap();
+        let apex = |this: &Work, t: usize| {
+            this.tets[t]
+                .iter()
+                .copied()
+                .find(|v| ![a, b, c].contains(v))
+                .unwrap()
+        };
         let (d, e) = (apex(self, ts[0]), apex(self, ts[1]));
         if !self.tets_with(&[d, e]).is_empty() {
             return self.why("flip_face#2");
@@ -1414,9 +1741,14 @@ impl<'a> Work<'a> {
         }
         let h = self.hv[c1].max(self.hv[c2]);
         // the surface moves by the distance between the two diagonals of the quadrilateral (the wedge's height)
-        let (dx, dc) = (sub(self.p[shared[1]], self.p[shared[0]]), sub(self.p[c2], self.p[c1]));
+        let (dx, dc) = (
+            sub(self.p[shared[1]], self.p[shared[0]]),
+            sub(self.p[c2], self.p[c1]),
+        );
         let nrm = cross(dx, dc);
-        if norm(nrm) <= 0.0 || dot(nrm, sub(self.p[c1], self.p[shared[0]])).abs() / norm(nrm) > max_dev() * h {
+        if norm(nrm) <= 0.0
+            || dot(nrm, sub(self.p[c1], self.p[shared[0]])).abs() / norm(nrm) > max_dev() * h
+        {
             return self.why("peel#4");
         }
         let region = self.region(&c);
@@ -1433,7 +1765,10 @@ impl<'a> Work<'a> {
                 *edge_count.entry((f[i], f[j])).or_default() += 1;
             }
         }
-        let ok = edge_count.iter().filter(|(e, _)| c.contains(&e.0) && c.contains(&e.1)).all(|(_, &n)| n == 2);
+        let ok = edge_count
+            .iter()
+            .filter(|(e, _)| c.contains(&e.0) && c.contains(&e.1))
+            .all(|(_, &n)| n == 2);
         if !ok || !self.new_faces_follow_surface(&rest, &before, h) {
             self.rollback(m);
             return self.why("peel#5");
@@ -1456,10 +1791,12 @@ impl<'a> Work<'a> {
     /// the surface, becomes a boundary vertex.
     fn promote(&mut self, t: usize) -> bool {
         let c = self.tets[t];
-        let bf: Vec<usize> = (0..4).filter(|&k| {
-            let f: Vec<usize> = (0..4).filter(|&j| j != k).map(|j| c[j]).collect();
-            self.is_bface(f[0], f[1], f[2])
-        }).collect();
+        let bf: Vec<usize> = (0..4)
+            .filter(|&k| {
+                let f: Vec<usize> = (0..4).filter(|&j| j != k).map(|j| c[j]).collect();
+                self.is_bface(f[0], f[1], f[2])
+            })
+            .collect();
         if bf.len() != 1 {
             return self.why("promote#1");
         }
@@ -1483,22 +1820,34 @@ impl<'a> Work<'a> {
             let x = self.p[d];
             let y = match self.ctx.face_dists {
                 Some(fd) => {
-                    let g = scale(add(add(self.p[face[0]], self.p[face[1]]), self.p[face[2]]), 1.0 / 3.0);
+                    let g = scale(
+                        add(add(self.p[face[0]], self.p[face[1]]), self.p[face[2]]),
+                        1.0 / 3.0,
+                    );
                     let hits = fd(g);
-                    let primary = match hits.iter().min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs())) {
+                    let primary = match hits
+                        .iter()
+                        .min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))
+                    {
                         Some(h) => h.face,
                         None => return false,
                     };
                     let mut y = x;
                     for _ in 0..8 {
                         let here = fd(y);
-                        let Some(hit) = here.iter().find(|h| h.face == primary) else { return false };
+                        let Some(hit) = here.iter().find(|h| h.face == primary) else {
+                            return false;
+                        };
                         for k in 0..3 {
                             y[k] -= hit.dist * hit.normal[k];
                         }
                     }
                     let here = fd(y);
-                    let others = here.iter().filter(|h| h.face != primary).map(|h| h.dist.abs()).fold(f64::INFINITY, f64::min);
+                    let others = here
+                        .iter()
+                        .filter(|h| h.face != primary)
+                        .map(|h| h.dist.abs())
+                        .fold(f64::INFINITY, f64::min);
                     if others < 0.6 * h {
                         return self.why("promote#5");
                     }
@@ -1528,7 +1877,10 @@ impl<'a> Work<'a> {
             }
             let cells: Vec<[usize; 4]> = rest.iter().map(|&u| self.tets[u]).collect();
             let new_vol = self.volume_of(&rest);
-            if self.under_gate(&cells) > old_under || !self.better_than(old_stats, &cells) || (new_vol - old_vol).abs() > 0.05 * h * h * h {
+            if self.under_gate(&cells) > old_under
+                || !self.better_than(old_stats, &cells)
+                || (new_vol - old_vol).abs() > 0.05 * h * h * h
+            {
                 self.rollback(m);
                 self.why("promote#7");
                 continue;
@@ -1566,8 +1918,17 @@ impl<'a> Work<'a> {
                 return self.why("collapse#1");
             }
             if let Some(fd) = self.ctx.face_dists {
-                let near = |x: V3, r: f64| -> BTreeSet<usize> { fd(x).iter().filter(|h| h.dist.abs() < r).map(|h| h.face).collect() };
-                let (fu, fv) = (near(self.p[u], 0.5 * self.hv[u]), near(self.p[v], 0.5 * self.hv[v]));
+                let near = |x: V3, r: f64| -> BTreeSet<usize> {
+                    fd(x)
+                        .iter()
+                        .filter(|h| h.dist.abs() < r)
+                        .map(|h| h.face)
+                        .collect()
+                };
+                let (fu, fv) = (
+                    near(self.p[u], 0.5 * self.hv[u]),
+                    near(self.p[v], 0.5 * self.hv[v]),
+                );
                 if !fu.is_subset(&fv) {
                     return self.why("collapse#2");
                 }
@@ -1580,15 +1941,25 @@ impl<'a> Work<'a> {
         // The outside cone makes boundary pinches part of the same full simplicial link test.
         let region = self.region(&[u, v]);
         let mut cells: Vec<_> = region.iter().map(|&t| self.tets[t]).collect();
-        cells.extend(self.boundary_faces(&region).keys().map(|f| [f[0], f[1], f[2], GHOST]));
+        cells.extend(
+            self.boundary_faces(&region)
+                .keys()
+                .map(|f| [f[0], f[1], f[2], GHOST]),
+        );
         let link = |query: &[usize]| {
             let mut simplices = BTreeSet::new();
             for c in &cells {
-                if !query.iter().all(|v| c.contains(v)) { continue; }
+                if !query.iter().all(|v| c.contains(v)) {
+                    continue;
+                }
                 let rest: Vec<_> = c.iter().copied().filter(|v| !query.contains(v)).collect();
                 for mask in 1..1 << rest.len() {
-                    let mut simplex: Vec<_> = rest.iter().enumerate()
-                        .filter(|(k, _)| mask & (1 << k) != 0).map(|(_, &v)| v).collect();
+                    let mut simplex: Vec<_> = rest
+                        .iter()
+                        .enumerate()
+                        .filter(|(k, _)| mask & (1 << k) != 0)
+                        .map(|(_, &v)| v)
+                        .collect();
                     simplex.sort_unstable();
                     simplices.insert(simplex);
                 }
@@ -1602,7 +1973,11 @@ impl<'a> Work<'a> {
         let around = self.tets_with(&[u, v]);
         let star = self.vt[u].clone();
         // the elements that change: the star of `u`, and that of `v` too when it moves
-        let old = if at.is_some() { region.clone() } else { star.clone() };
+        let old = if at.is_some() {
+            region.clone()
+        } else {
+            star.clone()
+        };
         let h = self.hv[u].max(self.hv[v]);
         let max_edge_old = old
             .iter()
@@ -1614,7 +1989,11 @@ impl<'a> Work<'a> {
             .fold(0.0, f64::max);
         let (old_stats, old_under) = (self.stats(&old), self.under_gate_ids(&old));
         let surface = bu || (at.is_some() && self.bnd[v]);
-        let before = if surface { Some(self.boundary_snapshot(&region, h)) } else { None };
+        let before = if surface {
+            Some(self.boundary_snapshot(&region, h))
+        } else {
+            None
+        };
         let was = self.p[v];
         if let Some(x) = at {
             self.p[v] = x;
@@ -1635,14 +2014,17 @@ impl<'a> Work<'a> {
                 refusal = Some("collapse#5");
                 break;
             }
-            if c.iter().any(|&w| w != v && norm(sub(self.p[w], self.p[v])) > 1.3 * max_edge_old) {
+            if c.iter()
+                .any(|&w| w != v && norm(sub(self.p[w], self.p[v])) > 1.3 * max_edge_old)
+            {
                 refusal = Some("collapse#6");
                 break;
             }
             replaced.push(c);
         }
         // a collapse that only deletes elements (every tetrahedron of `u` also holds `v`) judges nothing new
-        if refusal.is_none() && !replaced.is_empty()
+        if refusal.is_none()
+            && !replaced.is_empty()
             && (self.under_gate(&replaced) > old_under || !self.better_than(old_stats, &replaced))
         {
             refusal = Some("collapse#7");
@@ -1670,10 +2052,17 @@ impl<'a> Work<'a> {
             affected.extend(new_ids.iter().copied());
             // how far the surface moved: the removed vertex's (and the survivor's old position's) distance to the new boundary
             // faces around the survivor
-            let faces: Vec<[usize; 3]> = self.boundary_faces(&affected).into_keys().filter(|f| f.contains(&v)).collect();
-            let distance = |x: V3| faces.iter()
-                .map(|f| point_triangle_distance(x, self.p[f[0]], self.p[f[1]], self.p[f[2]]))
-                .fold(f64::INFINITY, f64::min);
+            let faces: Vec<[usize; 3]> = self
+                .boundary_faces(&affected)
+                .into_keys()
+                .filter(|f| f.contains(&v))
+                .collect();
+            let distance = |x: V3| {
+                faces
+                    .iter()
+                    .map(|f| point_triangle_distance(x, self.p[f[0]], self.p[f[1]], self.p[f[2]]))
+                    .fold(f64::INFINITY, f64::min)
+            };
             let mut deviation = if bu { distance(self.p[u]) } else { 0.0 };
             if at.is_some() {
                 deviation = deviation.max(distance(was));
@@ -1711,10 +2100,17 @@ impl<'a> Work<'a> {
                 }
                 // an end at a corner of three or more faces, the other near some of them: the two merge onto the corner
                 _ => {
-                    let faces = [a, b].into_iter().filter_map(|v| self.corner_faces(v)).max_by_key(Vec::len)?;
+                    let faces = [a, b]
+                        .into_iter()
+                        .filter_map(|v| self.corner_faces(v))
+                        .max_by_key(Vec::len)?;
                     let fd = self.ctx.face_dists?;
                     for v in [a, b] {
-                        if !fd(self.p[v]).iter().filter(|x| x.dist.abs() < 0.5 * self.hv[v]).all(|x| faces.contains(&x.face)) {
+                        if !fd(self.p[v])
+                            .iter()
+                            .filter(|x| x.dist.abs() < 0.5 * self.hv[v])
+                            .all(|x| faces.contains(&x.face))
+                        {
                             return None;
                         }
                     }
@@ -1748,7 +2144,11 @@ impl<'a> Work<'a> {
         } else {
             mid
         };
-        let before = if boundary_edge { Some(self.boundary_snapshot(&around, h)) } else { None };
+        let before = if boundary_edge {
+            Some(self.boundary_snapshot(&around, h))
+        } else {
+            None
+        };
         self.depth += 1;
         let m = self.mark();
         let nv = self.p.len();
@@ -1826,8 +2226,14 @@ impl<'a> Work<'a> {
 
     /// Model faces vertex `v` lies on: within [`FACE_TOL`] of `h`, the tolerance the namer gives a triangle to a face with.
     fn on_faces(&self, v: usize, h: f64) -> Vec<usize> {
-        let Some(fd) = self.ctx.face_dists else { return Vec::new() };
-        let mut faces: Vec<usize> = fd(self.p[v]).into_iter().filter(|hit| hit.dist.abs() <= FACE_TOL * h).map(|hit| hit.face).collect();
+        let Some(fd) = self.ctx.face_dists else {
+            return Vec::new();
+        };
+        let mut faces: Vec<usize> = fd(self.p[v])
+            .into_iter()
+            .filter(|hit| hit.dist.abs() <= FACE_TOL * h)
+            .map(|hit| hit.face)
+            .collect();
         faces.sort_unstable();
         faces.dedup();
         faces
@@ -1841,11 +2247,14 @@ impl<'a> Work<'a> {
                 edges.insert((a, b));
             }
         }
-        edges.into_iter().filter(|&(a, b)| {
-            let h = 0.5 * (self.hv[a] + self.hv[b]);
-            let (fa, fb) = (self.on_faces(a, h), self.on_faces(b, h));
-            !fa.is_empty() && !fb.is_empty() && fa.iter().all(|f| !fb.contains(f))
-        }).collect()
+        edges
+            .into_iter()
+            .filter(|&(a, b)| {
+                let h = 0.5 * (self.hv[a] + self.hv[b]);
+                let (fa, fb) = (self.on_faces(a, h), self.on_faces(b, h));
+                !fa.is_empty() && !fb.is_empty() && fa.iter().all(|f| !fb.contains(f))
+            })
+            .collect()
     }
     /// Split boundary edge (a, b), whose ends lie on different faces, at the point K where a face of a meets a face of b along a
     /// proven concave edge (`tetmesh::reentrant_edge`), K within one edge length of the midpoint. The two facets on (a, b)
@@ -1857,7 +2266,9 @@ impl<'a> Work<'a> {
     /// gate, and the new surface follows the model ([`Self::surface_refusal_on`], with faces lying on either crossed patch
     /// admitted). K is a feature vertex.
     fn split_crease(&mut self, a: usize, b: usize) -> bool {
-        let (Some(fd), Some(_)) = (self.ctx.face_dists, self.ctx.triangle_face) else { return false };
+        let (Some(fd), Some(_)) = (self.ctx.face_dists, self.ctx.triangle_face) else {
+            return false;
+        };
         let fan = self.tets_with(&[a, b]);
         if fan.is_empty() || !self.edge_is_boundary(a, b) {
             return self.why("split_crease#edge");
@@ -1876,8 +2287,12 @@ impl<'a> Work<'a> {
             let mut crease = None;
             'pairs: for &fa in &sa {
                 for &fb in &sb {
-                    let Some(k) = self.surface_point(None, seed, h, Some(&[fa, fb])) else { continue };
-                    if norm(sub(k, mid)) <= len && reentrant_edge(fd, self.ctx.sdf, k, [fa, fb], 1e-3 * h) {
+                    let Some(k) = self.surface_point(None, seed, h, Some(&[fa, fb])) else {
+                        continue;
+                    };
+                    if norm(sub(k, mid)) <= len
+                        && reentrant_edge(fd, self.ctx.sdf, k, [fa, fb], 1e-3 * h)
+                    {
                         crease = Some(k);
                         break 'pairs;
                     }
@@ -1898,15 +2313,29 @@ impl<'a> Work<'a> {
         false
     }
     /// The star of crease point `pos` over the cells around boundary edge (a, b) ([`Self::split_crease`]).
-    fn crease_star(&mut self, a: usize, b: usize, pos: V3, sa: &[usize], sb: &[usize], h: f64) -> bool {
+    fn crease_star(
+        &mut self,
+        a: usize,
+        b: usize,
+        pos: V3,
+        sa: &[usize],
+        sb: &[usize],
+        h: f64,
+    ) -> bool {
         /// Cells a crease cavity may grow to.
         const MAX_CAVITY: usize = 160;
         const FACES: [[usize; 3]; 4] = [[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]];
-        let (Some(fd), Some(classify)) = (self.ctx.face_dists, self.ctx.triangle_face) else { return false };
+        let (Some(fd), Some(classify)) = (self.ctx.face_dists, self.ctx.triangle_face) else {
+            return false;
+        };
         let fan = self.tets_with(&[a, b]);
         // the surface K's fan replaces: the two bridges, and any surface face of the cavity K does not see (one beside K on the
         // same face: its cell with K is flat)
-        let mut bridges: Vec<[usize; 3]> = self.boundary_faces(&fan).into_keys().filter(|f| f.contains(&a) && f.contains(&b)).collect();
+        let mut bridges: Vec<[usize; 3]> = self
+            .boundary_faces(&fan)
+            .into_keys()
+            .filter(|f| f.contains(&a) && f.contains(&b))
+            .collect();
         if bridges.len() != 2 {
             return self.why("split_crease#bridges");
         }
@@ -1926,7 +2355,11 @@ impl<'a> Work<'a> {
             for &u in cavity {
                 for k in 0..4 {
                     let f = face(w, u, k);
-                    if !w.tets_with(&f).iter().any(|&o| o != u && cavity.contains(&o)) {
+                    if !w
+                        .tets_with(&f)
+                        .iter()
+                        .any(|&o| o != u && cavity.contains(&o))
+                    {
                         outer.push((u, k));
                     }
                 }
@@ -1946,30 +2379,62 @@ impl<'a> Work<'a> {
                 x[k] = pos;
                 scaled_jacobian(&x, [0, 1, 2, 3])
             };
-            let grow = outer.iter().filter(|&&(u, k)| !bridges.contains(&face(self, u, k))).find(|&&(u, k)| {
-                let f = face(self, u, k);
-                let near = || norm(sub(scale(add(add(self.p[f[0]], self.p[f[1]]), self.p[f[2]]), 1.0 / 3.0), pos)) <= reach * h;
-                apex(self, u, k) <= 0.0 || (star_sj(u, k) < gate && self.tets_with(&f).len() == 2 && near())
-            });
+            let grow = outer
+                .iter()
+                .filter(|&&(u, k)| !bridges.contains(&face(self, u, k)))
+                .find(|&&(u, k)| {
+                    let f = face(self, u, k);
+                    let near = || {
+                        norm(sub(
+                            scale(
+                                add(add(self.p[f[0]], self.p[f[1]]), self.p[f[2]]),
+                                1.0 / 3.0,
+                            ),
+                            pos,
+                        )) <= reach * h
+                    };
+                    apex(self, u, k) <= 0.0
+                        || (star_sj(u, k) < gate && self.tets_with(&f).len() == 2 && near())
+                });
             let Some(&(u, k)) = grow else {
                 // each outline edge (x, y) of the replaced disk becomes K's fan face (x, y, K), oriented as the disk face it
                 // bordered; where that face would face neither crossed face (a smaller bridge standing across the crease, or
                 // one to a vertex off the surface), the surface face beyond the edge joins the disk
                 let mut directed: Vec<(usize, usize)> = Vec::new();
                 for f in &bridges {
-                    let Some(&t) = self.tets_with(f).first() else { continue };
+                    let Some(&t) = self.tets_with(f).first() else {
+                        continue;
+                    };
                     let apex = self.tets[t].into_iter().find(|v| !f.contains(v)).unwrap();
                     let n = self.outward(*f, apex);
-                    let g = if dot(cross(sub(self.p[f[1]], self.p[f[0]]), sub(self.p[f[2]], self.p[f[0]])), n) >= 0.0 { *f } else { [f[0], f[2], f[1]] };
+                    let g = if dot(
+                        cross(
+                            sub(self.p[f[1]], self.p[f[0]]),
+                            sub(self.p[f[2]], self.p[f[0]]),
+                        ),
+                        n,
+                    ) >= 0.0
+                    {
+                        *f
+                    } else {
+                        [f[0], f[2], f[1]]
+                    };
                     directed.extend([(g[0], g[1]), (g[1], g[2]), (g[2], g[0])]);
                 }
-                let across = directed.iter().copied().filter(|&(x, y)| !directed.contains(&(y, x))).find(|&(x, y)| {
-                    let n = cross(sub(self.p[y], self.p[x]), sub(pos, self.p[x]));
-                    // judged against the patch the namer will give it, as `surface_refusal` judges it
-                    let owner = classify([self.p[x], self.p[y], pos]);
-                    let m = here.iter().find(|hit| hit.face == owner).and_then(|hit| self.face_normal(pos, hit, h));
-                    norm(n) <= 1e-12 * h * h || m.is_none_or(|m| dot(unit(n), m) < 0.5)
-                });
+                let across = directed
+                    .iter()
+                    .copied()
+                    .filter(|&(x, y)| !directed.contains(&(y, x)))
+                    .find(|&(x, y)| {
+                        let n = cross(sub(self.p[y], self.p[x]), sub(pos, self.p[x]));
+                        // judged against the patch the namer will give it, as `surface_refusal` judges it
+                        let owner = classify([self.p[x], self.p[y], pos]);
+                        let m = here
+                            .iter()
+                            .find(|hit| hit.face == owner)
+                            .and_then(|hit| self.face_normal(pos, hit, h));
+                        norm(n) <= 1e-12 * h * h || m.is_none_or(|m| dot(unit(n), m) < 0.5)
+                    });
                 let Some((x, y)) = across else { break outer };
                 let mut beyond = None;
                 for t in self.tets_with(&[x, y]) {
@@ -1979,7 +2444,9 @@ impl<'a> Work<'a> {
                         }
                     }
                 }
-                let Some((t, f)) = beyond else { return self.why("split_crease#beyond") };
+                let Some((t, f)) = beyond else {
+                    return self.why("split_crease#beyond");
+                };
                 bridges.push(f);
                 cavity.insert(t);
                 if cavity.len() > MAX_CAVITY || bridges.len() > MAX_CAVITY {
@@ -2036,7 +2503,10 @@ impl<'a> Work<'a> {
                     }
                 }
             }
-            if reached.len() != bridges.len() || corners.len() + bridges.len() != edges.len() + 1 || edges.values().any(|&n| n > 2) {
+            if reached.len() != bridges.len()
+                || corners.len() + bridges.len() != edges.len() + 1
+                || edges.values().any(|&n| n > 2)
+            {
                 return self.why("split_crease#disk");
             }
         }
@@ -2049,7 +2519,10 @@ impl<'a> Work<'a> {
                 // behind the replaced face, or in front of it by no more than the outside depth `surface_point` allows (0.02 of
                 // the size: a face with a corner just off the surface)
                 let f = FACES[k].map(|j| self.tets[u][j]);
-                let twice_area = norm(cross(sub(self.p[f[1]], self.p[f[0]]), sub(self.p[f[2]], self.p[f[0]])));
+                let twice_area = norm(cross(
+                    sub(self.p[f[1]], self.p[f[0]]),
+                    sub(self.p[f[2]], self.p[f[0]]),
+                ));
                 if !(v > -0.02 * h * twice_area) {
                     return self.why("split_crease#outside");
                 }
@@ -2062,11 +2535,15 @@ impl<'a> Work<'a> {
             return self.why("split_crease#fold");
         }
         let nv = self.p.len();
-        let cells: Vec<[usize; 4]> = outer.iter().filter(|&&(u, k)| !bridges.contains(&face(self, u, k))).map(|&(u, k)| {
-            let mut c = self.tets[u];
-            c[k] = nv;
-            c
-        }).collect();
+        let cells: Vec<[usize; 4]> = outer
+            .iter()
+            .filter(|&&(u, k)| !bridges.contains(&face(self, u, k)))
+            .map(|&(u, k)| {
+                let mut c = self.tets[u];
+                c[k] = nv;
+                c
+            })
+            .collect();
         self.p.push(pos);
         let positive = self.min_sj_cells(&cells) > 1e-6;
         self.p.pop();
@@ -2129,7 +2606,11 @@ impl<'a> Work<'a> {
     /// [`Self::recover_creases`], undone whole if the mesh ends with more elements under the gate than it started with (each
     /// split is judged over its own region only; this bounds the whole mesh).
     fn recover_creases_kept(&mut self, gate: f64) {
-        let under = |w: &Self| (0..w.tets.len()).filter(|&t| w.alive[t] && w.sj(w.tets[t]) < gate).count();
+        let under = |w: &Self| {
+            (0..w.tets.len())
+                .filter(|&t| w.alive[t] && w.sj(w.tets[t]) < gate)
+                .count()
+        };
         let (before, kept) = (under(self), self.snapshot());
         let report = self.rep.clone();
         self.recover_creases();
@@ -2139,7 +2620,11 @@ impl<'a> Work<'a> {
             self.rep = report;
         }
         if self.trace {
-            eprintln!("crease splits: {} ({before} -> {after} elements under the gate{})", self.rep.creases, if after > before { ", undone" } else { "" });
+            eprintln!(
+                "crease splits: {} ({before} -> {after} elements under the gate{})",
+                self.rep.creases,
+                if after > before { ", undone" } else { "" }
+            );
         }
     }
     /// Split every crease candidate that passes [`Self::split_crease`], a few sweeps (a bridge facet has two candidate edges;
@@ -2171,11 +2656,18 @@ impl<'a> Work<'a> {
         let mut kept = false;
         if self.optimise_vertex_with(v, false, false, true) {
             for _ in 0..2 {
-                let pushed: Vec<usize> = self.vt[v].iter().copied().filter(|&t| self.sj(self.tets[t]) < gate).collect();
+                let pushed: Vec<usize> = self.vt[v]
+                    .iter()
+                    .copied()
+                    .filter(|&t| self.sj(self.tets[t]) < gate)
+                    .collect();
                 let mut any = false;
                 for t in pushed {
                     for w in self.tets[t] {
-                        if w != v && self.sj(self.tets[t]) < gate && self.optimise_vertex(w, false, false) {
+                        if w != v
+                            && self.sj(self.tets[t]) < gate
+                            && self.optimise_vertex(w, false, false)
+                        {
                             any = true;
                         }
                     }
@@ -2191,7 +2683,12 @@ impl<'a> Work<'a> {
                     old.entry(u).or_insert(x);
                 }
             }
-            let cells: Vec<usize> = old.keys().flat_map(|&u| self.vt[u].iter().copied()).collect::<BTreeSet<_>>().into_iter().collect();
+            let cells: Vec<usize> = old
+                .keys()
+                .flat_map(|&u| self.vt[u].iter().copied())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
             let after = (self.under_gate_ids(&cells), self.min_sj(&cells));
             let new: Vec<(usize, V3)> = old.keys().map(|&u| (u, self.p[u])).collect();
             for (&u, &x) in &old {
@@ -2259,7 +2756,11 @@ impl<'a> Work<'a> {
                 let c = self.tets[u];
                 for k in 0..4 {
                     let f: Vec<usize> = (0..4).filter(|&j| j != k).map(|j| c[j]).collect();
-                    if !self.tets_with(&f).iter().any(|&o| o != u && cavity.binary_search(&o).is_ok()) {
+                    if !self
+                        .tets_with(&f)
+                        .iter()
+                        .any(|&o| o != u && cavity.binary_search(&o).is_ok())
+                    {
                         outer.push((u, k));
                     }
                 }
@@ -2288,30 +2789,66 @@ impl<'a> Work<'a> {
                 continue;
             }
             // the star in local numbering: the cavity's vertices, then the new vertex last
-            let local: BTreeMap<usize, usize> = verts.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+            let local: BTreeMap<usize, usize> =
+                verts.iter().enumerate().map(|(i, &v)| (v, i)).collect();
             let mut lp: Vec<V3> = verts.iter().map(|&v| self.p[v]).collect();
             lp.push([0.0; 3]);
-            let lcells: Vec<[usize; 4]> = outer.iter().map(|&(u, k)| { let mut c = self.tets[u].map(|v| local.get(&v).copied().unwrap_or(usize::MAX)); c[k] = verts.len(); c }).collect();
+            let lcells: Vec<[usize; 4]> = outer
+                .iter()
+                .map(|&(u, k)| {
+                    let mut c = self.tets[u].map(|v| local.get(&v).copied().unwrap_or(usize::MAX));
+                    c[k] = verts.len();
+                    c
+                })
+                .collect();
             let mut eval = |x: V3| -> f64 {
                 lp[verts.len()] = x;
-                lcells.iter().map(|&c| if vol6(&lp, c) > 0.0 { scaled_jacobian(&lp, c) } else { f64::NEG_INFINITY }).fold(f64::INFINITY, f64::min)
+                lcells
+                    .iter()
+                    .map(|&c| {
+                        if vol6(&lp, c) > 0.0 {
+                            scaled_jacobian(&lp, c)
+                        } else {
+                            f64::NEG_INFINITY
+                        }
+                    })
+                    .fold(f64::INFINITY, f64::min)
             };
             let h = verts.iter().map(|&v| self.hv[v]).sum::<f64>() / verts.len() as f64;
             let centre = |vs: &mut dyn Iterator<Item = usize>| -> V3 {
                 let (mut s, mut n) = ([0.0; 3], 0.0);
-                for v in vs { s = add(s, self.p[v]); n += 1.0; }
+                for v in vs {
+                    s = add(s, self.p[v]);
+                    n += 1.0;
+                }
                 scale(s, 1.0 / n)
             };
-            let mut seeds = vec![centre(&mut verts.iter().copied()), centre(&mut self.tets[t].iter().copied())];
+            let mut seeds = vec![
+                centre(&mut verts.iter().copied()),
+                centre(&mut self.tets[t].iter().copied()),
+            ];
             // the point that would make each outer face's element regular, and their mean
             let mut mean = [0.0; 3];
             for &(u, k) in &outer {
                 let c = self.tets[u];
                 let f: Vec<usize> = (0..4).filter(|&j| j != k).map(|j| c[j]).collect();
-                let g = scale(add(add(self.p[f[0]], self.p[f[1]]), self.p[f[2]]), 1.0 / 3.0);
-                let n = unit(cross(sub(self.p[f[1]], self.p[f[0]]), sub(self.p[f[2]], self.p[f[0]])));
-                let n = if dot(n, sub(self.p[c[k]], g)) < 0.0 { scale(n, -1.0) } else { n };
-                let l = (norm(sub(self.p[f[0]], self.p[f[1]])) + norm(sub(self.p[f[1]], self.p[f[2]])) + norm(sub(self.p[f[2]], self.p[f[0]]))) / 3.0;
+                let g = scale(
+                    add(add(self.p[f[0]], self.p[f[1]]), self.p[f[2]]),
+                    1.0 / 3.0,
+                );
+                let n = unit(cross(
+                    sub(self.p[f[1]], self.p[f[0]]),
+                    sub(self.p[f[2]], self.p[f[0]]),
+                ));
+                let n = if dot(n, sub(self.p[c[k]], g)) < 0.0 {
+                    scale(n, -1.0)
+                } else {
+                    n
+                };
+                let l = (norm(sub(self.p[f[0]], self.p[f[1]]))
+                    + norm(sub(self.p[f[1]], self.p[f[2]]))
+                    + norm(sub(self.p[f[2]], self.p[f[0]])))
+                    / 3.0;
                 let apex = add(g, scale(n, l * (2.0f64 / 3.0).sqrt()));
                 mean = add(mean, apex);
                 seeds.push(apex);
@@ -2366,11 +2903,19 @@ impl<'a> Work<'a> {
                 continue;
             }
             let nv = self.p.len();
-            let cells: Vec<[usize; 4]> = outer.iter().map(|&(u, k)| { let mut c = self.tets[u]; c[k] = nv; c }).collect();
+            let cells: Vec<[usize; 4]> = outer
+                .iter()
+                .map(|&(u, k)| {
+                    let mut c = self.tets[u];
+                    c[k] = nv;
+                    c
+                })
+                .collect();
             // strictly fewer elements under the gate, the worst no worse: an operation accepted on "no worse" changes the
             // path of what follows without lowering any count (`docs/issue-46-phase-143.md`)
             self.p.push(best);
-            let better = self.under_gate(&cells) < self.under_gate_ids(&cavity) && self.min_sj_cells(&cells) >= self.min_sj(&cavity) - EPS;
+            let better = self.under_gate(&cells) < self.under_gate_ids(&cavity)
+                && self.min_sj_cells(&cells) >= self.min_sj(&cavity) - EPS;
             self.p.pop();
             if !better {
                 self.why("rebuild#4");
@@ -2496,13 +3041,20 @@ impl<'a> Work<'a> {
     /// Probe a failed element for trace reasons without committing the probe's mesh or counters.
     fn trace_retry(&mut self, t: usize) -> bool {
         let gate = QualityThresholds::default().min_scaled_jacobian;
-        let count = |w: &Work| (0..w.tets.len()).filter(|&u| w.alive[u] && w.sj(w.tets[u]) < gate).count();
+        let count = |w: &Work| {
+            (0..w.tets.len())
+                .filter(|&u| w.alive[u] && w.sj(w.tets[u]) < gate)
+                .count()
+        };
         let before = count(self);
         let mark = self.mark();
         let report = self.rep.clone();
         self.depth += 1;
         let result = self.cleanup_tet(t, true);
-        eprintln!("    retry: elements under the gate {before} -> {} in the whole mesh", count(self));
+        eprintln!(
+            "    retry: elements under the gate {before} -> {} in the whole mesh",
+            count(self)
+        );
         self.rollback(mark);
         self.depth -= 1;
         self.rep = report;
@@ -2517,7 +3069,12 @@ fn round_key(bad: &[(f64, usize)], gate: f64) -> (usize, usize) {
 
 /// Repair the tetrahedra `tets` (positively oriented) over the points `p` in place; returns the compacted vertex map (old to
 /// new, `usize::MAX` for a removed vertex) and a report. Vertices of the input that stay keep their relative order.
-pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, opts: RepairOptions) -> (Vec<usize>, RepairReport) {
+pub fn repair(
+    p: &mut Vec<V3>,
+    tets: &mut Vec<[usize; 4]>,
+    ctx: &RepairContext,
+    opts: RepairOptions,
+) -> (Vec<usize>, RepairReport) {
     let gate = QualityThresholds::default().min_scaled_jacobian;
     let t_start = std::time::Instant::now();
     let n0 = tets.len();
@@ -2566,7 +3123,8 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         target: opts.target,
     };
     {
-        let mut count: std::collections::HashMap<[usize; 3], u32> = std::collections::HashMap::with_capacity(n0 * 2);
+        let mut count: std::collections::HashMap<[usize; 3], u32> =
+            std::collections::HashMap::with_capacity(n0 * 2);
         for c in &w.tets {
             for x in 0..4 {
                 let mut f: Vec<usize> = (0..4).filter(|&j| j != x).map(|j| c[j]).collect();
@@ -2594,7 +3152,19 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         for v in 0..w.p.len() {
             if w.bnd[v] {
                 let r = (w.ctx.sdf)(w.p[v]).abs() / w.hv[v];
-                let b = if r < 0.02 { 0 } else if r < 0.1 { 1 } else if r < 0.25 { 2 } else if r < 0.5 { 3 } else if r < 1.0 { 4 } else { 5 };
+                let b = if r < 0.02 {
+                    0
+                } else if r < 0.1 {
+                    1
+                } else if r < 0.25 {
+                    2
+                } else if r < 0.5 {
+                    3
+                } else if r < 1.0 {
+                    4
+                } else {
+                    5
+                };
                 hist[b] += 1;
                 if r >= 0.1 && w.vt[v].iter().any(|&t| w.sj(w.tets[t]) < opts.target) {
                     bad_off += 1;
@@ -2663,7 +3233,13 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         }
         w.rep.rounds = round + 1;
         if w.trace {
-            eprintln!("round {round}: {} elements under the target, {} under the gate, {} tets, relax {}", bad.len(), bad.iter().filter(|b| b.0 < gate).count(), w.live, w.relax_enabled);
+            eprintln!(
+                "round {round}: {} elements under the target, {} under the gate, {} tets, relax {}",
+                bad.len(),
+                bad.iter().filter(|b| b.0 < gate).count(),
+                w.live,
+                w.relax_enabled
+            );
         }
         let mut progress = false;
         // cheap and geometry-preserving operations first; the last resort only once they stop helping
@@ -2732,7 +3308,9 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
     // Stuck regions: each element still under the gate gets a cavity rebuild, kept only when it leaves strictly fewer
     // elements under the gate. It runs on the final (best) mesh, so it can only lower the count the rounds reached.
     for _ in 0..4 {
-        let stuck: Vec<usize> = (0..w.tets.len()).filter(|&t| w.alive[t] && w.sj(w.tets[t]) < gate).collect();
+        let stuck: Vec<usize> = (0..w.tets.len())
+            .filter(|&t| w.alive[t] && w.sj(w.tets[t]) < gate)
+            .collect();
         let mut any = false;
         for t in stuck {
             if w.alive[t] && w.sj(w.tets[t]) < gate && w.rebuild(t) {
@@ -2740,7 +3318,13 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
             }
         }
         if w.trace {
-            eprintln!("stuck regions: {} rebuilds so far, {} elements under the gate", w.rep.rebuilds, (0..w.tets.len()).filter(|&t| w.alive[t] && w.sj(w.tets[t]) < gate).count());
+            eprintln!(
+                "stuck regions: {} rebuilds so far, {} elements under the gate",
+                w.rep.rebuilds,
+                (0..w.tets.len())
+                    .filter(|&t| w.alive[t] && w.sj(w.tets[t]) < gate)
+                    .count()
+            );
         }
         if !any {
             break;
@@ -2758,30 +3342,84 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
                 continue;
             }
             let c = w.tets[t];
-            let bf = (0..4).filter(|&k| { let f: Vec<usize> = (0..4).filter(|&j| j != k).map(|j| c[j]).collect(); w.is_bface(f[0], f[1], f[2]) }).count();
-            let desc: Vec<String> = c.iter().map(|&v| { let fx = w.fixed(v); format!("[b{} f{} h{:.3} star{}]", w.bnd[v] as u8, fx as u8, w.hv[v], w.vt[v].len()) }).collect();
+            let bf = (0..4)
+                .filter(|&k| {
+                    let f: Vec<usize> = (0..4).filter(|&j| j != k).map(|j| c[j]).collect();
+                    w.is_bface(f[0], f[1], f[2])
+                })
+                .count();
+            let desc: Vec<String> = c
+                .iter()
+                .map(|&v| {
+                    let fx = w.fixed(v);
+                    format!(
+                        "[b{} f{} h{:.3} star{}]",
+                        w.bnd[v] as u8,
+                        fx as u8,
+                        w.hv[v],
+                        w.vt[v].len()
+                    )
+                })
+                .collect();
             let mut el = Vec::new();
-            for i in 0..4 { for j in i + 1..4 { el.push(norm(sub(w.p[c[i]], w.p[c[j]]))); } }
-            eprintln!("  unresolved sj {:.4} bfaces {} verts {} edges {:.3?}", w.sj(c), bf, desc.join(" "), el);
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    el.push(norm(sub(w.p[c[i]], w.p[c[j]])));
+                }
+            }
+            eprintln!(
+                "  unresolved sj {:.4} bfaces {} verts {} edges {:.3?}",
+                w.sj(c),
+                bf,
+                desc.join(" "),
+                el
+            );
             if shown < 32 {
                 let mut edges = Vec::new();
-                for i in 0..4 { for j in i + 1..4 {
-                    if w.edge_is_boundary(c[i], c[j]) { edges.push((norm(sub(w.p[c[i]], w.p[c[j]])), c[i], c[j])); }
-                }}
+                for i in 0..4 {
+                    for j in i + 1..4 {
+                        if w.edge_is_boundary(c[i], c[j]) {
+                            edges.push((norm(sub(w.p[c[i]], w.p[c[j]])), c[i], c[j]));
+                        }
+                    }
+                }
                 edges.sort_by(|a, b| a.0.total_cmp(&b.0));
                 if let Some(&(_, a, b)) = edges.first() {
                     let region = w.region(&[a, b]);
                     let vertices: BTreeSet<_> = region.iter().flat_map(|&t| w.tets[t]).collect();
-                    let map: BTreeMap<_, _> = vertices.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+                    let map: BTreeMap<_, _> =
+                        vertices.iter().enumerate().map(|(i, &v)| (v, i)).collect();
                     eprintln!("    cavity edge {:?}", [map[&a], map[&b]]);
-                    eprintln!("    cavity points {:?}", vertices.iter().map(|&v| w.p[v]).collect::<Vec<_>>());
-                    eprintln!("    cavity cells {:?}", region.iter().map(|&t| w.tets[t].map(|v| map[&v])).collect::<Vec<_>>());
-                    eprintln!("    cavity sizes {:?}", vertices.iter().map(|&v| w.hv[v]).collect::<Vec<_>>());
-                    eprintln!("    cavity exterior {:?}", w.boundary_faces(&region).keys().map(|f| f.map(|v| map[&v])).collect::<Vec<_>>());
+                    eprintln!(
+                        "    cavity points {:?}",
+                        vertices.iter().map(|&v| w.p[v]).collect::<Vec<_>>()
+                    );
+                    eprintln!(
+                        "    cavity cells {:?}",
+                        region
+                            .iter()
+                            .map(|&t| w.tets[t].map(|v| map[&v]))
+                            .collect::<Vec<_>>()
+                    );
+                    eprintln!(
+                        "    cavity sizes {:?}",
+                        vertices.iter().map(|&v| w.hv[v]).collect::<Vec<_>>()
+                    );
+                    eprintln!(
+                        "    cavity exterior {:?}",
+                        w.boundary_faces(&region)
+                            .keys()
+                            .map(|f| f.map(|v| map[&v]))
+                            .collect::<Vec<_>>()
+                    );
                 }
             }
             if shown < 8 {
-                eprintln!("    coords {:?} sdf {:?}", c.map(|v| w.p[v]), c.map(|v| (w.ctx.sdf)(w.p[v])));
+                eprintln!(
+                    "    coords {:?} sdf {:?}",
+                    c.map(|v| w.p[v]),
+                    c.map(|v| (w.ctx.sdf)(w.p[v]))
+                );
                 w.verbose = true;
                 let r = w.trace_retry(t);
                 w.verbose = false;
@@ -2792,7 +3430,11 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
     }
     if std::env::var_os("REPAIR_TRACE").is_some() {
         eprintln!("reasons {:?}", w.reasons);
-        eprintln!("repair loop {:.2}s (setup {:.2}s)", t_init.elapsed().as_secs_f64(), (t_init - t_start).as_secs_f64());
+        eprintln!(
+            "repair loop {:.2}s (setup {:.2}s)",
+            t_init.elapsed().as_secs_f64(),
+            (t_init - t_start).as_secs_f64()
+        );
     }
     // compact
     let mut remap = vec![usize::MAX; w.p.len()];
@@ -2815,8 +3457,14 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
     let all: Vec<usize> = (0..nt.len()).collect();
     let mut rep = w.rep.clone();
     rep.tets_after = nt.len();
-    rep.min_sj_after = all.iter().map(|&t| scaled_jacobian(&np, nt[t])).fold(f64::INFINITY, f64::min);
-    rep.bad_after = all.iter().filter(|&&t| scaled_jacobian(&np, nt[t]) < gate).count();
+    rep.min_sj_after = all
+        .iter()
+        .map(|&t| scaled_jacobian(&np, nt[t]))
+        .fold(f64::INFINITY, f64::min);
+    rep.bad_after = all
+        .iter()
+        .filter(|&&t| scaled_jacobian(&np, nt[t]) < gate)
+        .count();
     rep.volume_after = nt.iter().map(|&c| vol6(&np, c) / 6.0).sum();
     *p = np;
     *tets = nt;
@@ -2833,30 +3481,58 @@ mod tests {
             for k in 0..4 {
                 let mut f: Vec<_> = (0..4).filter(|&j| j != k).map(|j| cell[j]).collect();
                 f.sort_unstable();
-                *faces.entry([f[0],f[1],f[2]]).or_default() += 1;
+                *faces.entry([f[0], f[1], f[2]]).or_default() += 1;
             }
         }
         move |x| {
-            let d = faces.iter().filter(|(_, count)| **count == 1)
+            let d = faces
+                .iter()
+                .filter(|(_, count)| **count == 1)
                 .map(|(f, _)| point_triangle_distance(x, points[f[0]], points[f[1]], points[f[2]]))
                 .fold(f64::INFINITY, f64::min);
-            let inside = cells.iter().any(|c| (0..4).all(|k| {
-                let mut q = c.map(|v| points[v]);
-                q[k] = x;
-                vol6(&q, [0,1,2,3]) >= 0.0
-            }));
-            if inside { -d } else { d }
+            let inside = cells.iter().any(|c| {
+                (0..4).all(|k| {
+                    let mut q = c.map(|v| points[v]);
+                    q[k] = x;
+                    vol6(&q, [0, 1, 2, 3]) >= 0.0
+                })
+            });
+            if inside {
+                -d
+            } else {
+                d
+            }
         }
     }
 
     fn one_tet<'a>(ctx: &'a RepairContext<'a>) -> Work<'a> {
         Work {
-            p: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            tets: vec![[0, 1, 2, 3]], alive: vec![true], vt: vec![vec![0]; 4],
-            bnd: vec![true; 4], state: vec![0; 4], hv: vec![1.0; 4], live: 1, max_live: 1,
-            log: Vec::new(), ver: vec![0; 4], clock: 0, failed: Default::default(), depth: 0,
-            trace: false, verbose: false, relax_enabled: false, reasons: Default::default(),
-            ctx, rep: RepairReport::default(), target: 0.12,
+            p: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            tets: vec![[0, 1, 2, 3]],
+            alive: vec![true],
+            vt: vec![vec![0]; 4],
+            bnd: vec![true; 4],
+            state: vec![0; 4],
+            hv: vec![1.0; 4],
+            live: 1,
+            max_live: 1,
+            log: Vec::new(),
+            ver: vec![0; 4],
+            clock: 0,
+            failed: Default::default(),
+            depth: 0,
+            trace: false,
+            verbose: false,
+            relax_enabled: false,
+            reasons: Default::default(),
+            ctx,
+            rep: RepairReport::default(),
+            target: 0.12,
         }
     }
 
@@ -2866,48 +3542,161 @@ mod tests {
         let n = 4;
         let id = |i: usize, j: usize, k: usize| (i * n + j) * n + k;
         let mut p = Vec::new();
-        for i in 0..n { for j in 0..n { for k in 0..n { p.push([i as f64, j as f64, k as f64]); } } }
-        for &(v, d) in shift { p[v] = add(p[v], d); }
-        let mut tets = Vec::new();
-        for i in 0..n - 1 { for j in 0..n - 1 { for k in 0..n - 1 {
-            for perm in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
-                let mut at = [i, j, k];
-                let mut c = [id(i, j, k), 0, 0, 0];
-                for (s, &axis) in perm.iter().enumerate() { at[axis] += 1; c[s + 1] = id(at[0], at[1], at[2]); }
-                if vol6(&p, c) < 0.0 { c.swap(0, 1); }
-                tets.push(c);
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    p.push([i as f64, j as f64, k as f64]);
+                }
             }
-        }}}
+        }
+        for &(v, d) in shift {
+            p[v] = add(p[v], d);
+        }
+        let mut tets = Vec::new();
+        for i in 0..n - 1 {
+            for j in 0..n - 1 {
+                for k in 0..n - 1 {
+                    for perm in [
+                        [0, 1, 2],
+                        [0, 2, 1],
+                        [1, 0, 2],
+                        [1, 2, 0],
+                        [2, 0, 1],
+                        [2, 1, 0],
+                    ] {
+                        let mut at = [i, j, k];
+                        let mut c = [id(i, j, k), 0, 0, 0];
+                        for (s, &axis) in perm.iter().enumerate() {
+                            at[axis] += 1;
+                            c[s + 1] = id(at[0], at[1], at[2]);
+                        }
+                        if vol6(&p, c) < 0.0 {
+                            c.swap(0, 1);
+                        }
+                        tets.push(c);
+                    }
+                }
+            }
+        }
         let mut vt = vec![Vec::new(); p.len()];
-        for (t, c) in tets.iter().enumerate() { for &v in c { vt[v].push(t); } }
-        let outer: Vec<bool> = (0..p.len()).map(|v| { let (i, j, k) = (v / (n * n), v / n % n, v % n); [i, j, k].iter().any(|&x| x == 0 || x == n - 1) }).collect();
+        for (t, c) in tets.iter().enumerate() {
+            for &v in c {
+                vt[v].push(t);
+            }
+        }
+        let outer: Vec<bool> = (0..p.len())
+            .map(|v| {
+                let (i, j, k) = (v / (n * n), v / n % n, v % n);
+                [i, j, k].iter().any(|&x| x == 0 || x == n - 1)
+            })
+            .collect();
         let m = p.len();
         let live = tets.len();
         Work {
-            p, alive: vec![true; live], tets, vt, state: outer.iter().map(|&o| if o { 2 } else { 0 }).collect(), bnd: outer,
-            hv: vec![1.0; m], live, max_live: 2 * live, log: Vec::new(), ver: vec![0; m], clock: 0, failed: Default::default(),
-            depth: 0, trace: false, verbose: false, relax_enabled: false, reasons: Default::default(), ctx,
-            rep: RepairReport::default(), target: 0.12,
+            p,
+            alive: vec![true; live],
+            tets,
+            vt,
+            state: outer.iter().map(|&o| if o { 2 } else { 0 }).collect(),
+            bnd: outer,
+            hv: vec![1.0; m],
+            live,
+            max_live: 2 * live,
+            log: Vec::new(),
+            ver: vec![0; m],
+            clock: 0,
+            failed: Default::default(),
+            depth: 0,
+            trace: false,
+            verbose: false,
+            relax_enabled: false,
+            reasons: Default::default(),
+            ctx,
+            rep: RepairReport::default(),
+            target: 0.12,
         }
     }
 
     /// Interior vertices of the lattice, moved by up to 0.45 (found by a seeded search for a case where the plain move of
     /// vertex 21 is refused and the chain is not).
     const CHAIN_SHIFT: [(usize, V3); 8] = [
-        (21, [-0.41304924158162554, 0.14742076642160593, 0.30612567903211985]),
-        (22, [0.4023356688867415, 0.08041250487872005, -0.3167644823747256]),
-        (25, [0.32414582909447365, -0.25979612673960095, 0.03882080070943288]),
-        (26, [0.40912135124152704, 0.26282117039918396, 0.15579209393426321]),
-        (37, [-0.40306819590931875, 0.06166133686706212, 0.11911535391355783]),
-        (38, [0.19961982541912734, -0.14555729891584632, 0.0800885728031598]),
-        (41, [0.13477436391213726, -0.30890736711436834, -0.28403942803676135]),
-        (42, [0.18818541552226423, -0.10860156176111137, 0.3087374449269669]),
+        (
+            21,
+            [
+                -0.41304924158162554,
+                0.14742076642160593,
+                0.30612567903211985,
+            ],
+        ),
+        (
+            22,
+            [0.4023356688867415, 0.08041250487872005, -0.3167644823747256],
+        ),
+        (
+            25,
+            [
+                0.32414582909447365,
+                -0.25979612673960095,
+                0.03882080070943288,
+            ],
+        ),
+        (
+            26,
+            [
+                0.40912135124152704,
+                0.26282117039918396,
+                0.15579209393426321,
+            ],
+        ),
+        (
+            37,
+            [
+                -0.40306819590931875,
+                0.06166133686706212,
+                0.11911535391355783,
+            ],
+        ),
+        (
+            38,
+            [
+                0.19961982541912734,
+                -0.14555729891584632,
+                0.0800885728031598,
+            ],
+        ),
+        (
+            41,
+            [
+                0.13477436391213726,
+                -0.30890736711436834,
+                -0.28403942803676135,
+            ],
+        ),
+        (
+            42,
+            [
+                0.18818541552226423,
+                -0.10860156176111137,
+                0.3087374449269669,
+            ],
+        ),
     ];
 
     #[test]
     fn a_move_that_pushes_neighbours_under_the_gate_is_kept_once_they_are_repaired() {
-        let sdf = |x: V3| (-x[0]).max(x[0] - 3.0).max(-x[1]).max(x[1] - 3.0).max(-x[2]).max(x[2] - 3.0);
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let sdf = |x: V3| {
+            (-x[0])
+                .max(x[0] - 3.0)
+                .max(-x[1])
+                .max(x[1] - 3.0)
+                .max(-x[2])
+                .max(x[2] - 3.0)
+        };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let mut w = lattice(&ctx, &CHAIN_SHIFT);
         let all: Vec<usize> = (0..w.tets.len()).collect();
         let (under, worst) = (w.under_gate_ids(&all), w.min_sj(&all));
@@ -2924,8 +3713,19 @@ mod tests {
 
     #[test]
     fn a_chain_that_does_not_lower_the_count_is_undone_whole() {
-        let sdf = |x: V3| (-x[0]).max(x[0] - 3.0).max(-x[1]).max(x[1] - 3.0).max(-x[2]).max(x[2] - 3.0);
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let sdf = |x: V3| {
+            (-x[0])
+                .max(x[0] - 3.0)
+                .max(-x[1])
+                .max(x[1] - 3.0)
+                .max(-x[2])
+                .max(x[2] - 3.0)
+        };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let mut refused = 0;
         for (v, _) in CHAIN_SHIFT {
             let mut w = lattice(&ctx, &CHAIN_SHIFT);
@@ -2933,7 +3733,11 @@ mod tests {
             if !w.chained_move(v) {
                 refused += 1;
                 assert_eq!(w.p, p, "vertex {v}: every move of the chain is undone");
-                assert_eq!(w.rep, RepairReport::default(), "vertex {v}: and so are its counts");
+                assert_eq!(
+                    w.rep,
+                    RepairReport::default(),
+                    "vertex {v}: and so are its counts"
+                );
                 assert!(w.log.is_empty() && w.depth == 0);
             }
         }
@@ -2943,22 +3747,85 @@ mod tests {
     /// Interior vertices of the lattice moved without folding it, vertices 21 and 22 brought within 0.45 of each other (found by
     /// a seeded search for a case where neither end of their edge can take the other but their midpoint can).
     const MERGE_SHIFT: [(usize, V3); 8] = [
-        (21, [0.01275779301788753, 0.19236962101845498, 0.4097710829165493]),
-        (22, [-0.17388298454156645, -0.166034324114863, -0.3949142436616808]),
-        (25, [0.005457706079940894, -0.27467896984130175, -0.27609898443582115]),
-        (26, [-0.22665877746119276, -0.19327217097996577, 0.18329493084775303]),
-        (37, [0.20503712573452038, -0.26842811430800784, -0.018031662478240618]),
-        (38, [-0.20239292194820854, -0.08322196574864822, -0.15371950525813252]),
-        (41, [-0.029207666036728128, 0.17473697800257684, 0.009973110050718059]),
-        (42, [-0.08470752419932459, -0.25987274544706657, -0.009620944572905632]),
+        (
+            21,
+            [0.01275779301788753, 0.19236962101845498, 0.4097710829165493],
+        ),
+        (
+            22,
+            [
+                -0.17388298454156645,
+                -0.166034324114863,
+                -0.3949142436616808,
+            ],
+        ),
+        (
+            25,
+            [
+                0.005457706079940894,
+                -0.27467896984130175,
+                -0.27609898443582115,
+            ],
+        ),
+        (
+            26,
+            [
+                -0.22665877746119276,
+                -0.19327217097996577,
+                0.18329493084775303,
+            ],
+        ),
+        (
+            37,
+            [
+                0.20503712573452038,
+                -0.26842811430800784,
+                -0.018031662478240618,
+            ],
+        ),
+        (
+            38,
+            [
+                -0.20239292194820854,
+                -0.08322196574864822,
+                -0.15371950525813252,
+            ],
+        ),
+        (
+            41,
+            [
+                -0.029207666036728128,
+                0.17473697800257684,
+                0.009973110050718059,
+            ],
+        ),
+        (
+            42,
+            [
+                -0.08470752419932459,
+                -0.25987274544706657,
+                -0.009620944572905632,
+            ],
+        ),
     ];
 
     /// NEMA17 kept two vertices 0.05 of the size apart beside a reentrant crease, each pinned so that neither could take the
     /// other; merging them at their midpoint removed the edge. The merge is judged over both stars and fills the same volume.
     #[test]
     fn an_edge_neither_end_can_take_merges_at_its_midpoint() {
-        let sdf = |x: V3| (-x[0]).max(x[0] - 3.0).max(-x[1]).max(x[1] - 3.0).max(-x[2]).max(x[2] - 3.0);
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let sdf = |x: V3| {
+            (-x[0])
+                .max(x[0] - 3.0)
+                .max(-x[1])
+                .max(x[1] - 3.0)
+                .max(-x[2])
+                .max(x[2] - 3.0)
+        };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let mut w = lattice(&ctx, &MERGE_SHIFT);
         let all: Vec<usize> = (0..w.tets.len()).collect();
         let total: f64 = all.iter().map(|&t| vol6(&w.p, w.tets[t])).sum();
@@ -2966,9 +3833,15 @@ mod tests {
         let star: Vec<usize> = w.region(&[21, 22]);
         let (under, worst) = (w.under_gate_ids(&star), w.min_sj(&star));
         let around = w.tets_with(&[21, 22]).len();
-        let outside: Vec<V3> = (0..w.p.len()).filter(|&v| w.bnd[v]).map(|v| w.p[v]).collect();
+        let outside: Vec<V3> = (0..w.p.len())
+            .filter(|&v| w.bnd[v])
+            .map(|v| w.p[v])
+            .collect();
         assert!(!w.collapse(21, 22) && !w.collapse(22, 21));
-        assert!(w.log.is_empty() && w.rep.collapses == 0, "a refused collapse leaves nothing behind");
+        assert!(
+            w.log.is_empty() && w.rep.collapses == 0,
+            "a refused collapse leaves nothing behind"
+        );
         let at = w.merge_point(21, 22).unwrap();
         assert_eq!(at, scale(add(w.p[21], w.p[22]), 0.5));
         // a target that turns an element of the survivor's star inside out is refused, the mesh untouched
@@ -2986,7 +3859,13 @@ mod tests {
         assert!((after - 162.0).abs() < 1e-9, "{after}");
         let changed = w.region(&[22]);
         assert!(w.under_gate_ids(&changed) <= under && w.min_sj(&changed) > worst);
-        assert_eq!((0..w.p.len()).filter(|&v| w.bnd[v]).map(|v| w.p[v]).collect::<Vec<_>>(), outside);
+        assert_eq!(
+            (0..w.p.len())
+                .filter(|&v| w.bnd[v])
+                .map(|v| w.p[v])
+                .collect::<Vec<_>>(),
+            outside
+        );
         assert_eq!(w.rep.collapses, 1);
         assert!(w.log.is_empty(), "committed");
         // without model faces a pinned boundary pair has no edge to merge along
@@ -2996,39 +3875,128 @@ mod tests {
     /// Interior vertices of the lattice moved by up to 0.4 without folding it (the elements' volumes add up to the box's),
     /// found by a seeded search for a case where some rebuilds are kept and some refused.
     const REBUILD_SHIFT: [(usize, V3); 8] = [
-        (21, [-0.3315232626177248, -0.2973583203401493, -0.015616695771415907]),
-        (22, [0.39332853415929536, 0.03395137281351558, 0.10906260170592882]),
-        (25, [0.3714445574389372, 0.3283562961085602, 0.11475551869940245]),
-        (26, [-0.31516195108647604, -0.0017730871543533222, 0.315493602612441]),
-        (37, [0.2584941241803029, -0.3338360513027511, -0.3619832312883444]),
-        (38, [-0.29543771266919705, 0.24914393321352624, 0.3833078515007148]),
-        (41, [0.22434864363247717, 0.07541603276310391, -0.3154825845497976]),
-        (42, [-0.015702671216021476, -0.28377916375220613, 0.04462534711911276]),
+        (
+            21,
+            [
+                -0.3315232626177248,
+                -0.2973583203401493,
+                -0.015616695771415907,
+            ],
+        ),
+        (
+            22,
+            [
+                0.39332853415929536,
+                0.03395137281351558,
+                0.10906260170592882,
+            ],
+        ),
+        (
+            25,
+            [0.3714445574389372, 0.3283562961085602, 0.11475551869940245],
+        ),
+        (
+            26,
+            [
+                -0.31516195108647604,
+                -0.0017730871543533222,
+                0.315493602612441,
+            ],
+        ),
+        (
+            37,
+            [0.2584941241803029, -0.3338360513027511, -0.3619832312883444],
+        ),
+        (
+            38,
+            [
+                -0.29543771266919705,
+                0.24914393321352624,
+                0.3833078515007148,
+            ],
+        ),
+        (
+            41,
+            [
+                0.22434864363247717,
+                0.07541603276310391,
+                -0.3154825845497976,
+            ],
+        ),
+        (
+            42,
+            [
+                -0.015702671216021476,
+                -0.28377916375220613,
+                0.04462534711911276,
+            ],
+        ),
     ];
 
     /// Rebuild each element under 0.1 of the lattice moved by `shift`; returns how many were kept and how many refused.
     fn rebuild_each_bad_element(shift: &[(usize, V3)]) -> (usize, usize) {
-        let sdf = |x: V3| (-x[0]).max(x[0] - 3.0).max(-x[1]).max(x[1] - 3.0).max(-x[2]).max(x[2] - 3.0);
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let sdf = |x: V3| {
+            (-x[0])
+                .max(x[0] - 3.0)
+                .max(-x[1])
+                .max(x[1] - 3.0)
+                .max(-x[2])
+                .max(x[2] - 3.0)
+        };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let base = lattice(&ctx, shift);
-        let alive = |w: &Work| (0..w.tets.len()).filter(|&t| w.alive[t]).collect::<Vec<_>>();
+        let alive = |w: &Work| {
+            (0..w.tets.len())
+                .filter(|&t| w.alive[t])
+                .collect::<Vec<_>>()
+        };
         let volume = |w: &Work| alive(w).iter().map(|&t| vol6(&w.p, w.tets[t])).sum::<f64>();
-        let bad: Vec<usize> = alive(&base).into_iter().filter(|&t| base.sj(base.tets[t]) < 0.1).collect();
+        let bad: Vec<usize> = alive(&base)
+            .into_iter()
+            .filter(|&t| base.sj(base.tets[t]) < 0.1)
+            .collect();
         let (mut kept, mut refused) = (0, 0);
         for &t in &bad {
             let mut w = lattice(&ctx, shift);
-            let (p, tets, under, v0) = (w.p.clone(), w.tets.clone(), w.under_gate_ids(&alive(&w)), volume(&w));
+            let (p, tets, under, v0) = (
+                w.p.clone(),
+                w.tets.clone(),
+                w.under_gate_ids(&alive(&w)),
+                volume(&w),
+            );
             if w.rebuild(t) {
                 kept += 1;
-                assert!(w.under_gate_ids(&alive(&w)) < under, "element {t}: strictly fewer under the gate");
+                assert!(
+                    w.under_gate_ids(&alive(&w)) < under,
+                    "element {t}: strictly fewer under the gate"
+                );
                 assert_eq!(w.rep.rebuilds, 1);
-                assert!(alive(&w).iter().all(|&u| vol6(&w.p, w.tets[u]) > 0.0), "element {t}: every element positive");
-                assert!((volume(&w) - v0).abs() < 1e-9 * v0, "element {t}: the star fills exactly the cavity: volume {v0} -> {}", volume(&w));
-                assert_eq!(w.p[..p.len()], p[..], "element {t}: no existing vertex moves");
+                assert!(
+                    alive(&w).iter().all(|&u| vol6(&w.p, w.tets[u]) > 0.0),
+                    "element {t}: every element positive"
+                );
+                assert!(
+                    (volume(&w) - v0).abs() < 1e-9 * v0,
+                    "element {t}: the star fills exactly the cavity: volume {v0} -> {}",
+                    volume(&w)
+                );
+                assert_eq!(
+                    w.p[..p.len()],
+                    p[..],
+                    "element {t}: no existing vertex moves"
+                );
                 assert!(w.log.is_empty() && w.depth == 0, "element {t}: committed");
             } else {
                 refused += 1;
-                assert_eq!((w.p.clone(), w.tets.clone(), w.rep.clone()), (p, tets, RepairReport::default()), "element {t}: untouched");
+                assert_eq!(
+                    (w.p.clone(), w.tets.clone(), w.rep.clone()),
+                    (p, tets, RepairReport::default()),
+                    "element {t}: untouched"
+                );
             }
         }
         (kept, refused)
@@ -3048,33 +4016,78 @@ mod tests {
     }
 
     fn boundary_rim_star<'a>(ctx: &'a RepairContext<'a>) -> Work<'a> {
-        let p = vec![[-0.01, 0.0, -0.01], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0], [-1.0, 0.0, -1.0]];
+        let p = vec![
+            [-0.01, 0.0, -0.01],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, -1.0, 0.0],
+            [-1.0, 0.0, -1.0],
+        ];
         let mut tets = vec![[0, 5, 4, 1], [0, 5, 1, 2], [0, 5, 2, 3], [0, 5, 3, 4]];
         let mut vt = vec![Vec::new(); p.len()];
         for (i, t) in tets.iter_mut().enumerate() {
-            if vol6(&p, *t) < 0.0 { t.swap(0, 1); }
+            if vol6(&p, *t) < 0.0 {
+                t.swap(0, 1);
+            }
             assert!(vol6(&p, *t) > 0.0);
-            for &v in t.iter() { vt[v].push(i); }
+            for &v in t.iter() {
+                vt[v].push(i);
+            }
         }
         Work {
-            p, tets, alive: vec![true; 4], vt, bnd: vec![true; 6], state: vec![0; 6], hv: vec![1.0; 6],
-            live: 4, max_live: 8, log: Vec::new(), ver: vec![0; 6], clock: 0, failed: Default::default(), depth: 0,
-            trace: true, verbose: false, relax_enabled: false, reasons: Default::default(),
-            ctx, rep: RepairReport::default(), target: 0.12,
+            p,
+            tets,
+            alive: vec![true; 4],
+            vt,
+            bnd: vec![true; 6],
+            state: vec![0; 6],
+            hv: vec![1.0; 6],
+            live: 4,
+            max_live: 8,
+            log: Vec::new(),
+            ver: vec![0; 6],
+            clock: 0,
+            failed: Default::default(),
+            depth: 0,
+            trace: true,
+            verbose: false,
+            relax_enabled: false,
+            reasons: Default::default(),
+            ctx,
+            rep: RepairReport::default(),
+            target: 0.12,
         }
     }
 
-
     fn patch_star<'a>(ctx: &'a RepairContext<'a>) -> Work<'a> {
         let mut w = one_tet(ctx);
-        w.p = vec![[6.612502589056242, 0.9791623515729307, 1.0], [6.709354826170753, 1.032107583153861, 1.0], [6.557800678787904, 0.9375225165944678, 1.0], [6.666976380116919, 0.9836550398218374, 1.0], [6.714729407896115, 0.9361133872367009, 0.8748461643523383], [6.679584679480411, 0.9993773349533329, 0.9059898063594833]];
-        w.tets = vec![[4,1,2,3], [0,2,5,1], [2,1,4,5]];
+        w.p = vec![
+            [6.612502589056242, 0.9791623515729307, 1.0],
+            [6.709354826170753, 1.032107583153861, 1.0],
+            [6.557800678787904, 0.9375225165944678, 1.0],
+            [6.666976380116919, 0.9836550398218374, 1.0],
+            [6.714729407896115, 0.9361133872367009, 0.8748461643523383],
+            [6.679584679480411, 0.9993773349533329, 0.9059898063594833],
+        ];
+        w.tets = vec![[4, 1, 2, 3], [0, 2, 5, 1], [2, 1, 4, 5]];
         w.vt = vec![Vec::new(); 6];
-        for (i, t) in w.tets.iter().enumerate() { for &v in t { w.vt[v].push(i); } }
+        for (i, t) in w.tets.iter().enumerate() {
+            for &v in t {
+                w.vt[v].push(i);
+            }
+        }
         w.alive = vec![true; 3];
         w.bnd = vec![true; 6];
         w.state = vec![2; 6];
-        w.hv = vec![0.12643032043277333, 0.12644010801297415, 0.12455267678398671, 0.17269906801500776, 0.1517131854328633, 0.12225311699582002];
+        w.hv = vec![
+            0.12643032043277333,
+            0.12644010801297415,
+            0.12455267678398671,
+            0.17269906801500776,
+            0.1517131854328633,
+            0.12225311699582002,
+        ];
         w.ver = vec![0; 6];
         w.live = 3;
         w.max_live = 4;
@@ -3083,58 +4096,108 @@ mod tests {
 
     #[test]
     fn collapse_checks_the_boundary_exposed_on_surviving_cells() {
-        let points = [[0.0,0.0,0.0],[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,-1.0],[0.25,0.25,0.01]];
-        let cells = [[0,2,1,3],[0,1,2,4]];
-        let sdf = body_sdf(&points,&cells);
-        let ctx = RepairContext {sdf:&sdf,face_dists:None,triangle_face:None};
+        let points = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.25, 0.25, 0.01],
+        ];
+        let cells = [[0, 2, 1, 3], [0, 1, 2, 4]];
+        let sdf = body_sdf(&points, &cells);
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let mut w = one_tet(&ctx);
         w.p = points.to_vec();
         w.tets = cells.to_vec();
-        w.vt = vec![Vec::new();5];
-        for (i,c) in cells.iter().enumerate() {for &v in c {w.vt[v].push(i);}}
-        w.alive = vec![true;2];
-        w.bnd = vec![true;5];
-        w.state = vec![0;5];
-        w.hv = vec![1.0;5];
-        w.ver = vec![0;5];
+        w.vt = vec![Vec::new(); 5];
+        for (i, c) in cells.iter().enumerate() {
+            for &v in c {
+                w.vt[v].push(i);
+            }
+        }
+        w.alive = vec![true; 2];
+        w.bnd = vec![true; 5];
+        w.state = vec![0; 5];
+        w.hv = vec![1.0; 5];
+        w.ver = vec![0; 5];
         w.live = 2;
         w.max_live = 2;
-        assert!(embedded_positive_cells(&w.p,&w.tets));
-        assert!(w.collapse(4,0));
-        assert_eq!(w.live,1);
-        assert!(w.is_bface(0,1,2));
-        assert_eq!(w.tets[0],cells[0]);
+        assert!(embedded_positive_cells(&w.p, &w.tets));
+        assert!(w.collapse(4, 0));
+        assert_eq!(w.live, 1);
+        assert!(w.is_bface(0, 1, 2));
+        assert_eq!(w.tets[0], cells[0]);
     }
 
     #[test]
     fn new_surface_faces_may_not_introduce_a_cad_patch() {
-        let points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let points = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
         let cells = [[0, 1, 2, 3]];
         let sdf = body_sdf(&points, &cells);
         let owner = |_: [V3; 3]| 1usize;
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: Some(&owner) };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: Some(&owner),
+        };
         let w = one_tet(&ctx);
         // every face is new and owned by patch 1, which the (empty) replaced surface never had
         assert!(!w.new_faces_follow_surface(&[0], &BTreeMap::new(), 1.0));
         // the same faces re-tiling removed faces of patch 1 are admitted
-        let before: BTreeMap<_, _> = w.boundary_faces(&[0]).into_iter().enumerate()
-            .map(|(i, (f, apex))| ([100 + 3 * i, 101 + 3 * i, 102 + 3 * i], w.boundary_face_state(f, apex, 1.0))).collect();
+        let before: BTreeMap<_, _> = w
+            .boundary_faces(&[0])
+            .into_iter()
+            .enumerate()
+            .map(|(i, (f, apex))| {
+                (
+                    [100 + 3 * i, 101 + 3 * i, 102 + 3 * i],
+                    w.boundary_face_state(f, apex, 1.0),
+                )
+            })
+            .collect();
         assert!(w.new_faces_follow_surface(&[0], &before, 1.0));
     }
 
     #[test]
     fn a_face_touches_a_tangent_patch_but_not_one_across_a_sharp_edge() {
         // face [0, 1, 2] of the unit tetrahedron lies in z = 0 with outward normal -z
-        let fd = |x: V3| vec![
-            // tangent: a patch continuing the face's plane
-            FaceHit { face: 7, dist: -x[2], normal: [0.0, 0.0, -1.0] },
-            // sharp edge: a patch through the face's centroid at right angles to it
-            FaceHit { face: 8, dist: x[0] - 1.0 / 3.0, normal: [1.0, 0.0, 0.0] },
-            // far: a patch parallel to the face, half the size away
-            FaceHit { face: 9, dist: -x[2] - 0.5, normal: [0.0, 0.0, -1.0] },
-        ];
+        let fd = |x: V3| {
+            vec![
+                // tangent: a patch continuing the face's plane
+                FaceHit {
+                    face: 7,
+                    dist: -x[2],
+                    normal: [0.0, 0.0, -1.0],
+                },
+                // sharp edge: a patch through the face's centroid at right angles to it
+                FaceHit {
+                    face: 8,
+                    dist: x[0] - 1.0 / 3.0,
+                    normal: [1.0, 0.0, 0.0],
+                },
+                // far: a patch parallel to the face, half the size away
+                FaceHit {
+                    face: 9,
+                    dist: -x[2] - 0.5,
+                    normal: [0.0, 0.0, -1.0],
+                },
+            ]
+        };
         let sdf = |x: V3| -x[2];
-        let ctx = RepairContext { sdf: &sdf, face_dists: Some(&fd), triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: Some(&fd),
+            triangle_face: None,
+        };
         let w = one_tet(&ctx);
         assert!(w.face_touches_patch([0, 1, 2], 3, 7, 1.0));
         assert!(!w.face_touches_patch([0, 1, 2], 3, 8, 1.0));
@@ -3146,7 +4209,11 @@ mod tests {
     fn surface_fidelity_is_bounded_by_the_worst_face_of_the_replaced_region() {
         // every face of the tetrahedron is off the surface z = -0.02; at h = 0.1 the base face's error is twice the tolerance
         let sdf = |x: V3| -x[2] - 0.02;
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let w = one_tet(&ctx);
         let h = 0.1;
         let now = w.boundary_snapshot(&[0], h);
@@ -3167,10 +4234,21 @@ mod tests {
     #[test]
     fn an_operation_may_not_add_elements_under_the_gate() {
         let sdf = |x: V3| -x[2];
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let mut w = one_tet(&ctx);
         // one flat element replaced by two less flat ones, both still under the gate
-        w.p = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.3, 0.3, 0.01], [0.3, 0.3, 0.03], [0.35, 0.3, 0.035]];
+        w.p = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.3, 0.3, 0.01],
+            [0.3, 0.3, 0.03],
+            [0.35, 0.3, 0.035],
+        ];
         let (old, a, b) = ([0, 1, 2, 3], [0, 1, 2, 4], [0, 1, 2, 5]);
         w.tets[0] = old;
         let gate = QualityThresholds::default().min_scaled_jacobian;
@@ -3181,12 +4259,20 @@ mod tests {
 
     #[test]
     fn collapse_removes_an_interior_subdivision_without_changing_the_boundary() {
-        let ctx = RepairContext {sdf: &|_| panic!("interior collapse must not project"), face_dists: None, triangle_face: None};
+        let ctx = RepairContext {
+            sdf: &|_| panic!("interior collapse must not project"),
+            face_dists: None,
+            triangle_face: None,
+        };
         let mut w = one_tet(&ctx);
-        w.p.push([0.01,0.01,0.01]);
-        w.tets = vec![[4,1,2,3], [0,4,2,3], [0,1,4,3], [0,1,2,4]];
+        w.p.push([0.01, 0.01, 0.01]);
+        w.tets = vec![[4, 1, 2, 3], [0, 4, 2, 3], [0, 1, 4, 3], [0, 1, 2, 4]];
         w.vt = vec![Vec::new(); 5];
-        for (i,c) in w.tets.iter().enumerate() { for &v in c { w.vt[v].push(i); } }
+        for (i, c) in w.tets.iter().enumerate() {
+            for &v in c {
+                w.vt[v].push(i);
+            }
+        }
         w.alive = vec![true; 4];
         w.bnd.push(false);
         w.state.push(0);
@@ -3194,46 +4280,97 @@ mod tests {
         w.ver.push(0);
         w.live = 4;
         w.max_live = 4;
-        let before = w.boundary_faces(&[0,1,2,3]).keys().copied().collect::<Vec<_>>();
+        let before = w
+            .boundary_faces(&[0, 1, 2, 3])
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         assert!(embedded_positive_cells(&w.p, &w.tets));
-        assert!(w.collapse(4,0));
-        let live: Vec<_> = w.alive.iter().enumerate().filter(|(_,a)| **a).map(|(i,_)|i).collect();
-        assert_eq!(live.len(),1);
-        assert_eq!(w.tets[live[0]],[0,1,2,3]);
-        assert_eq!(w.boundary_faces(&live).keys().copied().collect::<Vec<_>>(),before);
-        assert_eq!(w.rep.collapses,1);
+        assert!(w.collapse(4, 0));
+        let live: Vec<_> = w
+            .alive
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| **a)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(live.len(), 1);
+        assert_eq!(w.tets[live[0]], [0, 1, 2, 3]);
+        assert_eq!(
+            w.boundary_faces(&live).keys().copied().collect::<Vec<_>>(),
+            before
+        );
+        assert_eq!(w.rep.collapses, 1);
     }
 
     #[test]
     fn collapse_rejects_a_shared_ghost_edge_and_preserves_the_mesh() {
-        let mut points = [[1.0, 2.0, 0.0], [1.0, 2.0, 1.0], [1.0, 3.0, 0.0], [1.0, 3.0, 1.0], [2.0, 2.0, 0.0], [2.0, 2.0, 1.0], [2.0, 3.0, 0.0], [1.7862770674388084, 2.6412709154599487, 1.2395633041759209], [2.0, 3.0, 2.0], [3.0, 3.0, 0.0], [3.0, 3.0, 1.0]];
-        let source = [[0, 4, 6, 7], [4, 0, 5, 7], [2, 0, 6, 7], [0, 2, 3, 7], [1, 0, 3, 7], [3, 1, 7, 8], [6, 4, 9, 10], [4, 6, 7, 10], [5, 4, 7, 10]];
+        let mut points = [
+            [1.0, 2.0, 0.0],
+            [1.0, 2.0, 1.0],
+            [1.0, 3.0, 0.0],
+            [1.0, 3.0, 1.0],
+            [2.0, 2.0, 0.0],
+            [2.0, 2.0, 1.0],
+            [2.0, 3.0, 0.0],
+            [1.7862770674388084, 2.6412709154599487, 1.2395633041759209],
+            [2.0, 3.0, 2.0],
+            [3.0, 3.0, 0.0],
+            [3.0, 3.0, 1.0],
+        ];
+        let source = [
+            [0, 4, 6, 7],
+            [4, 0, 5, 7],
+            [2, 0, 6, 7],
+            [0, 2, 3, 7],
+            [1, 0, 3, 7],
+            [3, 1, 7, 8],
+            [6, 4, 9, 10],
+            [4, 6, 7, 10],
+            [5, 4, 7, 10],
+        ];
         points[6] = add(points[7], scale(sub(points[6], points[7]), 0.01));
         let mut faces = BTreeMap::<[usize; 3], usize>::new();
         for cell in source {
             for k in 0..4 {
                 let mut face: Vec<_> = (0..4).filter(|&j| j != k).map(|j| cell[j]).collect();
                 face.sort_unstable();
-                *faces.entry([face[0],face[1],face[2]]).or_default() += 1;
+                *faces.entry([face[0], face[1], face[2]]).or_default() += 1;
             }
         }
         let sdf = |x: V3| {
-            let d = faces.iter().filter(|(_, count)| **count == 1)
+            let d = faces
+                .iter()
+                .filter(|(_, count)| **count == 1)
                 .map(|(f, _)| point_triangle_distance(x, points[f[0]], points[f[1]], points[f[2]]))
                 .fold(f64::INFINITY, f64::min);
-            let inside = source.iter().any(|c| (0..4).all(|k| {
-                let mut q = c.map(|v| points[v]);
-                q[k] = x;
-                vol6(&q, [0,1,2,3]) >= 0.0
-            }));
-            if inside { -d } else { d }
+            let inside = source.iter().any(|c| {
+                (0..4).all(|k| {
+                    let mut q = c.map(|v| points[v]);
+                    q[k] = x;
+                    vol6(&q, [0, 1, 2, 3]) >= 0.0
+                })
+            });
+            if inside {
+                -d
+            } else {
+                d
+            }
         };
-        let ctx = RepairContext {sdf: &sdf, face_dists: None, triangle_face: None};
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let mut w = one_tet(&ctx);
         w.p = points.to_vec();
         w.tets = source.to_vec();
         w.vt = vec![Vec::new(); points.len()];
-        for (i,c) in source.iter().enumerate() { for &v in c { w.vt[v].push(i); } }
+        for (i, c) in source.iter().enumerate() {
+            for &v in c {
+                w.vt[v].push(i);
+            }
+        }
         w.alive = vec![true; source.len()];
         w.bnd = vec![true; points.len()];
         w.state = vec![0; points.len()];
@@ -3244,47 +4381,99 @@ mod tests {
         assert!(embedded_positive_cells(&w.p, &w.tets));
         let mut edges = BTreeMap::new();
         for (f, count) in &faces {
-            if *count != 1 { continue; }
+            if *count != 1 {
+                continue;
+            }
             for k in 0..3 {
-                let (a,b) = (f[k],f[(k+1)%3]);
-                *edges.entry((a.min(b),a.max(b))).or_insert(0) += 1;
+                let (a, b) = (f[k], f[(k + 1) % 3]);
+                *edges.entry((a.min(b), a.max(b))).or_insert(0) += 1;
             }
         }
         assert!(edges.values().all(|&count| count == 2));
         let before = (w.p.clone(), w.tets.clone(), w.vt.clone(), w.bnd.clone());
-        assert!(!w.collapse(6,7));
+        assert!(!w.collapse(6, 7));
         assert_eq!((w.p, w.tets, w.vt, w.bnd), before);
     }
 
     #[test]
     fn surface_slide_uses_body_membership_at_a_concave_trim() {
         let sdf = |x: V3| {
-            let d = trimmed_rim_faces(x).iter().map(|h|h.dist.abs()).fold(f64::INFINITY,f64::min);
-            if x[0]>0.0 && x[2]>0.0 { d } else { -d }
+            let d = trimmed_rim_faces(x)
+                .iter()
+                .map(|h| h.dist.abs())
+                .fold(f64::INFINITY, f64::min);
+            if x[0] > 0.0 && x[2] > 0.0 {
+                d
+            } else {
+                -d
+            }
         };
-        let ctx = RepairContext { sdf: &sdf, face_dists: Some(&trimmed_rim_faces), triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: Some(&trimmed_rim_faces),
+            triangle_face: None,
+        };
         let mut w = one_tet(&ctx);
-        w.p[0] = [0.0,0.0,0.05];
-        assert_eq!(w.surface_point(Some(0),[0.0,0.0,0.08],0.25,Some(&[1])),Some([0.0,0.0,0.08]));
-        let convex = |x: V3| vec![FaceHit {face:0,dist:x[0],normal:[1.0,0.0,0.0]}, FaceHit {face:1,dist:x[2],normal:[0.0,0.0,1.0]}];
+        w.p[0] = [0.0, 0.0, 0.05];
+        assert_eq!(
+            w.surface_point(Some(0), [0.0, 0.0, 0.08], 0.25, Some(&[1])),
+            Some([0.0, 0.0, 0.08])
+        );
+        let convex = |x: V3| {
+            vec![
+                FaceHit {
+                    face: 0,
+                    dist: x[0],
+                    normal: [1.0, 0.0, 0.0],
+                },
+                FaceHit {
+                    face: 1,
+                    dist: x[2],
+                    normal: [0.0, 0.0, 1.0],
+                },
+            ]
+        };
         let convex_sdf = |x: V3| x[0].max(x[2]);
-        let ctx = RepairContext {sdf:&convex_sdf,face_dists:Some(&convex),triangle_face:None};
+        let ctx = RepairContext {
+            sdf: &convex_sdf,
+            face_dists: Some(&convex),
+            triangle_face: None,
+        };
         let mut w = one_tet(&ctx);
-        w.p[0] = [-0.05,0.0,0.0];
-        assert_eq!(w.surface_point(Some(0),[0.05,0.0,0.0],0.25,Some(&[1])),None);
-        let bad = RepairContext {sdf:&|_|f64::NAN,..ctx};
-        assert_eq!(one_tet(&bad).surface_point(None,[0.0;3],0.25,Some(&[1])),None);
+        w.p[0] = [-0.05, 0.0, 0.0];
+        assert_eq!(
+            w.surface_point(Some(0), [0.05, 0.0, 0.0], 0.25, Some(&[1])),
+            None
+        );
+        let bad = RepairContext {
+            sdf: &|_| f64::NAN,
+            ..ctx
+        };
+        assert_eq!(
+            one_tet(&bad).surface_point(None, [0.0; 3], 0.25, Some(&[1])),
+            None
+        );
     }
 
     #[test]
     fn fixed_endpoints_allow_only_a_single_flat_patch_diagonal() {
         let sdf = |x: V3| x[2] - 1.0;
         let owner = |_: [V3; 3]| 1;
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: Some(&owner) };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: Some(&owner),
+        };
         let mut w = patch_star(&ctx);
         let old_volume: f64 = w.tets.iter().map(|&t| vol6(&w.p, t)).sum();
         assert!(w.remove_edge(1, 2));
-        let cells: Vec<_> = w.tets.iter().enumerate().filter(|(i, _)| w.alive[*i]).map(|(_, &t)| t).collect();
+        let cells: Vec<_> = w
+            .tets
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| w.alive[*i])
+            .map(|(_, &t)| t)
+            .collect();
         assert!(embedded_positive_cells(&w.p, &cells));
         assert!(cells.iter().all(|t| !(t.contains(&1) && t.contains(&2))));
         assert!(cells.iter().all(|&t| scaled_jacobian(&w.p, t) >= 0.1438));
@@ -3297,51 +4486,96 @@ mod tests {
             assert!(!w.remove_edge(1, 2));
             assert_eq!(w.tets, original);
         }
-        let absent = RepairContext { triangle_face: None, ..ctx };
+        let absent = RepairContext {
+            triangle_face: None,
+            ..ctx
+        };
         assert!(!patch_star(&absent).remove_edge(1, 2));
-        let changed = |t: [V3; 3]| if t.contains(&[6.612502589056242, 0.9791623515729307, 1.0]) { 2 } else { 1 };
-        let split = RepairContext { triangle_face: Some(&changed), ..ctx };
+        let changed = |t: [V3; 3]| {
+            if t.contains(&[6.612502589056242, 0.9791623515729307, 1.0]) {
+                2
+            } else {
+                1
+            }
+        };
+        let split = RepairContext {
+            triangle_face: Some(&changed),
+            ..ctx
+        };
         assert!(!patch_star(&split).remove_edge(1, 2));
         let p = patch_star(&ctx).p;
-        let replacement_only = |t: [V3; 3]| if [p[0], p[1], p[3]].iter().all(|v| t.contains(v)) { 2 } else { 1 };
-        let split = RepairContext { triangle_face: Some(&replacement_only), ..ctx };
+        let replacement_only = |t: [V3; 3]| {
+            if [p[0], p[1], p[3]].iter().all(|v| t.contains(v)) {
+                2
+            } else {
+                1
+            }
+        };
+        let split = RepairContext {
+            triangle_face: Some(&replacement_only),
+            ..ctx
+        };
         assert!(!patch_star(&split).remove_edge(1, 2));
     }
 
     #[test]
     fn flat_quad_and_cell_embedding_refuse_degeneracy() {
-        let [a,b,c,d] = [[-1.,0.,0.], [1.,0.,0.], [0.,-1.,0.], [0.,1.,0.]];
-        assert!(flat_convex_quad(a,b,c,d));
+        let [a, b, c, d] = [[-1., 0., 0.], [1., 0., 0.], [0., -1., 0.], [0., 1., 0.]];
+        assert!(flat_convex_quad(a, b, c, d));
         let tilt = |x: V3| [x[0], x[1], 0.5 * x[0] + 0.25 * x[1]];
         assert!(flat_convex_quad(tilt(a), tilt(b), tilt(c), tilt(d)));
-        assert!(!flat_convex_quad(a,b,c,c));
-        assert!(!flat_convex_quad(a,b,c,[0.,0.,0.]));
-        assert!(!flat_convex_quad(a,b,c,[0.,1.,f64::EPSILON]));
-        let p = [[0.,0.,0.], [1.,0.,0.], [0.,1.,0.], [0.,0.,1.]];
-        assert!(embedded_positive_cells(&p, &[[0,1,2,3]]));
-        assert!(!embedded_positive_cells(&p, &[[0,1,2,3], [0,1,2,3]]));
-        assert!(!embedded_positive_cells(&p, &[[1,0,2,3]]));
+        assert!(!flat_convex_quad(a, b, c, c));
+        assert!(!flat_convex_quad(a, b, c, [0., 0., 0.]));
+        assert!(!flat_convex_quad(a, b, c, [0., 1., f64::EPSILON]));
+        let p = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+        assert!(embedded_positive_cells(&p, &[[0, 1, 2, 3]]));
+        assert!(!embedded_positive_cells(&p, &[[0, 1, 2, 3], [0, 1, 2, 3]]));
+        assert!(!embedded_positive_cells(&p, &[[1, 0, 2, 3]]));
         let p: Vec<_> = p.into_iter().chain(p.map(|x| add(x, [0.125; 3]))).collect();
-        assert!(!embedded_positive_cells(&p, &[[0,1,2,3], [4,5,6,7]]));
+        assert!(!embedded_positive_cells(&p, &[[0, 1, 2, 3], [4, 5, 6, 7]]));
     }
     fn trimmed_rim_faces(x: V3) -> Vec<FaceHit> {
-        [([x[0].max(0.0), x[1], 0.0], [0.0, 0.0, 1.0]),
-         ([0.0, x[1], x[2].max(0.0)], [1.0, 0.0, 0.0])]
-            .into_iter().enumerate().map(|(face, (q, outward))| {
-                let off = sub(x, q);
-                let d = norm(off);
-                let sign = if dot(off, outward) < 0.0 { -1.0 } else { 1.0 };
-                FaceHit { face, dist: sign * d, normal: if d > 1e-12 { scale(off, sign / d) } else { outward } }
-            }).collect()
+        [
+            ([x[0].max(0.0), x[1], 0.0], [0.0, 0.0, 1.0]),
+            ([0.0, x[1], x[2].max(0.0)], [1.0, 0.0, 0.0]),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(face, (q, outward))| {
+            let off = sub(x, q);
+            let d = norm(off);
+            let sign = if dot(off, outward) < 0.0 { -1.0 } else { 1.0 };
+            FaceHit {
+                face,
+                dist: sign * d,
+                normal: if d > 1e-12 {
+                    scale(off, sign / d)
+                } else {
+                    outward
+                },
+            }
+        })
+        .collect()
     }
 
     #[test]
     fn trimmed_projection_directions_do_not_hide_a_sharp_feature_or_prevent_a_rim_slide() {
         let sdf = |x: V3| {
-            let d = trimmed_rim_faces(x).iter().map(|hit| hit.dist.abs()).fold(f64::INFINITY, f64::min);
-            if x[0] <= 0.0 || x[2] <= 0.0 { -d } else { d }
+            let d = trimmed_rim_faces(x)
+                .iter()
+                .map(|hit| hit.dist.abs())
+                .fold(f64::INFINITY, f64::min);
+            if x[0] <= 0.0 || x[2] <= 0.0 {
+                -d
+            } else {
+                d
+            }
         };
-        let ctx = RepairContext { sdf: &sdf, face_dists: Some(&trimmed_rim_faces), triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: Some(&trimmed_rim_faces),
+            triangle_face: None,
+        };
         let mut w = boundary_rim_star(&ctx);
         w.p[0][1] = 0.8;
         let hits = trimmed_rim_faces(w.p[0]);
@@ -3359,18 +4593,42 @@ mod tests {
     fn unavailable_or_invalid_intrinsic_normals_pin_the_vertex_and_refuse_a_move() {
         for mode in 0..3 {
             let fd = |x: V3| {
-                let mut hits = vec![FaceHit { face: 0, dist: -0.01, normal: [1.0, 0.0, 0.0] }, FaceHit { face: 1, dist: -0.01, normal: [0.0, 0.0, 1.0] }];
+                let mut hits = vec![
+                    FaceHit {
+                        face: 0,
+                        dist: -0.01,
+                        normal: [1.0, 0.0, 0.0],
+                    },
+                    FaceHit {
+                        face: 1,
+                        dist: -0.01,
+                        normal: [0.0, 0.0, 1.0],
+                    },
+                ];
                 if x != [-0.01, 0.0, -0.01] {
                     match mode {
                         0 => hits.clear(),
-                        1 => { for hit in &mut hits { hit.dist = 0.1; } }
-                        _ => { for hit in &mut hits { hit.dist = 0.0; hit.normal = [2.0, 0.0, 0.0]; } }
+                        1 => {
+                            for hit in &mut hits {
+                                hit.dist = 0.1;
+                            }
+                        }
+                        _ => {
+                            for hit in &mut hits {
+                                hit.dist = 0.0;
+                                hit.normal = [2.0, 0.0, 0.0];
+                            }
+                        }
                     }
                 }
                 hits
             };
             let sdf = |_: V3| 0.0;
-            let ctx = RepairContext { sdf: &sdf, face_dists: Some(&fd), triangle_face: None };
+            let ctx = RepairContext {
+                sdf: &sdf,
+                face_dists: Some(&fd),
+                triangle_face: None,
+            };
             let mut w = boundary_rim_star(&ctx);
             let before = (w.p.clone(), w.tets.clone(), w.rep.clone());
             assert!(w.fixed(0));
@@ -3382,11 +4640,17 @@ mod tests {
 
     /// The solid octant x, y, z <= 0: its three model faces and its distance.
     fn octant_faces(x: V3) -> Vec<FaceHit> {
-        (0..3).map(|k| {
-            let mut normal = [0.0; 3];
-            normal[k] = 1.0;
-            FaceHit { face: k, dist: x[k], normal }
-        }).collect()
+        (0..3)
+            .map(|k| {
+                let mut normal = [0.0; 3];
+                normal[k] = 1.0;
+                FaceHit {
+                    face: k,
+                    dist: x[k],
+                    normal,
+                }
+            })
+            .collect()
     }
     fn octant_sdf(x: V3) -> f64 {
         x[0].max(x[1]).max(x[2])
@@ -3396,35 +4660,75 @@ mod tests {
     /// the solid (no single model edge holds it, only the corner can), and `shift` places other vertices.
     fn corner_cube<'a>(ctx: &'a RepairContext<'a>, shift: &[(usize, V3)]) -> Work<'a> {
         let mut w = one_tet(ctx);
-        w.p = (0..8).map(|b: usize| [(b & 1) as f64 - 1.0, ((b >> 1) & 1) as f64 - 1.0, ((b >> 2) & 1) as f64 - 1.0]).collect();
+        w.p = (0..8)
+            .map(|b: usize| {
+                [
+                    (b & 1) as f64 - 1.0,
+                    ((b >> 1) & 1) as f64 - 1.0,
+                    ((b >> 2) & 1) as f64 - 1.0,
+                ]
+            })
+            .collect();
         w.p[7] = [-0.2, -0.15, -0.25];
-        for &(v, x) in shift { w.p[v] = x; }
+        for &(v, x) in shift {
+            w.p[v] = x;
+        }
         w.tets = Vec::new();
-        for perm in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        for perm in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
             let mut c = [0, 0, 0, 0];
             let mut at = 0;
-            for (s, &axis) in perm.iter().enumerate() { at |= 1 << axis; c[s + 1] = at; }
-            if vol6(&w.p, c) < 0.0 { c.swap(0, 1); }
+            for (s, &axis) in perm.iter().enumerate() {
+                at |= 1 << axis;
+                c[s + 1] = at;
+            }
+            if vol6(&w.p, c) < 0.0 {
+                c.swap(0, 1);
+            }
             assert!(vol6(&w.p, c) > 0.0);
             w.tets.push(c);
         }
         w.vt = vec![Vec::new(); 8];
-        for (i, t) in w.tets.iter().enumerate() { for &v in t { w.vt[v].push(i); } }
-        (w.alive, w.bnd, w.state, w.hv, w.ver) = (vec![true; 6], vec![true; 8], vec![0; 8], vec![1.0; 8], vec![0; 8]);
+        for (i, t) in w.tets.iter().enumerate() {
+            for &v in t {
+                w.vt[v].push(i);
+            }
+        }
+        (w.alive, w.bnd, w.state, w.hv, w.ver) = (
+            vec![true; 6],
+            vec![true; 8],
+            vec![0; 8],
+            vec![1.0; 8],
+            vec![0; 8],
+        );
         (w.live, w.max_live, w.trace) = (6, 12, true);
         w
     }
 
     #[test]
     fn a_vertex_near_a_three_face_corner_moves_onto_it_and_then_stays() {
-        let ctx = RepairContext { sdf: &octant_sdf, face_dists: Some(&octant_faces), triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &octant_sdf,
+            face_dists: Some(&octant_faces),
+            triangle_face: None,
+        };
         let mut w = corner_cube(&ctx, &[]);
         let all: Vec<usize> = (0..6).collect();
         let before = w.min_sj(&all);
         assert!(w.fixed(7));
         assert_eq!(w.feature_edge(7).unwrap_err(), "optimise_vertex#1");
         assert!(w.optimise_vertex(7, false, false));
-        assert!(norm(w.p[7]) < 1e-9, "the vertex lands on the corner: {:?}", w.p[7]);
+        assert!(
+            norm(w.p[7]) < 1e-9,
+            "the vertex lands on the corner: {:?}",
+            w.p[7]
+        );
         assert!(w.min_sj(&all) > before);
         assert_eq!(w.rep.slides, 1);
         // the cells tile the unit cube again
@@ -3439,13 +4743,31 @@ mod tests {
         // faces x = 0, y = 0 and a plane through the origin 15 degrees off y = 0: one face after the other shrinks the error
         // by about cos(15 deg)^2 per sweep, far short of the 1e-6 h a surface point must reach in its 12 sweeps
         let n = [0.0, 15_f64.to_radians().cos(), 15_f64.to_radians().sin()];
-        let fd = |x: V3| vec![
-            FaceHit { face: 0, dist: x[0], normal: [1.0, 0.0, 0.0] },
-            FaceHit { face: 1, dist: x[1], normal: [0.0, 1.0, 0.0] },
-            FaceHit { face: 2, dist: dot(x, n), normal: n },
-        ];
+        let fd = |x: V3| {
+            vec![
+                FaceHit {
+                    face: 0,
+                    dist: x[0],
+                    normal: [1.0, 0.0, 0.0],
+                },
+                FaceHit {
+                    face: 1,
+                    dist: x[1],
+                    normal: [0.0, 1.0, 0.0],
+                },
+                FaceHit {
+                    face: 2,
+                    dist: dot(x, n),
+                    normal: n,
+                },
+            ]
+        };
         let sdf = |x: V3| x[0].max(x[1]).max(dot(x, n));
-        let ctx = RepairContext { sdf: &sdf, face_dists: Some(&fd), triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: Some(&fd),
+            triangle_face: None,
+        };
         let w = one_tet(&ctx);
         let start = [-0.2, -0.1, -0.3];
         // the corner of all three
@@ -3455,7 +4777,10 @@ mod tests {
         assert!(norm(y) < 1e-9, "{y:?}");
         // the edge of the two shallow faces (the x axis): the nearest point on it, as the sweep would reach in the limit
         let y = w.surface_point(None, start, 1.0, Some(&[1, 2])).unwrap();
-        assert!((y[0] + 0.2).abs() < 1e-9 && y[1].abs() < 1e-9 && y[2].abs() < 1e-9, "{y:?}");
+        assert!(
+            (y[0] + 0.2).abs() < 1e-9 && y[1].abs() < 1e-9 && y[2].abs() < 1e-9,
+            "{y:?}"
+        );
         // two parallel faces fix no point
         assert_eq!(w.point_on_faces(start, &[1, 1], 1.0), None);
         assert_eq!(w.point_on_faces(start, &[1, 1, 0], 1.0), None);
@@ -3466,17 +4791,37 @@ mod tests {
         // x = 0, y = 0 and a plane 10 degrees off y = 0 that passes 0.44 from the corner vertex: all three are within half
         // the size, but they meet 1.7 away (at z = 1.44)
         let n = [0.0, 10_f64.to_radians().cos(), 10_f64.to_radians().sin()];
-        let fd = move |x: V3| vec![
-            FaceHit { face: 0, dist: x[0], normal: [1.0, 0.0, 0.0] },
-            FaceHit { face: 1, dist: x[1], normal: [0.0, 1.0, 0.0] },
-            FaceHit { face: 2, dist: dot(x, n) - 0.25, normal: n },
-        ];
+        let fd = move |x: V3| {
+            vec![
+                FaceHit {
+                    face: 0,
+                    dist: x[0],
+                    normal: [1.0, 0.0, 0.0],
+                },
+                FaceHit {
+                    face: 1,
+                    dist: x[1],
+                    normal: [0.0, 1.0, 0.0],
+                },
+                FaceHit {
+                    face: 2,
+                    dist: dot(x, n) - 0.25,
+                    normal: n,
+                },
+            ]
+        };
         let sdf = move |x: V3| x[0].max(x[1]).max(dot(x, n) - 0.25);
-        let ctx = RepairContext { sdf: &sdf, face_dists: Some(&fd), triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: Some(&fd),
+            triangle_face: None,
+        };
         let mut w = corner_cube(&ctx, &[]);
         let snapshot = (w.p.clone(), w.tets.clone(), w.rep.clone());
         assert_eq!(w.corner_faces(7), Some(vec![0, 1, 2]));
-        let far = w.surface_point(Some(7), w.p[7], 1.0, Some(&[0, 1, 2])).unwrap();
+        let far = w
+            .surface_point(Some(7), w.p[7], 1.0, Some(&[0, 1, 2]))
+            .unwrap();
         assert!(norm(sub(far, w.p[7])) > 1.5);
         assert!(!w.optimise_vertex(7, false, false));
         assert_eq!(w.reasons.get("corner#1"), Some(&1));
@@ -3487,12 +4832,20 @@ mod tests {
     fn a_corner_move_that_would_crush_an_element_is_refused_and_leaves_the_mesh_alone() {
         // as above, but the vertex on the edge x = y = 0 sits 0.1 below the corner, so the corner point would squash the
         // elements between them; the move must be refused with a corner reason and change nothing
-        let ctx = RepairContext { sdf: &octant_sdf, face_dists: Some(&octant_faces), triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &octant_sdf,
+            face_dists: Some(&octant_faces),
+            triangle_face: None,
+        };
         let mut w = corner_cube(&ctx, &[(3, [0.0, 0.0, -0.1])]);
         let snapshot = (w.p.clone(), w.tets.clone(), w.rep.clone());
         assert!(w.corner_faces(7).is_some());
         assert!(!w.optimise_vertex(7, false, false));
-        assert!(w.reasons.keys().any(|k| k.starts_with("corner#")), "{:?}", w.reasons);
+        assert!(
+            w.reasons.keys().any(|k| k.starts_with("corner#")),
+            "{:?}",
+            w.reasons
+        );
         assert_eq!((w.p, w.tets, w.rep), snapshot);
     }
 
@@ -3500,7 +4853,11 @@ mod tests {
     fn two_pinned_vertices_beside_a_corner_merge_onto_it() {
         // vertex 7 on the edge x = y = 0 within half the size of the corner (three faces near), vertex 3 on the same edge 0.6
         // below (two faces near), both pinned: the edge between them merges at the corner, not at its midpoint
-        let ctx = RepairContext { sdf: &octant_sdf, face_dists: Some(&octant_faces), triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &octant_sdf,
+            face_dists: Some(&octant_faces),
+            triangle_face: None,
+        };
         let mut w = corner_cube(&ctx, &[(7, [0.0, 0.0, -0.1]), (3, [0.0, 0.0, -0.6])]);
         w.state[3] = 2;
         assert!(w.fixed(3) && w.fixed(7));
@@ -3521,10 +4878,18 @@ mod tests {
         // a fourth face, the plane z = -0.8, is near vertex 3 but not near vertex 7: the corner of faces 0..2 does not hold it
         let fd = |x: V3| {
             let mut hits = octant_faces(x);
-            hits.push(FaceHit { face: 3, dist: x[2] + 0.8, normal: [0.0, 0.0, 1.0] });
+            hits.push(FaceHit {
+                face: 3,
+                dist: x[2] + 0.8,
+                normal: [0.0, 0.0, 1.0],
+            });
             hits
         };
-        let ctx = RepairContext { sdf: &octant_sdf, face_dists: Some(&fd), triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &octant_sdf,
+            face_dists: Some(&fd),
+            triangle_face: None,
+        };
         let mut w = corner_cube(&ctx, &[(7, [0.0, 0.0, -0.1]), (3, [0.0, 0.0, -0.6])]);
         w.state[3] = 2;
         assert_eq!(w.corner_faces(7), Some(vec![0, 1, 2]));
@@ -3535,9 +4900,26 @@ mod tests {
     fn nearly_tangent_faces_stay_free_but_a_sharp_turn_is_fixed() {
         for (angle, expected) in [(20_f64, false), (30_f64, true)] {
             let n = [angle.to_radians().sin(), 0.0, angle.to_radians().cos()];
-            let fd = |x: V3| vec![FaceHit { face: 0, dist: x[2], normal: [0.0, 0.0, 1.0] }, FaceHit { face: 1, dist: dot(x, n), normal: n }];
+            let fd = |x: V3| {
+                vec![
+                    FaceHit {
+                        face: 0,
+                        dist: x[2],
+                        normal: [0.0, 0.0, 1.0],
+                    },
+                    FaceHit {
+                        face: 1,
+                        dist: dot(x, n),
+                        normal: n,
+                    },
+                ]
+            };
             let sdf = |_: V3| 0.0;
-            let ctx = RepairContext { sdf: &sdf, face_dists: Some(&fd), triangle_face: None };
+            let ctx = RepairContext {
+                sdf: &sdf,
+                face_dists: Some(&fd),
+                triangle_face: None,
+            };
             assert_eq!(boundary_rim_star(&ctx).fixed(0), expected);
         }
     }
@@ -3545,13 +4927,29 @@ mod tests {
     #[test]
     fn surface_fidelity_uses_the_owned_patch_normal_and_trim_distance() {
         let sdf = |x: V3| {
-            let d = trimmed_rim_faces(x).iter().map(|hit| hit.dist.abs()).fold(f64::INFINITY, f64::min);
-            if x[0] <= 0.0 || x[2] <= 0.0 { -d } else { d }
+            let d = trimmed_rim_faces(x)
+                .iter()
+                .map(|hit| hit.dist.abs())
+                .fold(f64::INFINITY, f64::min);
+            if x[0] <= 0.0 || x[2] <= 0.0 {
+                -d
+            } else {
+                d
+            }
         };
         let classify = |_: [V3; 3]| 0;
-        let ctx = RepairContext { sdf: &sdf, face_dists: Some(&trimmed_rim_faces), triangle_face: Some(&classify) };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: Some(&trimmed_rim_faces),
+            triangle_face: Some(&classify),
+        };
         let mut w = one_tet(&ctx);
-        w.p = vec![[-0.001, 0.0, 0.0], [-0.0015, 1.0, 0.0], [-0.002, 0.0, 0.0], [0.0, 0.0, -0.5]];
+        w.p = vec![
+            [-0.001, 0.0, 0.0],
+            [-0.0015, 1.0, 0.0],
+            [-0.002, 0.0, 0.0],
+            [0.0, 0.0, -0.5],
+        ];
         w.tets[0] = [0, 2, 1, 3];
         let state = w.boundary_face_state([0, 1, 2], 3, 0.1);
         assert!(state.normal_alignment > 0.999);
@@ -3567,7 +4965,11 @@ mod tests {
         let sdf = |_: V3| 0.0;
         let fd = |_: V3| Vec::new();
         let classify = |_: [V3; 3]| 0;
-        let ctx = RepairContext { sdf: &sdf, face_dists: Some(&fd), triangle_face: Some(&classify) };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: Some(&fd),
+            triangle_face: Some(&classify),
+        };
         let w = one_tet(&ctx);
         let before = w.boundary_snapshot(&[0], 1.0);
         assert!(!w.new_faces_follow_surface(&[0], &before, 1.0));
@@ -3576,22 +4978,44 @@ mod tests {
     #[test]
     fn repeated_small_normal_changes_cannot_cross_the_surface_alignment_floor() {
         let sdf = |x: V3| -x[2];
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let mut w = one_tet(&ctx);
         let original = w.p.clone();
-        let rotate = |angle: f64| original.iter().map(|p| [p[0], p[1] * angle.cos() - p[2] * angle.sin(), p[1] * angle.sin() + p[2] * angle.cos()]).collect();
+        let rotate = |angle: f64| {
+            original
+                .iter()
+                .map(|p| {
+                    [
+                        p[0],
+                        p[1] * angle.cos() - p[2] * angle.sin(),
+                        p[1] * angle.sin() + p[2] * angle.cos(),
+                    ]
+                })
+                .collect()
+        };
         w.p = rotate(60_f64.to_radians());
         let before = w.boundary_snapshot(&[0], 10.0);
         assert!((before[&[0, 1, 2]].normal_alignment - 0.5).abs() < EPS);
         w.p = rotate(65_f64.to_radians());
-        assert!(w.boundary_face_state([0, 1, 2], 3, 10.0).normal_alignment + 0.1 >= before[&[0, 1, 2]].normal_alignment);
+        assert!(
+            w.boundary_face_state([0, 1, 2], 3, 10.0).normal_alignment + 0.1
+                >= before[&[0, 1, 2]].normal_alignment
+        );
         assert!(!w.new_faces_follow_surface(&[0], &before, 10.0));
     }
 
     #[test]
     fn moved_boundary_face_with_same_vertices_cannot_expand_without_bound() {
         let sdf = |_: V3| 0.0;
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let mut w = one_tet(&ctx);
         let before = w.boundary_snapshot(&[0], 0.1);
         w.p[1][0] = 1.1;
@@ -3605,8 +5029,14 @@ mod tests {
     #[test]
     fn moved_boundary_face_cannot_change_final_cad_owner() {
         let sdf = |_: V3| 0.0;
-        let classify = |vertices: [V3; 3]| usize::from(vertices.iter().map(|p| p[0]).sum::<f64>() / 3.0 > 0.37);
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: Some(&classify) };
+        let classify = |vertices: [V3; 3]| {
+            usize::from(vertices.iter().map(|p| p[0]).sum::<f64>() / 3.0 > 0.37)
+        };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: Some(&classify),
+        };
         let mut w = one_tet(&ctx);
         let before = w.boundary_snapshot(&[0], 0.1);
         assert_eq!(before[&[0, 1, 2]].owner, Some(0));
@@ -3621,15 +5051,45 @@ mod tests {
     #[test]
     fn surface_search_keeps_a_valid_improvement_when_the_unconstrained_optimum_distorts_a_face() {
         let sdf = |x: V3| x[2];
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let mut w = Work {
-            p: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [0.04, 0.04, 0.0]],
-            tets: vec![[0, 4, 1, 3], [1, 4, 2, 3], [2, 4, 0, 3]], alive: vec![true; 3],
-            vt: vec![vec![0, 2], vec![0, 1], vec![1, 2], vec![0, 1, 2], vec![0, 1, 2]],
-            bnd: vec![true; 5], state: vec![0; 5], hv: vec![1.0; 5], live: 3, max_live: 3,
-            log: Vec::new(), ver: vec![0; 5], clock: 0, failed: Default::default(), depth: 0,
-            trace: false, verbose: false, relax_enabled: false, reasons: Default::default(),
-            ctx: &ctx, rep: RepairReport::default(), target: 0.12,
+            p: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, -1.0],
+                [0.04, 0.04, 0.0],
+            ],
+            tets: vec![[0, 4, 1, 3], [1, 4, 2, 3], [2, 4, 0, 3]],
+            alive: vec![true; 3],
+            vt: vec![
+                vec![0, 2],
+                vec![0, 1],
+                vec![1, 2],
+                vec![0, 1, 2],
+                vec![0, 1, 2],
+            ],
+            bnd: vec![true; 5],
+            state: vec![0; 5],
+            hv: vec![1.0; 5],
+            live: 3,
+            max_live: 3,
+            log: Vec::new(),
+            ver: vec![0; 5],
+            clock: 0,
+            failed: Default::default(),
+            depth: 0,
+            trace: false,
+            verbose: false,
+            relax_enabled: false,
+            reasons: Default::default(),
+            ctx: &ctx,
+            rep: RepairReport::default(),
+            target: 0.12,
         };
         let star = [0, 1, 2];
         let before = w.boundary_snapshot(&star, 1.0);
@@ -3643,12 +5103,33 @@ mod tests {
     #[test]
     fn crossing_solver_gate_counts_as_a_gain_below_minimum_step() {
         let sdf = |_: V3| 0.0;
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let w = Work {
-            p: vec![], tets: vec![], alive: vec![], vt: vec![], bnd: vec![], state: vec![], hv: vec![],
-            live: 0, max_live: 0, log: vec![], ver: vec![], clock: 0, failed: Default::default(),
-            depth: 0, trace: false, verbose: false, relax_enabled: false, reasons: Default::default(),
-            ctx: &ctx, rep: RepairReport::default(), target: 0.12,
+            p: vec![],
+            tets: vec![],
+            alive: vec![],
+            vt: vec![],
+            bnd: vec![],
+            state: vec![],
+            hv: vec![],
+            live: 0,
+            max_live: 0,
+            log: vec![],
+            ver: vec![],
+            clock: 0,
+            failed: Default::default(),
+            depth: 0,
+            trace: false,
+            verbose: false,
+            relax_enabled: false,
+            reasons: Default::default(),
+            ctx: &ctx,
+            rep: RepairReport::default(),
+            target: 0.12,
         };
         let gate = QualityThresholds::default().min_scaled_jacobian;
         assert!(w.gains(gate - 0.004, gate + 0.002));
@@ -3658,9 +5139,18 @@ mod tests {
 
     #[test]
     fn restoring_a_snapshot_returns_every_table_to_the_kept_round() {
-        let points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let points = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
         let sdf = body_sdf(&points, &[[0, 1, 2, 3]]);
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
+        };
         let mut w = one_tet(&ctx);
         w.max_live = 8;
         let kept = w.snapshot();
@@ -3681,9 +5171,15 @@ mod tests {
         w.failed.insert(1, (w.clock, false));
         w.restore(kept);
         assert_eq!(w.p, points.to_vec());
-        assert_eq!((w.tets.clone(), w.alive.clone(), w.live), (vec![[0, 1, 2, 3]], vec![true], 1));
+        assert_eq!(
+            (w.tets.clone(), w.alive.clone(), w.live),
+            (vec![[0, 1, 2, 3]], vec![true], 1)
+        );
         assert_eq!(w.vt, vec![vec![0]; 4]);
-        assert_eq!((w.bnd.len(), w.state.len(), w.hv.len(), w.ver.len()), (4, 4, 4, 4));
+        assert_eq!(
+            (w.bnd.len(), w.state.len(), w.hv.len(), w.ver.len()),
+            (4, 4, 4, 4)
+        );
         assert!(w.failed.is_empty() && w.log.is_empty());
         // the adjacency answers for the restored mesh
         assert_eq!(w.tets_with(&[0, 1, 2]), vec![0]);
@@ -3691,25 +5187,66 @@ mod tests {
 
     #[test]
     fn trace_retry_rolls_back_a_successful_repair() {
-        let p = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.25, 0.25, 0.01]];
+        let p = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.25, 0.25, 0.01],
+        ];
         let mut tets = vec![[4, 1, 2, 3], [0, 4, 2, 3], [0, 1, 4, 3], [0, 1, 2, 4]];
         for t in &mut tets {
-            if vol6(&p, *t) < 0.0 { t.swap(1, 2); }
+            if vol6(&p, *t) < 0.0 {
+                t.swap(1, 2);
+            }
         }
         let mut vt = vec![Vec::new(); p.len()];
         for (i, t) in tets.iter().enumerate() {
-            for &v in t { vt[v].push(i); }
+            for &v in t {
+                vt[v].push(i);
+            }
         }
         let sdf = |_: V3| 0.0;
-        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
-        let mut w = Work {
-            p, tets, alive: vec![true; 4], vt, bnd: vec![true, true, true, true, false], state: vec![0; 5],
-            hv: vec![1.0; 5], live: 4, max_live: 8, log: Vec::new(), ver: vec![0; 5], clock: 0,
-            failed: Default::default(), depth: 0, trace: false, verbose: false, relax_enabled: false,
-            reasons: Default::default(), ctx: &ctx, rep: RepairReport::default(), target: 0.12,
+        let ctx = RepairContext {
+            sdf: &sdf,
+            face_dists: None,
+            triangle_face: None,
         };
-        let before = (w.p.clone(), w.tets.clone(), w.alive.clone(), w.vt.clone(), w.bnd.clone(), w.rep.clone());
-        assert!(w.trace_retry(1), "the diagnostic must exercise a successful repair");
+        let mut w = Work {
+            p,
+            tets,
+            alive: vec![true; 4],
+            vt,
+            bnd: vec![true, true, true, true, false],
+            state: vec![0; 5],
+            hv: vec![1.0; 5],
+            live: 4,
+            max_live: 8,
+            log: Vec::new(),
+            ver: vec![0; 5],
+            clock: 0,
+            failed: Default::default(),
+            depth: 0,
+            trace: false,
+            verbose: false,
+            relax_enabled: false,
+            reasons: Default::default(),
+            ctx: &ctx,
+            rep: RepairReport::default(),
+            target: 0.12,
+        };
+        let before = (
+            w.p.clone(),
+            w.tets.clone(),
+            w.alive.clone(),
+            w.vt.clone(),
+            w.bnd.clone(),
+            w.rep.clone(),
+        );
+        assert!(
+            w.trace_retry(1),
+            "the diagnostic must exercise a successful repair"
+        );
         assert_eq!((w.p, w.tets, w.alive, w.vt, w.bnd, w.rep), before);
         assert_eq!((w.live, w.depth, w.clock, w.log.len()), (4, 0, 0, 0));
     }

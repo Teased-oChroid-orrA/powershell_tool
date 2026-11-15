@@ -69,7 +69,11 @@ impl Constraints {
     /// New reference point at `x` with its translation and rotation dofs.
     pub fn add_ref_point(&mut self, mesh: &Mesh, x: [f64; 3]) -> RefPoint {
         let d = mesh.dim();
-        let rp = RefPoint { first: mesh.n_dofs() + self.n_extra, d, x };
+        let rp = RefPoint {
+            first: mesh.n_dofs() + self.n_extra,
+            d,
+            x,
+        };
         self.n_extra += d + if d == 2 { 1 } else { 3 };
         rp
     }
@@ -84,9 +88,21 @@ impl Constraints {
                 self.add_equation(n * 2 + 1, vec![(rp.trans(1), 1.0), (rp.rot(0), r[0])], 0.0);
             } else {
                 // theta x r = (ty rz - tz ry, tz rx - tx rz, tx ry - ty rx)
-                self.add_equation(n * 3, vec![(rp.trans(0), 1.0), (rp.rot(1), r[2]), (rp.rot(2), -r[1])], 0.0);
-                self.add_equation(n * 3 + 1, vec![(rp.trans(1), 1.0), (rp.rot(2), r[0]), (rp.rot(0), -r[2])], 0.0);
-                self.add_equation(n * 3 + 2, vec![(rp.trans(2), 1.0), (rp.rot(0), r[1]), (rp.rot(1), -r[0])], 0.0);
+                self.add_equation(
+                    n * 3,
+                    vec![(rp.trans(0), 1.0), (rp.rot(1), r[2]), (rp.rot(2), -r[1])],
+                    0.0,
+                );
+                self.add_equation(
+                    n * 3 + 1,
+                    vec![(rp.trans(1), 1.0), (rp.rot(2), r[0]), (rp.rot(0), -r[2])],
+                    0.0,
+                );
+                self.add_equation(
+                    n * 3 + 2,
+                    vec![(rp.trans(2), 1.0), (rp.rot(0), r[1]), (rp.rot(1), -r[0])],
+                    0.0,
+                );
             }
         }
     }
@@ -160,7 +176,13 @@ impl Resolver<'_> {
 impl Model {
     /// Linear static solve with Dirichlet constraints, multi-point constraints and loads on the
     /// extra dofs `(extra dof index (>= n_dofs), force)`.
-    pub fn solve_static_constrained(&self, loads: &Loads, bc: &Dirichlet, cons: &Constraints, extra_loads: &[(usize, f64)]) -> Result<ConstrainedSolution, String> {
+    pub fn solve_static_constrained(
+        &self,
+        loads: &Loads,
+        bc: &Dirichlet,
+        cons: &Constraints,
+        extra_loads: &[(usize, f64)],
+    ) -> Result<ConstrainedSolution, String> {
         let nd = self.mesh.n_dofs();
         let n = nd + cons.n_extra;
         // ---- classify dofs
@@ -189,7 +211,15 @@ impl Model {
             }
         }
         // ---- resolve slave chains by memoised substitution
-        let mut resolver = Resolver { cons, slave_eq: &slave_eq, ind_of: &ind_of, bc, nd, memo: HashMap::new(), stack: Vec::new() };
+        let mut resolver = Resolver {
+            cons,
+            slave_eq: &slave_eq,
+            ind_of: &ind_of,
+            bc,
+            nd,
+            memo: HashMap::new(),
+            stack: Vec::new(),
+        };
         for &s in slave_eq.keys() {
             resolver.resolve(s)?;
         }
@@ -236,7 +266,9 @@ impl Model {
         f.resize(n, 0.0);
         for &(dof, v) in extra_loads {
             if dof < nd || dof >= n {
-                return Err(format!("extra load on dof {dof}, which is not an extra dof"));
+                return Err(format!(
+                    "extra load on dof {dof}, which is not an extra dof"
+                ));
             }
             f[dof] += v;
         }
@@ -333,6 +365,11 @@ impl Model {
                 reactions[i] = ku[i] - f[i];
             }
         }
-        Ok(ConstrainedSolution { u: u_full[..nd].to_vec(), extra: u_full[nd..].to_vec(), reactions, n_independent: m })
+        Ok(ConstrainedSolution {
+            u: u_full[..nd].to_vec(),
+            extra: u_full[nd..].to_vec(),
+            reactions,
+            n_independent: m,
+        })
     }
 }

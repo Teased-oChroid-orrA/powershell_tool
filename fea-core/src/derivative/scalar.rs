@@ -9,7 +9,14 @@
 
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
-pub trait Scalar: Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> + Div<Output = Self> + Neg<Output = Self> {
+pub trait Scalar:
+    Copy
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Mul<Output = Self>
+    + Div<Output = Self>
+    + Neg<Output = Self>
+{
     /// A constant (no derivative).
     fn cst(v: f64) -> Self;
     /// The real value, used for comparisons and branches.
@@ -66,9 +73,18 @@ pub trait Scalar: Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = 
         if xv > 0.0 {
             (self / x).atan()
         } else if xv < 0.0 {
-            (self / x).atan() + Self::cst(if yv >= 0.0 { std::f64::consts::PI } else { -std::f64::consts::PI })
+            (self / x).atan()
+                + Self::cst(if yv >= 0.0 {
+                    std::f64::consts::PI
+                } else {
+                    -std::f64::consts::PI
+                })
         } else {
-            Self::cst(if yv >= 0.0 { std::f64::consts::FRAC_PI_2 } else { -std::f64::consts::FRAC_PI_2 }) - (x / self).atan()
+            Self::cst(if yv >= 0.0 {
+                std::f64::consts::FRAC_PI_2
+            } else {
+                -std::f64::consts::FRAC_PI_2
+            }) - (x / self).atan()
         }
     }
     /// The larger of two values (the branch of the larger real value).

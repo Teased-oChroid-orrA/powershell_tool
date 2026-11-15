@@ -32,20 +32,38 @@ pub fn revolve(mesh: &Mesh, angles: &[f64]) -> Result<Mesh, String> {
     if mesh.nodes.iter().any(|x| x[0] < 0.0) {
         return Err("a revolved mesh needs non-negative radii (x >= 0)".into());
     }
-    if angles.last().zip(angles.first()).is_some_and(|(b, a)| b - a > std::f64::consts::TAU + 1e-12) {
+    if angles
+        .last()
+        .zip(angles.first())
+        .is_some_and(|(b, a)| b - a > std::f64::consts::TAU + 1e-12)
+    {
         return Err("a revolution cannot exceed 360 degrees".into());
     }
     // A profile node on the axis (r = 0) is the same point at every angle: one node, not one per level.
-    let scale = mesh.nodes.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+    let scale = mesh
+        .nodes
+        .iter()
+        .flatten()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
     let on_axis: Vec<bool> = mesh.nodes.iter().map(|x| x[0] <= 1e-12 * scale).collect();
-    sweep(mesh, angles, closed_sweep(angles), &on_axis, &|x, phi| if x[0] <= 1e-12 * scale { [0.0, x[1], 0.0] } else { [x[0] * phi.cos(), x[1], x[0] * phi.sin()] })
+    sweep(mesh, angles, closed_sweep(angles), &on_axis, &|x, phi| {
+        if x[0] <= 1e-12 * scale {
+            [0.0, x[1], 0.0]
+        } else {
+            [x[0] * phi.cos(), x[1], x[0] * phi.sin()]
+        }
+    })
 }
 
 /// Sweep along any mapping `pos(x2d, s)` of a 2D node and a level to its 3D position (a profile carried along a path),
 /// through the strictly increasing `levels`. The mapping must keep the orientation (a positive Jacobian: `dpos/dx x
 /// dpos/dy` along `dpos/ds`) or the elements come out inside out; `Model::validate` reports such elements. A mid-layer
 /// node is placed at the middle level, so a mapping that follows a circle puts it exactly on the circle.
-pub fn sweep_along(mesh: &Mesh, levels: &[f64], pos: &dyn Fn([f64; 3], f64) -> [f64; 3]) -> Result<Mesh, String> {
+pub fn sweep_along(
+    mesh: &Mesh,
+    levels: &[f64],
+    pos: &dyn Fn([f64; 3], f64) -> [f64; 3],
+) -> Result<Mesh, String> {
     if matches!(mesh.physics, Physics::Axisymmetric) {
         return Err("an axisymmetric mesh is revolved, not swept".into());
     }
@@ -62,7 +80,13 @@ type SweepMap<'a> = &'a dyn Fn([f64; 3], f64) -> [f64; 3];
 
 /// `on_axis[n]` (empty: none) marks the profile nodes that sweep onto themselves (the axis of a revolution): they get one 3D
 /// node at level 0, shared by every layer, and count as lying on every level.
-fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, on_axis: &[bool], pos: SweepMap) -> Result<Mesh, String> {
+fn sweep(
+    mesh: &Mesh,
+    levels: &[f64],
+    closed: bool,
+    on_axis: &[bool],
+    pos: SweepMap,
+) -> Result<Mesh, String> {
     if mesh.dim() != 2 {
         return Err("only 2D meshes can be swept".into());
     }
@@ -75,10 +99,19 @@ fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, on_axis: &[bool], pos: Sweep
     let mut ids: HashMap<(usize, usize), usize> = HashMap::new();
     let n_layers = levels.len() - 1;
     let mut node = |out: &mut Mesh, n2: usize, half: usize| -> usize {
-        let key = if (closed && half == 2 * n_layers) || on_axis.get(n2).copied().unwrap_or(false) { 0 } else { half };
+        let key = if (closed && half == 2 * n_layers) || on_axis.get(n2).copied().unwrap_or(false) {
+            0
+        } else {
+            half
+        };
         *ids.entry((n2, key)).or_insert_with(|| {
-            #[allow(clippy::manual_is_multiple_of)] // is_multiple_of needs a newer toolchain than the CI pin
-            let s = if key % 2 == 0 { levels[key / 2] } else { 0.5 * (levels[key / 2] + levels[key / 2 + 1]) };
+            #[allow(clippy::manual_is_multiple_of)]
+            // is_multiple_of needs a newer toolchain than the CI pin
+            let s = if key % 2 == 0 {
+                levels[key / 2]
+            } else {
+                0.5 * (levels[key / 2] + levels[key / 2 + 1])
+            };
             out.add_node(pos(mesh.nodes[n2], s))
         })
     };
@@ -89,7 +122,11 @@ fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, on_axis: &[bool], pos: Sweep
             ElementKind::Quad9 => ElementKind::Hex27,
             ElementKind::Tri3 => ElementKind::Wedge6,
             ElementKind::Tri6 => ElementKind::Wedge15,
-            k => return Err(format!("{k:?} cannot be swept (only triangles and quadrilaterals sweep)")),
+            k => {
+                return Err(format!(
+                    "{k:?} cannot be swept (only triangles and quadrilaterals sweep)"
+                ))
+            }
         };
         let mut conn = Vec::with_capacity(blk.n_elems() * n_layers * kind3.n_nodes());
         for q in blk.conn.chunks_exact(blk.kind.n_nodes()) {
@@ -139,18 +176,30 @@ fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, on_axis: &[bool], pos: Sweep
     }
     // Node sets: every layer of the 2D set; plus the two end layers.
     for (name, set) in &mesh.node_sets {
-        let mut v: Vec<usize> = set.iter().flat_map(|&n2| (0..=2 * n_layers).filter_map(|h| ids.get(&(n2, h)).copied()).collect::<Vec<_>>()).collect();
+        let mut v: Vec<usize> = set
+            .iter()
+            .flat_map(|&n2| {
+                (0..=2 * n_layers)
+                    .filter_map(|h| ids.get(&(n2, h)).copied())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         v.sort_unstable();
         v.dedup();
         out.node_sets.insert(name.clone(), v);
     }
     for (name, half) in [("start", 0), ("end", if closed { 0 } else { 2 * n_layers })] {
-        let mut v: Vec<usize> = ids.iter().filter(|(k, _)| k.1 == half || on_axis.get(k.0).copied().unwrap_or(false)).map(|(_, &v)| v).collect();
+        let mut v: Vec<usize> = ids
+            .iter()
+            .filter(|(k, _)| k.1 == half || on_axis.get(k.0).copied().unwrap_or(false))
+            .map(|(_, &v)| v)
+            .collect();
         v.sort_unstable();
         out.node_sets.insert(name.to_string(), v);
     }
     // Surfaces from the boundary faces: end faces are single-level, lateral faces project onto a 2D surface.
-    let parent: HashMap<usize, (usize, usize)> = ids.iter().map(|(&(n2, h), &n3)| (n3, (n2, h))).collect();
+    let parent: HashMap<usize, (usize, usize)> =
+        ids.iter().map(|(&(n2, h), &n3)| (n3, (n2, h))).collect();
     let faces = out.boundary_faces();
     let axis = |n: &usize| on_axis.get(parent[n].0).copied().unwrap_or(false);
     for (name, half) in [("start", 0), ("end", 2 * n_layers)] {
@@ -158,7 +207,11 @@ fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, on_axis: &[bool], pos: Sweep
             out.surfaces.insert(name.to_string(), Vec::new());
             continue;
         }
-        let f: Vec<Vec<usize>> = faces.iter().filter(|f| f.nodes.iter().all(|n| parent[n].1 == half || axis(n))).map(|f| f.nodes.clone()).collect();
+        let f: Vec<Vec<usize>> = faces
+            .iter()
+            .filter(|f| f.nodes.iter().all(|n| parent[n].1 == half || axis(n)))
+            .map(|f| f.nodes.clone())
+            .collect();
         out.surfaces.insert(name.to_string(), f);
     }
     for (name, edges) in &mesh.surfaces {
@@ -166,7 +219,8 @@ fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, on_axis: &[bool], pos: Sweep
         let f: Vec<Vec<usize>> = faces
             .iter()
             .filter(|f| {
-                let levels_hit: std::collections::HashSet<usize> = f.nodes.iter().map(|n| parent[n].1).collect();
+                let levels_hit: std::collections::HashSet<usize> =
+                    f.nodes.iter().map(|n| parent[n].1).collect();
                 levels_hit.len() > 1 && f.nodes.iter().all(|n| on.contains(&parent[n].0))
             })
             .map(|f| f.nodes.clone())
@@ -185,7 +239,14 @@ mod tests {
     use crate::mesh::Elastic;
 
     fn plate(kind: ElementKind) -> Mesh {
-        grid(Physics::PlaneStrain { thickness: 1.0 }, kind, Elastic::new(1.0, 0.3), [2, 2, 1], &|p| [2.0 * p[0] + 0.2 * p[1], 1.5 * p[1], 0.0]).unwrap()
+        grid(
+            Physics::PlaneStrain { thickness: 1.0 },
+            kind,
+            Elastic::new(1.0, 0.3),
+            [2, 2, 1],
+            &|p| [2.0 * p[0] + 0.2 * p[1], 1.5 * p[1], 0.0],
+        )
+        .unwrap()
     }
 
     /// Every node of every hexahedron sits where the (straight-sided) element map puts it: this
@@ -194,7 +255,11 @@ mod tests {
         for blk in &m.blocks {
             let nc = blk.kind.n_corners();
             let (kind, nc_coords) = (blk.kind, blk.kind.node_coords());
-            let lin = if kind == ElementKind::Hex8 { kind } else { ElementKind::Hex8 };
+            let lin = if kind == ElementKind::Hex8 {
+                kind
+            } else {
+                ElementKind::Hex8
+            };
             for e in 0..blk.n_elems() {
                 let conn = blk.elem(e);
                 for (k, xi) in nc_coords.iter().enumerate() {
@@ -206,7 +271,10 @@ mod tests {
                         }
                     }
                     let got = m.nodes[conn[k]];
-                    assert!((0..3).all(|i| (got[i] - want[i]).abs() < 1e-12), "{kind:?} element {e} node {k}: {got:?} vs {want:?}");
+                    assert!(
+                        (0..3).all(|i| (got[i] - want[i]).abs() < 1e-12),
+                        "{kind:?} element {e} node {k}: {got:?} vs {want:?}"
+                    );
                 }
             }
         }
@@ -214,7 +282,11 @@ mod tests {
 
     #[test]
     fn extruded_nodes_have_the_vtk_hexahedron_order_and_positive_volume() {
-        for (q, h) in [(ElementKind::Quad4, ElementKind::Hex8), (ElementKind::Quad8, ElementKind::Hex20), (ElementKind::Quad9, ElementKind::Hex27)] {
+        for (q, h) in [
+            (ElementKind::Quad4, ElementKind::Hex8),
+            (ElementKind::Quad8, ElementKind::Hex20),
+            (ElementKind::Quad9, ElementKind::Hex27),
+        ] {
             let m2 = plate(q);
             let m3 = extrude(&m2, &[0.0, 0.5, 1.5, 2.0]).unwrap();
             assert_eq!(m3.blocks[0].kind, h);
@@ -238,7 +310,10 @@ mod tests {
         let m2 = plate(ElementKind::Quad9);
         let m3 = extrude(&m2, &[0.0, 1.0, 2.0]).unwrap();
         assert_eq!(m3.node_sets["start"].len(), m2.nodes.len());
-        assert!(m3.node_sets["start"].iter().all(|&n| m3.nodes[n][2] == 0.0) && m3.node_sets["end"].iter().all(|&n| m3.nodes[n][2] == 2.0));
+        assert!(
+            m3.node_sets["start"].iter().all(|&n| m3.nodes[n][2] == 0.0)
+                && m3.node_sets["end"].iter().all(|&n| m3.nodes[n][2] == 2.0)
+        );
         // 2D set u0 (left edge, 5 nodes) over 5 z half-levels.
         assert_eq!(m3.node_sets["u0"].len(), 5 * 5);
         // End surfaces: 4 quad faces each, of nine nodes, outward normal -z at start and +z at end.
@@ -246,7 +321,13 @@ mod tests {
         assert!(m3.surfaces["start"].iter().all(|f| f.len() == 9));
         use crate::loads::{assemble, Loads, SurfaceLoad};
         for (name, sign) in [("start", -1.0), ("end", 1.0)] {
-            let loads = Loads { faces: m3.surfaces[name].iter().map(|f| (f.clone(), SurfaceLoad::Pressure(1.0))).collect(), ..Loads::default() };
+            let loads = Loads {
+                faces: m3.surfaces[name]
+                    .iter()
+                    .map(|f| (f.clone(), SurfaceLoad::Pressure(1.0)))
+                    .collect(),
+                ..Loads::default()
+            };
             let f = assemble(&m3, &loads).unwrap();
             let fz: f64 = (0..m3.nodes.len()).map(|n| f[n * 3 + 2]).sum();
             // Pressure pushes into the body: on the end face (normal +z) the force is -p A in z.
@@ -261,12 +342,26 @@ mod tests {
     fn invalid_sweeps_are_rejected() {
         let m2 = plate(ElementKind::Quad9);
         assert!(extrude(&m2, &[0.0]).is_err() && extrude(&m2, &[0.0, 1.0, 1.0]).is_err());
-        let tri = grid(Physics::PlaneStrain { thickness: 1.0 }, ElementKind::Tri6, Elastic::new(1.0, 0.3), [1, 1, 1], &|p| p).unwrap();
+        let tri = grid(
+            Physics::PlaneStrain { thickness: 1.0 },
+            ElementKind::Tri6,
+            Elastic::new(1.0, 0.3),
+            [1, 1, 1],
+            &|p| p,
+        )
+        .unwrap();
         let prism = extrude(&tri, &[0.0, 1.0]).unwrap();
         assert_eq!(prism.blocks[0].kind, ElementKind::Wedge15);
         // a unit square of two Tri6: 9 plane nodes on each of 2 levels, plus 4 corner nodes at the mid level
         assert_eq!(prism.nodes.len(), 9 * 2 + 4);
-        let ax = grid(Physics::Axisymmetric, ElementKind::Quad9, Elastic::new(1.0, 0.3), [1, 1, 1], &|p| [1.0 + p[0], p[1], 0.0]).unwrap();
+        let ax = grid(
+            Physics::Axisymmetric,
+            ElementKind::Quad9,
+            Elastic::new(1.0, 0.3),
+            [1, 1, 1],
+            &|p| [1.0 + p[0], p[1], 0.0],
+        )
+        .unwrap();
         assert!(extrude(&ax, &[0.0, 1.0]).is_err());
         assert!(revolve(&ax, &[0.0, 7.0]).is_err());
     }

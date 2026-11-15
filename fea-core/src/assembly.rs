@@ -40,7 +40,9 @@ impl Pattern {
         let mut cols: Vec<Vec<u32>> = vec![Vec::new(); n];
         for &(a, b) in extra {
             if a >= n || b >= n {
-                return Err(format!("extra coupling ({a}, {b}) refers to a missing node"));
+                return Err(format!(
+                    "extra coupling ({a}, {b}) refers to a missing node"
+                ));
             }
             let (hi, lo) = (a.max(b), a.min(b));
             cols[lo].push(hi as u32);
@@ -69,7 +71,14 @@ impl Pattern {
             row_idx.extend_from_slice(c);
             col_ptr.push(row_idx.len());
         }
-        let mut pat = Self { n_nodes: n, d: mesh.dim(), col_ptr, row_idx, scatter: Vec::new(), colors: Vec::new() };
+        let mut pat = Self {
+            n_nodes: n,
+            d: mesh.dim(),
+            col_ptr,
+            row_idx,
+            scatter: Vec::new(),
+            colors: Vec::new(),
+        };
         pat.scatter = mesh
             .blocks
             .iter()
@@ -80,7 +89,9 @@ impl Pattern {
                     for (b, &gb) in conn.iter().enumerate() {
                         for (a, &ga) in conn.iter().enumerate() {
                             if ga >= gb {
-                                map[e * nn * nn + a * nn + b] = pat.find(ga, gb).expect("pattern covers every element pair") as u32;
+                                map[e * nn * nn + a * nn + b] =
+                                    pat.find(ga, gb).expect("pattern covers every element pair")
+                                        as u32;
                             }
                         }
                     }
@@ -95,7 +106,9 @@ impl Pattern {
     /// Index of block `(row node, col node)` in the value array.
     pub fn find(&self, row: usize, col: usize) -> Option<usize> {
         let rows = &self.row_idx[self.col_ptr[col]..self.col_ptr[col + 1]];
-        rows.binary_search(&(row as u32)).ok().map(|k| self.col_ptr[col] + k)
+        rows.binary_search(&(row as u32))
+            .ok()
+            .map(|k| self.col_ptr[col] + k)
     }
 
     pub fn n_blocks(&self) -> usize {
@@ -121,7 +134,9 @@ fn colour_elements(mesh: &Mesh) -> Result<Vec<Vec<(u32, u32)>>, String> {
                     busy[w] |= used[nd * WORDS + w];
                 }
             }
-            let c = (0..WORDS * 64).find(|&c| busy[c / 64] >> (c % 64) & 1 == 0).ok_or("element colouring needs more than 512 colours (degenerate mesh)")?;
+            let c = (0..WORDS * 64)
+                .find(|&c| busy[c / 64] >> (c % 64) & 1 == 0)
+                .ok_or("element colouring needs more than 512 colours (degenerate mesh)")?;
             for &nd in conn {
                 used[nd * WORDS + c / 64] |= 1 << (c % 64);
             }
@@ -148,7 +163,10 @@ unsafe impl Sync for Shared {}
 
 impl BlockMatrix {
     pub fn zeros(pat: &Pattern) -> Self {
-        Self { d: pat.d, vals: vec![0.0; pat.n_blocks() * pat.d * pat.d] }
+        Self {
+            d: pat.d,
+            vals: vec![0.0; pat.n_blocks() * pat.d * pat.d],
+        }
     }
 
     /// `y += K x` (full symmetric product from the stored lower triangle).
@@ -203,7 +221,13 @@ pub fn assemble_stiffness(mesh: &Mesh, pat: &Pattern) -> Result<BlockMatrix, Str
         class
             .par_iter()
             .try_for_each_init(
-                || (Work::new(), vec![0.0f64; MAX_NODES * MAX_NODES * 10], vec![[0.0f64; 3]; MAX_NODES]),
+                || {
+                    (
+                        Work::new(),
+                        vec![0.0f64; MAX_NODES * MAX_NODES * 10],
+                        vec![[0.0f64; 3]; MAX_NODES],
+                    )
+                },
                 |(work, ke, xyz), &(bi, e)| -> Result<(), ElementError> {
                     let blk = &mesh.blocks[bi as usize];
                     let nn = blk.kind.n_nodes();
@@ -211,8 +235,16 @@ pub fn assemble_stiffness(mesh: &Mesh, pat: &Pattern) -> Result<BlockMatrix, Str
                     for (a, &nd) in conn.iter().enumerate() {
                         xyz[a] = mesh.nodes[nd];
                     }
-                    let layout = kernel::stiffness_fast(blk.kind, mesh.physics, &blk.material, &xyz[..nn], work, ke)?;
-                    let map = &pat.scatter[bi as usize][e as usize * nn * nn..(e as usize + 1) * nn * nn];
+                    let layout = kernel::stiffness_fast(
+                        blk.kind,
+                        mesh.physics,
+                        &blk.material,
+                        &xyz[..nn],
+                        work,
+                        ke,
+                    )?;
+                    let map =
+                        &pat.scatter[bi as usize][e as usize * nn * nn..(e as usize + 1) * nn * nn];
                     for a in 0..nn {
                         for b in 0..nn {
                             let pos = map[a * nn + b];
@@ -225,7 +257,8 @@ pub fn assemble_stiffness(mesh: &Mesh, pat: &Pattern) -> Result<BlockMatrix, Str
                                 let dst = shared.0.add(pos as usize * dd);
                                 for i in 0..d {
                                     for j in 0..d {
-                                        *dst.add(i * d + j) += kernel::entry(layout, ke, nn, d, a, b, i, j);
+                                        *dst.add(i * d + j) +=
+                                            kernel::entry(layout, ke, nn, d, a, b, i, j);
                                     }
                                 }
                             }
@@ -242,7 +275,11 @@ pub fn assemble_stiffness(mesh: &Mesh, pat: &Pattern) -> Result<BlockMatrix, Str
 /// Assemble a matrix whose node-pair blocks are a scalar times the identity (consistent mass, geometric stiffness):
 /// `element(block, element, xyz, work, out)` fills the element's `nn x nn` scalars. Same colouring and scatter as the
 /// stiffness.
-pub fn assemble_scalar_identity<F>(mesh: &Mesh, pat: &Pattern, element: F) -> Result<BlockMatrix, String>
+pub fn assemble_scalar_identity<F>(
+    mesh: &Mesh,
+    pat: &Pattern,
+    element: F,
+) -> Result<BlockMatrix, String>
 where
     F: Fn(usize, usize, &[[f64; 3]], &mut Work, &mut [f64]) -> Result<(), ElementError> + Sync,
 {
@@ -255,7 +292,13 @@ where
         class
             .par_iter()
             .try_for_each_init(
-                || (Work::new(), vec![0.0f64; MAX_NODES * MAX_NODES], vec![[0.0f64; 3]; MAX_NODES]),
+                || {
+                    (
+                        Work::new(),
+                        vec![0.0f64; MAX_NODES * MAX_NODES],
+                        vec![[0.0f64; 3]; MAX_NODES],
+                    )
+                },
                 |(work, me, xyz), &(bi, e)| -> Result<(), ElementError> {
                     let blk = &mesh.blocks[bi as usize];
                     let nn = blk.kind.n_nodes();
@@ -263,7 +306,8 @@ where
                         xyz[a] = mesh.nodes[nd];
                     }
                     element(bi as usize, e as usize, &xyz[..nn], work, me)?;
-                    let map = &pat.scatter[bi as usize][e as usize * nn * nn..(e as usize + 1) * nn * nn];
+                    let map =
+                        &pat.scatter[bi as usize][e as usize * nn * nn..(e as usize + 1) * nn * nn];
                     for a in 0..nn {
                         for b in 0..nn {
                             let pos = map[a * nn + b];
@@ -290,6 +334,14 @@ where
 impl BlockMatrix {
     /// `self + alpha * other` (same pattern).
     pub fn axpy(&self, alpha: f64, other: &BlockMatrix) -> BlockMatrix {
-        BlockMatrix { d: self.d, vals: self.vals.iter().zip(&other.vals).map(|(a, b)| a + alpha * b).collect() }
+        BlockMatrix {
+            d: self.d,
+            vals: self
+                .vals
+                .iter()
+                .zip(&other.vals)
+                .map(|(a, b)| a + alpha * b)
+                .collect(),
+        }
     }
 }

@@ -93,15 +93,28 @@ impl Model {
     /// Condition number estimate of the constrained stiffness (power iteration for the largest eigenvalue, inverse
     /// iteration on the Cholesky factor for the smallest; `tol` is the relative change of the Rayleigh quotient
     /// accepted as converged). Cost: one factorisation plus a few dozen solves and products.
-    pub fn condition_estimate(&self, bc: &Dirichlet, tol: f64, max_iter: usize) -> Result<Condition, String> {
+    pub fn condition_estimate(
+        &self,
+        bc: &Dirichlet,
+        tol: f64,
+        max_iter: usize,
+    ) -> Result<Condition, String> {
         let k = self.assemble()?;
-        let red = Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), crate::linear::Ordering::Auto).map_err(|e| e.to_string())?;
+        let red = Reduced::with_ordering(
+            &self.pattern,
+            bc,
+            Some(&self.mesh.nodes),
+            crate::linear::Ordering::Auto,
+        )
+        .map_err(|e| e.to_string())?;
         let fac = red.factor(&k).map_err(|e| e.to_string())?;
         let m = red.n_free();
         let free = red.free_dofs().to_vec();
         let n = self.mesh.n_dofs();
         // A deterministic start vector with energy in every mode.
-        let start: Vec<f64> = (0..m).map(|i| 1.0 + ((i as f64 + 1.0) * 0.618_033_988_749_895).fract()).collect();
+        let start: Vec<f64> = (0..m)
+            .map(|i| 1.0 + ((i as f64 + 1.0) * 0.618_033_988_749_895).fract())
+            .collect();
         let normalise = |x: &mut [f64]| {
             let s = dot(x, x).sqrt();
             x.iter_mut().for_each(|v| *v /= s);
@@ -160,7 +173,13 @@ impl Model {
                 converged = false;
             }
         }
-        Ok(Condition { lambda_max: lmax, lambda_min: lmin, cond: lmax / lmin, iterations, converged })
+        Ok(Condition {
+            lambda_max: lmax,
+            lambda_min: lmin,
+            cond: lmax / lmin,
+            iterations,
+            converged,
+        })
     }
 }
 
@@ -205,7 +224,14 @@ impl crate::nonlinear::NlSolution {
             if i > 0 {
                 o.push(',');
             }
-            let _ = write!(o, "{{\"kind\":\"{}\",\"lambda\":{},\"residual\":{},\"detail\":{}}}", e.kind.name(), num(e.lambda), num(e.residual), json_str(&e.detail));
+            let _ = write!(
+                o,
+                "{{\"kind\":\"{}\",\"lambda\":{},\"residual\":{},\"detail\":{}}}",
+                e.kind.name(),
+                num(e.lambda),
+                num(e.residual),
+                json_str(&e.detail)
+            );
         }
         o.push_str("],\"steps\":[");
         for (i, s) in self.steps.iter().enumerate() {

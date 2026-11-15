@@ -54,7 +54,13 @@ pub struct MeshOptions {
 
 impl Default for MeshOptions {
     fn default() -> Self {
-        Self { max_ratio: 1.2, size_factor: 0.66, max_arc_angle: 0.35, min_edge: 0.0, max_vertices: 2_000_000 }
+        Self {
+            max_ratio: 1.2,
+            size_factor: 0.66,
+            max_arc_angle: 0.35,
+            min_edge: 0.0,
+            max_vertices: 2_000_000,
+        }
     }
 }
 
@@ -108,11 +114,20 @@ fn key(a: u32, b: u32) -> (u32, u32) {
 }
 
 fn orient(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
-    orient2d(Coord { x: a[0], y: a[1] }, Coord { x: b[0], y: b[1] }, Coord { x: c[0], y: c[1] })
+    orient2d(
+        Coord { x: a[0], y: a[1] },
+        Coord { x: b[0], y: b[1] },
+        Coord { x: c[0], y: c[1] },
+    )
 }
 
 fn in_circle(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> f64 {
-    incircle(Coord { x: a[0], y: a[1] }, Coord { x: b[0], y: b[1] }, Coord { x: c[0], y: c[1] }, Coord { x: d[0], y: d[1] })
+    incircle(
+        Coord { x: a[0], y: a[1] },
+        Coord { x: b[0], y: b[1] },
+        Coord { x: c[0], y: c[1] },
+        Coord { x: d[0], y: d[1] },
+    )
 }
 
 enum Loc {
@@ -166,7 +181,11 @@ impl<'a> Builder<'a> {
     }
 
     fn index_of(&self, t: u32, v: u32) -> usize {
-        self.tri(t).v.iter().position(|&x| x == v).expect("vertex in triangle")
+        self.tri(t)
+            .v
+            .iter()
+            .position(|&x| x == v)
+            .expect("vertex in triangle")
     }
 
     fn replace_neighbor(&mut self, t: u32, old: u32, new: u32) {
@@ -197,7 +216,11 @@ impl<'a> Builder<'a> {
     // ------------------------------------------------------------------ location
 
     fn locate(&mut self, p: [f64; 2], start: u32) -> Loc {
-        let mut cur = if self.tri(start).alive { start } else { self.last };
+        let mut cur = if self.tri(start).alive {
+            start
+        } else {
+            self.last
+        };
         for _ in 0..(self.tris.len() * 2 + 16) {
             let tr = *self.tri(cur);
             let first = (self.next_rand() % 3) as usize;
@@ -233,7 +256,10 @@ impl<'a> Builder<'a> {
         // Degenerate walk (cycling): fall back to a scan.
         for t in 0..self.tris.len() as u32 {
             let tr = self.tri(t);
-            if tr.alive && (0..3).all(|i| orient(self.p(tr.v[(i + 1) % 3]), self.p(tr.v[(i + 2) % 3]), p) >= 0.0) {
+            if tr.alive
+                && (0..3)
+                    .all(|i| orient(self.p(tr.v[(i + 1) % 3]), self.p(tr.v[(i + 2) % 3]), p) >= 0.0)
+            {
                 self.last = t;
                 return Loc::Inside(t);
             }
@@ -385,7 +411,14 @@ impl<'a> Builder<'a> {
 
     fn add_sub(&mut self, a: u32, b: u32, seg: u32, t0: f64, t1: f64) -> u32 {
         let id = self.subs.len() as u32;
-        self.subs.push(Sub { a, b, seg, t0, t1, alive: true });
+        self.subs.push(Sub {
+            a,
+            b,
+            seg,
+            t0,
+            t1,
+            alive: true,
+        });
         self.sub_of.insert(key(a, b), id);
         id
     }
@@ -401,7 +434,9 @@ impl<'a> Builder<'a> {
         if curve.sweep() * (sb.t1 - sb.t0).abs() > self.opt.max_arc_angle {
             return true;
         }
-        let Some((t, i)) = self.find_edge(sb.a, sb.b) else { return true };
+        let Some((t, i)) = self.find_edge(sb.a, sb.b) else {
+            return true;
+        };
         let (pa, pb) = (self.p(sb.a), self.p(sb.b));
         let tr = self.tri(t);
         let mut apexes = vec![tr.v[i]];
@@ -424,7 +459,11 @@ impl<'a> Builder<'a> {
         let (pa, pb) = (self.p(sb.a), self.p(sb.b));
         // A straight piece splits at the midpoint of the actual chord (keeps the vertex on the edge
         // to rounding); an arc piece at the curve point.
-        let m = if matches!(curve, Curve::Line { .. }) { [0.5 * (pa[0] + pb[0]), 0.5 * (pa[1] + pb[1])] } else { curve.point(tm) };
+        let m = if matches!(curve, Curve::Line { .. }) {
+            [0.5 * (pa[0] + pb[0]), 0.5 * (pa[1] + pb[1])]
+        } else {
+            curve.point(tm)
+        };
         self.subs[s as usize].alive = false;
         self.sub_of.remove(&key(sb.a, sb.b));
         let mv = match self.find_edge(sb.a, sb.b) {
@@ -466,7 +505,10 @@ impl<'a> Builder<'a> {
         let mut splits = 0usize;
         while let Some(s) = queue.pop() {
             if self.pts.len() > self.opt.max_vertices {
-                return Err(format!("mesh exceeds {} vertices (size function too small?)", self.opt.max_vertices));
+                return Err(format!(
+                    "mesh exceeds {} vertices (size function too small?)",
+                    self.opt.max_vertices
+                ));
             }
             if !self.sub_needs_split(s) {
                 continue;
@@ -525,7 +567,9 @@ impl<'a> Builder<'a> {
                 self.vt[v as usize] = t as u32;
             }
         }
-        self.last = (0..self.tris.len() as u32).find(|&t| self.tris[t as usize].alive).unwrap_or(0);
+        self.last = (0..self.tris.len() as u32)
+            .find(|&t| self.tris[t as usize].alive)
+            .unwrap_or(0);
     }
 
     // ------------------------------------------------------------------ refinement
@@ -546,7 +590,11 @@ impl<'a> Builder<'a> {
         let tr = self.tri(t);
         let (a, b, c) = (self.p(tr.v[0]), self.p(tr.v[1]), self.p(tr.v[2]));
         let (_, r) = self.circumcentre(t);
-        let e = [(b[0] - c[0]).hypot(b[1] - c[1]), (c[0] - a[0]).hypot(c[1] - a[1]), (a[0] - b[0]).hypot(a[1] - b[1])];
+        let e = [
+            (b[0] - c[0]).hypot(b[1] - c[1]),
+            (c[0] - a[0]).hypot(c[1] - a[1]),
+            (a[0] - b[0]).hypot(a[1] - b[1]),
+        ];
         let emin = e.iter().cloned().fold(f64::INFINITY, f64::min);
         if !r.is_finite() || emin <= 0.0 {
             return 0.0;
@@ -572,7 +620,10 @@ impl<'a> Builder<'a> {
         let mut segq: Vec<u32> = Vec::new();
         while let Some(Bad(_, t)) = heap.pop() {
             if self.pts.len() > self.opt.max_vertices {
-                return Err(format!("mesh exceeds {} vertices (size function too small?)", self.opt.max_vertices));
+                return Err(format!(
+                    "mesh exceeds {} vertices (size function too small?)",
+                    self.opt.max_vertices
+                ));
             }
             if !self.tri(t).alive || self.badness(t) <= 1.0 {
                 continue;
@@ -583,7 +634,10 @@ impl<'a> Builder<'a> {
             let (encroached, inside) = match self.locate(cc, t) {
                 Loc::Outside(ot, oi) => {
                     let tr = self.tri(ot);
-                    let s = self.sub_of.get(&key(tr.v[(oi + 1) % 3], tr.v[(oi + 2) % 3])).copied();
+                    let s = self
+                        .sub_of
+                        .get(&key(tr.v[(oi + 1) % 3], tr.v[(oi + 2) % 3]))
+                        .copied();
                     (s.into_iter().collect::<Vec<u32>>(), false)
                 }
                 Loc::OnVertex(_) => continue,
@@ -630,7 +684,9 @@ impl<'a> Builder<'a> {
                 let (x, y) = (tr.v[(i + 1) % 3], tr.v[(i + 2) % 3]);
                 if let Some(&s) = self.sub_of.get(&key(x, y)) {
                     let (a, b) = (self.p(x), self.p(y));
-                    if (a[0] - p[0]) * (b[0] - p[0]) + (a[1] - p[1]) * (b[1] - p[1]) < 0.0 && !out.contains(&s) {
+                    if (a[0] - p[0]) * (b[0] - p[0]) + (a[1] - p[1]) * (b[1] - p[1]) < 0.0
+                        && !out.contains(&s)
+                    {
                         out.push(s);
                     }
                     continue;
@@ -650,7 +706,11 @@ impl<'a> Builder<'a> {
 }
 
 /// Triangulate `region` with element sizes `size(x)` (target edge length at `x`).
-pub fn triangulate(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: MeshOptions) -> Result<TriMesh, String> {
+pub fn triangulate(
+    region: &Region,
+    size: &dyn Fn([f64; 2]) -> f64,
+    opt: MeshOptions,
+) -> Result<TriMesh, String> {
     let (lo, hi) = region.bounds();
     let extent = (hi[0] - lo[0]).max(hi[1] - lo[1]);
     if extent.is_nan() || extent <= 0.0 {
@@ -701,7 +761,9 @@ pub fn triangulate(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: MeshOpt
             let curve = b.segs[seg].0;
             let (va, vb) = (starts[k], starts[(k + 1) % count]);
             let mid = curve.point(0.5);
-            let n = ((curve.length() / (*size)(mid).max(1e-300)).ceil() as usize).max((curve.sweep() / opt.max_arc_angle).ceil() as usize).max(1);
+            let n = ((curve.length() / (*size)(mid).max(1e-300)).ceil() as usize)
+                .max((curve.sweep() / opt.max_arc_angle).ceil() as usize)
+                .max(1);
             let mut prev = va;
             for j in 1..=n {
                 let t = j as f64 / n as f64;
@@ -756,13 +818,27 @@ impl Builder<'_> {
                     continue;
                 }
                 let (x, y) = (tr.v[(i + 1) % 3], tr.v[(i + 2) % 3]);
-                let sid = *self.sub_of.get(&key(x, y)).ok_or("internal error: a hull edge is not a boundary subsegment")?;
+                let sid = *self
+                    .sub_of
+                    .get(&key(x, y))
+                    .ok_or("internal error: a hull edge is not a boundary subsegment")?;
                 let s = self.subs[sid as usize];
                 let (t_a, t_b) = if s.a == x { (s.t0, s.t1) } else { (s.t1, s.t0) };
-                boundary.push(BoundaryEdge { a: new_id[x as usize], b: new_id[y as usize], seg: s.seg as usize, t_a, t_b });
+                boundary.push(BoundaryEdge {
+                    a: new_id[x as usize],
+                    b: new_id[y as usize],
+                    seg: s.seg as usize,
+                    t_a,
+                    t_b,
+                });
             }
         }
-        Ok(TriMesh { pts, tris, boundary, segments: self.segs.clone() })
+        Ok(TriMesh {
+            pts,
+            tris,
+            boundary,
+            segments: self.segs.clone(),
+        })
     }
 }
 
@@ -778,25 +854,44 @@ impl TriMesh {
             }
             for i in 0..3 {
                 let (a, b) = (tr[(i + 1) % 3], tr[(i + 2) % 3]);
-                edge_tri.entry((a.min(b), a.max(b))).or_default().push((t, i));
+                edge_tri
+                    .entry((a.min(b), a.max(b)))
+                    .or_default()
+                    .push((t, i));
             }
         }
         let mut worst = 0.0f64;
         for ((a, b), v) in &edge_tri {
             match v.len() {
                 1 => {
-                    if !self.boundary.iter().any(|e| (e.a.min(e.b), e.a.max(e.b)) == (*a, *b)) {
-                        return Err(format!("edge {a}-{b} has one triangle but is not a boundary edge"));
+                    if !self
+                        .boundary
+                        .iter()
+                        .any(|e| (e.a.min(e.b), e.a.max(e.b)) == (*a, *b))
+                    {
+                        return Err(format!(
+                            "edge {a}-{b} has one triangle but is not a boundary edge"
+                        ));
                     }
                 }
                 2 => {
                     let (t1, i1) = v[0];
                     let t2 = v[1].0;
-                    let apex = self.tris[t2].iter().copied().find(|x| x != a && x != b).unwrap();
+                    let apex = self.tris[t2]
+                        .iter()
+                        .copied()
+                        .find(|x| x != a && x != b)
+                        .unwrap();
                     let tr = self.tris[t1];
                     let _ = i1;
-                    let inc = in_circle(self.pts[tr[0]], self.pts[tr[1]], self.pts[tr[2]], self.pts[apex]);
-                    let len2 = (self.pts[*a][0] - self.pts[*b][0]).powi(2) + (self.pts[*a][1] - self.pts[*b][1]).powi(2);
+                    let inc = in_circle(
+                        self.pts[tr[0]],
+                        self.pts[tr[1]],
+                        self.pts[tr[2]],
+                        self.pts[apex],
+                    );
+                    let len2 = (self.pts[*a][0] - self.pts[*b][0]).powi(2)
+                        + (self.pts[*a][1] - self.pts[*b][1]).powi(2);
                     worst = worst.max(inc / (len2 * len2));
                 }
                 n => return Err(format!("edge {a}-{b} has {n} triangles")),
@@ -815,7 +910,8 @@ impl TriMesh {
                 (a[0] - b[0]).hypot(a[1] - b[1])
             });
             for i in 0..3 {
-                let cosv = (e[(i + 1) % 3].powi(2) + e[(i + 2) % 3].powi(2) - e[i].powi(2)) / (2.0 * e[(i + 1) % 3] * e[(i + 2) % 3]);
+                let cosv = (e[(i + 1) % 3].powi(2) + e[(i + 2) % 3].powi(2) - e[i].powi(2))
+                    / (2.0 * e[(i + 1) % 3] * e[(i + 2) % 3]);
                 amin = amin.min(cosv.clamp(-1.0, 1.0).acos().to_degrees());
             }
             let area = 0.5 * orient(p[0], p[1], p[2]);
@@ -830,7 +926,10 @@ impl TriMesh {
 
     /// Total triangle area.
     pub fn area(&self) -> f64 {
-        self.tris.iter().map(|t| 0.5 * orient(self.pts[t[0]], self.pts[t[1]], self.pts[t[2]])).sum()
+        self.tris
+            .iter()
+            .map(|t| 0.5 * orient(self.pts[t[0]], self.pts[t[1]], self.pts[t[2]]))
+            .sum()
     }
 }
 
@@ -847,47 +946,90 @@ mod tests {
 
     /// Shoelace area of the boundary polyline (what the straight-sided triangles must cover).
     fn boundary_area(m: &TriMesh) -> f64 {
-        m.boundary.iter().map(|e| 0.5 * (m.pts[e.a][0] * m.pts[e.b][1] - m.pts[e.b][0] * m.pts[e.a][1])).sum()
+        m.boundary
+            .iter()
+            .map(|e| 0.5 * (m.pts[e.a][0] * m.pts[e.b][1] - m.pts[e.b][0] * m.pts[e.a][1]))
+            .sum()
     }
 
     fn check(m: &TriMesh, label: &str) {
         let worst = m.validate().unwrap_or_else(|e| panic!("{label}: {e}"));
-        assert!(worst < 1e-9, "{label}: local Delaunay violated by {worst:e}");
+        assert!(
+            worst < 1e-9,
+            "{label}: local Delaunay violated by {worst:e}"
+        );
         let (a, b) = (m.area(), boundary_area(m));
-        assert!((a - b).abs() < 1e-10 * a.abs().max(1.0), "{label}: triangle area {a} vs boundary polygon area {b}");
+        assert!(
+            (a - b).abs() < 1e-10 * a.abs().max(1.0),
+            "{label}: triangle area {a} vs boundary polygon area {b}"
+        );
     }
 
     #[test]
     fn rectangle_with_uniform_size_is_valid_and_well_shaped() {
-        let region = Region::new(Loop::rectangle(0.0, 0.0, 2.0, 1.0).unwrap(), vec![], steel()).unwrap();
+        let region = Region::new(
+            Loop::rectangle(0.0, 0.0, 2.0, 1.0).unwrap(),
+            vec![],
+            steel(),
+        )
+        .unwrap();
         let m = triangulate(&region, &|_| 0.2, MeshOptions::default()).unwrap();
         check(&m, "rectangle");
         assert!((m.area() - 2.0).abs() < 1e-12, "area {}", m.area());
         let (amin, rmax, lmax, lmin) = m.quality();
         eprintln!("rectangle: {} triangles, min angle {amin:.1}, max radius-edge {rmax:.3}, edges {lmin:.3}..{lmax:.3}", m.tris.len());
         assert!(amin > 24.0 && rmax < 1.21, "angles {amin} ratio {rmax}");
-        assert!(lmax < 0.2 * 1.5 && lmin > 0.2 * 0.4, "edge range {lmin}..{lmax}");
+        assert!(
+            lmax < 0.2 * 1.5 && lmin > 0.2 * 0.4,
+            "edge range {lmin}..{lmax}"
+        );
         // The boundary edges chain the full perimeter, each with the domain on its left: the centroid
         // of the adjacent triangle is on the left of the directed edge.
-        let perimeter: f64 = m.boundary.iter().map(|e| (m.pts[e.a][0] - m.pts[e.b][0]).hypot(m.pts[e.a][1] - m.pts[e.b][1])).sum();
+        let perimeter: f64 = m
+            .boundary
+            .iter()
+            .map(|e| (m.pts[e.a][0] - m.pts[e.b][0]).hypot(m.pts[e.a][1] - m.pts[e.b][1]))
+            .sum();
         assert!((perimeter - 6.0).abs() < 1e-12, "perimeter {perimeter}");
         for e in &m.boundary {
-            let tr = m.tris.iter().find(|t| t.contains(&e.a) && t.contains(&e.b)).unwrap();
-            let cen = [(m.pts[tr[0]][0] + m.pts[tr[1]][0] + m.pts[tr[2]][0]) / 3.0, (m.pts[tr[0]][1] + m.pts[tr[1]][1] + m.pts[tr[2]][1]) / 3.0];
-            assert!(orient(m.pts[e.a], m.pts[e.b], cen) > 0.0, "boundary edge {}-{} has the domain on its right", e.a, e.b);
+            let tr = m
+                .tris
+                .iter()
+                .find(|t| t.contains(&e.a) && t.contains(&e.b))
+                .unwrap();
+            let cen = [
+                (m.pts[tr[0]][0] + m.pts[tr[1]][0] + m.pts[tr[2]][0]) / 3.0,
+                (m.pts[tr[0]][1] + m.pts[tr[1]][1] + m.pts[tr[2]][1]) / 3.0,
+            ];
+            assert!(
+                orient(m.pts[e.a], m.pts[e.b], cen) > 0.0,
+                "boundary edge {}-{} has the domain on its right",
+                e.a,
+                e.b
+            );
         }
     }
 
     #[test]
     fn hole_boundary_lies_exactly_on_the_circle_and_the_mesh_is_graded() {
         let c = [1.0, 0.5];
-        let region = Region::new(Loop::rectangle(0.0, 0.0, 4.0, 2.0).unwrap(), vec![Loop::circle(c, 0.4, "bore").unwrap()], steel()).unwrap();
+        let region = Region::new(
+            Loop::rectangle(0.0, 0.0, 4.0, 2.0).unwrap(),
+            vec![Loop::circle(c, 0.4, "bore").unwrap()],
+            steel(),
+        )
+        .unwrap();
         // Fine at the hole, coarse far away.
-        let size = move |x: [f64; 2]| (0.04 + 0.35 * ((x[0] - c[0]).hypot(x[1] - c[1]) - 0.4).max(0.0)).min(0.6);
+        let size = move |x: [f64; 2]| {
+            (0.04 + 0.35 * ((x[0] - c[0]).hypot(x[1] - c[1]) - 0.4).max(0.0)).min(0.6)
+        };
         let m = triangulate(&region, &size, MeshOptions::default()).unwrap();
         check(&m, "plate with hole");
         let (amin, rmax, ..) = m.quality();
-        eprintln!("plate with hole: {} triangles, min angle {amin:.1}, max radius-edge {rmax:.3}", m.tris.len());
+        eprintln!(
+            "plate with hole: {} triangles, min angle {amin:.1}, max radius-edge {rmax:.3}",
+            m.tris.len()
+        );
         assert!(amin > 24.0, "min angle {amin}");
         for e in m.boundary.iter().filter(|e| m.segments[e.seg].1 == "bore") {
             for v in [e.a, e.b] {
@@ -900,8 +1042,12 @@ mod tests {
         // Grading: the mean edge length near the hole is well below the mean far from it.
         let (mut near, mut far) = ((0.0, 0), (0.0, 0));
         for t in &m.tris {
-            let cen = [(m.pts[t[0]][0] + m.pts[t[1]][0] + m.pts[t[2]][0]) / 3.0, (m.pts[t[0]][1] + m.pts[t[1]][1] + m.pts[t[2]][1]) / 3.0];
-            let e = ((m.pts[t[0]][0] - m.pts[t[1]][0]).hypot(m.pts[t[0]][1] - m.pts[t[1]][1])).min((m.pts[t[1]][0] - m.pts[t[2]][0]).hypot(m.pts[t[1]][1] - m.pts[t[2]][1]));
+            let cen = [
+                (m.pts[t[0]][0] + m.pts[t[1]][0] + m.pts[t[2]][0]) / 3.0,
+                (m.pts[t[0]][1] + m.pts[t[1]][1] + m.pts[t[2]][1]) / 3.0,
+            ];
+            let e = ((m.pts[t[0]][0] - m.pts[t[1]][0]).hypot(m.pts[t[0]][1] - m.pts[t[1]][1]))
+                .min((m.pts[t[1]][0] - m.pts[t[2]][0]).hypot(m.pts[t[1]][1] - m.pts[t[2]][1]));
             let d = (cen[0] - c[0]).hypot(cen[1] - c[1]);
             if d < 0.6 {
                 near.0 += e;
@@ -918,14 +1064,35 @@ mod tests {
 
     #[test]
     fn concave_l_shape_and_a_thin_slot() {
-        let l = Loop::polygon(&[[0.0, 0.0], [3.0, 0.0], [3.0, 1.0], [1.0, 1.0], [1.0, 3.0], [0.0, 3.0]], "l").unwrap();
-        let m = triangulate(&Region::new(l, vec![], steel()).unwrap(), &|_| 0.3, MeshOptions::default()).unwrap();
+        let l = Loop::polygon(
+            &[
+                [0.0, 0.0],
+                [3.0, 0.0],
+                [3.0, 1.0],
+                [1.0, 1.0],
+                [1.0, 3.0],
+                [0.0, 3.0],
+            ],
+            "l",
+        )
+        .unwrap();
+        let m = triangulate(
+            &Region::new(l, vec![], steel()).unwrap(),
+            &|_| 0.3,
+            MeshOptions::default(),
+        )
+        .unwrap();
         check(&m, "L shape");
         assert!((m.area() - 5.0).abs() < 1e-12);
         assert!(m.quality().0 > 24.0);
         // A long thin rectangle much narrower than the requested size.
         let slot = Loop::rectangle(0.0, 0.0, 5.0, 0.05).unwrap();
-        let m = triangulate(&Region::new(slot, vec![], steel()).unwrap(), &|_| 0.5, MeshOptions::default()).unwrap();
+        let m = triangulate(
+            &Region::new(slot, vec![], steel()).unwrap(),
+            &|_| 0.5,
+            MeshOptions::default(),
+        )
+        .unwrap();
         check(&m, "slot");
         assert!((m.area() - 0.25).abs() < 1e-12);
     }
@@ -937,7 +1104,10 @@ mod tests {
             .map(|i| {
                 let (a, b, c) = (p[(i + n - 1) % n], p[i], p[(i + 1) % n]);
                 let (u, v) = ([a[0] - b[0], a[1] - b[1]], [c[0] - b[0], c[1] - b[1]]);
-                (u[0] * v[0] + u[1] * v[1]).atan2(u[0] * v[1] - u[1] * v[0]).abs().to_degrees()
+                (u[0] * v[0] + u[1] * v[1])
+                    .atan2(u[0] * v[1] - u[1] * v[0])
+                    .abs()
+                    .to_degrees()
             })
             .fold(180.0, f64::min)
     }
@@ -964,13 +1134,28 @@ mod tests {
             let corner = min_corner_angle(&pts);
             let region = Region::new(Loop::polygon(&pts, "p").unwrap(), vec![], steel()).unwrap();
             let h = 0.12 + 0.2 * rnd();
-            let m = triangulate(&region, &|_| h, MeshOptions { min_edge: 1e-4, ..MeshOptions::default() }).unwrap_or_else(|e| panic!("case {case}: {e}"));
+            let m = triangulate(
+                &region,
+                &|_| h,
+                MeshOptions {
+                    min_edge: 1e-4,
+                    ..MeshOptions::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("case {case}: {e}"));
             check(&m, &format!("star case {case}"));
-            assert!((m.area() - region.area()).abs() < 1e-10, "case {case}: area");
+            assert!(
+                (m.area() - region.area()).abs() < 1e-10,
+                "case {case}: area"
+            );
             // Away from small input angles the quality bound holds; a corner of angle a limits the mesh to ~a.
             let want = 24.0f64.min(0.9 * corner);
             worst_angle_margin = worst_angle_margin.min(m.quality().0 - want);
-            assert!(m.quality().0 > want - 1e-9, "case {case}: min angle {} (corner {corner:.1})", m.quality().0);
+            assert!(
+                m.quality().0 > want - 1e-9,
+                "case {case}: min angle {} (corner {corner:.1})",
+                m.quality().0
+            );
         }
         eprintln!("150 random polygons meshed; worst angle margin over the guaranteed bound {worst_angle_margin:.2} deg");
     }

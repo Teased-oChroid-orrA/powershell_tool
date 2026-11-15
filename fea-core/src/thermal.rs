@@ -41,7 +41,12 @@ impl Conductivity {
     pub fn validate(&self) -> Result<(), String> {
         let ok = match self {
             Conductivity::Constant(k) => k.is_finite() && *k > 0.0,
-            Conductivity::Table(p) => !p.is_empty() && p.iter().all(|(t, k)| t.is_finite() && k.is_finite() && *k > 0.0) && p.windows(2).all(|w| w[1].0 > w[0].0),
+            Conductivity::Table(p) => {
+                !p.is_empty()
+                    && p.iter()
+                        .all(|(t, k)| t.is_finite() && k.is_finite() && *k > 0.0)
+                    && p.windows(2).all(|w| w[1].0 > w[0].0)
+            }
         };
         if ok {
             Ok(())
@@ -97,14 +102,23 @@ impl HeatSolution {
     /// `|in - out|` over the sum of the magnitudes of every term: the global energy balance, which no solver tolerance enters.
     pub fn balance_error(&self) -> f64 {
         let out = self.heat_out_fixed + self.heat_out_convection;
-        (self.heat_in - out).abs() / (self.heat_in.abs() + self.heat_out_fixed.abs() + self.heat_out_convection.abs()).max(1e-300)
+        (self.heat_in - out).abs()
+            / (self.heat_in.abs() + self.heat_out_fixed.abs() + self.heat_out_convection.abs())
+                .max(1e-300)
     }
 }
 
 impl Pattern {
     /// The same node coupling with one unknown per node (the pattern of a scalar field on the structural mesh).
     pub fn scalar(&self) -> Pattern {
-        Pattern { n_nodes: self.n_nodes, d: 1, col_ptr: self.col_ptr.clone(), row_idx: self.row_idx.clone(), scatter: self.scatter.clone(), colors: self.colors.clone() }
+        Pattern {
+            n_nodes: self.n_nodes,
+            d: 1,
+            col_ptr: self.col_ptr.clone(),
+            row_idx: self.row_idx.clone(),
+            scatter: self.scatter.clone(),
+            colors: self.colors.clone(),
+        }
     }
 }
 
@@ -114,7 +128,14 @@ impl Model {
             .blocks
             .iter()
             .enumerate()
-            .map(|(i, b)| b.thermal.as_ref().ok_or_else(|| format!("block {i} ({}) has no thermal properties (Mesh::set_thermal)", b.name)))
+            .map(|(i, b)| {
+                b.thermal.as_ref().ok_or_else(|| {
+                    format!(
+                        "block {i} ({}) has no thermal properties (Mesh::set_thermal)",
+                        b.name
+                    )
+                })
+            })
             .collect()
     }
 
@@ -130,7 +151,12 @@ impl Model {
 
     /// The conduction matrix of one block alone (`only = Some(b)`: the other blocks contribute zero) or of all of them. Conduction is
     /// linear in a block's conductivity, so the block matrix is the derivative with respect to that block's conductivity scale.
-    pub(crate) fn conduction_matrix_block(&self, spat: &Pattern, t: &[f64], only: Option<usize>) -> Result<BlockMatrix, String> {
+    pub(crate) fn conduction_matrix_block(
+        &self,
+        spat: &Pattern,
+        t: &[f64],
+        only: Option<usize>,
+    ) -> Result<BlockMatrix, String> {
         let props = self.thermal_props()?;
         let mesh = &self.mesh;
         assemble_scalar_identity(mesh, spat, |bi, e, xyz, work, ke| {
@@ -142,19 +168,41 @@ impl Model {
             }
             let conn = blk.elem(e);
             let tn: Vec<f64> = conn.iter().map(|&n| t[n]).collect();
-            kernel::conduction(blk.kind, mesh.physics, &|tg| props[bi].conductivity.at(tg), &tn[..nn], xyz, work, ke)
+            kernel::conduction(
+                blk.kind,
+                mesh.physics,
+                &|tg| props[bi].conductivity.at(tg),
+                &tn[..nn],
+                xyz,
+                work,
+                ke,
+            )
         })
     }
 
     fn capacity_matrix(&self, spat: &Pattern) -> Result<BlockMatrix, String> {
         let props = self.thermal_props()?;
         let mesh = &self.mesh;
-        assemble_scalar_identity(mesh, spat, |bi, _e, xyz, work, me| kernel::mass(mesh.blocks[bi].kind, mesh.physics, props[bi].capacity, xyz, work, me))
+        assemble_scalar_identity(mesh, spat, |bi, _e, xyz, work, me| {
+            kernel::mass(
+                mesh.blocks[bi].kind,
+                mesh.physics,
+                props[bi].capacity,
+                xyz,
+                work,
+                me,
+            )
+        })
     }
 
     /// Add `h N_a N_b` of every convection face to `k`; returns the right-hand side of all heat loads and the heat the
     /// sources, fluxes and point inputs put in (the convection's `h T_ambient` is on the right-hand side but is not an input).
-    pub(crate) fn heat_system(&self, spat: &Pattern, loads: &HeatLoads, k: &mut BlockMatrix) -> Result<(Vec<f64>, f64), String> {
+    pub(crate) fn heat_system(
+        &self,
+        spat: &Pattern,
+        loads: &HeatLoads,
+        k: &mut BlockMatrix,
+    ) -> Result<(Vec<f64>, f64), String> {
         let mesh = &self.mesh;
         let n = mesh.nodes.len();
         let mut f = vec![0.0; n];
@@ -169,7 +217,13 @@ impl Model {
             let mut fe = vec![0.0; crate::element::MAX_NODES * crate::element::MAX_NODES];
             let mut xyz = [[0.0f64; 3]; crate::element::MAX_NODES];
             for (bi, blk) in mesh.blocks.iter().enumerate() {
-                let q: f64 = loads.source + loads.block_source.iter().filter(|(b, _)| *b == bi).map(|(_, v)| v).sum::<f64>();
+                let q: f64 = loads.source
+                    + loads
+                        .block_source
+                        .iter()
+                        .filter(|(b, _)| *b == bi)
+                        .map(|(_, v)| v)
+                        .sum::<f64>();
                 if q == 0.0 {
                     continue;
                 }
@@ -179,7 +233,8 @@ impl Model {
                         xyz[a] = mesh.nodes[nd];
                     }
                     // consistent source: q * integral N_a = row sums of the unit-density mass
-                    kernel::mass(blk.kind, mesh.physics, q, &xyz[..nn], &mut work, &mut fe).map_err(|e| e.to_string())?;
+                    kernel::mass(blk.kind, mesh.physics, q, &xyz[..nn], &mut work, &mut fe)
+                        .map_err(|e| e.to_string())?;
                     for (a, &nd) in conn.iter().enumerate() {
                         f[nd] += (0..nn).map(|b| fe[a * nn + b]).sum::<f64>();
                     }
@@ -231,7 +286,12 @@ impl Model {
     /// Steady-state temperature field. A conductivity table makes it nonlinear: Picard iteration on `K(T) T = f` until the
     /// field changes by less than `tol` (relative to its range) AND the residual with the conductivity of the answer is
     /// below `tol`.
-    pub fn solve_heat_steady(&self, loads: &HeatLoads, bc: &Dirichlet, tol: f64) -> Result<HeatSolution, String> {
+    pub fn solve_heat_steady(
+        &self,
+        loads: &HeatLoads,
+        bc: &Dirichlet,
+        tol: f64,
+    ) -> Result<HeatSolution, String> {
         if !tol.is_finite() || tol <= 0.0 {
             return Err("steady heat: tolerance must be positive and finite".into());
         }
@@ -240,18 +300,34 @@ impl Model {
         for p in &props {
             p.conductivity.validate()?;
         }
-        if bc.d != 1 || bc.fixed.len() != self.mesh.nodes.len() || bc.value.len() != bc.fixed.len() || bc.value.iter().any(|v| !v.is_finite()) {
+        if bc.d != 1
+            || bc.fixed.len() != self.mesh.nodes.len()
+            || bc.value.len() != bc.fixed.len()
+            || bc.value.iter().any(|v| !v.is_finite())
+        {
             return Err("the temperature constraints must be a Dirichlet set with one component per node (Model::thermal_dirichlet)".into());
         }
         if bc.n_fixed() == 0 && loads.convection.is_empty() {
             return Err("a steady conduction problem needs a fixed temperature or a convection boundary (otherwise the level is undetermined)".into());
         }
-        let nonlinear = props.iter().any(|p| matches!(p.conductivity, Conductivity::Table(_)));
+        let nonlinear = props
+            .iter()
+            .any(|p| matches!(p.conductivity, Conductivity::Table(_)));
         let n = self.mesh.nodes.len();
-        let red = Reduced::with_ordering(&spat, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
-        let mut t: Vec<f64> = (0..n).map(|i| if bc.fixed[i] { bc.value[i] } else { 0.0 }).collect();
+        let red = Reduced::with_ordering(&spat, bc, Some(&self.mesh.nodes), Ordering::Auto)
+            .map_err(|e| e.to_string())?;
+        let mut t: Vec<f64> = (0..n)
+            .map(|i| if bc.fixed[i] { bc.value[i] } else { 0.0 })
+            .collect();
         if nonlinear && bc.n_fixed() > 0 {
-            let mean = bc.value.iter().zip(&bc.fixed).filter(|(_, f)| **f).map(|(v, _)| *v).sum::<f64>() / bc.n_fixed() as f64;
+            let mean = bc
+                .value
+                .iter()
+                .zip(&bc.fixed)
+                .filter(|(_, f)| **f)
+                .map(|(v, _)| *v)
+                .sum::<f64>()
+                / bc.n_fixed() as f64;
             for (i, v) in t.iter_mut().enumerate() {
                 if !bc.fixed[i] {
                     *v = mean;
@@ -268,8 +344,14 @@ impl Model {
             if tn.iter().any(|v| !v.is_finite()) {
                 return Err("steady heat: the temperature field is not finite".into());
             }
-            let range = tn.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - tn.iter().cloned().fold(f64::INFINITY, f64::min);
-            let change = tn.iter().zip(&t).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max) / range.max(1e-300);
+            let range = tn.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+                - tn.iter().cloned().fold(f64::INFINITY, f64::min);
+            let change = tn
+                .iter()
+                .zip(&t)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f64::max)
+                / range.max(1e-300);
             t = tn;
             if !nonlinear || change <= tol || iterations >= 100 {
                 break change;
@@ -285,7 +367,10 @@ impl Model {
         k.matvec_add(&spat, &t, &mut kt);
         // A load/reaction-only scale degenerates for a non-zero uniform temperature with no heat flow.
         // Use the magnitudes before cancellation in K T, the standard backward-error scale.
-        let abs_k = BlockMatrix { d: k.d, vals: k.vals.iter().map(|v| v.abs()).collect() };
+        let abs_k = BlockMatrix {
+            d: k.d,
+            vals: k.vals.iter().map(|v| v.abs()).collect(),
+        };
         let abs_t: Vec<f64> = t.iter().map(|v| v.abs()).collect();
         let mut scale = vec![0.0; n];
         abs_k.matvec_add(&spat, &abs_t, &mut scale);
@@ -301,51 +386,105 @@ impl Model {
         }
         let rel_residual = rn / denominator.max(1e-300);
         let heat_out_convection = self.convection_out(loads, &t)?;
-        if !denominator.is_finite() || !rel_residual.is_finite() || !heat_in.is_finite() || !reaction.is_finite() || !heat_out_convection.is_finite() {
+        if !denominator.is_finite()
+            || !rel_residual.is_finite()
+            || !heat_in.is_finite()
+            || !reaction.is_finite()
+            || !heat_out_convection.is_finite()
+        {
             return Err("steady heat: the final residual or heat flow is not finite".into());
         }
         if rel_residual > tol {
             return Err(format!("steady heat: the final residual {rel_residual:.2e} exceeds the allowed tolerance {tol:.2e}"));
         }
         let flow_scale = heat_in.abs() + reaction.abs() + heat_out_convection.abs();
-        let roundoff = 100.0 * f64::EPSILON * scale.iter().zip(&f).map(|(s, f)| s + f.abs()).sum::<f64>();
+        let roundoff =
+            100.0 * f64::EPSILON * scale.iter().zip(&f).map(|(s, f)| s + f.abs()).sum::<f64>();
         let imbalance = (heat_in + reaction - heat_out_convection).abs();
         let accepted_balance_error = (imbalance - roundoff).max(0.0) / flow_scale.max(1e-300);
-        if !roundoff.is_finite() || !flow_scale.is_finite() || !imbalance.is_finite() || !accepted_balance_error.is_finite() || accepted_balance_error > tol {
+        if !roundoff.is_finite()
+            || !flow_scale.is_finite()
+            || !imbalance.is_finite()
+            || !accepted_balance_error.is_finite()
+            || accepted_balance_error > tol
+        {
             return Err(format!("steady heat: global heat balance {accepted_balance_error:e} exceeds {tol:e} or is nonfinite"));
         }
-        Ok(HeatSolution { temperature: t, rel_residual, accepted_balance_error, iterations, heat_in, heat_out_fixed: -reaction, heat_out_convection })
+        Ok(HeatSolution {
+            temperature: t,
+            rel_residual,
+            accepted_balance_error,
+            iterations,
+            heat_in,
+            heat_out_fixed: -reaction,
+            heat_out_convection,
+        })
     }
 
     /// Transient temperature field by the theta method (`theta = 1` backward Euler, `0.5` Crank-Nicolson), constant
     /// conductivities, from the initial field `t0`; returns the fields at every step.
-    pub fn solve_heat_transient(&self, loads: &HeatLoads, bc: &Dirichlet, t0: &[f64], dt: f64, steps: usize, theta: f64) -> Result<Vec<Vec<f64>>, String> {
+    pub fn solve_heat_transient(
+        &self,
+        loads: &HeatLoads,
+        bc: &Dirichlet,
+        t0: &[f64],
+        dt: f64,
+        steps: usize,
+        theta: f64,
+    ) -> Result<Vec<Vec<f64>>, String> {
         let spat = std::sync::Arc::new(self.pattern.scalar());
         let props = self.thermal_props()?;
-        if props.iter().any(|p| matches!(p.conductivity, Conductivity::Table(_))) {
-            return Err("temperature-dependent conductivity is available for the steady problem only".into());
+        if props
+            .iter()
+            .any(|p| matches!(p.conductivity, Conductivity::Table(_)))
+        {
+            return Err(
+                "temperature-dependent conductivity is available for the steady problem only"
+                    .into(),
+            );
         }
         for p in &props {
             p.conductivity.validate()?;
             if !p.capacity.is_finite() || p.capacity <= 0.0 {
-                return Err("a transient conduction problem needs a positive heat capacity in every block".into());
+                return Err(
+                    "a transient conduction problem needs a positive heat capacity in every block"
+                        .into(),
+                );
             }
         }
         if !dt.is_finite() || dt <= 0.0 || !(0.5..=1.0).contains(&theta) {
-            return Err("transient conduction: dt must be positive and theta within [0.5, 1]".into());
+            return Err(
+                "transient conduction: dt must be positive and theta within [0.5, 1]".into(),
+            );
         }
         let n = self.mesh.nodes.len();
         if t0.len() != n || t0.iter().any(|v| !v.is_finite()) {
-            return Err("the initial temperature field must have the correct length and finite values".into());
+            return Err(
+                "the initial temperature field must have the correct length and finite values"
+                    .into(),
+            );
         }
-        if bc.d != 1 || bc.fixed.len() != n || bc.value.len() != n || bc.value.iter().any(|v| !v.is_finite()) {
+        if bc.d != 1
+            || bc.fixed.len() != n
+            || bc.value.len() != n
+            || bc.value.iter().any(|v| !v.is_finite())
+        {
             return Err("transient conduction: invalid constraints".into());
         }
         let mut k = self.conduction_matrix(&spat, t0)?;
         let (f, _) = self.heat_system(&spat, loads, &mut k)?;
         let c = self.capacity_matrix(&spat)?;
-        let lhs = BlockMatrix { d: 1, vals: k.vals.iter().zip(&c.vals).map(|(kk, cc)| cc / dt + theta * kk).collect() };
-        let red = Reduced::with_ordering(&spat, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+        let lhs = BlockMatrix {
+            d: 1,
+            vals: k
+                .vals
+                .iter()
+                .zip(&c.vals)
+                .map(|(kk, cc)| cc / dt + theta * kk)
+                .collect(),
+        };
+        let red = Reduced::with_ordering(&spat, bc, Some(&self.mesh.nodes), Ordering::Auto)
+            .map_err(|e| e.to_string())?;
         let fac = red.factor(&lhs).map_err(|e| e.to_string())?;
         let mut t: Vec<f64> = t0.to_vec();
         for (ti, (fx, v)) in t.iter_mut().zip(bc.fixed.iter().zip(&bc.value)) {
@@ -358,7 +497,9 @@ impl Model {
             let (mut ct, mut kt) = (vec![0.0; n], vec![0.0; n]);
             c.matvec_add(&spat, &t, &mut ct);
             k.matvec_add(&spat, &t, &mut kt);
-            let rhs: Vec<f64> = (0..n).map(|i| ct[i] / dt - (1.0 - theta) * kt[i] + f[i]).collect();
+            let rhs: Vec<f64> = (0..n)
+                .map(|i| ct[i] / dt - (1.0 - theta) * kt[i] + f[i])
+                .collect();
             t = fac.solve(&lhs, &rhs, bc);
             if t.iter().any(|v| !v.is_finite()) {
                 return Err("transient conduction: nonfinite temperature".into());

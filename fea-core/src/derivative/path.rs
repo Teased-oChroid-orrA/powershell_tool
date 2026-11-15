@@ -55,7 +55,10 @@ pub struct Qoi {
 
 impl Qoi {
     pub fn displacement(grad_u: Vec<f64>) -> Self {
-        Self { grad_u, state_weights: None }
+        Self {
+            grad_u,
+            state_weights: None,
+        }
     }
 }
 
@@ -69,7 +72,11 @@ pub struct PathOptions {
 
 impl Default for PathOptions {
     fn default() -> Self {
-        Self { steps: 4, tol: 1e-13, max_iter: 30 }
+        Self {
+            steps: 4,
+            tol: 1e-13,
+            max_iter: 30,
+        }
     }
 }
 
@@ -99,27 +106,44 @@ fn dotv(a: &[f64], b: &[f64]) -> f64 {
 
 /// Solve the path by Newton's method at every load step (proportional loading, no step cutting: a step that does not converge is an
 /// error, so the sensitivities always belong to the sequence of steps they describe). Constraints must be homogeneous.
-pub fn solve_path(model: &Model, loads: &Loads, bc: &Dirichlet, opt: &PathOptions) -> Result<PathSolution, String> {
+pub fn solve_path(
+    model: &Model,
+    loads: &Loads,
+    bc: &Dirichlet,
+    opt: &PathOptions,
+) -> Result<PathSolution, String> {
     if bc.fixed.iter().zip(&bc.value).any(|(f, v)| *f && *v != 0.0) {
         return Err("path sensitivities need homogeneous constraints (prescribed displacements are not scaled with the load)".into());
     }
     model.check_constrained(bc)?;
     let n = model.mesh.n_dofs();
     let f_ext = loads::assemble(&model.mesh, loads)?;
-    let red = Reduced::with_ordering(&model.pattern, bc, Some(&model.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+    let red = Reduced::with_ordering(&model.pattern, bc, Some(&model.mesh.nodes), Ordering::Auto)
+        .map_err(|e| e.to_string())?;
     let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
     let mut u = vec![0.0; n];
     let mut state = NlState::new(&model.mesh);
-    let mut out = PathSolution { steps: opt.steps, u: Vec::new(), states: vec![state.clone()], newton_iterations: 0, factorizations: 0 };
+    let mut out = PathSolution {
+        steps: opt.steps,
+        u: Vec::new(),
+        states: vec![state.clone()],
+        newton_iterations: 0,
+        factorizations: 0,
+    };
     for step in 1..=opt.steps {
         let lambda = step as f64 / opt.steps as f64;
         let mut converged = false;
         for _ in 0..opt.max_iter {
             let mut new = state.clone();
-            let (f_int, k) = assemble_nl_public(&model.mesh, &model.pattern, &u, &state, &mut new, true)?;
+            let (f_int, k) =
+                assemble_nl_public(&model.mesh, &model.pattern, &u, &state, &mut new, true)?;
             let k = k.ok_or("no tangent")?;
             let r: Vec<f64> = free.iter().map(|&d| f_int[d] - lambda * f_ext[d]).collect();
-            let scale = free.iter().map(|&d| (lambda * f_ext[d]).abs().max(f_int[d].abs())).fold(0.0f64, f64::max).max(1e-300);
+            let scale = free
+                .iter()
+                .map(|&d| (lambda * f_ext[d]).abs().max(f_int[d].abs()))
+                .fold(0.0f64, f64::max)
+                .max(1e-300);
             let rn = r.iter().fold(0.0f64, |m, v| m.max(v.abs()));
             if rn <= opt.tol * scale {
                 converged = true;
@@ -135,7 +159,10 @@ pub fn solve_path(model: &Model, loads: &Loads, bc: &Dirichlet, opt: &PathOption
             out.newton_iterations += 1;
         }
         if !converged {
-            return Err(format!("load step {step} of {} did not converge in {} iterations", opt.steps, opt.max_iter));
+            return Err(format!(
+                "load step {step} of {} did not converge in {} iterations",
+                opt.steps, opt.max_iter
+            ));
         }
         let mut new = state.clone();
         assemble_nl_public(&model.mesh, &model.pattern, &u, &state, &mut new, false)?;
@@ -184,14 +211,22 @@ impl<'m> Setup<'m> {
         let mut work = Work::new();
         for (bi, blk) in model.mesh.blocks.iter().enumerate() {
             if blk.material.aniso.is_some() {
-                return Err(format!("block {bi}: anisotropic elasticity is not supported by the path sensitivities"));
+                return Err(format!(
+                    "block {bi}: anisotropic elasticity is not supported by the path sensitivities"
+                ));
             }
-            if blk.plasticity.is_some_and(|j| j.large_strain || j.neo_hookean) {
+            if blk
+                .plasticity
+                .is_some_and(|j| j.large_strain || j.neo_hookean)
+            {
                 return Err(format!("block {bi}: only small-strain J2 plasticity is supported by the path sensitivities"));
             }
             let plane_stress = matches!(physics, Physics::PlaneStress { .. });
             laws.push(match blk.plasticity {
-                Some(j2) => Law::Plastic { plane_stress, table: J2Table::new(blk.material.e, blk.material.nu, &j2.law) },
+                Some(j2) => Law::Plastic {
+                    plane_stress,
+                    table: J2Table::new(blk.material.e, blk.material.nu, &j2.law),
+                },
                 None => Law::Elastic { plane_stress },
             });
             let t = blk.kind.table();
@@ -199,7 +234,8 @@ impl<'m> Setup<'m> {
             for e in 0..blk.n_elems() {
                 let conn = blk.elem(e);
                 let xyz: Vec<[f64; 3]> = conn.iter().map(|&n| model.mesh.nodes[n]).collect();
-                kernel::geometry(blk.kind, physics, &xyz, &mut work).map_err(|er| er.to_string())?;
+                kernel::geometry(blk.kind, physics, &xyz, &mut work)
+                    .map_err(|er| er.to_string())?;
                 for g in 0..ngp {
                     let gr = &work.grad[g * nn * d..(g + 1) * nn * d];
                     let nsh = t.n_at(g);
@@ -234,12 +270,28 @@ impl<'m> Setup<'m> {
                             }
                         }
                     }
-                    let dofs: Vec<usize> = conn.iter().flat_map(|&n| (0..d).map(move |i| n * d + i)).collect();
-                    gps.push(Gp { block: bi, elem: e, g, w: work.wdet[g], b, dofs });
+                    let dofs: Vec<usize> = conn
+                        .iter()
+                        .flat_map(|&n| (0..d).map(move |i| n * d + i))
+                        .collect();
+                    gps.push(Gp {
+                        block: bi,
+                        elem: e,
+                        g,
+                        w: work.wdet[g],
+                        b,
+                        dofs,
+                    });
                 }
             }
         }
-        Ok(Self { model, gps, laws, free, f_ext })
+        Ok(Self {
+            model,
+            gps,
+            laws,
+            free,
+            f_ext,
+        })
     }
 
     pub(crate) fn strain(&self, gp: &Gp, u: &[f64]) -> [f64; VOIGT] {
@@ -255,17 +307,50 @@ impl<'m> Setup<'m> {
         e
     }
 
-    pub(crate) fn sens(&self, gp: &Gp, u: &[f64], old: &[f64; STATE]) -> Result<MaterialSensitivities, String> {
+    pub(crate) fn sens(
+        &self,
+        gp: &Gp,
+        u: &[f64],
+        old: &[f64; STATE],
+    ) -> Result<MaterialSensitivities, String> {
         let strain = self.strain(gp, u);
         let blk = &self.model.mesh.blocks[gp.block];
         let r = match &self.laws[gp.block] {
-            Law::Elastic { plane_stress: false } => sensitivities(&Hooke { e: blk.material.e, nu: blk.material.nu }, &[blk.material.e, blk.material.nu], &strain, old),
+            Law::Elastic {
+                plane_stress: false,
+            } => sensitivities(
+                &Hooke {
+                    e: blk.material.e,
+                    nu: blk.material.nu,
+                },
+                &[blk.material.e, blk.material.nu],
+                &strain,
+                old,
+            ),
             Law::Elastic { plane_stress: true } => {
-                let m = PlaneStress { inner: Hooke { e: blk.material.e, nu: blk.material.nu } };
+                let m = PlaneStress {
+                    inner: Hooke {
+                        e: blk.material.e,
+                        nu: blk.material.nu,
+                    },
+                };
                 sensitivities(&m, &[blk.material.e, blk.material.nu], &strain, old)
             }
-            Law::Plastic { plane_stress: false, table } => sensitivities(table, &table.parameters(), &strain, old),
-            Law::Plastic { plane_stress: true, table } => sensitivities(&PlaneStress { inner: table.clone() }, &table.parameters(), &strain, old),
+            Law::Plastic {
+                plane_stress: false,
+                table,
+            } => sensitivities(table, &table.parameters(), &strain, old),
+            Law::Plastic {
+                plane_stress: true,
+                table,
+            } => sensitivities(
+                &PlaneStress {
+                    inner: table.clone(),
+                },
+                &table.parameters(),
+                &strain,
+                old,
+            ),
         };
         r.map_err(|e| format!("block {} element {}: {e}", gp.block, gp.elem))
     }
@@ -273,7 +358,10 @@ impl<'m> Setup<'m> {
     /// Index into a block's parameter vector of `p` and the factor from the parameter to that entry (`d/dp = factor * d/dentry`).
     fn param_entry(&self, p: NlParam) -> Result<Option<(usize, usize, f64)>, String> {
         let check = |b: usize, plastic_only: bool| -> Result<(), String> {
-            let law = self.laws.get(b).ok_or(format!("block {b} does not exist"))?;
+            let law = self
+                .laws
+                .get(b)
+                .ok_or(format!("block {b} does not exist"))?;
             if plastic_only && matches!(law, Law::Elastic { .. }) {
                 return Err(format!("block {b} is elastic: it has no yield curve"));
             }
@@ -316,7 +404,15 @@ impl<'m> Setup<'m> {
     }
 
     pub(crate) fn gp_states(&self, st: &NlState) -> Vec<[f64; STATE]> {
-        self.gps.iter().map(|gp| st.gp[gp.block].get(gp.elem * self.model.mesh.blocks[gp.block].kind.table().ngp + gp.g).copied().unwrap_or([0.0; STATE])).collect()
+        self.gps
+            .iter()
+            .map(|gp| {
+                st.gp[gp.block]
+                    .get(gp.elem * self.model.mesh.blocks[gp.block].kind.table().ngp + gp.g)
+                    .copied()
+                    .unwrap_or([0.0; STATE])
+            })
+            .collect()
     }
 }
 
@@ -336,15 +432,26 @@ pub struct PathReport {
 pub type SensitivityMatrix = Vec<Vec<f64>>;
 
 fn jacobian_bytes(s: &MaterialSensitivities) -> usize {
-    8 * (s.d_stress_d_strain.len() + s.d_stress_d_state.len() + s.d_stress_d_params.len() + s.d_new_state_d_strain.len() + s.d_new_state_d_state.len() + s.d_new_state_d_params.len() + VOIGT + STATE)
+    8 * (s.d_stress_d_strain.len()
+        + s.d_stress_d_state.len()
+        + s.d_stress_d_params.len()
+        + s.d_new_state_d_strain.len()
+        + s.d_new_state_d_state.len()
+        + s.d_new_state_d_params.len()
+        + VOIGT
+        + STATE)
 }
 
 fn matvec(m: &[f64], rows: usize, cols: usize, v: &[f64]) -> Vec<f64> {
-    (0..rows).map(|r| (0..cols).map(|c| m[r * cols + c] * v[c]).sum()).collect()
+    (0..rows)
+        .map(|r| (0..cols).map(|c| m[r * cols + c] * v[c]).sum())
+        .collect()
 }
 
 fn matvec_t(m: &[f64], rows: usize, cols: usize, v: &[f64]) -> Vec<f64> {
-    (0..cols).map(|c| (0..rows).map(|r| m[r * cols + c] * v[r]).sum()).collect()
+    (0..cols)
+        .map(|c| (0..rows).map(|r| m[r * cols + c] * v[r]).sum())
+        .collect()
 }
 
 /// A column of a row-major `rows x cols` matrix.
@@ -362,19 +469,34 @@ impl<'m> PathSensitivityEngine<'m> {
         if loads.delta_t != 0.0 || loads.temperature.is_some() {
             return Err("path sensitivities: thermal loads depend on the modulus and the geometry; the path engine does not differentiate them (use mechanical loads)".into());
         }
-        let red = Reduced::with_ordering(&model.pattern, bc, Some(&model.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+        let red =
+            Reduced::with_ordering(&model.pattern, bc, Some(&model.mesh.nodes), Ordering::Auto)
+                .map_err(|e| e.to_string())?;
         let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
         let setup = Setup::new(model, loads::assemble(&model.mesh, loads)?, free)?;
         Ok(Self { setup, red })
     }
 
-    fn tangent<'a>(&'a self, u: &[f64], old: &NlState, k_store: &'a mut Option<crate::assembly::BlockMatrix>) -> Result<TangentSolver<'a>, String> {
+    fn tangent<'a>(
+        &'a self,
+        u: &[f64],
+        old: &NlState,
+        k_store: &'a mut Option<crate::assembly::BlockMatrix>,
+    ) -> Result<TangentSolver<'a>, String> {
         let m = self.setup.model;
         let mut new = old.clone();
         let (_, k) = assemble_nl_public(&m.mesh, &m.pattern, u, old, &mut new, true)?;
         *k_store = k;
         let k = k_store.as_ref().ok_or("no tangent")?;
-        TangentSolver::new(&self.red, &m.pattern, k, m.mesh.n_dofs(), &self.setup.free, &[]).map_err(|e| e.to_string())
+        TangentSolver::new(
+            &self.red,
+            &m.pattern,
+            k,
+            m.mesh.n_dofs(),
+            &self.setup.free,
+            &[],
+        )
+        .map_err(|e| e.to_string())
     }
 
     fn restrict(&self, v: &[f64]) -> Vec<f64> {
@@ -390,10 +512,18 @@ impl<'m> PathSensitivityEngine<'m> {
     }
 
     /// Explicit residual derivative `R_p` and the state-update derivative `S_p` of one parameter at one step.
-    fn explicit_terms(&self, p: NlParam, lambda: f64, sens: &[MaterialSensitivities]) -> Result<(Vec<f64>, Vec<[f64; STATE]>), String> {
+    fn explicit_terms(
+        &self,
+        p: NlParam,
+        lambda: f64,
+        sens: &[MaterialSensitivities],
+    ) -> Result<(Vec<f64>, Vec<[f64; STATE]>), String> {
         let n = self.setup.model.mesh.n_dofs();
         match self.setup.param_entry(p)? {
-            None => Ok((self.setup.f_ext.iter().map(|v| -lambda * v).collect(), vec![[0.0; STATE]; self.setup.gps.len()])),
+            None => Ok((
+                self.setup.f_ext.iter().map(|v| -lambda * v).collect(),
+                vec![[0.0; STATE]; self.setup.gps.len()],
+            )),
             Some((block, entry, factor)) => {
                 let np = |s: &MaterialSensitivities| s.n_params;
                 let sigma_p = |gp_idx: usize, gp: &Gp| -> Option<[f64; VOIGT]> {
@@ -434,12 +564,26 @@ impl<'m> PathSensitivityEngine<'m> {
         }
     }
 
-    fn all_sens(&self, u: &[f64], old: &[[f64; STATE]]) -> Result<Vec<MaterialSensitivities>, String> {
-        self.setup.gps.iter().zip(old).map(|(gp, o)| self.setup.sens(gp, u, o)).collect()
+    fn all_sens(
+        &self,
+        u: &[f64],
+        old: &[[f64; STATE]],
+    ) -> Result<Vec<MaterialSensitivities>, String> {
+        self.setup
+            .gps
+            .iter()
+            .zip(old)
+            .map(|(gp, o)| self.setup.sens(gp, u, o))
+            .collect()
     }
 
     /// Direct (forward) sensitivities of every quantity for every parameter.
-    pub fn direct(&self, sol: &PathSolution, params: &[NlParam], qois: &[Qoi]) -> Result<(SensitivityMatrix, PathReport), String> {
+    pub fn direct(
+        &self,
+        sol: &PathSolution,
+        params: &[NlParam],
+        qois: &[Qoi],
+    ) -> Result<(SensitivityMatrix, PathReport), String> {
         let n_gp = self.setup.gps.len();
         let mut ds: Vec<Vec<[f64; STATE]>> = vec![vec![[0.0; STATE]; n_gp]; params.len()];
         let mut du_last = vec![vec![0.0; self.setup.model.mesh.n_dofs()]; params.len()];
@@ -457,8 +601,20 @@ impl<'m> PathSensitivityEngine<'m> {
             for (pi, &p) in params.iter().enumerate() {
                 let (rp, sp) = self.explicit_terms(p, lambda, &sens)?;
                 // dR/ds_{k-1} ds_{k-1}: per Gauss point, w B^T W (dsigma/ds_old) ds_old
-                let hist = self.setup.assemble_stress_indexed(|gi, _| Some(matvec(&sens[gi].d_stress_d_state, VOIGT, STATE, &ds[pi][gi])));
-                let rhs: Vec<f64> = self.restrict(&rp.iter().zip(&hist).map(|(a, b)| -(a + b)).collect::<Vec<_>>());
+                let hist = self.setup.assemble_stress_indexed(|gi, _| {
+                    Some(matvec(
+                        &sens[gi].d_stress_d_state,
+                        VOIGT,
+                        STATE,
+                        &ds[pi][gi],
+                    ))
+                });
+                let rhs: Vec<f64> = self.restrict(
+                    &rp.iter()
+                        .zip(&hist)
+                        .map(|(a, b)| -(a + b))
+                        .collect::<Vec<_>>(),
+                );
                 let dur = solver.solve(&rhs)?;
                 solves += 1;
                 let du = self.expand(&dur);
@@ -490,7 +646,17 @@ impl<'m> PathSensitivityEngine<'m> {
                 out[qi][pi] = v;
             }
         }
-        Ok((out, PathReport { method: super::SensitivityMethod::Direct, tangent_factorizations: facs, tangent_solves: solves, jacobian_evaluations: evals, jacobian_bytes: peak, strategy: JacobianStrategy::Recompute }))
+        Ok((
+            out,
+            PathReport {
+                method: super::SensitivityMethod::Direct,
+                tangent_factorizations: facs,
+                tangent_solves: solves,
+                jacobian_evaluations: evals,
+                jacobian_bytes: peak,
+                strategy: JacobianStrategy::Recompute,
+            },
+        ))
     }
 
     fn flatten_weights(&self, w: &[Vec<[f64; STATE]>]) -> Vec<[f64; STATE]> {
@@ -499,7 +665,10 @@ impl<'m> PathSensitivityEngine<'m> {
             .iter()
             .map(|gp| {
                 let ngp = self.setup.model.mesh.blocks[gp.block].kind.table().ngp;
-                w.get(gp.block).and_then(|b| b.get(gp.elem * ngp + gp.g)).copied().unwrap_or([0.0; STATE])
+                w.get(gp.block)
+                    .and_then(|b| b.get(gp.elem * ngp + gp.g))
+                    .copied()
+                    .unwrap_or([0.0; STATE])
             })
             .collect()
     }
@@ -507,7 +676,14 @@ impl<'m> PathSensitivityEngine<'m> {
     /// Direct or adjoint, chosen by [`super::select_sensitivity`] from the number of parameters, quantities and steps (or the
     /// `forced` method); the returned [`SensitivityPlan`] says why. A matrix-free choice is answered by the adjoint here (the
     /// per-step tangent is assembled and factorised once either way).
-    pub fn sensitivities(&self, sol: &PathSolution, params: &[NlParam], qois: &[Qoi], forced: Option<super::SensitivityMethod>, strategy: JacobianStrategy) -> Result<(SensitivityMatrix, PathReport, super::SensitivityPlan), String> {
+    pub fn sensitivities(
+        &self,
+        sol: &PathSolution,
+        params: &[NlParam],
+        qois: &[Qoi],
+        forced: Option<super::SensitivityMethod>,
+        strategy: JacobianStrategy,
+    ) -> Result<(SensitivityMatrix, PathReport, super::SensitivityPlan), String> {
         let n = self.setup.model.mesh.n_dofs();
         let mut ctx = super::SensitivityContext::static_linear(n, params.len(), qois.len());
         ctx.steps = sol.steps;
@@ -522,12 +698,31 @@ impl<'m> PathSensitivityEngine<'m> {
 
     /// Discrete adjoint sensitivities of every quantity for every parameter: one backward sweep per quantity, whatever the number of
     /// parameters.
-    pub fn adjoint(&self, sol: &PathSolution, params: &[NlParam], qois: &[Qoi], strategy: JacobianStrategy) -> Result<(SensitivityMatrix, PathReport), String> {
+    pub fn adjoint(
+        &self,
+        sol: &PathSolution,
+        params: &[NlParam],
+        qois: &[Qoi],
+        strategy: JacobianStrategy,
+    ) -> Result<(SensitivityMatrix, PathReport), String> {
         let n_gp = self.setup.gps.len();
         let nq = qois.len();
-        let weights: Vec<Option<Vec<[f64; STATE]>>> = qois.iter().map(|q| q.state_weights.as_ref().map(|w| self.flatten_weights(w))).collect();
+        let weights: Vec<Option<Vec<[f64; STATE]>>> = qois
+            .iter()
+            .map(|q| q.state_weights.as_ref().map(|w| self.flatten_weights(w)))
+            .collect();
         // nu_N = -c per quantity
-        let mut nu: Vec<Vec<[f64; STATE]>> = (0..nq).map(|q| (0..n_gp).map(|gi| weights[q].as_ref().map_or([0.0; STATE], |w| std::array::from_fn(|i| -w[gi][i]))).collect()).collect();
+        let mut nu: Vec<Vec<[f64; STATE]>> = (0..nq)
+            .map(|q| {
+                (0..n_gp)
+                    .map(|gi| {
+                        weights[q]
+                            .as_ref()
+                            .map_or([0.0; STATE], |w| std::array::from_fn(|i| -w[gi][i]))
+                    })
+                    .collect()
+            })
+            .collect();
         let mut grad = vec![vec![0.0; params.len()]; nq];
         let (mut solves, mut facs, mut evals, mut peak) = (0, 0, 0, 0);
         // optional store of the Jacobians of every step
@@ -538,7 +733,11 @@ impl<'m> PathSensitivityEngine<'m> {
                 stored[k - 1] = Some(self.all_sens(&sol.u[k - 1], &old)?);
                 evals += n_gp;
             }
-            peak = stored.iter().flatten().map(|v| v.iter().map(jacobian_bytes).sum::<usize>()).sum();
+            peak = stored
+                .iter()
+                .flatten()
+                .map(|v| v.iter().map(jacobian_bytes).sum::<usize>())
+                .sum();
         }
         for k in (1..=sol.steps).rev() {
             let lambda = k as f64 / sol.steps as f64;
@@ -557,13 +756,18 @@ impl<'m> PathSensitivityEngine<'m> {
             let mut kstore = None;
             let solver = self.tangent(u, &sol.states[k - 1], &mut kstore)?;
             facs += 1;
-            let explicit: Vec<(Vec<f64>, Vec<[f64; STATE]>)> = params.iter().map(|&p| self.explicit_terms(p, lambda, sens)).collect::<Result<_, _>>()?;
+            let explicit: Vec<(Vec<f64>, Vec<[f64; STATE]>)> = params
+                .iter()
+                .map(|&p| self.explicit_terms(p, lambda, sens))
+                .collect::<Result<_, _>>()?;
             for q in 0..nq {
                 // rhs = -delta_kN grad_u + sum_gp B^T (S_eps^T nu)
-                let a: Vec<[f64; VOIGT]> = (0..n_gp).map(|gi| {
-                    let t = matvec_t(&sens[gi].d_new_state_d_strain, STATE, VOIGT, &nu[q][gi]);
-                    std::array::from_fn(|i| t[i])
-                }).collect();
+                let a: Vec<[f64; VOIGT]> = (0..n_gp)
+                    .map(|gi| {
+                        let t = matvec_t(&sens[gi].d_new_state_d_strain, STATE, VOIGT, &nu[q][gi]);
+                        std::array::from_fn(|i| t[i])
+                    })
+                    .collect();
                 let mut rhs_full = self.setup.assemble_strain_adjoint(&a);
                 if k == sol.steps {
                     for (r, g) in rhs_full.iter_mut().zip(&qois[q].grad_u) {
@@ -595,7 +799,17 @@ impl<'m> PathSensitivityEngine<'m> {
                 nu[q] = new_nu;
             }
         }
-        Ok((grad, PathReport { method: super::SensitivityMethod::DiscreteAdjoint, tangent_factorizations: facs, tangent_solves: solves, jacobian_evaluations: evals, jacobian_bytes: peak, strategy }))
+        Ok((
+            grad,
+            PathReport {
+                method: super::SensitivityMethod::DiscreteAdjoint,
+                tangent_factorizations: facs,
+                tangent_solves: solves,
+                jacobian_evaluations: evals,
+                jacobian_bytes: peak,
+                strategy,
+            },
+        ))
     }
 }
 

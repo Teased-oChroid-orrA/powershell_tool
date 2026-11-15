@@ -70,7 +70,15 @@ fn fit(d: usize, p: usize, centre: [f64; 3], samples: &[&GaussStress]) -> Option
     if samples.len() < nt + 2 {
         return None;
     }
-    let scale = samples.iter().map(|s| (0..d).map(|i| (s.0[i] - centre[i]).powi(2)).sum::<f64>().sqrt()).fold(0.0f64, f64::max);
+    let scale = samples
+        .iter()
+        .map(|s| {
+            (0..d)
+                .map(|i| (s.0[i] - centre[i]).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        })
+        .fold(0.0f64, f64::max);
     if scale <= 0.0 {
         return None;
     }
@@ -78,7 +86,13 @@ fn fit(d: usize, p: usize, centre: [f64; 3], samples: &[&GaussStress]) -> Option
     let mut rhs = [[0.0f64; 6]; 10];
     let mut t = [0.0; 10];
     for s in samples {
-        let x: [f64; 3] = std::array::from_fn(|i| if i < d { (s.0[i] - centre[i]) / scale } else { 0.0 });
+        let x: [f64; 3] = std::array::from_fn(|i| {
+            if i < d {
+                (s.0[i] - centre[i]) / scale
+            } else {
+                0.0
+            }
+        });
         terms(d, p, x, &mut t);
         for i in 0..nt {
             for j in 0..nt {
@@ -126,12 +140,24 @@ fn fit(d: usize, p: usize, centre: [f64; 3], samples: &[&GaussStress]) -> Option
             coef[i][c] = s / l[i * nt + i];
         }
     }
-    Some(Fit { centre, scale, degree: p, coef, nt })
+    Some(Fit {
+        centre,
+        scale,
+        degree: p,
+        coef,
+        nt,
+    })
 }
 
 impl Fit {
     fn eval(&self, d: usize, x: [f64; 3]) -> [f64; 6] {
-        let xs: [f64; 3] = std::array::from_fn(|i| if i < d { (x[i] - self.centre[i]) / self.scale } else { 0.0 });
+        let xs: [f64; 3] = std::array::from_fn(|i| {
+            if i < d {
+                (x[i] - self.centre[i]) / self.scale
+            } else {
+                0.0
+            }
+        });
         let mut t = [0.0; 10];
         terms(d, self.degree, xs, &mut t);
         let mut out = [0.0; 6];
@@ -164,7 +190,8 @@ pub fn complementary_energy(mat: &Elastic, s: &[f64; 6]) -> f64 {
         return 0.5 * w;
     }
     let tr = s[0] + s[1] + s[2];
-    let sq = s[0] * s[0] + s[1] * s[1] + s[2] * s[2] + 2.0 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]);
+    let sq =
+        s[0] * s[0] + s[1] * s[1] + s[2] * s[2] + 2.0 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]);
     0.5 * ((1.0 + mat.nu) * sq - mat.nu * tr * tr) / mat.e
 }
 
@@ -182,9 +209,16 @@ pub struct ZzEstimate {
 impl ZzEstimate {
     /// Relative error `eta / sqrt(eta^2 + |sigma*|^2)`.
     pub fn relative(&self) -> f64 {
-        if !self.total.is_finite() || !self.norm.is_finite() || self.total < 0.0 || self.norm < 0.0 { return f64::NAN; }
+        if !self.total.is_finite() || !self.norm.is_finite() || self.total < 0.0 || self.norm < 0.0
+        {
+            return f64::NAN;
+        }
         let denominator = self.total.hypot(self.norm);
-        if denominator == 0.0 { 0.0 } else { self.total / denominator }
+        if denominator == 0.0 {
+            0.0
+        } else {
+            self.total / denominator
+        }
     }
 }
 
@@ -206,7 +240,11 @@ pub struct SprDiagnostics {
 impl SprDiagnostics {
     /// Fraction of corner nodes that fell back to the plain average (an unreliable stress).
     pub fn averaged_fraction(&self) -> f64 {
-        if self.corner_nodes == 0 { 0.0 } else { self.averaged as f64 / self.corner_nodes as f64 }
+        if self.corner_nodes == 0 {
+            0.0
+        } else {
+            self.averaged as f64 / self.corner_nodes as f64
+        }
     }
 
     fn add(&mut self, o: &SprDiagnostics) {
@@ -261,7 +299,10 @@ fn error_rule(kind: ElementKind) -> Vec<([f64; 3], f64)> {
             for &(a, wa) in &gl {
                 for &(b, wb) in &gl {
                     for &(c, wc) in &gl {
-                        out.push(([2.0 * a - 1.0, 2.0 * b - 1.0, 2.0 * c - 1.0], 8.0 * wa * wb * wc));
+                        out.push((
+                            [2.0 * a - 1.0, 2.0 * b - 1.0, 2.0 * c - 1.0],
+                            8.0 * wa * wb * wc,
+                        ));
                     }
                 }
             }
@@ -278,7 +319,10 @@ fn error_rule(kind: ElementKind) -> Vec<([f64; 3], f64)> {
             for &(u, wu) in &gl {
                 for &(v, wv) in &gl {
                     for &(c, wc) in &axial {
-                        out.push(([u * (1.0 - v), v, 2.0 * c - 1.0], 2.0 * wu * wv * (1.0 - v) * wc));
+                        out.push((
+                            [u * (1.0 - v), v, 2.0 * c - 1.0],
+                            2.0 * wu * wv * (1.0 - v) * wc,
+                        ));
                     }
                 }
             }
@@ -288,7 +332,10 @@ fn error_rule(kind: ElementKind) -> Vec<([f64; 3], f64)> {
             for &(a, wa) in &gl {
                 for &(b, wb) in &gl {
                     for &(c, wc) in &gl {
-                        out.push(([a * (1.0 - b) * (1.0 - c), b * (1.0 - c), c], wa * wb * wc * (1.0 - b) * (1.0 - c) * (1.0 - c)));
+                        out.push((
+                            [a * (1.0 - b) * (1.0 - c), b * (1.0 - c), c],
+                            wa * wb * wc * (1.0 - b) * (1.0 - c) * (1.0 - c),
+                        ));
                     }
                 }
             }
@@ -299,7 +346,10 @@ fn error_rule(kind: ElementKind) -> Vec<([f64; 3], f64)> {
             for &(a, wa) in &gl {
                 for &(b, wb) in &gl {
                     for &(c, wc) in &gl {
-                        out.push(([(2.0 * a - 1.0) * (1.0 - c), (2.0 * b - 1.0) * (1.0 - c), c], 4.0 * wa * wb * wc * (1.0 - c) * (1.0 - c)));
+                        out.push((
+                            [(2.0 * a - 1.0) * (1.0 - c), (2.0 * b - 1.0) * (1.0 - c), c],
+                            4.0 * wa * wb * wc * (1.0 - c) * (1.0 - c),
+                        ));
                     }
                 }
             }
@@ -315,10 +365,15 @@ pub(crate) struct ErrorPoint {
     pub xi: [f64; 3],
 }
 
-pub(crate) fn error_points(kind: ElementKind, physics: crate::mesh::Physics, xyz: &[[f64; 3]]) -> Result<Vec<ErrorPoint>, String> {
+pub(crate) fn error_points(
+    kind: ElementKind,
+    physics: crate::mesh::Physics,
+    xyz: &[[f64; 3]],
+) -> Result<Vec<ErrorPoint>, String> {
     let (nn, d) = (kind.n_nodes(), kind.dim());
     let scale = match physics {
-        crate::mesh::Physics::PlaneStress { thickness } | crate::mesh::Physics::PlaneStrain { thickness } => thickness,
+        crate::mesh::Physics::PlaneStress { thickness }
+        | crate::mesh::Physics::PlaneStrain { thickness } => thickness,
         _ => 1.0,
     };
     let mut out = Vec::new();
@@ -335,20 +390,30 @@ pub(crate) fn error_points(kind: ElementKind, physics: crate::mesh::Physics, xyz
         let det = if d == 2 {
             jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0]
         } else {
-            jac[0][0] * (jac[1][1] * jac[2][2] - jac[1][2] * jac[2][1]) - jac[0][1] * (jac[1][0] * jac[2][2] - jac[1][2] * jac[2][0]) + jac[0][2] * (jac[1][0] * jac[2][1] - jac[1][1] * jac[2][0])
+            jac[0][0] * (jac[1][1] * jac[2][2] - jac[1][2] * jac[2][1])
+                - jac[0][1] * (jac[1][0] * jac[2][2] - jac[1][2] * jac[2][0])
+                + jac[0][2] * (jac[1][0] * jac[2][1] - jac[1][1] * jac[2][0])
         };
         if det.is_nan() || det <= 0.0 || !det.is_finite() {
-            return Err(format!("inverted or degenerate element (Jacobian {det:.3e} in the error quadrature)"));
+            return Err(format!(
+                "inverted or degenerate element (Jacobian {det:.3e} in the error quadrature)"
+            ));
         }
         let mut w = wref * det * scale;
         if matches!(physics, crate::mesh::Physics::Axisymmetric) {
             let r: f64 = (0..nn).map(|a| n[a] * xyz[a][0]).sum();
             if r.is_nan() || r <= 0.0 {
-                return Err(format!("axisymmetric element with radius {r:.3e} in the error quadrature"));
+                return Err(format!(
+                    "axisymmetric element with radius {r:.3e} in the error quadrature"
+                ));
             }
             w *= 2.0 * std::f64::consts::PI * r;
         }
-        out.push(ErrorPoint { n: n[..nn].to_vec(), weight: w, xi });
+        out.push(ErrorPoint {
+            n: n[..nn].to_vec(),
+            weight: w,
+            xi,
+        });
     }
     Ok(out)
 }
@@ -361,7 +426,10 @@ impl Model {
     }
 
     /// [`recover_spr`](Self::recover_spr) with a count of how each corner node was resolved.
-    pub fn recover_spr_diag(&self, gauss: &[Vec<GaussStress>]) -> Result<(Vec<[f64; 6]>, SprDiagnostics), String> {
+    pub fn recover_spr_diag(
+        &self,
+        gauss: &[Vec<GaussStress>],
+    ) -> Result<(Vec<[f64; 6]>, SprDiagnostics), String> {
         let d = self.mesh.dim();
         let n = self.mesh.nodes.len();
         // Elements around each node: (block, element).
@@ -388,7 +456,13 @@ impl Model {
             }
             v
         };
-        let fits: Vec<Option<Fit>> = per_node(n, |nd| if corner[nd] { fit(d, degree[nd], self.mesh.nodes[nd], &samples_of(nd)) } else { None });
+        let fits: Vec<Option<Fit>> = per_node(n, |nd| {
+            if corner[nd] {
+                fit(d, degree[nd], self.mesh.nodes[nd], &samples_of(nd))
+            } else {
+                None
+            }
+        });
         // Corner nodes without a well-posed patch: borrow from an edge-adjacent fitted node
         // (iterate outward), else fall back to lower degrees on the node's own patch.
         let mut neigh: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -417,8 +491,16 @@ impl Model {
         for nd in 0..n {
             if corner[nd] && on_boundary[nd] {
                 let x = self.mesh.nodes[nd];
-                let dist = |m: usize| (0..d).map(|i| (self.mesh.nodes[m][i] - x[i]).powi(2)).sum::<f64>();
-                borrowed[nd] = neigh[nd].iter().copied().filter(|&m| !on_boundary[m] && fits[m].is_some()).min_by(|&a, &b| dist(a).total_cmp(&dist(b)));
+                let dist = |m: usize| {
+                    (0..d)
+                        .map(|i| (self.mesh.nodes[m][i] - x[i]).powi(2))
+                        .sum::<f64>()
+                };
+                borrowed[nd] = neigh[nd]
+                    .iter()
+                    .copied()
+                    .filter(|&m| !on_boundary[m] && fits[m].is_some())
+                    .min_by(|&a, &b| dist(a).total_cmp(&dist(b)));
             }
         }
         for _ in 0..4 {
@@ -479,7 +561,9 @@ impl Model {
         // Midside / face / interior nodes: average of the owning elements' corner polynomials at the node.
         let corner_value = |cn: usize, x: [f64; 3]| -> Option<[f64; 6]> {
             match (on_boundary[cn], borrowed[cn], &fits[cn]) {
-                (true, Some(m), _) | (_, Some(m), None) => Some(fits[m].as_ref().unwrap().eval(d, x)),
+                (true, Some(m), _) | (_, Some(m), None) => {
+                    Some(fits[m].as_ref().unwrap().eval(d, x))
+                }
                 (_, _, Some(f)) => Some(f.eval(d, x)),
                 _ => None,
             }
@@ -515,12 +599,18 @@ impl Model {
     /// SPR+ recovery: patches never span two materials. The elements of each material (blocks of equal `Elastic`) are
     /// recovered as a model of their own, so at an interface each side is a one-sided boundary patch (the boundary rule of
     /// the original method) instead of an average over the jump.
-    pub fn recover_spr_by_material(&self, gauss: &[Vec<GaussStress>]) -> Result<SprRecovery, String> {
+    pub fn recover_spr_by_material(
+        &self,
+        gauss: &[Vec<GaussStress>],
+    ) -> Result<SprRecovery, String> {
         let nb = self.mesh.blocks.len();
         let mut group_of_block = vec![0usize; nb];
         let mut reps: Vec<usize> = Vec::new(); // first block of each material
         for b in 0..nb {
-            match reps.iter().position(|&r| self.mesh.blocks[r].material == self.mesh.blocks[b].material) {
+            match reps
+                .iter()
+                .position(|&r| self.mesh.blocks[r].material == self.mesh.blocks[b].material)
+            {
                 Some(g) => group_of_block[b] = g,
                 None => {
                     group_of_block[b] = reps.len();
@@ -530,15 +620,29 @@ impl Model {
         }
         if reps.len() <= 1 {
             let (rec, diag) = self.recover_spr_diag(gauss)?;
-            return Ok(SprRecovery { group_of_block, groups: vec![rec], interface_nodes: 0, diagnostics: diag });
+            return Ok(SprRecovery {
+                group_of_block,
+                groups: vec![rec],
+                interface_nodes: 0,
+                diagnostics: diag,
+            });
         }
         let mut groups = Vec::with_capacity(reps.len());
         let mut diagnostics = SprDiagnostics::default();
         for g in 0..reps.len() {
             let mut mesh = self.mesh.clone();
-            mesh.blocks = (0..nb).filter(|&b| group_of_block[b] == g).map(|b| self.mesh.blocks[b].clone()).collect();
-            let sub_gauss: Vec<Vec<GaussStress>> = (0..nb).filter(|&b| group_of_block[b] == g).map(|b| gauss[b].clone()).collect();
-            let sub = Model { mesh, pattern: self.pattern.clone() };
+            mesh.blocks = (0..nb)
+                .filter(|&b| group_of_block[b] == g)
+                .map(|b| self.mesh.blocks[b].clone())
+                .collect();
+            let sub_gauss: Vec<Vec<GaussStress>> = (0..nb)
+                .filter(|&b| group_of_block[b] == g)
+                .map(|b| gauss[b].clone())
+                .collect();
+            let sub = Model {
+                mesh,
+                pattern: self.pattern.clone(),
+            };
             let (rec, diag) = sub.recover_spr_diag(&sub_gauss)?;
             diagnostics.add(&diag);
             groups.push(rec);
@@ -554,7 +658,12 @@ impl Model {
                 }
             }
         }
-        Ok(SprRecovery { group_of_block, groups, interface_nodes: interface.iter().filter(|&&i| i).count(), diagnostics })
+        Ok(SprRecovery {
+            group_of_block,
+            groups,
+            interface_nodes: interface.iter().filter(|&&i| i).count(),
+            diagnostics,
+        })
     }
 
     /// ZZ error estimate from the displacement field `u`: per-element energy norm of the difference
@@ -564,7 +673,12 @@ impl Model {
     }
 
     /// As [`zz_error`](Self::zz_error) with a nodal temperature field (`Loads::temperature`) on top of `delta_t`.
-    pub fn zz_error_field(&self, u: &[f64], delta_t: f64, field: Option<&[f64]>) -> Result<ZzEstimate, String> {
+    pub fn zz_error_field(
+        &self,
+        u: &[f64],
+        delta_t: f64,
+        field: Option<&[f64]>,
+    ) -> Result<ZzEstimate, String> {
         let gauss = self.gauss_stresses_field(u, delta_t, field)?;
         let rec = self.recover_spr_by_material(&gauss)?;
         let (mut eta, mut norm2) = (Vec::with_capacity(self.mesh.n_elems()), 0.0f64);
@@ -573,7 +687,9 @@ impl Model {
             let d = self.mesh.dim();
             // Per element: the error energy and the recovered-stress energy (summed afterwards, in element order), integrated with
             // the error rule at points where both the recovered and the finite-element stress are evaluated.
-            let one = |(xyz, ue): &mut (Vec<[f64; 3]>, Vec<f64>), e: usize| -> Result<(f64, f64), String> {
+            let one = |(xyz, ue): &mut (Vec<[f64; 3]>, Vec<f64>),
+                       e: usize|
+             -> Result<(f64, f64), String> {
                 let conn = blk.elem(e);
                 for (a, &nd) in conn.iter().enumerate() {
                     xyz[a] = self.mesh.nodes[nd];
@@ -590,8 +706,22 @@ impl Model {
                             star[c] += pt.n[a] * r[c];
                         }
                     }
-                    let dt = delta_t + field.map_or(0.0, |tf| conn.iter().enumerate().map(|(a, &nd)| pt.n[a] * tf[nd]).sum::<f64>());
-                    let h = crate::analysis::stress_at_xi(blk.kind, self.mesh.physics, &blk.material, xyz, ue, pt.xi, dt)?;
+                    let dt = delta_t
+                        + field.map_or(0.0, |tf| {
+                            conn.iter()
+                                .enumerate()
+                                .map(|(a, &nd)| pt.n[a] * tf[nd])
+                                .sum::<f64>()
+                        });
+                    let h = crate::analysis::stress_at_xi(
+                        blk.kind,
+                        self.mesh.physics,
+                        &blk.material,
+                        xyz,
+                        ue,
+                        pt.xi,
+                        dt,
+                    )?;
                     let diff: [f64; 6] = std::array::from_fn(|c| star[c] - h[c]);
                     e2 += pt.weight * complementary_energy(&blk.material, &diff) * 2.0;
                     n2 += pt.weight * complementary_energy(&blk.material, &star) * 2.0;
@@ -600,10 +730,15 @@ impl Model {
             };
             let init = || (vec![[0.0; 3]; nn], vec![0.0; nn * d]);
             let per_elem: Vec<(f64, f64)> = if blk.n_elems() >= PARALLEL_NODES {
-                (0..blk.n_elems()).into_par_iter().map_init(init, |st, e| one(st, e)).collect::<Result<_, _>>()?
+                (0..blk.n_elems())
+                    .into_par_iter()
+                    .map_init(init, |st, e| one(st, e))
+                    .collect::<Result<_, _>>()?
             } else {
                 let mut st = init();
-                (0..blk.n_elems()).map(|e| one(&mut st, e)).collect::<Result<_, _>>()?
+                (0..blk.n_elems())
+                    .map(|e| one(&mut st, e))
+                    .collect::<Result<_, _>>()?
             };
             for (e2, n2) in per_elem {
                 eta.push(e2.sqrt());
@@ -611,12 +746,21 @@ impl Model {
             }
         }
         let total = eta.iter().map(|x| x * x).sum::<f64>().sqrt();
-        Ok(ZzEstimate { eta, total, norm: norm2.sqrt() })
+        Ok(ZzEstimate {
+            eta,
+            total,
+            norm: norm2.sqrt(),
+        })
     }
 
     /// Energy norm `sqrt(int (sigma_exact - sigma_h) : C^-1 : (sigma_exact - sigma_h))` of the true
     /// stress error against a known stress field (verification and convergence studies).
-    pub fn stress_error_energy(&self, u: &[f64], delta_t: f64, exact: impl Fn(&[f64; 3]) -> [f64; 6]) -> Result<f64, String> {
+    pub fn stress_error_energy(
+        &self,
+        u: &[f64],
+        delta_t: f64,
+        exact: impl Fn(&[f64; 3]) -> [f64; 6],
+    ) -> Result<f64, String> {
         let d = self.mesh.dim();
         let mut sum = 0.0;
         for blk in &self.mesh.blocks {
@@ -631,8 +775,17 @@ impl Model {
                     }
                 }
                 for pt in error_points(blk.kind, self.mesh.physics, &xyz)? {
-                    let x: [f64; 3] = std::array::from_fn(|k| (0..nn).map(|a| pt.n[a] * xyz[a][k]).sum());
-                    let h = crate::analysis::stress_at_xi(blk.kind, self.mesh.physics, &blk.material, &xyz, &ue, pt.xi, delta_t)?;
+                    let x: [f64; 3] =
+                        std::array::from_fn(|k| (0..nn).map(|a| pt.n[a] * xyz[a][k]).sum());
+                    let h = crate::analysis::stress_at_xi(
+                        blk.kind,
+                        self.mesh.physics,
+                        &blk.material,
+                        &xyz,
+                        &ue,
+                        pt.xi,
+                        delta_t,
+                    )?;
                     let ex = exact(&x);
                     let diff: [f64; 6] = std::array::from_fn(|c| ex[c] - h[c]);
                     sum += pt.weight * complementary_energy(&blk.material, &diff) * 2.0;
@@ -654,22 +807,28 @@ mod rule_tests {
             let rule = error_rule(kind);
             let measure: f64 = rule.iter().map(|r| r.1).sum();
             let want = kind.reference_measure();
-            assert!((measure - want).abs() < 1e-13, "{kind:?}: measure {measure} vs {want}");
+            assert!(
+                (measure - want).abs() < 1e-13,
+                "{kind:?}: measure {measure} vs {want}"
+            );
             // the squared difference of two fields of the element's order: degree 2 (linear kinds) or 4 (quadratic kinds)
             let quadratic = kind.n_nodes() > kind.n_corners();
             let p = if quadratic { 2 } else { 1 };
-            let got: f64 = rule.iter().map(|(x, w)| w * x[0].powi(p) * x[1].powi(p)).sum();
+            let got: f64 = rule
+                .iter()
+                .map(|(x, w)| w * x[0].powi(p) * x[1].powi(p))
+                .sum();
             let wedge = matches!(kind, ElementKind::Wedge6 | ElementKind::Wedge15);
             let exact = match (kind.is_simplex(), kind.dim(), quadratic) {
                 _ if wedge => 2.0 * if quadratic { 4.0 / 720.0 } else { 1.0 / 24.0 }, // triangle integral times the axial length 2
-                (true, 2, false) => 1.0 / 24.0,           // int x y over the unit triangle = 1!1!/4!
-                (true, 2, true) => 4.0 / 720.0,           // 2!2!/6!
-                (true, _, false) => 1.0 / 120.0,          // 1!1!/5!
-                (true, _, true) => 4.0 / 5040.0,          // 2!2!/7!
-                (false, 2, false) => 0.0,                 // odd in x
-                (false, 2, true) => 4.0 / 9.0,            // (2/3)^2
+                (true, 2, false) => 1.0 / 24.0, // int x y over the unit triangle = 1!1!/4!
+                (true, 2, true) => 4.0 / 720.0, // 2!2!/6!
+                (true, _, false) => 1.0 / 120.0, // 1!1!/5!
+                (true, _, true) => 4.0 / 5040.0, // 2!2!/7!
+                (false, 2, false) => 0.0,       // odd in x
+                (false, 2, true) => 4.0 / 9.0,  // (2/3)^2
                 (false, _, false) => 0.0,
-                (false, _, true) => 8.0 / 9.0,            // (2/3)(2/3)(2)
+                (false, _, true) => 8.0 / 9.0, // (2/3)(2/3)(2)
             };
             assert!((got - exact).abs() < 1e-12, "{kind:?}: {got} vs {exact}");
         }

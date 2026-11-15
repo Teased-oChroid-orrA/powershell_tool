@@ -1,6 +1,7 @@
 //! Small-displacement structural members. Trusses carry axial force; spatial frames use
 //! exact two-node Timoshenko bending, Saint-Venant torsion and Euler-Bernoulli consistent
-//! uniform-load vectors. No releases, warping, geometric nonlinearity or local buckling.
+//! uniform-load vectors. End releases (pinned / moment-released ends) are condensed out of
+//! the member stiffness and load vector. No warping, geometric nonlinearity or local buckling.
 use crate::fields::{DofMap, Field, FieldAssembly, FieldConstraints, FieldResult};
 
 fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -62,6 +63,138 @@ impl FrameSection {
         Ok(())
     }
 }
+/// Rotational end releases of a frame member, about the member's local `[x, y, z]` axes
+/// (`x` is torsion, `y` / `z` are bending). `true` releases that rotation: the member end
+/// transmits no moment about that axis and the node rotation does not enter the member.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EndReleases {
+    pub start: [bool; 3],
+    pub end: [bool; 3],
+}
+impl EndReleases {
+    /// Both ends transmit no moment about any axis: the member acts as a truss bar, with its
+    /// bending stiffness removed.
+    pub const PINNED_BOTH: Self = Self {
+        start: [true; 3],
+        end: [true; 3],
+    };
+    /// Pin at one end about the bending axes (torsion stays continuous).
+    pub const fn pin_start() -> Self {
+        Self {
+            start: [false, true, true],
+            end: [false; 3],
+        }
+    }
+    pub const fn pin_end() -> Self {
+        Self {
+            start: [false; 3],
+            end: [false, true, true],
+        }
+    }
+}
+/// Solve `a x = b` (n x n, `m` right-hand sides, row-major) in place by Gauss-Jordan with
+/// partial pivoting; `b` becomes the solution.
+fn gauss_solve(a: &mut [f64], b: &mut [f64], n: usize, m: usize) -> Result<(), String> {
+    let scale = a.iter().fold(0.0_f64, |s, v| s.max(v.abs()));
+    for c in 0..n {
+        let p = (c..n)
+            .max_by(|&i, &j| a[i * n + c].abs().total_cmp(&a[j * n + c].abs()))
+            .unwrap();
+        if a[p * n + c].abs() <= 1e-14 * scale {
+            return Err("member release: released rotations leave a mechanism".into());
+        }
+        if p != c {
+            for j in 0..n {
+                a.swap(p * n + j, c * n + j);
+            }
+            for j in 0..m {
+                b.swap(p * m + j, c * m + j);
+            }
+        }
+        let d = a[c * n + c];
+        for i in (0..n).filter(|&i| i != c) {
+            let f = a[i * n + c] / d;
+            if f != 0.0 {
+                for j in 0..n {
+                    a[i * n + j] -= f * a[c * n + j];
+                }
+                for j in 0..m {
+                    b[i * m + j] -= f * b[c * m + j];
+                }
+            }
+        }
+    }
+    for i in 0..n {
+        let d = a[i * n + i];
+        for j in 0..m {
+            b[i * m + j] /= d;
+        }
+    }
+    Ok(())
+}
+/// Static condensation of the released local DOFs of one decoupled block (`ids` into the
+/// 12-DOF local arrays): `K' = Kff - Kfr Krr^-1 Krf`, `f' = ff - Kfr Krr^-1 fr`. Released
+/// rows, columns and load entries become exactly zero. A block with every DOF released
+/// carries nothing.
+fn condense(
+    local: &mut [f64],
+    load: &mut [f64],
+    ids: &[usize],
+    released: &[bool],
+) -> Result<(), String> {
+    let r: Vec<usize> = (0..ids.len()).filter(|&i| released[i]).collect();
+    if r.is_empty() {
+        return Ok(());
+    }
+    let f: Vec<usize> = (0..ids.len()).filter(|&i| !released[i]).collect();
+    let k = |i: usize, j: usize| local[ids[i] * 12 + ids[j]];
+    let (nr, nf) = (r.len(), f.len());
+    let mut upd = vec![0.0; nf * nf];
+    let mut fupd = vec![0.0; nf];
+    if nf > 0 {
+        let mut a: Vec<f64> = r
+            .iter()
+            .flat_map(|&i| r.iter().map(move |&j| (i, j)))
+            .map(|(i, j)| k(i, j))
+            .collect();
+        // columns: Krf (nf) then fr (1)
+        let m = nf + 1;
+        let mut x = vec![0.0; nr * m];
+        for (ri, &i) in r.iter().enumerate() {
+            for (fi, &j) in f.iter().enumerate() {
+                x[ri * m + fi] = k(i, j);
+            }
+            x[ri * m + nf] = load[ids[i]];
+        }
+        gauss_solve(&mut a, &mut x, nr, m)?;
+        for (a_i, &i) in f.iter().enumerate() {
+            for (b_i, _) in f.iter().enumerate() {
+                upd[a_i * nf + b_i] = (0..nr).map(|q| k(i, r[q]) * x[q * m + b_i]).sum();
+            }
+            fupd[a_i] = (0..nr).map(|q| k(i, r[q]) * x[q * m + nf]).sum();
+        }
+    }
+    let old: Vec<f64> = f
+        .iter()
+        .flat_map(|&i| f.iter().map(move |&j| (i, j)))
+        .map(|(i, j)| k(i, j))
+        .collect();
+    let oldf: Vec<f64> = f.iter().map(|&i| load[ids[i]]).collect();
+    for &i in ids {
+        for &j in ids {
+            local[i * 12 + j] = 0.0;
+        }
+        load[i] = 0.0;
+    }
+    for (a_i, &i) in f.iter().enumerate() {
+        for (b_i, &j) in f.iter().enumerate() {
+            local[ids[i] * 12 + ids[j]] = old[a_i * nf + b_i] - upd[a_i * nf + b_i];
+        }
+        load[ids[i]] = oldf[a_i] - fupd[a_i];
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub enum Member {
     Truss {
@@ -75,11 +208,22 @@ pub enum Member {
         reference: [f64; 3],
         uniform_load: [f64; 3],
     },
+    /// A frame member with rotational end releases (see [`EndReleases`]). With no release
+    /// set it equals `Frame`.
+    FrameReleased {
+        nodes: [usize; 2],
+        section: FrameSection,
+        reference: [f64; 3],
+        uniform_load: [f64; 3],
+        releases: EndReleases,
+    },
 }
 impl Member {
     fn nodes(&self) -> [usize; 2] {
         match self {
-            Self::Truss { nodes, .. } | Self::Frame { nodes, .. } => *nodes,
+            Self::Truss { nodes, .. }
+            | Self::Frame { nodes, .. }
+            | Self::FrameReleased { nodes, .. } => *nodes,
         }
     }
 }
@@ -134,6 +278,12 @@ impl MemberModel {
             match member {
                 Member::Truss { e, area, .. } => positive(&[*e, *area])?,
                 Member::Frame {
+                    section,
+                    reference,
+                    uniform_load,
+                    ..
+                }
+                | Member::FrameReleased {
                     section,
                     reference,
                     uniform_load,
@@ -215,7 +365,17 @@ impl MemberModel {
                 reference,
                 uniform_load,
                 ..
+            }
+            | Member::FrameReleased {
+                section: s,
+                reference,
+                uniform_load,
+                ..
             } => {
+                let releases = match member {
+                    Member::FrameReleased { releases, .. } => *releases,
+                    _ => EndReleases::default(),
+                };
                 s.validate()?;
                 let (axes, l) = frame(xa, xb, *reference)?;
                 let mut local = vec![0.0; 144];
@@ -255,6 +415,30 @@ impl MemberModel {
                         }
                     }
                 }
+                let q = *uniform_load;
+                let mut load = vec![0.0; 12];
+                for axis in 0..3 {
+                    load[axis] = q[axis] * l / 2.0;
+                    load[6 + axis] = load[axis];
+                }
+                load[5] = q[1] * l * l / 12.0;
+                load[11] = -load[5];
+                load[4] = -q[2] * l * l / 12.0;
+                load[10] = -load[4];
+                let [rs, re] = [releases.start, releases.end];
+                condense(&mut local, &mut load, &[3, 9], &[rs[0], re[0]])?;
+                condense(
+                    &mut local,
+                    &mut load,
+                    &[1, 5, 7, 11],
+                    &[false, rs[2], false, re[2]],
+                )?;
+                condense(
+                    &mut local,
+                    &mut load,
+                    &[2, 4, 8, 10],
+                    &[false, rs[1], false, re[1]],
+                )?;
                 let mut k = vec![0.0; 144];
                 for i in 0..12 {
                     for j in 0..12 {
@@ -267,16 +451,6 @@ impl MemberModel {
                         }
                     }
                 }
-                let q = *uniform_load;
-                let mut load = vec![0.0; 12];
-                for axis in 0..3 {
-                    load[axis] = q[axis] * l / 2.0;
-                    load[6 + axis] = load[axis];
-                }
-                load[5] = q[1] * l * l / 12.0;
-                load[11] = -load[5];
-                load[4] = -q[2] * l * l / 12.0;
-                load[10] = -load[4];
                 let dofs = [a, b]
                     .into_iter()
                     .flat_map(|n| {
@@ -322,8 +496,12 @@ impl MemberModel {
         )?;
         let mut assembly = FieldAssembly::new(self.map.clone());
         let mut elements = Vec::new();
+        let mut stiff = vec![false; self.map.n_dofs()];
         for member in &self.members {
             let elem = self.element(member)?;
+            for (i, &dof) in elem.dofs.iter().enumerate() {
+                stiff[dof] |= elem.k[i * elem.dofs.len() + i] > 0.0;
+            }
             assembly.add_element(&elem.dofs, &elem.k)?;
             if !elem.truss {
                 for (i, &dof) in elem.dofs.iter().enumerate() {
@@ -338,7 +516,21 @@ impl MemberModel {
         for &(node, field, force) in nodal_loads {
             assembly.add_load(self.map.index(node, field)?, force)?;
         }
-        let fields = assembly.finish().solve(bc, tol)?;
+        // A rotation no member stiffens (every member there releases it) is a free-floating
+        // DOF with no load; hold it at zero so it does not make the system singular.
+        let mut bc = bc.clone();
+        for node in 0..self.nodes.len() {
+            for &field in self.map.fields(node).unwrap_or(&[]) {
+                let dof = self.map.index(node, field)?;
+                if matches!(field, Field::Rotation(_))
+                    && !stiff[dof]
+                    && bc.prescribed(dof)?.is_none()
+                {
+                    bc.prescribe(&self.map, node, field, 0.0)?;
+                }
+            }
+        }
+        let fields = assembly.finish().solve(&bc, tol)?;
         let mut members = Vec::new();
         for elem in elements {
             let n = elem.dofs.len();

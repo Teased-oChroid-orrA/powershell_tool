@@ -22,33 +22,58 @@ impl HyperDual {
 
     /// A variable seeded in direction 1 and/or 2.
     pub fn seeded(v: f64, in1: bool, in2: bool) -> Self {
-        Self { f0: v, f1: if in1 { 1.0 } else { 0.0 }, f2: if in2 { 1.0 } else { 0.0 }, f12: 0.0 }
+        Self {
+            f0: v,
+            f1: if in1 { 1.0 } else { 0.0 },
+            f2: if in2 { 1.0 } else { 0.0 },
+            f12: 0.0,
+        }
     }
 
     /// `g(f)` from `g`, `g'`, `g''` at the value.
     fn chain(self, g: f64, g1: f64, g2: f64) -> Self {
-        Self { f0: g, f1: g1 * self.f1, f2: g1 * self.f2, f12: g1 * self.f12 + g2 * self.f1 * self.f2 }
+        Self {
+            f0: g,
+            f1: g1 * self.f1,
+            f2: g1 * self.f2,
+            f12: g1 * self.f12 + g2 * self.f1 * self.f2,
+        }
     }
 }
 
 impl Add for HyperDual {
     type Output = Self;
     fn add(self, o: Self) -> Self {
-        Self::new(self.f0 + o.f0, self.f1 + o.f1, self.f2 + o.f2, self.f12 + o.f12)
+        Self::new(
+            self.f0 + o.f0,
+            self.f1 + o.f1,
+            self.f2 + o.f2,
+            self.f12 + o.f12,
+        )
     }
 }
 
 impl Sub for HyperDual {
     type Output = Self;
     fn sub(self, o: Self) -> Self {
-        Self::new(self.f0 - o.f0, self.f1 - o.f1, self.f2 - o.f2, self.f12 - o.f12)
+        Self::new(
+            self.f0 - o.f0,
+            self.f1 - o.f1,
+            self.f2 - o.f2,
+            self.f12 - o.f12,
+        )
     }
 }
 
 impl Mul for HyperDual {
     type Output = Self;
     fn mul(self, o: Self) -> Self {
-        Self::new(self.f0 * o.f0, self.f0 * o.f1 + self.f1 * o.f0, self.f0 * o.f2 + self.f2 * o.f0, self.f0 * o.f12 + self.f1 * o.f2 + self.f2 * o.f1 + self.f12 * o.f0)
+        Self::new(
+            self.f0 * o.f0,
+            self.f0 * o.f1 + self.f1 * o.f0,
+            self.f0 * o.f2 + self.f2 * o.f0,
+            self.f0 * o.f12 + self.f1 * o.f2 + self.f2 * o.f1 + self.f12 * o.f0,
+        )
     }
 }
 
@@ -109,6 +134,10 @@ impl Scalar for HyperDual {
         powi_by_mul(self, n)
     }
     fn powf(self, c: f64) -> Self {
-        self.chain(self.f0.powf(c), c * self.f0.powf(c - 1.0), c * (c - 1.0) * self.f0.powf(c - 2.0))
+        self.chain(
+            self.f0.powf(c),
+            c * self.f0.powf(c - 1.0),
+            c * (c - 1.0) * self.f0.powf(c - 2.0),
+        )
     }
 }

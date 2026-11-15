@@ -18,7 +18,13 @@ const SIDE2: [&str; 4] = ["u0", "u1", "v0", "v1"];
 const SIDE3: [&str; 6] = ["u0", "u1", "v0", "v1", "w0", "w1"];
 
 /// Build a `div[0] x div[1] (x div[2])` grid of `kind` elements.
-pub fn grid(physics: Physics, kind: ElementKind, mat: Elastic, div: [usize; 3], map: Map) -> Result<Mesh, String> {
+pub fn grid(
+    physics: Physics,
+    kind: ElementKind,
+    mat: Elastic,
+    div: [usize; 3],
+    map: Map,
+) -> Result<Mesh, String> {
     let d = kind.dim();
     if physics.dim() != d {
         return Err(format!("{kind:?} does not fit this analysis type"));
@@ -31,8 +37,18 @@ pub fn grid(physics: Physics, kind: ElementKind, mat: Elastic, div: [usize; 3], 
     }
     if matches!(kind, ElementKind::Wedge6 | ElementKind::Wedge15) {
         // triangles in the plane, swept along z in `div[2]` layers
-        let tri = if kind == ElementKind::Wedge6 { ElementKind::Tri3 } else { ElementKind::Tri6 };
-        let plane = grid(Physics::PlaneStrain { thickness: 1.0 }, tri, mat, [div[0], div[1], 1], &|p| p)?;
+        let tri = if kind == ElementKind::Wedge6 {
+            ElementKind::Tri3
+        } else {
+            ElementKind::Tri6
+        };
+        let plane = grid(
+            Physics::PlaneStrain { thickness: 1.0 },
+            tri,
+            mat,
+            [div[0], div[1], 1],
+            &|p| p,
+        )?;
         let levels: Vec<f64> = (0..=div[2]).map(|k| k as f64 / div[2] as f64).collect();
         let mut mesh = crate::sweep::extrude(&plane, &levels)?;
         for x in &mut mesh.nodes {
@@ -49,15 +65,31 @@ pub fn grid(physics: Physics, kind: ElementKind, mat: Elastic, div: [usize; 3], 
     Ok(mesh)
 }
 
-fn tensor_grid(mesh: &mut Mesh, kind: ElementKind, mat: Elastic, div: [usize; 3], map: Map) -> Result<(), String> {
+fn tensor_grid(
+    mesh: &mut Mesh,
+    kind: ElementKind,
+    mat: Elastic,
+    div: [usize; 3],
+    map: Map,
+) -> Result<(), String> {
     let d = kind.dim();
-    let order = if matches!(kind, ElementKind::Quad4 | ElementKind::Hex8) { 1 } else { 2 };
+    let order = if matches!(kind, ElementKind::Quad4 | ElementKind::Hex8) {
+        1
+    } else {
+        2
+    };
     let nl: [usize; 3] = std::array::from_fn(|a| if a < d { div[a] * order + 1 } else { 1 });
     let mut id = vec![usize::MAX; nl[0] * nl[1] * nl[2]];
     let mut node = |mesh: &mut Mesh, idx: [usize; 3]| -> usize {
         let slot = idx[0] + nl[0] * (idx[1] + nl[1] * idx[2]);
         if id[slot] == usize::MAX {
-            let p: [f64; 3] = std::array::from_fn(|a| if a < d { idx[a] as f64 / (div[a] * order) as f64 } else { 0.0 });
+            let p: [f64; 3] = std::array::from_fn(|a| {
+                if a < d {
+                    idx[a] as f64 / (div[a] * order) as f64
+                } else {
+                    0.0
+                }
+            });
             id[slot] = mesh.add_node(map(p));
         }
         id[slot]
@@ -69,7 +101,13 @@ fn tensor_grid(mesh: &mut Mesh, kind: ElementKind, mat: Elastic, div: [usize; 3]
             for ci in 0..cells[0] {
                 let c = [ci, cj, ck];
                 for x in kind.node_coords() {
-                    let idx: [usize; 3] = std::array::from_fn(|a| if a < d { order * c[a] + ((x[a] + 1.0) * 0.5 * order as f64).round() as usize } else { 0 });
+                    let idx: [usize; 3] = std::array::from_fn(|a| {
+                        if a < d {
+                            order * c[a] + ((x[a] + 1.0) * 0.5 * order as f64).round() as usize
+                        } else {
+                            0
+                        }
+                    });
                     conn.push(node(mesh, idx));
                 }
             }
@@ -146,13 +184,21 @@ fn tensor_grid(mesh: &mut Mesh, kind: ElementKind, mat: Elastic, div: [usize; 3]
     for (s, name) in names.iter().enumerate() {
         let (axis, hi) = (s / 2, s % 2 == 1);
         let target = if hi { nl[axis] - 1 } else { 0 };
-        let ids: Vec<usize> = (0..lattice.len()).filter(|&n| lattice[n][axis] == target).collect();
+        let ids: Vec<usize> = (0..lattice.len())
+            .filter(|&n| lattice[n][axis] == target)
+            .collect();
         mesh.node_sets.insert((*name).to_string(), ids);
     }
     Ok(())
 }
 
-fn simplex_grid(mesh: &mut Mesh, kind: ElementKind, mat: Elastic, div: [usize; 3], map: Map) -> Result<(), String> {
+fn simplex_grid(
+    mesh: &mut Mesh,
+    kind: ElementKind,
+    mat: Elastic,
+    div: [usize; 3],
+    map: Map,
+) -> Result<(), String> {
     let d = kind.dim();
     let quadratic = matches!(kind, ElementKind::Tri6 | ElementKind::Tet10);
     let nl: [usize; 3] = std::array::from_fn(|a| if a < d { div[a] + 1 } else { 1 });
@@ -162,7 +208,13 @@ fn simplex_grid(mesh: &mut Mesh, kind: ElementKind, mat: Elastic, div: [usize; 3
     let mut vertex = |mesh: &mut Mesh, idx: [usize; 3]| -> usize {
         let slot = idx[0] + nl[0] * (idx[1] + nl[1] * idx[2]);
         if id[slot] == usize::MAX {
-            let p: [f64; 3] = std::array::from_fn(|a| if a < d { idx[a] as f64 / div[a] as f64 } else { 0.0 });
+            let p: [f64; 3] = std::array::from_fn(|a| {
+                if a < d {
+                    idx[a] as f64 / div[a] as f64
+                } else {
+                    0.0
+                }
+            });
             id[slot] = mesh.add_node(map(p));
             param.push(p);
             lattice.push(idx);
@@ -174,7 +226,11 @@ fn simplex_grid(mesh: &mut Mesh, kind: ElementKind, mat: Elastic, div: [usize; 3
     for ck in 0..cells[2] {
         for cj in 0..cells[1] {
             for ci in 0..cells[0] {
-                let corner = |mesh: &mut Mesh, vertex: &mut dyn FnMut(&mut Mesh, [usize; 3]) -> usize, bits: [usize; 3]| vertex(mesh, [ci + bits[0], cj + bits[1], ck + bits[2]]);
+                let corner = |mesh: &mut Mesh,
+                              vertex: &mut dyn FnMut(&mut Mesh, [usize; 3]) -> usize,
+                              bits: [usize; 3]| {
+                    vertex(mesh, [ci + bits[0], cj + bits[1], ck + bits[2]])
+                };
                 if d == 2 {
                     let c00 = corner(mesh, &mut vertex, [0, 0, 0]);
                     let c10 = corner(mesh, &mut vertex, [1, 0, 0]);
@@ -184,7 +240,14 @@ fn simplex_grid(mesh: &mut Mesh, kind: ElementKind, mat: Elastic, div: [usize; 3
                     simplices.push(vec![c00, c11, c01]);
                 } else {
                     // Kuhn subdivision: six tetrahedra along the main diagonal (conforming).
-                    const PERMS: [([usize; 3], bool); 6] = [([0, 1, 2], true), ([0, 2, 1], false), ([1, 0, 2], false), ([1, 2, 0], true), ([2, 0, 1], true), ([2, 1, 0], false)];
+                    const PERMS: [([usize; 3], bool); 6] = [
+                        ([0, 1, 2], true),
+                        ([0, 2, 1], false),
+                        ([1, 0, 2], false),
+                        ([1, 2, 0], true),
+                        ([2, 0, 1], true),
+                        ([2, 1, 0], false),
+                    ];
                     for (perm, even) in PERMS {
                         let mut bits = [0usize; 3];
                         let v0 = corner(mesh, &mut vertex, bits);
@@ -194,7 +257,11 @@ fn simplex_grid(mesh: &mut Mesh, kind: ElementKind, mat: Elastic, div: [usize; 3
                         let v2 = corner(mesh, &mut vertex, bits);
                         bits[perm[2]] = 1;
                         let v3 = corner(mesh, &mut vertex, bits);
-                        simplices.push(if even { vec![v0, v1, v2, v3] } else { vec![v0, v2, v1, v3] });
+                        simplices.push(if even {
+                            vec![v0, v1, v2, v3]
+                        } else {
+                            vec![v0, v2, v1, v3]
+                        });
                     }
                 }
             }
@@ -203,7 +270,11 @@ fn simplex_grid(mesh: &mut Mesh, kind: ElementKind, mat: Elastic, div: [usize; 3
     let mut conn = Vec::new();
     if quadratic {
         let mut mids: HashMap<(usize, usize), usize> = HashMap::new();
-        let edges: &[[usize; 2]] = if d == 2 { &[[0, 1], [1, 2], [2, 0]] } else { &[[0, 1], [1, 2], [2, 0], [0, 3], [1, 3], [2, 3]] };
+        let edges: &[[usize; 2]] = if d == 2 {
+            &[[0, 1], [1, 2], [2, 0]]
+        } else {
+            &[[0, 1], [1, 2], [2, 0], [0, 3], [1, 3], [2, 3]]
+        };
         for s in &simplices {
             conn.extend_from_slice(s);
             for &[p, q] in edges {
@@ -229,7 +300,9 @@ fn simplex_grid(mesh: &mut Mesh, kind: ElementKind, mat: Elastic, div: [usize; 3
         for (s, name) in names.iter().enumerate() {
             let (axis, hi) = (s / 2, s % 2 == 1);
             let target = if hi { 1.0 } else { 0.0 };
-            let ids: Vec<usize> = (0..node_param.len()).filter(|&n| (node_param[n][axis] - target).abs() < 1e-12).collect();
+            let ids: Vec<usize> = (0..node_param.len())
+                .filter(|&n| (node_param[n][axis] - target).abs() < 1e-12)
+                .collect();
             mesh.node_sets.insert((*name).to_string(), ids);
         }
         if d == 2 {
@@ -244,7 +317,9 @@ fn simplex_grid(mesh: &mut Mesh, kind: ElementKind, mat: Elastic, div: [usize; 3
         for (s, name) in names.iter().enumerate() {
             let (axis, hi) = (s / 2, s % 2 == 1);
             let target = if hi { nl[axis] - 1 } else { 0 };
-            let ids: Vec<usize> = (0..lattice.len()).filter(|&n| lattice[n][axis] == target).collect();
+            let ids: Vec<usize> = (0..lattice.len())
+                .filter(|&n| lattice[n][axis] == target)
+                .collect();
             mesh.node_sets.insert((*name).to_string(), ids);
         }
         if d == 2 {

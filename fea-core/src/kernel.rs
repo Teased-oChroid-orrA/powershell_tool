@@ -31,7 +31,12 @@ impl Default for Work {
 
 impl Work {
     pub fn new() -> Self {
-        Self { grad: vec![0.0; 64 * MAX_NODES * 3], wdet: vec![0.0; 64], radius: vec![0.0; 64], cm_grad: vec![0.0; 27 * MAX_NODES * 3] }
+        Self {
+            grad: vec![0.0; 64 * MAX_NODES * 3],
+            wdet: vec![0.0; 64],
+            radius: vec![0.0; 64],
+            cm_grad: vec![0.0; 27 * MAX_NODES * 3],
+        }
     }
 }
 
@@ -46,19 +51,35 @@ pub enum ElementError {
 impl std::fmt::Display for ElementError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ElementError::BadJacobian { gauss_point, det } => write!(f, "inverted or degenerate element (Jacobian {det:.3e} at Gauss point {gauss_point})"),
-            ElementError::BadRadius { gauss_point, r } => write!(f, "axisymmetric element with radius {r:.3e} at Gauss point {gauss_point}"),
+            ElementError::BadJacobian { gauss_point, det } => write!(
+                f,
+                "inverted or degenerate element (Jacobian {det:.3e} at Gauss point {gauss_point})"
+            ),
+            ElementError::BadRadius { gauss_point, r } => write!(
+                f,
+                "axisymmetric element with radius {r:.3e} at Gauss point {gauss_point}"
+            ),
         }
     }
 }
 
 /// Physical gradients and integration weights of one element.
-pub fn geometry(kind: ElementKind, physics: Physics, xyz: &[[f64; 3]], work: &mut Work) -> Result<(), ElementError> {
+pub fn geometry(
+    kind: ElementKind,
+    physics: Physics,
+    xyz: &[[f64; 3]],
+    work: &mut Work,
+) -> Result<(), ElementError> {
     geometry_with(kind.table(), physics, xyz, work)
 }
 
 /// [`geometry`] on a given rule (the mass rule of a simplex differs from its stiffness rule).
-pub fn geometry_with(t: &crate::element::ShapeTable, physics: Physics, xyz: &[[f64; 3]], work: &mut Work) -> Result<(), ElementError> {
+pub fn geometry_with(
+    t: &crate::element::ShapeTable,
+    physics: Physics,
+    xyz: &[[f64; 3]],
+    work: &mut Work,
+) -> Result<(), ElementError> {
     let (nn, d) = (t.nn, t.dim);
     let scale = match physics {
         Physics::PlaneStress { thickness } | Physics::PlaneStrain { thickness } => thickness,
@@ -79,7 +100,14 @@ pub fn geometry_with(t: &crate::element::ShapeTable, physics: Physics, xyz: &[[f
         let (inv, det) = if d == 2 {
             let det = jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0];
             let r = 1.0 / det;
-            ([[jac[1][1] * r, -jac[0][1] * r, 0.0], [-jac[1][0] * r, jac[0][0] * r, 0.0], [0.0; 3]], det)
+            (
+                [
+                    [jac[1][1] * r, -jac[0][1] * r, 0.0],
+                    [-jac[1][0] * r, jac[0][0] * r, 0.0],
+                    [0.0; 3],
+                ],
+                det,
+            )
         } else {
             let c00 = jac[1][1] * jac[2][2] - jac[1][2] * jac[2][1];
             let c01 = jac[1][2] * jac[2][0] - jac[1][0] * jac[2][2];
@@ -87,15 +115,30 @@ pub fn geometry_with(t: &crate::element::ShapeTable, physics: Physics, xyz: &[[f
             let det = jac[0][0] * c00 + jac[0][1] * c01 + jac[0][2] * c02;
             let r = 1.0 / det;
             let inv = [
-                [c00 * r, (jac[0][2] * jac[2][1] - jac[0][1] * jac[2][2]) * r, (jac[0][1] * jac[1][2] - jac[0][2] * jac[1][1]) * r],
-                [c01 * r, (jac[0][0] * jac[2][2] - jac[0][2] * jac[2][0]) * r, (jac[0][2] * jac[1][0] - jac[0][0] * jac[1][2]) * r],
-                [c02 * r, (jac[0][1] * jac[2][0] - jac[0][0] * jac[2][1]) * r, (jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0]) * r],
+                [
+                    c00 * r,
+                    (jac[0][2] * jac[2][1] - jac[0][1] * jac[2][2]) * r,
+                    (jac[0][1] * jac[1][2] - jac[0][2] * jac[1][1]) * r,
+                ],
+                [
+                    c01 * r,
+                    (jac[0][0] * jac[2][2] - jac[0][2] * jac[2][0]) * r,
+                    (jac[0][2] * jac[1][0] - jac[0][0] * jac[1][2]) * r,
+                ],
+                [
+                    c02 * r,
+                    (jac[0][1] * jac[2][0] - jac[0][0] * jac[2][1]) * r,
+                    (jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0]) * r,
+                ],
             ];
             (inv, det)
         };
         #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must be rejected too
         if !(det > 0.0) || !det.is_finite() {
-            return Err(ElementError::BadJacobian { gauss_point: g, det });
+            return Err(ElementError::BadJacobian {
+                gauss_point: g,
+                det,
+            });
         }
         let out = &mut work.grad[g * nn * d..(g + 1) * nn * d];
         for a in 0..nn {
@@ -124,7 +167,14 @@ pub fn geometry_with(t: &crate::element::ShapeTable, physics: Physics, xyz: &[[f
 }
 
 /// Stiffness blocks of one element: `ke[(a * nn + b) * d * d + i * d + j]`.
-pub fn stiffness(kind: ElementKind, physics: Physics, mat: &Elastic, xyz: &[[f64; 3]], work: &mut Work, ke: &mut [f64]) -> Result<(), ElementError> {
+pub fn stiffness(
+    kind: ElementKind,
+    physics: Physics,
+    mat: &Elastic,
+    xyz: &[[f64; 3]],
+    work: &mut Work,
+    ke: &mut [f64],
+) -> Result<(), ElementError> {
     geometry(kind, physics, xyz, work)?;
     let t = kind.table();
     let (nn, d) = (t.nn, t.dim);
@@ -187,7 +237,13 @@ fn reduced_d(an: &crate::mesh::Aniso, physics: Physics) -> ([[f64; 6]; 6], usize
 }
 
 /// Anisotropic stiffness blocks, `K_ab = sum_g w B_a^T D B_b` over the lower triangle of node pairs.
-fn stiffness_aniso(t: &crate::element::ShapeTable, physics: Physics, an: &crate::mesh::Aniso, work: &Work, blocks: &mut [f64]) {
+fn stiffness_aniso(
+    t: &crate::element::ShapeTable,
+    physics: Physics,
+    an: &crate::mesh::Aniso,
+    work: &Work,
+    blocks: &mut [f64],
+) {
     let (ngp, nn, d) = (t.ngp, t.nn, t.dim);
     let (dm, nc) = reduced_d(an, physics);
     let axisym = matches!(physics, Physics::Axisymmetric);
@@ -264,7 +320,16 @@ pub enum Layout {
 /// Entry `K[(a, i), (b, j)]` of an element matrix in either layout.
 #[allow(clippy::too_many_arguments)] // hot accessor: every index is needed and it must inline
 #[inline(always)]
-pub fn entry(layout: Layout, ke: &[f64], nn: usize, d: usize, a: usize, b: usize, i: usize, j: usize) -> f64 {
+pub fn entry(
+    layout: Layout,
+    ke: &[f64],
+    nn: usize,
+    d: usize,
+    a: usize,
+    b: usize,
+    i: usize,
+    j: usize,
+) -> f64 {
     match layout {
         Layout::NodeBlock => ke[(a * nn + b) * d * d + i * d + j],
         Layout::ComponentMajor => {
@@ -285,7 +350,14 @@ pub fn entry(layout: Layout, ke: &[f64], nn: usize, d: usize, a: usize, b: usize
 /// use the component-major layout: every update is a rank-1 outer product over contiguous rows of
 /// one `nn x nn` block, which the compiler vectorises (the node-pair form works on 2x2 / 3x3
 /// scalar blocks and cannot).
-pub fn stiffness_fast(kind: ElementKind, physics: Physics, mat: &Elastic, xyz: &[[f64; 3]], work: &mut Work, ke: &mut [f64]) -> Result<Layout, ElementError> {
+pub fn stiffness_fast(
+    kind: ElementKind,
+    physics: Physics,
+    mat: &Elastic,
+    xyz: &[[f64; 3]],
+    work: &mut Work,
+    ke: &mut [f64],
+) -> Result<Layout, ElementError> {
     if matches!(physics, Physics::Axisymmetric) || mat.aniso.is_some() {
         stiffness(kind, physics, mat, xyz, work, ke)?;
         return Ok(Layout::NodeBlock);
@@ -301,7 +373,14 @@ pub fn stiffness_fast(kind: ElementKind, physics: Physics, mat: &Elastic, xyz: &
     Ok(Layout::ComponentMajor)
 }
 
-fn stiffness_cm<const D: usize>(ngp: usize, nn: usize, work: &mut Work, lam: f64, mu: f64, ke: &mut [f64]) {
+fn stiffness_cm<const D: usize>(
+    ngp: usize,
+    nn: usize,
+    work: &mut Work,
+    lam: f64,
+    mu: f64,
+    ke: &mut [f64],
+) {
     let nn2 = nn * nn;
     let nblocks = D * D; // only i <= j are used; the rest keeps the indexing simple
     let (blocks, rest) = ke.split_at_mut(nblocks * nn2);
@@ -321,7 +400,8 @@ fn stiffness_cm<const D: usize>(ngp: usize, nn: usize, work: &mut Work, lam: f64
     for g in 0..ngp {
         let w = work.wdet[g];
         let (wl, wm) = (w * lam, w * mu);
-        let u: [&[f64]; D] = std::array::from_fn(|i| &ut[(i * ngp + g) * nn..(i * ngp + g + 1) * nn]);
+        let u: [&[f64]; D] =
+            std::array::from_fn(|i| &ut[(i * ngp + g) * nn..(i * ngp + g + 1) * nn]);
         for i in 0..D {
             // Diagonal block: (lam + mu) u_i u_i^T, lower triangle; and mu sum_k u_k u_k^T into G.
             let ui = u[i];
@@ -329,7 +409,10 @@ fn stiffness_cm<const D: usize>(ngp: usize, nn: usize, work: &mut Work, lam: f64
             for a in 0..nn {
                 let c1 = (wl + wm) * ui[a];
                 let c2 = wm * ui[a];
-                let (row, grow) = (&mut blk[a * nn..a * nn + a + 1], &mut g_mat[a * nn..a * nn + a + 1]);
+                let (row, grow) = (
+                    &mut blk[a * nn..a * nn + a + 1],
+                    &mut g_mat[a * nn..a * nn + a + 1],
+                );
                 for b in 0..=a {
                     row[b] += c1 * ui[b];
                     grow[b] += c2 * ui[b];
@@ -360,7 +443,14 @@ fn stiffness_cm<const D: usize>(ngp: usize, nn: usize, work: &mut Work, lam: f64
     }
 }
 
-fn stiffness_iso<const D: usize>(ngp: usize, nn: usize, work: &Work, lam: f64, mu: f64, ke: &mut [f64]) {
+fn stiffness_iso<const D: usize>(
+    ngp: usize,
+    nn: usize,
+    work: &Work,
+    lam: f64,
+    mu: f64,
+    ke: &mut [f64],
+) {
     for g in 0..ngp {
         let w = work.wdet[g];
         let (wl, wm) = (w * lam, w * mu);
@@ -386,9 +476,22 @@ fn stiffness_iso<const D: usize>(ngp: usize, nn: usize, work: &Work, lam: f64, m
 }
 
 /// Axisymmetric: strains `(rr, zz, tt, rz)`, `B_a = [[g_r, 0], [0, g_z], [N/r, 0], [g_z, g_r]]`.
-fn stiffness_axisym(ngp: usize, nn: usize, work: &Work, kind: ElementKind, lam: f64, mu: f64, ke: &mut [f64]) {
+fn stiffness_axisym(
+    ngp: usize,
+    nn: usize,
+    work: &Work,
+    kind: ElementKind,
+    lam: f64,
+    mu: f64,
+    ke: &mut [f64],
+) {
     let t = kind.table();
-    let dmat = [[lam + 2.0 * mu, lam, lam, 0.0], [lam, lam + 2.0 * mu, lam, 0.0], [lam, lam, lam + 2.0 * mu, 0.0], [0.0, 0.0, 0.0, mu]];
+    let dmat = [
+        [lam + 2.0 * mu, lam, lam, 0.0],
+        [lam, lam + 2.0 * mu, lam, 0.0],
+        [lam, lam, lam + 2.0 * mu, 0.0],
+        [0.0, 0.0, 0.0, mu],
+    ];
     for g in 0..ngp {
         let w = work.wdet[g];
         let r = work.radius[g];
@@ -428,18 +531,36 @@ fn stiffness_axisym(ngp: usize, nn: usize, work: &Work, kind: ElementKind, lam: 
 
 /// Equivalent nodal force of a uniform temperature change `d_t` of a fully free element
 /// (`f[a * d + i]`); the stress it would cause when constrained is `-c d_t I`.
-pub fn thermal_load(kind: ElementKind, physics: Physics, mat: &Elastic, d_t: f64, xyz: &[[f64; 3]], work: &mut Work, f: &mut [f64]) -> Result<(), ElementError> {
+pub fn thermal_load(
+    kind: ElementKind,
+    physics: Physics,
+    mat: &Elastic,
+    d_t: f64,
+    xyz: &[[f64; 3]],
+    work: &mut Work,
+    f: &mut [f64],
+) -> Result<(), ElementError> {
     thermal_load_with(kind, physics, mat, &|_| d_t, xyz, work, f)
 }
 
 /// Temperature change at the Gauss points from the element's nodal values `t_nodes` (the interpolated field).
 pub fn gauss_temperatures(kind: ElementKind, t_nodes: &[f64]) -> Vec<f64> {
     let t = kind.table();
-    (0..t.ngp).map(|g| (0..t.nn).map(|a| t.n_at(g)[a] * t_nodes[a]).sum()).collect()
+    (0..t.ngp)
+        .map(|g| (0..t.nn).map(|a| t.n_at(g)[a] * t_nodes[a]).sum())
+        .collect()
 }
 
 /// As [`thermal_load`] with the temperature change given per Gauss point (`dt_at(g)`): a temperature field.
-pub fn thermal_load_with(kind: ElementKind, physics: Physics, mat: &Elastic, dt_at: &dyn Fn(usize) -> f64, xyz: &[[f64; 3]], work: &mut Work, f: &mut [f64]) -> Result<(), ElementError> {
+pub fn thermal_load_with(
+    kind: ElementKind,
+    physics: Physics,
+    mat: &Elastic,
+    dt_at: &dyn Fn(usize) -> f64,
+    xyz: &[[f64; 3]],
+    work: &mut Work,
+    f: &mut [f64],
+) -> Result<(), ElementError> {
     geometry(kind, physics, xyz, work)?;
     let t = kind.table();
     let (nn, d) = (t.nn, t.dim);
@@ -492,7 +613,14 @@ pub fn thermal_load_with(kind: ElementKind, physics: Physics, mat: &Elastic, dt_
 
 /// Equivalent nodal force of a body force per unit volume (per unit area x thickness in plane
 /// problems).
-pub fn body_load(kind: ElementKind, physics: Physics, body: [f64; 3], xyz: &[[f64; 3]], work: &mut Work, f: &mut [f64]) -> Result<(), ElementError> {
+pub fn body_load(
+    kind: ElementKind,
+    physics: Physics,
+    body: [f64; 3],
+    xyz: &[[f64; 3]],
+    work: &mut Work,
+    f: &mut [f64],
+) -> Result<(), ElementError> {
     geometry(kind, physics, xyz, work)?;
     let t = kind.table();
     let (nn, d) = (t.nn, t.dim);
@@ -511,7 +639,14 @@ pub fn body_load(kind: ElementKind, physics: Physics, body: [f64; 3], xyz: &[[f6
 
 /// Consistent mass of one element as `nn x nn` scalars (`me[a * nn + b] = rho * integral N_a N_b`): the mass matrix of a
 /// continuum element is this times the identity on the displacement components.
-pub fn mass(kind: ElementKind, physics: Physics, rho: f64, xyz: &[[f64; 3]], work: &mut Work, me: &mut [f64]) -> Result<(), ElementError> {
+pub fn mass(
+    kind: ElementKind,
+    physics: Physics,
+    rho: f64,
+    xyz: &[[f64; 3]],
+    work: &mut Work,
+    me: &mut [f64],
+) -> Result<(), ElementError> {
     let t = kind.mass_table();
     geometry_with(t, physics, xyz, work)?;
     let nn = t.nn;
@@ -535,7 +670,15 @@ pub fn mass(kind: ElementKind, physics: Physics, rho: f64, xyz: &[[f64; 3]], wor
 
 /// Conduction matrix of one element as `nn x nn` scalars (`ke[a * nn + b] = integral k grad N_a . grad N_b`); the
 /// conductivity `k` is evaluated at the temperature of each Gauss point (`t_nodes` are the element's nodal temperatures).
-pub fn conduction(kind: ElementKind, physics: Physics, k_of_t: &dyn Fn(f64) -> f64, t_nodes: &[f64], xyz: &[[f64; 3]], work: &mut Work, ke: &mut [f64]) -> Result<(), ElementError> {
+pub fn conduction(
+    kind: ElementKind,
+    physics: Physics,
+    k_of_t: &dyn Fn(f64) -> f64,
+    t_nodes: &[f64],
+    xyz: &[[f64; 3]],
+    work: &mut Work,
+    ke: &mut [f64],
+) -> Result<(), ElementError> {
     geometry(kind, physics, xyz, work)?;
     let t = kind.table();
     let (nn, d) = (t.nn, t.dim);
@@ -566,7 +709,14 @@ pub fn conduction(kind: ElementKind, physics: Physics, k_of_t: &dyn Fn(f64) -> f
 /// Geometric (initial-stress) stiffness of one element as `nn x nn` scalars
 /// (`kg[a * nn + b] = integral grad N_a . sigma . grad N_b`), times the identity on the displacement components.
 /// `stress[g]` is the stress at Gauss point `g` in the component order of [`strain_at`]. Plane and 3D solids only.
-pub fn geometric_stiffness(kind: ElementKind, physics: Physics, stress: &[[f64; 6]], xyz: &[[f64; 3]], work: &mut Work, kg: &mut [f64]) -> Result<(), ElementError> {
+pub fn geometric_stiffness(
+    kind: ElementKind,
+    physics: Physics,
+    stress: &[[f64; 6]],
+    xyz: &[[f64; 3]],
+    work: &mut Work,
+    kg: &mut [f64],
+) -> Result<(), ElementError> {
     geometry(kind, physics, xyz, work)?;
     let t = kind.table();
     let (nn, d) = (t.nn, t.dim);
@@ -574,7 +724,11 @@ pub fn geometric_stiffness(kind: ElementKind, physics: Physics, stress: &[[f64; 
     for g in 0..t.ngp {
         let s = &stress[g];
         // The symmetric d x d stress matrix from the engineering ordering: (xx, yy, zz, xy, yz, zx); plane problems use (xx, yy, ., xy).
-        let m = if d == 2 { [[s[0], s[3], 0.0], [s[3], s[1], 0.0], [0.0; 3]] } else { [[s[0], s[3], s[5]], [s[3], s[1], s[4]], [s[5], s[4], s[2]]] };
+        let m = if d == 2 {
+            [[s[0], s[3], 0.0], [s[3], s[1], 0.0], [0.0; 3]]
+        } else {
+            [[s[0], s[3], s[5]], [s[3], s[1], s[4]], [s[5], s[4], s[2]]]
+        };
         let w = work.wdet[g];
         let gr = &work.grad[g * nn * d..(g + 1) * nn * d];
         for a in 0..nn {
@@ -595,7 +749,13 @@ pub fn geometric_stiffness(kind: ElementKind, physics: Physics, stress: &[[f64; 
 /// Strain (engineering shear) at Gauss point `g` from the element's nodal displacements `u`
 /// (`u[a * d + i]`). Plane: `(xx, yy, zz, xy)`; axisymmetric: `(rr, zz, tt, rz)`; solid:
 /// `(xx, yy, zz, xy, yz, zx)`. `zz` is zero in plane strain and not reported for plane stress.
-pub fn strain_at(kind: ElementKind, physics: Physics, work: &Work, g: usize, u: &[f64]) -> [f64; 6] {
+pub fn strain_at(
+    kind: ElementKind,
+    physics: Physics,
+    work: &Work,
+    g: usize,
+    u: &[f64],
+) -> [f64; 6] {
     let t = kind.table();
     let (nn, d) = (t.nn, t.dim);
     let gr = &work.grad[g * nn * d..(g + 1) * nn * d];
@@ -608,11 +768,25 @@ pub fn strain_at(kind: ElementKind, physics: Physics, work: &Work, g: usize, u: 
         }
     }
     match physics {
-        Physics::Solid => [h[0][0], h[1][1], h[2][2], h[0][1] + h[1][0], h[1][2] + h[2][1], h[2][0] + h[0][2]],
+        Physics::Solid => [
+            h[0][0],
+            h[1][1],
+            h[2][2],
+            h[0][1] + h[1][0],
+            h[1][2] + h[2][1],
+            h[2][0] + h[0][2],
+        ],
         Physics::Axisymmetric => {
             let n = t.n_at(g);
             let ur: f64 = (0..nn).map(|a| n[a] * u[a * 2]).sum();
-            [h[0][0], h[1][1], ur / work.radius[g], h[0][1] + h[1][0], 0.0, 0.0]
+            [
+                h[0][0],
+                h[1][1],
+                ur / work.radius[g],
+                h[0][1] + h[1][0],
+                0.0,
+                0.0,
+            ]
         }
         _ => [h[0][0], h[1][1], 0.0, h[0][1] + h[1][0], 0.0, 0.0],
     }
@@ -629,15 +803,36 @@ pub fn stress_from_strain(physics: Physics, mat: &Elastic, strain: [f64; 6], d_t
     match physics {
         Physics::PlaneStress { .. } => {
             let tr = strain[0] + strain[1] - 2.0 * th;
-            [lam * tr + 2.0 * mu * (strain[0] - th), lam * tr + 2.0 * mu * (strain[1] - th), 0.0, mu * strain[3], 0.0, 0.0]
+            [
+                lam * tr + 2.0 * mu * (strain[0] - th),
+                lam * tr + 2.0 * mu * (strain[1] - th),
+                0.0,
+                mu * strain[3],
+                0.0,
+                0.0,
+            ]
         }
         Physics::PlaneStrain { .. } => {
             let tr = strain[0] + strain[1] - 3.0 * th;
-            [lam * tr + 2.0 * mu * (strain[0] - th), lam * tr + 2.0 * mu * (strain[1] - th), lam * tr - 2.0 * mu * th, mu * strain[3], 0.0, 0.0]
+            [
+                lam * tr + 2.0 * mu * (strain[0] - th),
+                lam * tr + 2.0 * mu * (strain[1] - th),
+                lam * tr - 2.0 * mu * th,
+                mu * strain[3],
+                0.0,
+                0.0,
+            ]
         }
         Physics::Axisymmetric => {
             let tr = strain[0] + strain[1] + strain[2] - 3.0 * th;
-            [lam * tr + 2.0 * mu * (strain[0] - th), lam * tr + 2.0 * mu * (strain[1] - th), lam * tr + 2.0 * mu * (strain[2] - th), mu * strain[3], 0.0, 0.0]
+            [
+                lam * tr + 2.0 * mu * (strain[0] - th),
+                lam * tr + 2.0 * mu * (strain[1] - th),
+                lam * tr + 2.0 * mu * (strain[2] - th),
+                mu * strain[3],
+                0.0,
+                0.0,
+            ]
         }
         Physics::Solid => {
             let tr = strain[0] + strain[1] + strain[2] - 3.0 * th;
@@ -654,7 +849,12 @@ pub fn stress_from_strain(physics: Physics, mat: &Elastic, strain: [f64; 6], d_t
 }
 
 /// `sigma = D (strain - thermal)` for an anisotropic material (`th` = thermal strain vector, engineering shear).
-fn stress_aniso(an: &crate::mesh::Aniso, physics: Physics, strain: [f64; 6], th: [f64; 6]) -> [f64; 6] {
+fn stress_aniso(
+    an: &crate::mesh::Aniso,
+    physics: Physics,
+    strain: [f64; 6],
+    th: [f64; 6],
+) -> [f64; 6] {
     let mut out = [0.0f64; 6];
     match physics {
         Physics::Solid => {
@@ -673,8 +873,17 @@ fn stress_aniso(an: &crate::mesh::Aniso, physics: Physics, strain: [f64; 6], th:
         }
         Physics::PlaneStrain { .. } | Physics::Axisymmetric => {
             // Strain over (xx, yy, zz, xy): zz is zero in plane strain, the hoop strain in axisymmetry.
-            let ezz = if matches!(physics, Physics::PlaneStrain { .. }) { 0.0 } else { strain[2] };
-            let e = [strain[0] - th[0], strain[1] - th[1], ezz - th[2], strain[3] - th[3]];
+            let ezz = if matches!(physics, Physics::PlaneStrain { .. }) {
+                0.0
+            } else {
+                strain[2]
+            };
+            let e = [
+                strain[0] - th[0],
+                strain[1] - th[1],
+                ezz - th[2],
+                strain[3] - th[3],
+            ];
             for i in 0..4 {
                 out[i] = (0..4).map(|j| an.d[i][j] * e[j]).sum();
             }
@@ -701,9 +910,17 @@ mod tests {
             .map(|x| {
                 let (a, b, c) = (x[0], x[1], x[2]);
                 if kind.dim() == 2 {
-                    [2.0 + 0.8 * a + 0.1 * b + 0.05 * a * b, 1.0 + 0.1 * a + 0.7 * b - 0.04 * a * a, 0.0]
+                    [
+                        2.0 + 0.8 * a + 0.1 * b + 0.05 * a * b,
+                        1.0 + 0.1 * a + 0.7 * b - 0.04 * a * a,
+                        0.0,
+                    ]
                 } else {
-                    [2.0 + 0.8 * a + 0.1 * b + 0.05 * c + 0.03 * a * b, 1.0 + 0.1 * a + 0.7 * b + 0.04 * c, 3.0 + 0.05 * a + 0.1 * b + 0.9 * c + 0.02 * b * c]
+                    [
+                        2.0 + 0.8 * a + 0.1 * b + 0.05 * c + 0.03 * a * b,
+                        1.0 + 0.1 * a + 0.7 * b + 0.04 * c,
+                        3.0 + 0.05 * a + 0.1 * b + 0.9 * c + 0.02 * b * c,
+                    ]
                 }
             })
             .collect()
@@ -722,7 +939,10 @@ mod tests {
         let mat = Elastic::new(10.0e6, 0.33);
         let mut work = Work::new();
         for kind in ALL_KINDS {
-            for plane in [Physics::PlaneStress { thickness: 0.25 }, Physics::PlaneStrain { thickness: 1.0 }] {
+            for plane in [
+                Physics::PlaneStress { thickness: 0.25 },
+                Physics::PlaneStrain { thickness: 1.0 },
+            ] {
                 let ph = physics_for(kind, plane);
                 let (nn, d) = (kind.n_nodes(), kind.dim());
                 let xyz = distorted(kind);
@@ -735,7 +955,8 @@ mod tests {
                     for b in 0..nn {
                         for i in 0..d {
                             for j in 0..d {
-                                k[(a * d + i) * n + b * d + j] = ke[(a * nn + b) * d * d + i * d + j];
+                                k[(a * d + i) * n + b * d + j] =
+                                    ke[(a * nn + b) * d * d + i * d + j];
                             }
                         }
                     }
@@ -743,7 +964,10 @@ mod tests {
                 let scale = k.iter().fold(0.0f64, |m, v| m.max(v.abs()));
                 for i in 0..n {
                     for j in 0..i {
-                        assert!((k[i * n + j] - k[j * n + i]).abs() < 1e-10 * scale, "{kind:?} asymmetric");
+                        assert!(
+                            (k[i * n + j] - k[j * n + i]).abs() < 1e-10 * scale,
+                            "{kind:?} asymmetric"
+                        );
                     }
                 }
                 // Rigid translations and (infinitesimal) rotations.
@@ -777,17 +1001,25 @@ mod tests {
             let ph = physics_for(kind, Physics::PlaneStress { thickness: 1.0 });
             let (nn, d) = (kind.n_nodes(), kind.dim());
             let xyz = distorted(kind);
-            let h = [[1e-3, 2e-4, -3e-4], [5e-4, -2e-3, 1e-4], [-1e-4, 3e-4, 7e-4]];
+            let h = [
+                [1e-3, 2e-4, -3e-4],
+                [5e-4, -2e-3, 1e-4],
+                [-1e-4, 3e-4, 7e-4],
+            ];
             let mut u = vec![0.0; nn * d];
             for a in 0..nn {
                 for i in 0..d {
-                    u[a * d + i] = (0..d).map(|k| h[i][k] * xyz[a][k]).sum::<f64>() + 1e-3 * (i as f64 + 1.0);
+                    u[a * d + i] =
+                        (0..d).map(|k| h[i][k] * xyz[a][k]).sum::<f64>() + 1e-3 * (i as f64 + 1.0);
                 }
             }
             geometry(kind, ph, &xyz, &mut work).unwrap();
             for g in 0..kind.table().ngp {
                 let e = strain_at(kind, ph, &work, g, &u);
-                assert!((e[0] - h[0][0]).abs() < 1e-12 && (e[1] - h[1][1]).abs() < 1e-12, "{kind:?}");
+                assert!(
+                    (e[0] - h[0][0]).abs() < 1e-12 && (e[1] - h[1][1]).abs() < 1e-12,
+                    "{kind:?}"
+                );
                 assert!((e[3] - (h[0][1] + h[1][0])).abs() < 1e-12, "{kind:?}");
             }
             // Strain energy U = 1/2 u^T K u equals the integral of 1/2 sigma:eps.
@@ -798,7 +1030,8 @@ mod tests {
                 for b in 0..nn {
                     for i in 0..d {
                         for j in 0..d {
-                            ku += u[a * d + i] * ke[(a * nn + b) * d * d + i * d + j] * u[b * d + j];
+                            ku +=
+                                u[a * d + i] * ke[(a * nn + b) * d * d + i * d + j] * u[b * d + j];
                         }
                     }
                 }
@@ -808,10 +1041,22 @@ mod tests {
             for g in 0..kind.table().ngp {
                 let e = strain_at(kind, ph, &work, g, &u);
                 let s = stress_from_strain(ph, &mat, e, 0.0);
-                let dot = if d == 2 { s[0] * e[0] + s[1] * e[1] + s[3] * e[3] } else { s[0] * e[0] + s[1] * e[1] + s[2] * e[2] + s[3] * e[3] + s[4] * e[4] + s[5] * e[5] };
+                let dot = if d == 2 {
+                    s[0] * e[0] + s[1] * e[1] + s[3] * e[3]
+                } else {
+                    s[0] * e[0]
+                        + s[1] * e[1]
+                        + s[2] * e[2]
+                        + s[3] * e[3]
+                        + s[4] * e[4]
+                        + s[5] * e[5]
+                };
                 energy += work.wdet[g] * dot;
             }
-            assert!((ku - energy).abs() < 1e-9 * energy.abs(), "{kind:?}: {ku} vs {energy}");
+            assert!(
+                (ku - energy).abs() < 1e-9 * energy.abs(),
+                "{kind:?}: {ku} vs {energy}"
+            );
         }
     }
 
@@ -820,7 +1065,10 @@ mod tests {
         let mat = Elastic::new(10.0e6, 0.33);
         let mut work = Work::new();
         for kind in ALL_KINDS {
-            for plane in [Physics::PlaneStress { thickness: 0.25 }, Physics::PlaneStrain { thickness: 1.0 }] {
+            for plane in [
+                Physics::PlaneStress { thickness: 0.25 },
+                Physics::PlaneStrain { thickness: 1.0 },
+            ] {
                 let ph = physics_for(kind, plane);
                 let (nn, d) = (kind.n_nodes(), kind.dim());
                 let xyz = distorted(kind);
@@ -834,8 +1082,14 @@ mod tests {
                     for b in 0..nn {
                         for i in 0..d {
                             for j in 0..d {
-                                let (w, g) = (entry(Layout::NodeBlock, &want, nn, d, a, b, i, j), entry(layout, &got, nn, d, a, b, i, j));
-                                assert!((w - g).abs() < 1e-12 * scale, "{kind:?} ({a},{b}) ({i},{j}): {w} vs {g}");
+                                let (w, g) = (
+                                    entry(Layout::NodeBlock, &want, nn, d, a, b, i, j),
+                                    entry(layout, &got, nn, d, a, b, i, j),
+                                );
+                                assert!(
+                                    (w - g).abs() < 1e-12 * scale,
+                                    "{kind:?} ({a},{b}) ({i},{j}): {w} vs {g}"
+                                );
                             }
                         }
                     }
@@ -849,7 +1103,12 @@ mod tests {
         let mut work = Work::new();
         let mut xyz: Vec<[f64; 3]> = ElementKind::Quad4.node_coords().to_vec();
         xyz.swap(1, 3); // mirrored
-        let r = geometry(ElementKind::Quad4, Physics::PlaneStrain { thickness: 1.0 }, &xyz, &mut work);
+        let r = geometry(
+            ElementKind::Quad4,
+            Physics::PlaneStrain { thickness: 1.0 },
+            &xyz,
+            &mut work,
+        );
         assert!(matches!(r, Err(ElementError::BadJacobian { .. })), "{r:?}");
     }
 }

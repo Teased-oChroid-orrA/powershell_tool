@@ -99,7 +99,12 @@ fn spd_inverse(a: &[[f64; 6]; 6]) -> Option<[[f64; 6]; 6]> {
 
 impl Elastic {
     pub fn new(e: f64, nu: f64) -> Self {
-        Self { e, nu, alpha: 0.0, aniso: None }
+        Self {
+            e,
+            nu,
+            alpha: 0.0,
+            aniso: None,
+        }
     }
 
     /// General anisotropic material from its `6 x 6` stiffness (symmetric positive definite).
@@ -114,15 +119,35 @@ impl Elastic {
         let c = spd_inverse(&d).ok_or("the stiffness matrix is not positive definite")?;
         // Voigt-average equivalents (display and any isotropic-only consumer).
         let k = ((d[0][0] + d[1][1] + d[2][2]) + 2.0 * (d[0][1] + d[1][2] + d[2][0])) / 9.0;
-        let g = ((d[0][0] + d[1][1] + d[2][2]) - (d[0][1] + d[1][2] + d[2][0]) + 3.0 * (d[3][3] + d[4][4] + d[5][5])) / 15.0;
-        let (e, nu) = (9.0 * k * g / (3.0 * k + g), (3.0 * k - 2.0 * g) / (2.0 * (3.0 * k + g)));
-        Ok(Self { e, nu, alpha: 0.0, aniso: Some(Aniso { d, c, alpha: None }) })
+        let g = ((d[0][0] + d[1][1] + d[2][2]) - (d[0][1] + d[1][2] + d[2][0])
+            + 3.0 * (d[3][3] + d[4][4] + d[5][5]))
+            / 15.0;
+        let (e, nu) = (
+            9.0 * k * g / (3.0 * k + g),
+            (3.0 * k - 2.0 * g) / (2.0 * (3.0 * k + g)),
+        );
+        Ok(Self {
+            e,
+            nu,
+            alpha: 0.0,
+            aniso: Some(Aniso { d, c, alpha: None }),
+        })
     }
 
     /// Orthotropic material with principal axes along `x, y, z` from engineering constants
     /// (`nu_ij` = strain in `j` per strain in `i`, `g12 = G_xy`, `g23 = G_yz`, `g13 = G_zx`).
     #[allow(clippy::too_many_arguments)] // the nine independent engineering constants
-    pub fn orthotropic(e1: f64, e2: f64, e3: f64, nu12: f64, nu13: f64, nu23: f64, g12: f64, g23: f64, g13: f64) -> Result<Self, String> {
+    pub fn orthotropic(
+        e1: f64,
+        e2: f64,
+        e3: f64,
+        nu12: f64,
+        nu13: f64,
+        nu23: f64,
+        g12: f64,
+        g23: f64,
+        g13: f64,
+    ) -> Result<Self, String> {
         let mut s = [[0.0f64; 6]; 6];
         s[0][0] = 1.0 / e1;
         s[1][1] = 1.0 / e2;
@@ -136,13 +161,16 @@ impl Elastic {
         s[3][3] = 1.0 / g12;
         s[4][4] = 1.0 / g23;
         s[5][5] = 1.0 / g13;
-        let d = spd_inverse(&s).ok_or("the engineering constants do not give a positive definite material")?;
+        let d = spd_inverse(&s)
+            .ok_or("the engineering constants do not give a positive definite material")?;
         Self::anisotropic(d)
     }
 
     /// The same material with its principal axes rotated by `phi` (radians) about `z`.
     pub fn rotated_z(&self, phi: f64) -> Result<Self, String> {
-        let an = self.aniso.ok_or("only an anisotropic material can be rotated")?;
+        let an = self
+            .aniso
+            .ok_or("only an anisotropic material can be rotated")?;
         let (c, s) = (phi.cos(), phi.sin());
         let r = [
             [c * c, s * s, 0.0, -2.0 * c * s, 0.0, 0.0],
@@ -169,7 +197,10 @@ impl Elastic {
                 d[j][i] = m;
             }
         }
-        let mut out = Self { alpha: self.alpha, ..Self::anisotropic(d)? };
+        let mut out = Self {
+            alpha: self.alpha,
+            ..Self::anisotropic(d)?
+        };
         if let Some(a) = an.alpha {
             // alpha_g = Q alpha_l Q^T with the same Q as the stiffness (local axes at `phi` to the global ones).
             let (a11, a22, a12) = (a[0], a[1], 0.5 * a[3]);
@@ -189,16 +220,28 @@ impl Elastic {
     /// Anisotropic thermal expansion: the tensor components `(a_xx, a_yy, a_zz, a_xy, a_yz, a_zx)` per degree (tensor
     /// shear components, in the material axes). Only an anisotropic material has one.
     pub fn with_alpha_tensor(self, a: [f64; 6]) -> Result<Self, String> {
-        let mut an = self.aniso.ok_or("a thermal expansion tensor needs an anisotropic material")?;
+        let mut an = self
+            .aniso
+            .ok_or("a thermal expansion tensor needs an anisotropic material")?;
         an.alpha = Some([a[0], a[1], a[2], 2.0 * a[3], 2.0 * a[4], 2.0 * a[5]]);
-        Ok(Self { aniso: Some(an), ..self })
+        Ok(Self {
+            aniso: Some(an),
+            ..self
+        })
     }
 
     /// The thermal strain of a uniform temperature change `d_t` as `(xx, yy, zz, 2 xy, 2 yz, 2 zx)`.
     pub fn thermal_strain(&self, d_t: f64) -> [f64; 6] {
         match self.aniso.and_then(|a| a.alpha) {
             Some(a) => a.map(|v| v * d_t),
-            None => [self.alpha * d_t, self.alpha * d_t, self.alpha * d_t, 0.0, 0.0, 0.0],
+            None => [
+                self.alpha * d_t,
+                self.alpha * d_t,
+                self.alpha * d_t,
+                0.0,
+                0.0,
+                0.0,
+            ],
         }
     }
 
@@ -211,7 +254,11 @@ impl Elastic {
             an.c.iter_mut().flatten().for_each(|v| *v /= s);
             an
         });
-        Self { e: self.e * s, aniso, ..self }
+        Self {
+            e: self.e * s,
+            aniso,
+            ..self
+        }
     }
 
     pub fn with_alpha(self, alpha: f64) -> Self {
@@ -247,7 +294,11 @@ impl Elastic {
 
     /// Thermal stress per degree of uniform heating when fully constrained: `sigma = -c dT I`.
     pub fn thermal_modulus(&self, physics: Physics) -> f64 {
-        let dim_eff = if matches!(physics, Physics::PlaneStress { .. }) { 2.0 } else { 3.0 };
+        let dim_eff = if matches!(physics, Physics::PlaneStress { .. }) {
+            2.0
+        } else {
+            3.0
+        };
         self.alpha * (dim_eff * self.lambda(physics) + 2.0 * self.mu())
     }
 }
@@ -294,7 +345,13 @@ pub struct Mesh {
 
 impl Mesh {
     pub fn new(physics: Physics) -> Self {
-        Self { physics, nodes: Vec::new(), blocks: Vec::new(), node_sets: BTreeMap::new(), surfaces: BTreeMap::new() }
+        Self {
+            physics,
+            nodes: Vec::new(),
+            blocks: Vec::new(),
+            node_sets: BTreeMap::new(),
+            surfaces: BTreeMap::new(),
+        }
     }
 
     pub fn dim(&self) -> usize {
@@ -314,38 +371,81 @@ impl Mesh {
         self.nodes.len() - 1
     }
 
-    pub fn add_block(&mut self, kind: ElementKind, conn: Vec<usize>, material: Elastic, name: &str) -> Result<(), String> {
+    pub fn add_block(
+        &mut self,
+        kind: ElementKind,
+        conn: Vec<usize>,
+        material: Elastic,
+        name: &str,
+    ) -> Result<(), String> {
         if kind.dim() != self.dim() {
-            return Err(format!("{kind:?} elements do not fit a {}D analysis", self.dim()));
+            return Err(format!(
+                "{kind:?} elements do not fit a {}D analysis",
+                self.dim()
+            ));
         }
-        #[allow(clippy::manual_is_multiple_of)] // is_multiple_of needs a newer toolchain than the CI pin
+        #[allow(clippy::manual_is_multiple_of)]
+        // is_multiple_of needs a newer toolchain than the CI pin
         if conn.len() % kind.n_nodes() != 0 {
-            return Err(format!("connectivity length {} is not a multiple of {}", conn.len(), kind.n_nodes()));
+            return Err(format!(
+                "connectivity length {} is not a multiple of {}",
+                conn.len(),
+                kind.n_nodes()
+            ));
         }
         if let Some(&bad) = conn.iter().find(|&&n| n >= self.nodes.len()) {
-            return Err(format!("element refers to node {bad} but the mesh has {}", self.nodes.len()));
+            return Err(format!(
+                "element refers to node {bad} but the mesh has {}",
+                self.nodes.len()
+            ));
         }
         material.validate()?;
-        self.blocks.push(Block { kind, conn, material, name: name.to_string(), plasticity: None, density: 0.0, thermal: None });
+        self.blocks.push(Block {
+            kind,
+            conn,
+            material,
+            name: name.to_string(),
+            plasticity: None,
+            density: 0.0,
+            thermal: None,
+        });
         Ok(())
     }
 
     /// Mass density of block `block` (consistent units: with inch / psi use lbf s^2 / in^4, i.e. weight density / 386.09).
     pub fn set_density(&mut self, block: usize, density: f64) -> Result<(), String> {
         if !(density.is_finite() && density > 0.0) {
-            return Err(format!("density must be positive and finite, got {density}"));
+            return Err(format!(
+                "density must be positive and finite, got {density}"
+            ));
         }
-        self.blocks.get_mut(block).ok_or_else(|| format!("no block {block}"))?.density = density;
+        self.blocks
+            .get_mut(block)
+            .ok_or_else(|| format!("no block {block}"))?
+            .density = density;
         Ok(())
     }
 
     /// Thermal properties of block `block`.
-    pub fn set_thermal(&mut self, block: usize, conductivity: crate::thermal::Conductivity, capacity: f64) -> Result<(), String> {
+    pub fn set_thermal(
+        &mut self,
+        block: usize,
+        conductivity: crate::thermal::Conductivity,
+        capacity: f64,
+    ) -> Result<(), String> {
         conductivity.validate()?;
         if !(capacity.is_finite() && capacity >= 0.0) {
-            return Err(format!("heat capacity must be non-negative and finite, got {capacity}"));
+            return Err(format!(
+                "heat capacity must be non-negative and finite, got {capacity}"
+            ));
         }
-        self.blocks.get_mut(block).ok_or_else(|| format!("no block {block}"))?.thermal = Some(crate::thermal::ThermalProps { conductivity, capacity });
+        self.blocks
+            .get_mut(block)
+            .ok_or_else(|| format!("no block {block}"))?
+            .thermal = Some(crate::thermal::ThermalProps {
+            conductivity,
+            capacity,
+        });
         Ok(())
     }
 
@@ -359,7 +459,10 @@ impl Mesh {
 
     /// Attach J2 plasticity to block `block`. An anisotropic elastic law is supported with small-strain plasticity only.
     pub fn set_plasticity(&mut self, block: usize, j2: J2) -> Result<(), String> {
-        let b = self.blocks.get_mut(block).ok_or_else(|| format!("no block {block}"))?;
+        let b = self
+            .blocks
+            .get_mut(block)
+            .ok_or_else(|| format!("no block {block}"))?;
         if b.material.aniso.is_some() && j2.large_strain {
             return Err("finite-strain plasticity needs an isotropic elastic law (anisotropic elasticity is small-strain only)".into());
         }
@@ -385,21 +488,35 @@ impl Mesh {
             self.blocks.push(blk);
         }
         for (name, set) in &other.node_sets {
-            self.node_sets.insert(format!("{prefix}{name}"), set.iter().map(|n| n + off).collect());
+            self.node_sets.insert(
+                format!("{prefix}{name}"),
+                set.iter().map(|n| n + off).collect(),
+            );
         }
         for (name, faces) in &other.surfaces {
-            self.surfaces.insert(format!("{prefix}{name}"), faces.iter().map(|f| f.iter().map(|n| n + off).collect()).collect());
+            self.surfaces.insert(
+                format!("{prefix}{name}"),
+                faces
+                    .iter()
+                    .map(|f| f.iter().map(|n| n + off).collect())
+                    .collect(),
+            );
         }
         Ok(off)
     }
 
     pub fn node_set(&self, name: &str) -> Result<&[usize], String> {
-        self.node_sets.get(name).map(Vec::as_slice).ok_or_else(|| format!("no node set '{name}'"))
+        self.node_sets
+            .get(name)
+            .map(Vec::as_slice)
+            .ok_or_else(|| format!("no node set '{name}'"))
     }
 
     /// Nodes satisfying a predicate on their coordinates, as a named set.
     pub fn select_nodes(&mut self, name: &str, pred: impl Fn(&[f64; 3]) -> bool) -> &[usize] {
-        let ids: Vec<usize> = (0..self.nodes.len()).filter(|&i| pred(&self.nodes[i])).collect();
+        let ids: Vec<usize> = (0..self.nodes.len())
+            .filter(|&i| pred(&self.nodes[i]))
+            .collect();
         self.node_sets.insert(name.to_string(), ids);
         &self.node_sets[name]
     }

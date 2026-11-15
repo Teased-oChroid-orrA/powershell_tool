@@ -197,7 +197,9 @@ pub fn move_mesh_sliding(
     if prescribed
         .iter()
         .any(|p| p.node >= mesh.nodes.len() || p.displacement.iter().any(|v| !v.is_finite()))
-        || slides.iter().any(|s| s.node >= mesh.nodes.len() || s.axis >= mesh.dim() || !s.displacement.is_finite())
+        || slides.iter().any(|s| {
+            s.node >= mesh.nodes.len() || s.axis >= mesh.dim() || !s.displacement.is_finite()
+        })
     {
         return Err(MeshError::Failed(
             "prescribed node or slide out of range or displacement not finite".into(),
@@ -245,7 +247,11 @@ pub fn move_mesh_sliding(
             }
         }
         for sl in slides {
-            bc.fix(sl.node, sl.axis, sl.displacement * (1. - report.applied_fraction) * share);
+            bc.fix(
+                sl.node,
+                sl.axis,
+                sl.displacement * (1. - report.applied_fraction) * share,
+            );
         }
         let solution = model
             .solve_static(&Loads::default(), &bc)
@@ -261,7 +267,9 @@ pub fn move_mesh_sliding(
         // which the solver then refuses. Treat that as a failed step (rollback, then hand-over), not as an error of the motion.
         let verdict = judge(&q, &options.thresholds).and_then(|()| match gauss_inverted(&trial) {
             None => Ok(()),
-            Some((b, e)) => Err(format!("element {e} of block {b} has a non-positive Jacobian at a Gauss point")),
+            Some((b, e)) => Err(format!(
+                "element {e} of block {b} has a non-positive Jacobian at a Gauss point"
+            )),
         });
         match verdict {
             Ok(()) => {
@@ -494,17 +502,40 @@ mod tests {
         let mesh = column(4);
         let slides = |top: f64| -> Vec<Slide> {
             let mut s = Vec::new();
-            for (axis, value, d) in [(2usize, 0.0, 0.0), (2, 1.0, top), (0, 0.0, 0.0), (1, 0.0, 0.0)] {
-                s.extend(face_nodes(&mesh, axis, value).into_iter().map(|node| Slide { node, axis, displacement: d }));
+            for (axis, value, d) in [
+                (2usize, 0.0, 0.0),
+                (2, 1.0, top),
+                (0, 0.0, 0.0),
+                (1, 0.0, 0.0),
+            ] {
+                s.extend(
+                    face_nodes(&mesh, axis, value)
+                        .into_iter()
+                        .map(|node| Slide {
+                            node,
+                            axis,
+                            displacement: d,
+                        }),
+                );
             }
             s
         };
         let pinned = |top: f64| -> Vec<Prescribed> {
-            let mut p: Vec<Prescribed> = face_nodes(&mesh, 2, 0.).into_iter().map(|node| Prescribed { node, displacement: [0.; 3] }).collect();
-            p.extend(face_nodes(&mesh, 2, 1.).into_iter().map(|node| Prescribed { node, displacement: [0., 0., top] }));
+            let mut p: Vec<Prescribed> = face_nodes(&mesh, 2, 0.)
+                .into_iter()
+                .map(|node| Prescribed {
+                    node,
+                    displacement: [0.; 3],
+                })
+                .collect();
+            p.extend(face_nodes(&mesh, 2, 1.).into_iter().map(|node| Prescribed {
+                node,
+                displacement: [0., 0., top],
+            }));
             p
         };
-        let (slid, rs) = move_mesh_sliding(&mesh, &[], &slides(-0.6), MotionOptions::default()).unwrap();
+        let (slid, rs) =
+            move_mesh_sliding(&mesh, &[], &slides(-0.6), MotionOptions::default()).unwrap();
         assert_eq!(rs.outcome, Outcome::Complete, "{rs:?}");
         for &n in &face_nodes(&mesh, 2, 1.) {
             assert!((slid.nodes[n][2] - 0.4).abs() < 1e-9);
@@ -516,15 +547,44 @@ mod tests {
         for &n in &face_nodes(&mesh, 2, 0.) {
             assert!(slid.nodes[n][2].abs() < 1e-12);
         }
-        assert!(slid.quality().min_scaled_jacobian > 0.9, "{}", slid.quality().min_scaled_jacobian);
+        assert!(
+            slid.quality().min_scaled_jacobian > 0.9,
+            "{}",
+            slid.quality().min_scaled_jacobian
+        );
         assert!(rs.worst_free_reaction_ratio < 1e-8);
         // The same compression with the walls pinned laterally shears the layers next to them.
         let (pin, rp) = move_mesh(&mesh, &pinned(-0.6), MotionOptions::default()).unwrap();
-        eprintln!("sliding: min scaled Jacobian {:.3}; pinned: {:.3} ({:?})", slid.quality().min_scaled_jacobian, pin.quality().min_scaled_jacobian, rp.outcome);
+        eprintln!(
+            "sliding: min scaled Jacobian {:.3}; pinned: {:.3} ({:?})",
+            slid.quality().min_scaled_jacobian,
+            pin.quality().min_scaled_jacobian,
+            rp.outcome
+        );
         assert!(slid.quality().min_scaled_jacobian > pin.quality().min_scaled_jacobian + 0.05);
         // Out-of-range input is refused.
-        assert!(move_mesh_sliding(&mesh, &[], &[Slide { node: 10_000, axis: 2, displacement: 0. }], MotionOptions::default()).is_err());
-        assert!(move_mesh_sliding(&mesh, &[], &[Slide { node: 0, axis: 3, displacement: 0. }], MotionOptions::default()).is_err());
+        assert!(move_mesh_sliding(
+            &mesh,
+            &[],
+            &[Slide {
+                node: 10_000,
+                axis: 2,
+                displacement: 0.
+            }],
+            MotionOptions::default()
+        )
+        .is_err());
+        assert!(move_mesh_sliding(
+            &mesh,
+            &[],
+            &[Slide {
+                node: 0,
+                axis: 3,
+                displacement: 0.
+            }],
+            MotionOptions::default()
+        )
+        .is_err());
         assert!(move_mesh_sliding(&mesh, &[], &[], MotionOptions::default()).is_err());
     }
 }

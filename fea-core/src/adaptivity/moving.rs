@@ -10,7 +10,9 @@
 
 use super::{NodalInterpolation, SolverSnapshot, StateTransferOperator};
 use crate::mesh::Mesh;
-use crate::meshing::motion::{move_mesh_sliding, MotionOptions, MotionReport, Outcome, Prescribed, Slide};
+use crate::meshing::motion::{
+    move_mesh_sliding, MotionOptions, MotionReport, Outcome, Prescribed, Slide,
+};
 use crate::meshing::MeshError;
 use crate::Model;
 
@@ -35,7 +37,14 @@ pub struct AdvanceOptions {
 
 impl Default for AdvanceOptions {
     fn default() -> Self {
-        Self { motion: MotionOptions::default(), max_remeshes: 4, transfer: NodalInterpolation { max_unlocated_fraction: 0.2 }, min_progress: 1e-3 }
+        Self {
+            motion: MotionOptions::default(),
+            max_remeshes: 4,
+            transfer: NodalInterpolation {
+                max_unlocated_fraction: 0.2,
+            },
+            min_progress: 1e-3,
+        }
     }
 }
 
@@ -68,32 +77,51 @@ pub fn advance(
     options: AdvanceOptions,
 ) -> Result<Advanced, MeshError> {
     if field.len() != mesh.n_dofs() {
-        return Err(MeshError::Failed(format!("the carried field has {} values for {} dofs", field.len(), mesh.n_dofs())));
+        return Err(MeshError::Failed(format!(
+            "the carried field has {} values for {} dofs",
+            field.len(),
+            mesh.n_dofs()
+        )));
     }
     let mut current = mesh.clone();
     let mut field = field.to_vec();
-    let mut report = AdvanceReport { segments: Vec::new(), remeshes: 0, unlocated: Vec::new(), complete: false };
+    let mut report = AdvanceReport {
+        segments: Vec::new(),
+        remeshes: 0,
+        unlocated: Vec::new(),
+        complete: false,
+    };
     loop {
         let c = constraints(&current);
-        let (moved, motion) = move_mesh_sliding(&current, &c.prescribed, &c.slides, options.motion)?;
+        let (moved, motion) =
+            move_mesh_sliding(&current, &c.prescribed, &c.slides, options.motion)?;
         let after_remesh = report.remeshes > 0 && report.segments.len() == report.remeshes;
         let (outcome, applied) = (motion.outcome.clone(), motion.applied_fraction);
         report.segments.push(motion);
         match outcome {
             Outcome::Complete => {
                 report.complete = true;
-                return Ok(Advanced { mesh: moved, field, report });
+                return Ok(Advanced {
+                    mesh: moved,
+                    field,
+                    report,
+                });
             }
             Outcome::NeedsRemesh { reason, .. } => {
                 if after_remesh && applied < options.min_progress {
                     return Err(MeshError::Failed(format!("the remeshed mesh made no progress ({applied:.2e} of the remaining motion): {reason}")));
                 }
                 if report.remeshes >= options.max_remeshes {
-                    return Ok(Advanced { mesh: moved, field, report });
+                    return Ok(Advanced {
+                        mesh: moved,
+                        field,
+                        report,
+                    });
                 }
                 let next = remesh(&moved)?;
                 let old_model = Model::new(moved.clone()).map_err(MeshError::Failed)?;
-                let snapshot = SolverSnapshot::new(&moved, field, 0.0, "motion").map_err(MeshError::Failed)?;
+                let snapshot =
+                    SolverSnapshot::new(&moved, field, 0.0, "motion").map_err(MeshError::Failed)?;
                 let transferred = options.transfer.transfer(&old_model, &snapshot, &next)?;
                 report.unlocated.push(transferred.unlocated.len());
                 field = transferred.snapshot.u;
@@ -112,7 +140,14 @@ mod tests {
     use crate::mesh::{Elastic, Physics};
 
     fn unit_box(n: usize) -> Mesh {
-        grid(Physics::Solid, ElementKind::Hex8, Elastic::new(1., 0.3), [n, n, n], &|p| p).expect("box")
+        grid(
+            Physics::Solid,
+            ElementKind::Hex8,
+            Elastic::new(1., 0.3),
+            [n, n, n],
+            &|p| p,
+        )
+        .expect("box")
     }
 
     /// A fresh `n`-division grid of the bounding box of `m` (the body is a box, so the new mesh covers it exactly).
@@ -124,28 +159,58 @@ mod tests {
                 hi[k] = hi[k].max(x[k]);
             }
         }
-        grid(Physics::Solid, ElementKind::Hex8, Elastic::new(1., 0.3), n, &move |p| std::array::from_fn(|k| lo[k] + p[k] * (hi[k] - lo[k]))).map_err(MeshError::Failed)
+        grid(
+            Physics::Solid,
+            ElementKind::Hex8,
+            Elastic::new(1., 0.3),
+            n,
+            &move |p| std::array::from_fn(|k| lo[k] + p[k] * (hi[k] - lo[k])),
+        )
+        .map_err(MeshError::Failed)
     }
 
     /// Frictionless compression: symmetry planes at x = 0 and y = 0, the bottom held in z, the top carried to height `top`.
     fn compress(top: f64) -> impl Fn(&Mesh) -> Constraints {
         move |m: &Mesh| {
-            let zmax = m.nodes.iter().map(|x| x[2]).fold(f64::NEG_INFINITY, f64::max);
+            let zmax = m
+                .nodes
+                .iter()
+                .map(|x| x[2])
+                .fold(f64::NEG_INFINITY, f64::max);
             let mut slides = Vec::new();
             for (n, x) in m.nodes.iter().enumerate() {
                 if x[0].abs() < 1e-9 {
-                    slides.push(Slide { node: n, axis: 0, displacement: 0.0 });
+                    slides.push(Slide {
+                        node: n,
+                        axis: 0,
+                        displacement: 0.0,
+                    });
                 }
                 if x[1].abs() < 1e-9 {
-                    slides.push(Slide { node: n, axis: 1, displacement: 0.0 });
+                    slides.push(Slide {
+                        node: n,
+                        axis: 1,
+                        displacement: 0.0,
+                    });
                 }
                 if x[2].abs() < 1e-9 {
-                    slides.push(Slide { node: n, axis: 2, displacement: 0.0 });
+                    slides.push(Slide {
+                        node: n,
+                        axis: 2,
+                        displacement: 0.0,
+                    });
                 } else if (x[2] - zmax).abs() < 1e-9 {
-                    slides.push(Slide { node: n, axis: 2, displacement: top - zmax });
+                    slides.push(Slide {
+                        node: n,
+                        axis: 2,
+                        displacement: top - zmax,
+                    });
                 }
             }
-            Constraints { prescribed: Vec::new(), slides }
+            Constraints {
+                prescribed: Vec::new(),
+                slides,
+            }
         }
     }
 
@@ -156,37 +221,82 @@ mod tests {
     }
 
     #[test]
-    fn a_compression_that_stretches_the_elements_past_the_ceiling_continues_on_a_coarser_body_with_its_field() {
+    fn a_compression_that_stretches_the_elements_past_the_ceiling_continues_on_a_coarser_body_with_its_field(
+    ) {
         let mesh = unit_box(3);
         // The carried field is the material position, so after the motion it must still say where each point came from.
         let field: Vec<f64> = mesh.nodes.iter().flat_map(|x| [x[0], x[1], x[2]]).collect();
         let target = compress(0.03);
         // 97 % compression flattens three layers past the edge-ratio ceiling of 30: relocation alone cannot follow.
-        let (_, direct) = move_mesh_sliding(&mesh, &[], &target(&mesh).slides, strict_aspect().motion).unwrap();
-        assert!(matches!(direct.outcome, Outcome::NeedsRemesh { .. }), "the test needs a motion that hands over: {direct:?}");
+        let (_, direct) =
+            move_mesh_sliding(&mesh, &[], &target(&mesh).slides, strict_aspect().motion).unwrap();
+        assert!(
+            matches!(direct.outcome, Outcome::NeedsRemesh { .. }),
+            "the test needs a motion that hands over: {direct:?}"
+        );
         let mut remeshes = 0;
-        let out = advance(&mesh, &field, &target, &mut |m| { remeshes += 1; regrid(m, [3, 3, 1]) }, strict_aspect()).unwrap();
+        let out = advance(
+            &mesh,
+            &field,
+            &target,
+            &mut |m| {
+                remeshes += 1;
+                regrid(m, [3, 3, 1])
+            },
+            strict_aspect(),
+        )
+        .unwrap();
         assert!(out.report.complete, "{:?}", out.report);
         assert_eq!((out.report.remeshes, remeshes), (1, 1));
         assert_eq!(out.report.segments.len(), 2);
-        assert_eq!(out.report.unlocated, vec![0], "the regrid covers the old body exactly");
+        assert_eq!(
+            out.report.unlocated,
+            vec![0],
+            "the regrid covers the old body exactly"
+        );
         // The new body has one layer: fewer nodes, the top at 0.03, the elements acceptable.
         assert!(out.mesh.nodes.len() < mesh.nodes.len());
-        let zmax = out.mesh.nodes.iter().map(|x| x[2]).fold(f64::NEG_INFINITY, f64::max);
+        let zmax = out
+            .mesh
+            .nodes
+            .iter()
+            .map(|x| x[2])
+            .fold(f64::NEG_INFINITY, f64::max);
         assert!((zmax - 0.03).abs() < 1e-9, "top at {zmax}");
         let q = out.mesh.quality();
         assert_eq!(q.inverted, 0);
         assert!(q.max_edge_ratio <= 30.0, "edge ratio {}", q.max_edge_ratio);
         // The uniaxial motion is affine, so the carried material position maps back to the node exactly: (x, y) are the
         // material coordinates scaled by the lateral stretch, z by the compression.
-        let xmax = out.mesh.nodes.iter().map(|x| x[0]).fold(f64::NEG_INFINITY, f64::max);
-        let ymax = out.mesh.nodes.iter().map(|x| x[1]).fold(f64::NEG_INFINITY, f64::max);
+        let xmax = out
+            .mesh
+            .nodes
+            .iter()
+            .map(|x| x[0])
+            .fold(f64::NEG_INFINITY, f64::max);
+        let ymax = out
+            .mesh
+            .nodes
+            .iter()
+            .map(|x| x[1])
+            .fold(f64::NEG_INFINITY, f64::max);
         let mut worst: f64 = 0.0;
         for (n, x) in out.mesh.nodes.iter().enumerate() {
             let f = &out.field[n * 3..n * 3 + 3];
-            worst = worst.max((f[0] * xmax - x[0]).abs()).max((f[1] * ymax - x[1]).abs()).max((f[2] * 0.03 - x[2]).abs());
+            worst = worst
+                .max((f[0] * xmax - x[0]).abs())
+                .max((f[1] * ymax - x[1]).abs())
+                .max((f[2] * 0.03 - x[2]).abs());
         }
-        eprintln!("segments {:?}, edge ratio {:.1}, worst material-position mismatch {worst:.2e}", out.report.segments.iter().map(|s| s.applied_fraction).collect::<Vec<_>>(), q.max_edge_ratio);
+        eprintln!(
+            "segments {:?}, edge ratio {:.1}, worst material-position mismatch {worst:.2e}",
+            out.report
+                .segments
+                .iter()
+                .map(|s| s.applied_fraction)
+                .collect::<Vec<_>>(),
+            q.max_edge_ratio
+        );
         assert!(worst < 1e-9, "material position drifted by {worst}");
     }
 
@@ -196,17 +306,41 @@ mod tests {
         let field = vec![0.0; mesh.n_dofs()];
         let target = compress(0.03);
         // The remesher returns the mesh unchanged: no progress after the first remesh.
-        let err = advance(&mesh, &field, &target, &mut |m| Ok(m.clone()), strict_aspect()).unwrap_err();
+        let err = advance(
+            &mesh,
+            &field,
+            &target,
+            &mut |m| Ok(m.clone()),
+            strict_aspect(),
+        )
+        .unwrap_err();
         assert!(format!("{err:?}").contains("no progress"), "{err:?}");
         // A budget of zero remeshes returns the last valid mesh, not complete.
-        let none = AdvanceOptions { max_remeshes: 0, ..strict_aspect() };
+        let none = AdvanceOptions {
+            max_remeshes: 0,
+            ..strict_aspect()
+        };
         let out = advance(&mesh, &field, &target, &mut |m| Ok(m.clone()), none).unwrap();
         assert!(!out.report.complete && out.report.remeshes == 0);
         assert_eq!(out.mesh.quality().inverted, 0);
         // A field of the wrong length is refused before anything moves.
-        assert!(advance(&mesh, &field[..5], &target, &mut |m| Ok(m.clone()), strict_aspect()).is_err());
+        assert!(advance(
+            &mesh,
+            &field[..5],
+            &target,
+            &mut |m| Ok(m.clone()),
+            strict_aspect()
+        )
+        .is_err());
         // A failing remesher's error is passed on.
-        let err = advance(&mesh, &field, &target, &mut |_| Err(MeshError::Failed("no mesher".into())), strict_aspect()).unwrap_err();
+        let err = advance(
+            &mesh,
+            &field,
+            &target,
+            &mut |_| Err(MeshError::Failed("no mesher".into())),
+            strict_aspect(),
+        )
+        .unwrap_err();
         assert!(format!("{err:?}").contains("no mesher"));
         // A remesh that leaves the old domain is refused by the transfer, never filled with zeros.
         let far = |m: &Mesh| -> Result<Mesh, MeshError> {
@@ -217,7 +351,10 @@ mod tests {
             Ok(out)
         };
         let err = advance(&mesh, &field, &target, &mut { far }, strict_aspect()).unwrap_err();
-        assert!(format!("{err:?}").contains("outside the old mesh"), "{err:?}");
+        assert!(
+            format!("{err:?}").contains("outside the old mesh"),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -232,14 +369,27 @@ mod tests {
                 if r.iter().any(|&c| c == 0.0 || c == 1.0) {
                     let a = angle * r[2];
                     let (dx, dy) = (r[0] - 0.5, r[1] - 0.5);
-                    let target = [0.5 + dx * a.cos() - dy * a.sin(), 0.5 + dx * a.sin() + dy * a.cos(), r[2]];
-                    p.push(Prescribed { node: n, displacement: [target[0] - r[0], target[1] - r[1], 0.0] });
+                    let target = [
+                        0.5 + dx * a.cos() - dy * a.sin(),
+                        0.5 + dx * a.sin() + dy * a.cos(),
+                        r[2],
+                    ];
+                    p.push(Prescribed {
+                        node: n,
+                        displacement: [target[0] - r[0], target[1] - r[1], 0.0],
+                    });
                 }
             }
             p
         };
         for deg in [200.0f64, 450.0, 720.0] {
-            let (moved, r) = move_mesh_sliding(&mesh, &twist(deg.to_radians()), &[], MotionOptions::default()).unwrap_or_else(|e| panic!("twist {deg}: {e:?}"));
+            let (moved, r) = move_mesh_sliding(
+                &mesh,
+                &twist(deg.to_radians()),
+                &[],
+                MotionOptions::default(),
+            )
+            .unwrap_or_else(|e| panic!("twist {deg}: {e:?}"));
             assert_eq!(moved.quality().inverted, 0, "twist {deg}");
             assert!(gauss_free(&moved), "twist {deg}: {r:?}");
         }

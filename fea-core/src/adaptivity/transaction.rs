@@ -25,12 +25,22 @@ impl<S> Attempt<S> {
 
 /// Build a candidate from `current` with `build`, accept it with `accept(current, candidate)`; a failure at either step rolls
 /// back to `current`.
-pub fn attempt<S>(current: S, build: impl FnOnce(&S) -> Result<S, String>, accept: impl FnOnce(&S, &S) -> Result<(), String>) -> Attempt<S> {
+pub fn attempt<S>(
+    current: S,
+    build: impl FnOnce(&S) -> Result<S, String>,
+    accept: impl FnOnce(&S, &S) -> Result<(), String>,
+) -> Attempt<S> {
     match build(&current) {
-        Err(reason) => Attempt::RolledBack { kept: current, reason },
+        Err(reason) => Attempt::RolledBack {
+            kept: current,
+            reason,
+        },
         Ok(candidate) => match accept(&current, &candidate) {
             Ok(()) => Attempt::Committed(candidate),
-            Err(reason) => Attempt::RolledBack { kept: current, reason: format!("candidate rejected: {reason}") },
+            Err(reason) => Attempt::RolledBack {
+                kept: current,
+                reason: format!("candidate rejected: {reason}"),
+            },
         },
     }
 }
@@ -41,7 +51,17 @@ mod tests {
 
     #[test]
     fn a_rejected_candidate_leaves_the_current_state() {
-        let r = attempt(5, |s| Ok(s + 1), |_, c| if *c < 6 { Ok(()) } else { Err("too big".into()) });
+        let r = attempt(
+            5,
+            |s| Ok(s + 1),
+            |_, c| {
+                if *c < 6 {
+                    Ok(())
+                } else {
+                    Err("too big".into())
+                }
+            },
+        );
         match r {
             Attempt::RolledBack { kept, reason } => {
                 assert_eq!(kept, 5);

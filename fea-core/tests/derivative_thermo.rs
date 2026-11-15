@@ -32,11 +32,25 @@ struct Case {
 }
 
 fn case(kind: ElementKind, s: Shift) -> Case {
-    let mut mesh = grid(Physics::PlaneStress { thickness: 0.5 + s.thickness }, kind, Elastic::new(2.0e5, 0.3), [5, 3, 1], &|p| [3.0 * p[0] + 0.1 * p[1], p[1] + 0.04 * p[0] * p[0], 0.0]).unwrap();
+    let mut mesh = grid(
+        Physics::PlaneStress {
+            thickness: 0.5 + s.thickness,
+        },
+        kind,
+        Elastic::new(2.0e5, 0.3),
+        [5, 3, 1],
+        &|p| [3.0 * p[0] + 0.1 * p[1], p[1] + 0.04 * p[0] * p[0], 0.0],
+    )
+    .unwrap();
     mesh.blocks[0].material.e *= 1.0 + s.modulus;
     mesh.blocks[0].material.nu += s.nu;
     mesh.blocks[0].material.alpha = 1.2e-5 * (1.0 + s.alpha);
-    mesh.set_thermal(0, Conductivity::Constant(15.0 * (1.0 + s.conductivity)), 1.0).unwrap();
+    mesh.set_thermal(
+        0,
+        Conductivity::Constant(15.0 * (1.0 + s.conductivity)),
+        1.0,
+    )
+    .unwrap();
     mesh.nodes[s.node][0] += s.dx;
     mesh.nodes[s.node][1] += s.dy;
     let model = Model::new(mesh).unwrap();
@@ -53,10 +67,24 @@ fn case(kind: ElementKind, s: Shift) -> Case {
     for &n in model.mesh.node_set("u1").unwrap() {
         tbc.fix(n, 0, 20.0);
     }
-    let heat = HeatLoads { source: 40.0 * (1.0 + s.heat), ..HeatLoads::default() };
-    let loads = Loads { nodal: vec![(model.mesh.node_set("u1").unwrap()[0], [0.0, -50.0, 0.0])], delta_t: s.delta_t, ..Loads::default() };
+    let heat = HeatLoads {
+        source: 40.0 * (1.0 + s.heat),
+        ..HeatLoads::default()
+    };
+    let loads = Loads {
+        nodal: vec![(model.mesh.node_set("u1").unwrap()[0], [0.0, -50.0, 0.0])],
+        delta_t: s.delta_t,
+        ..Loads::default()
+    };
     let right = model.mesh.node_set("u1").unwrap().to_vec();
-    Case { model, bc, tbc, loads, heat, right }
+    Case {
+        model,
+        bc,
+        tbc,
+        loads,
+        heat,
+        right,
+    }
 }
 
 fn qoi(c: &Case) -> Vec<f64> {
@@ -80,16 +108,47 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 
 /// Linear engine with a thermal load (uniform temperature rise plus a nodal force): exact derivatives against differences of the solve.
 fn check_linear(kind: ElementKind) {
-    let base = Shift { delta_t: 35.0, node: 8, ..Shift::default() };
+    let base = Shift {
+        delta_t: 35.0,
+        node: 8,
+        ..Shift::default()
+    };
     let c = case(kind, base);
-    let node = (0..c.model.mesh.nodes.len()).find(|&n| c.model.mesh.nodes[n][0] > 1.0 && c.model.mesh.nodes[n][1] > 0.2 && c.model.mesh.nodes[n][1] < 0.8 && !c.model.mesh.node_set("u1").unwrap().contains(&n)).unwrap();
+    let node = (0..c.model.mesh.nodes.len())
+        .find(|&n| {
+            c.model.mesh.nodes[n][0] > 1.0
+                && c.model.mesh.nodes[n][1] > 0.2
+                && c.model.mesh.nodes[n][1] < 0.8
+                && !c.model.mesh.node_set("u1").unwrap().contains(&n)
+        })
+        .unwrap();
     let base = Shift { node, ..base };
     let c = case(kind, base);
     let g = qoi(&c);
     let eng = LinearSensitivityEngine::new(&c.model, &c.loads, &c.bc);
-    let params = [LinearParam::ModulusScale(0), LinearParam::PoissonRatio(0), LinearParam::ThermalExpansion(0), LinearParam::Thickness, LinearParam::UniformTemperature, LinearParam::Coord { node, axis: 0 }, LinearParam::Coord { node, axis: 1 }];
-    let (direct, _) = eng.sensitivities(&[g.clone()], &params, Some(fea_core::derivative::SensitivityMethod::Direct)).unwrap();
-    let (adj, _) = eng.sensitivities(&[g.clone()], &params, Some(fea_core::derivative::SensitivityMethod::DiscreteAdjoint)).unwrap();
+    let params = [
+        LinearParam::ModulusScale(0),
+        LinearParam::PoissonRatio(0),
+        LinearParam::ThermalExpansion(0),
+        LinearParam::Thickness,
+        LinearParam::UniformTemperature,
+        LinearParam::Coord { node, axis: 0 },
+        LinearParam::Coord { node, axis: 1 },
+    ];
+    let (direct, _) = eng
+        .sensitivities(
+            &[g.clone()],
+            &params,
+            Some(fea_core::derivative::SensitivityMethod::Direct),
+        )
+        .unwrap();
+    let (adj, _) = eng
+        .sensitivities(
+            &[g.clone()],
+            &params,
+            Some(fea_core::derivative::SensitivityMethod::DiscreteAdjoint),
+        )
+        .unwrap();
     let value = |s: Shift| {
         let c = case(kind, s);
         let sol = c.model.solve_static(&c.loads, &c.bc).unwrap();
@@ -114,8 +173,14 @@ fn check_linear(kind: ElementKind) {
         // the engine's modulus / alpha parameters are multipliers of the block's current values; the shifts above are about the base
         let (d, a) = (direct[0][i], adj[0][i]);
         // the thermal-expansion coefficient has base value 1.2e-5 * (1 + shift), so its multiplier derivative equals the shift derivative
-        assert!((d - a).abs() < 1e-9 * d.abs().max(1e-12), "{kind:?} param {i}: direct {d:e} vs adjoint {a:e}");
-        assert!((d - fd).abs() < 2e-5 * d.abs().max(fd.abs()).max(1e-12), "{kind:?} param {i}: exact {d:e} vs finite difference {fd:e}");
+        assert!(
+            (d - a).abs() < 1e-9 * d.abs().max(1e-12),
+            "{kind:?} param {i}: direct {d:e} vs adjoint {a:e}"
+        );
+        assert!(
+            (d - fd).abs() < 2e-5 * d.abs().max(fd.abs()).max(1e-12),
+            "{kind:?} param {i}: exact {d:e} vs finite difference {fd:e}"
+        );
     }
 }
 
@@ -136,7 +201,13 @@ fn coupled_value(kind: ElementKind, s: Shift) -> f64 {
 fn check_coupled(kind: ElementKind) {
     let c = case(kind, Shift::default());
     let eng = ThermoMechanicalSensitivity::new(&c.model, &c.loads, &c.heat, &c.bc, &c.tbc).unwrap();
-    let params = [CoupledParam::ConductivityScale(0), CoupledParam::HeatLoadScale, CoupledParam::Structural(LinearParam::ModulusScale(0)), CoupledParam::Structural(LinearParam::PoissonRatio(0)), CoupledParam::Structural(LinearParam::ThermalExpansion(0))];
+    let params = [
+        CoupledParam::ConductivityScale(0),
+        CoupledParam::HeatLoadScale,
+        CoupledParam::Structural(LinearParam::ModulusScale(0)),
+        CoupledParam::Structural(LinearParam::PoissonRatio(0)),
+        CoupledParam::Structural(LinearParam::ThermalExpansion(0)),
+    ];
     let g = qoi(&c);
     let (direct, rd) = eng.direct(&params, &[g.clone()]).unwrap();
     let (adj, ra) = eng.adjoint(&params, &[g.clone()]).unwrap();
@@ -155,11 +226,24 @@ fn check_coupled(kind: ElementKind) {
     for (i, &h) in steps.iter().enumerate() {
         let fd = richardson(&|x| coupled_value(kind, mk(i, x)), h);
         let (d, a) = (direct[0][i], adj[0][i]);
-        assert!((d - a).abs() < 1e-9 * d.abs().max(1e-12), "{kind:?} param {i}: direct {d:e} vs adjoint {a:e}");
-        assert!((d - fd).abs() < 2e-5 * d.abs().max(fd.abs()).max(1e-12), "{kind:?} param {i}: exact {d:e} vs finite difference {fd:e}");
+        assert!(
+            (d - a).abs() < 1e-9 * d.abs().max(1e-12),
+            "{kind:?} param {i}: direct {d:e} vs adjoint {a:e}"
+        );
+        assert!(
+            (d - fd).abs() < 2e-5 * d.abs().max(fd.abs()).max(1e-12),
+            "{kind:?} param {i}: exact {d:e} vs finite difference {fd:e}"
+        );
     }
-    assert!(direct[0][0].abs() > 1e-9 && direct[0][1].abs() > 1e-9, "the heat parameters must matter");
-    eprintln!("{kind:?}: direct {:?} solves, adjoint {:?} solves", (rd.structural_solves, rd.thermal_solves), (ra.structural_solves, ra.thermal_solves));
+    assert!(
+        direct[0][0].abs() > 1e-9 && direct[0][1].abs() > 1e-9,
+        "the heat parameters must matter"
+    );
+    eprintln!(
+        "{kind:?}: direct {:?} solves, adjoint {:?} solves",
+        (rd.structural_solves, rd.thermal_solves),
+        (ra.structural_solves, ra.thermal_solves)
+    );
     assert!(ra.thermal_solves < rd.thermal_solves || ra.thermal_solves <= 2, "the adjoint needs one thermal solve per quantity, the direct one per heat parameter (+ the primal)");
 }
 
@@ -173,24 +257,47 @@ fn heat_parameters_reach_the_displacements_through_the_temperature_field() {
 fn geometry_through_a_coupled_chain_and_temperature_dependent_conductivity_are_refused() {
     let c = case(ElementKind::Quad4, Shift::default());
     let eng = ThermoMechanicalSensitivity::new(&c.model, &c.loads, &c.heat, &c.bc, &c.tbc).unwrap();
-    let e = eng.adjoint(&[CoupledParam::Structural(LinearParam::Thickness)], &[qoi(&c)]).unwrap_err();
+    let e = eng
+        .adjoint(
+            &[CoupledParam::Structural(LinearParam::Thickness)],
+            &[qoi(&c)],
+        )
+        .unwrap_err();
     assert!(e.contains("not implemented"), "{e}");
     let mut mesh = c.model.mesh.clone();
-    mesh.set_thermal(0, Conductivity::Table(vec![(0.0, 10.0), (100.0, 20.0)]), 1.0).unwrap();
+    mesh.set_thermal(
+        0,
+        Conductivity::Table(vec![(0.0, 10.0), (100.0, 20.0)]),
+        1.0,
+    )
+    .unwrap();
     let m2 = Model::new(mesh).unwrap();
     assert!(ThermoMechanicalSensitivity::new(&m2, &c.loads, &c.heat, &c.bc, &c.tbc).is_err());
 }
 
 #[test]
-fn the_transient_and_path_engines_refuse_thermal_loads_instead_of_dropping_their_parameter_dependence() {
+fn the_transient_and_path_engines_refuse_thermal_loads_instead_of_dropping_their_parameter_dependence(
+) {
     use fea_core::derivative::path::PathSensitivityEngine;
     use fea_core::derivative::transient::TransientSensitivity;
     use fea_core::dynamics::TransientOptions;
-    let c = case(ElementKind::Quad4, Shift { delta_t: 10.0, ..Shift::default() });
-    assert!(PathSensitivityEngine::new(&c.model, &c.loads, &c.bc).err().expect("refused").contains("thermal loads"));
+    let c = case(
+        ElementKind::Quad4,
+        Shift {
+            delta_t: 10.0,
+            ..Shift::default()
+        },
+    );
+    assert!(PathSensitivityEngine::new(&c.model, &c.loads, &c.bc)
+        .err()
+        .expect("refused")
+        .contains("thermal loads"));
     let mut model = c.model.clone();
     model.mesh.set_density(0, 1e-3).unwrap();
-    let opt = TransientOptions { steps: 2, ..TransientOptions::default() };
+    let opt = TransientOptions {
+        steps: 2,
+        ..TransientOptions::default()
+    };
     let g = |_t: f64| 1.0;
     let eng = TransientSensitivity::new(&model, &c.loads, &g, &c.bc, None, &opt);
     assert!(eng.response().unwrap_err().contains("thermal loads"));

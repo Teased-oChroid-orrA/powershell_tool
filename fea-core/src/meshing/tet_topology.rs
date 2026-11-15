@@ -80,7 +80,10 @@ pub fn sphere_side(t: [Point; 4], p: Point) -> Result<SphereSide, MeshError> {
 /// a [`TetTopology`] is) with coordinates that passed the predicate range check: the same answer without recomputing
 /// either.
 pub fn sphere_side_positive(t: [Point; 4], p: Point) -> Result<SphereSide, MeshError> {
-    debug_assert_eq!(orientation(t[0], t[1], t[2], t[3]).ok(), Some(Ordering::Greater));
+    debug_assert_eq!(
+        orientation(t[0], t[1], t[2], t[3]).ok(),
+        Some(Ordering::Greater)
+    );
     debug_assert!(checked(&[t[0], t[1], t[2], t[3], p]).is_ok());
     let s = insphere(coord(t[0]), coord(t[1]), coord(t[2]), coord(t[3]), coord(p));
     if !s.is_finite() {
@@ -303,9 +306,15 @@ mod tests {
         }
         // a positive cell gives the same answer without the orientation
         let positive = [p[0], p[1], p[2], p[3]];
-        assert_eq!(orientation(positive[0], positive[1], positive[2], positive[3]).unwrap(), Ordering::Greater);
+        assert_eq!(
+            orientation(positive[0], positive[1], positive[2], positive[3]).unwrap(),
+            Ordering::Greater
+        );
         for q in [p[4], [2., 2., 2.], p[1], [0.5, 0.5, 0.5], [0.3, 0.3, -0.1]] {
-            assert_eq!(sphere_side_positive(positive, q).unwrap(), sphere_side(positive, q).unwrap());
+            assert_eq!(
+                sphere_side_positive(positive, q).unwrap(),
+                sphere_side(positive, q).unwrap()
+            );
         }
         assert!(orientation(p[0], p[1], p[2], [f64::INFINITY, 0., 0.]).is_err());
         assert!(orientation(p[0], p[1], p[2], [1e100, 0., 1.]).is_err());
@@ -335,19 +344,36 @@ mod tests {
     #[test]
     fn checked_two_to_three_flip_can_clear_quality_gate_without_moving_boundary() {
         let p = vec![
-            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
             [0.5, 0.8660254, 0.0],
             [0.4676201654449199, 0.3117365514855523, 0.41338745434207647],
-            [0.44135538017430254, 0.3773988350832113, -0.040774254313441186],
+            [
+                0.44135538017430254,
+                0.3773988350832113,
+                -0.040774254313441186,
+            ],
         ];
         let mut top = TetTopology::new(p.clone(), vec![[0, 1, 2, 3], [0, 2, 1, 4]], 10).unwrap();
         let signature = |faces: &[[usize; 3]]| -> BTreeMap<_, _> {
-            faces.iter().map(|&face| (key(face), parity(face))).collect()
+            faces
+                .iter()
+                .map(|&face| (key(face), parity(face)))
+                .collect()
         };
         let before = signature(top.boundary());
-        let q = |cells: &[[usize; 4]]| cells.iter().map(|&c| super::super::boundary_repair::scaled_jacobian(&p, c)).fold(f64::INFINITY, f64::min);
-        assert!(q(top.cells()) < super::super::quality::QualityThresholds::default().min_scaled_jacobian);
-        top.replace_cells(&[0, 1], &[[3, 0, 4, 1], [3, 4, 1, 2], [3, 2, 4, 0]]).unwrap();
+        let q = |cells: &[[usize; 4]]| {
+            cells
+                .iter()
+                .map(|&c| super::super::boundary_repair::scaled_jacobian(&p, c))
+                .fold(f64::INFINITY, f64::min)
+        };
+        assert!(
+            q(top.cells())
+                < super::super::quality::QualityThresholds::default().min_scaled_jacobian
+        );
+        top.replace_cells(&[0, 1], &[[3, 0, 4, 1], [3, 4, 1, 2], [3, 2, 4, 0]])
+            .unwrap();
         assert_eq!(signature(top.boundary()), before);
         assert!(q(top.cells()) > 0.3);
     }

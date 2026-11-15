@@ -50,8 +50,14 @@ impl<'m> SecondOrderEngine<'m> {
     }
 
     fn check_loads(&self) -> Result<(), String> {
-        let nodal_only = Loads { nodal: self.loads.nodal.clone(), ..Loads::default() };
-        let (a, b) = (loads::assemble(&self.model.mesh, self.loads)?, loads::assemble(&self.model.mesh, &nodal_only)?);
+        let nodal_only = Loads {
+            nodal: self.loads.nodal.clone(),
+            ..Loads::default()
+        };
+        let (a, b) = (
+            loads::assemble(&self.model.mesh, self.loads)?,
+            loads::assemble(&self.model.mesh, &nodal_only)?,
+        );
         if a != b {
             return Err("exact second derivatives need nodal loads only (surface, body and thermal loads depend on the parameters)".into());
         }
@@ -63,7 +69,13 @@ impl<'m> SecondOrderEngine<'m> {
         let m = self.model;
         let d = m.mesh.dim();
         let mut out = vec![0.0; m.mesh.n_dofs()];
-        if matches!(pi, LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature) || matches!(pj, LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature) {
+        if matches!(
+            pi,
+            LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature
+        ) || matches!(
+            pj,
+            LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature
+        ) {
             return Ok(out); // the stiffness does not depend on them
         }
         for (bi, blk) in m.mesh.blocks.iter().enumerate() {
@@ -81,10 +93,23 @@ impl<'m> SecondOrderEngine<'m> {
             let nd = nn * d;
             'elements: for e in 0..blk.n_elems() {
                 let conn = blk.elem(e);
-                let mut coords: Vec<[D2; 3]> = conn.iter().map(|&n| m.mesh.nodes[n].map(|c| D2::cst(c))).collect();
-                let (mut ev, mut nuv, mut tv) = (D2::cst(blk.material.e), D2::cst(blk.material.nu), D2::cst(self.thickness()));
+                let mut coords: Vec<[D2; 3]> = conn
+                    .iter()
+                    .map(|&n| m.mesh.nodes[n].map(|c| D2::cst(c)))
+                    .collect();
+                let (mut ev, mut nuv, mut tv) = (
+                    D2::cst(blk.material.e),
+                    D2::cst(blk.material.nu),
+                    D2::cst(self.thickness()),
+                );
                 // a quantity that both layers vary needs both seeds: value = inner var, outer derivative = 1
-                let seed = |p: LinearParam, outer: bool, ev: &mut D2, nuv: &mut D2, tv: &mut D2, coords: &mut Vec<[D2; 3]>| -> bool {
+                let seed = |p: LinearParam,
+                            outer: bool,
+                            ev: &mut D2,
+                            nuv: &mut D2,
+                            tv: &mut D2,
+                            coords: &mut Vec<[D2; 3]>|
+                 -> bool {
                     let mk = |x0: f64, cur: D2| -> D2 {
                         if outer {
                             D2::with(cur.v, [D1::cst(1.0)])
@@ -96,11 +121,17 @@ impl<'m> SecondOrderEngine<'m> {
                         LinearParam::ModulusScale(_) => *ev = mk_scale(blk.material.e, *ev, outer),
                         LinearParam::PoissonRatio(_) => *nuv = mk(blk.material.nu, *nuv),
                         LinearParam::Thickness => *tv = mk(self.thickness(), *tv),
-                        LinearParam::Coord { node, axis } => match conn.iter().position(|&n| n == node) {
-                            Some(l) => coords[l][axis] = mk(m.mesh.nodes[node][axis], coords[l][axis]),
-                            None => return false,
-                        },
-                        LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature => unreachable!("returned above"),
+                        LinearParam::Coord { node, axis } => {
+                            match conn.iter().position(|&n| n == node) {
+                                Some(l) => {
+                                    coords[l][axis] = mk(m.mesh.nodes[node][axis], coords[l][axis])
+                                }
+                                None => return false,
+                            }
+                        }
+                        LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature => {
+                            unreachable!("returned above")
+                        }
                     }
                     true
                 };
@@ -110,13 +141,15 @@ impl<'m> SecondOrderEngine<'m> {
                 if !seed(pi, true, &mut ev, &mut nuv, &mut tv, &mut coords) {
                     continue 'elements;
                 }
-                let ke = element::stiffness(blk.kind, m.mesh.physics, &coords, ev, nuv, tv).map_err(|er| er.to_string())?;
+                let ke = element::stiffness(blk.kind, m.mesh.physics, &coords, ev, nuv, tv)
+                    .map_err(|er| er.to_string())?;
                 for a in 0..nn {
                     for i in 0..d {
                         let mut s = 0.0;
                         for b in 0..nn {
                             for j in 0..d {
-                                s += ke[(a * d + i) * nd + b * d + j].d[0].d[0] * x[conn[b] * d + j];
+                                s +=
+                                    ke[(a * d + i) * nd + b * d + j].d[0].d[0] * x[conn[b] * d + j];
                             }
                         }
                         out[conn[a] * d + i] += s;
@@ -127,18 +160,39 @@ impl<'m> SecondOrderEngine<'m> {
         Ok(out)
     }
 
-    fn setup<'a>(&self, red: &'a Reduced, k: &'a crate::assembly::BlockMatrix, free: &'a [usize]) -> Result<TangentSolver<'a>, String>
+    fn setup<'a>(
+        &self,
+        red: &'a Reduced,
+        k: &'a crate::assembly::BlockMatrix,
+        free: &'a [usize],
+    ) -> Result<TangentSolver<'a>, String>
     where
         'm: 'a,
     {
-        TangentSolver::new(red, &self.model.pattern, k, self.model.mesh.n_dofs(), free, &[]).map_err(|e| e.to_string())
+        TangentSolver::new(
+            red,
+            &self.model.pattern,
+            k,
+            self.model.mesh.n_dofs(),
+            free,
+            &[],
+        )
+        .map_err(|e| e.to_string())
     }
 
-    fn prepare(&self) -> Result<(crate::assembly::BlockMatrix, Reduced, Vec<usize>, Vec<f64>), String> {
+    fn prepare(
+        &self,
+    ) -> Result<(crate::assembly::BlockMatrix, Reduced, Vec<usize>, Vec<f64>), String> {
         self.check_loads()?;
         self.model.check_constrained(self.bc)?;
         let k = self.model.assemble()?;
-        let red = Reduced::with_ordering(&self.model.pattern, self.bc, Some(&self.model.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+        let red = Reduced::with_ordering(
+            &self.model.pattern,
+            self.bc,
+            Some(&self.model.mesh.nodes),
+            Ordering::Auto,
+        )
+        .map_err(|e| e.to_string())?;
         let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
         let f = loads::assemble(&self.model.mesh, self.loads)?;
         Ok((k, red, free, f))
@@ -153,7 +207,12 @@ impl<'m> SecondOrderEngine<'m> {
     }
 
     /// `H v` for `J = g . u`: forward over reverse.
-    pub fn hessian_vector(&self, params: &[LinearParam], v: &[f64], g: &[f64]) -> Result<(Vec<f64>, SecondOrderReport), String> {
+    pub fn hessian_vector(
+        &self,
+        params: &[LinearParam],
+        v: &[f64],
+        g: &[f64],
+    ) -> Result<(Vec<f64>, SecondOrderReport), String> {
         if v.len() != params.len() {
             return Err("the direction needs one weight per parameter".into());
         }
@@ -179,8 +238,14 @@ impl<'m> SecondOrderEngine<'m> {
         };
         let kvu = sum(&u)?;
         let kvl = sum(&lambda)?;
-        let du_v = self.scatter(&free, &solver.solve(&restrict(&kvu.iter().map(|a| -a).collect::<Vec<_>>()))?);
-        let dl_v = self.scatter(&free, &solver.solve(&restrict(&kvl.iter().map(|a| -a).collect::<Vec<_>>()))?);
+        let du_v = self.scatter(
+            &free,
+            &solver.solve(&restrict(&kvu.iter().map(|a| -a).collect::<Vec<_>>()))?,
+        );
+        let dl_v = self.scatter(
+            &free,
+            &solver.solve(&restrict(&kvl.iter().map(|a| -a).collect::<Vec<_>>()))?,
+        );
         let mut hv = vec![0.0; params.len()];
         for (i, &pi) in params.iter().enumerate() {
             // dG_i/dv = dl_v . (-K_i u) + lambda . (-K_iv u - K_i du_v)
@@ -194,13 +259,24 @@ impl<'m> SecondOrderEngine<'m> {
                     }
                 }
             }
-            hv[i] = (0..n).map(|d| -dl_v[d] * kiu[d] - lambda[d] * (kiv_u[d] + kidu[d])).sum();
+            hv[i] = (0..n)
+                .map(|d| -dl_v[d] * kiu[d] - lambda[d] * (kiv_u[d] + kidu[d]))
+                .sum();
         }
-        Ok((hv, SecondOrderReport { tangent_solves: solver.n_solves() }))
+        Ok((
+            hv,
+            SecondOrderReport {
+                tangent_solves: solver.n_solves(),
+            },
+        ))
     }
 
     /// The full Hessian by `n` Hessian-vector products (row-major `n x n`).
-    pub fn hessian_forward_over_reverse(&self, params: &[LinearParam], g: &[f64]) -> Result<(Vec<f64>, SecondOrderReport), String> {
+    pub fn hessian_forward_over_reverse(
+        &self,
+        params: &[LinearParam],
+        g: &[f64],
+    ) -> Result<(Vec<f64>, SecondOrderReport), String> {
         let n = params.len();
         let mut h = vec![0.0; n * n];
         let mut solves = 0;
@@ -213,11 +289,20 @@ impl<'m> SecondOrderEngine<'m> {
                 h[i * n + j] = col[i];
             }
         }
-        Ok((h, SecondOrderReport { tangent_solves: solves }))
+        Ok((
+            h,
+            SecondOrderReport {
+                tangent_solves: solves,
+            },
+        ))
     }
 
     /// The full Hessian from the direct first sensitivities: reverse over forward.
-    pub fn hessian_reverse_over_forward(&self, params: &[LinearParam], g: &[f64]) -> Result<(Vec<f64>, SecondOrderReport), String> {
+    pub fn hessian_reverse_over_forward(
+        &self,
+        params: &[LinearParam],
+        g: &[f64],
+    ) -> Result<(Vec<f64>, SecondOrderReport), String> {
         let (k, red, free, f) = self.prepare()?;
         let solver = self.setup(&red, &k, &free)?;
         let lin = LinearSensitivityEngine::new(self.model, self.loads, self.bc);
@@ -238,10 +323,17 @@ impl<'m> SecondOrderEngine<'m> {
                 let kij = self.d2k_x(params[i], params[j], &u)?;
                 let ki_duj = lin.dk_u(params[i], &du[j])?;
                 let kj_dui = lin.dk_u(params[j], &du[i])?;
-                h[i * n + j] = -(0..n_dof).map(|d| lambda[d] * (kij[d] + ki_duj[d] + kj_dui[d])).sum::<f64>();
+                h[i * n + j] = -(0..n_dof)
+                    .map(|d| lambda[d] * (kij[d] + ki_duj[d] + kj_dui[d]))
+                    .sum::<f64>();
             }
         }
-        Ok((h, SecondOrderReport { tangent_solves: solver.n_solves() }))
+        Ok((
+            h,
+            SecondOrderReport {
+                tangent_solves: solver.n_solves(),
+            },
+        ))
     }
 }
 

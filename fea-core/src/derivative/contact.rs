@@ -18,9 +18,9 @@
 
 use super::linalg::TangentSolver;
 use super::policy::{ContactStatus, DerivativeSemantics, SensitivityMethod};
+use crate::analysis::Model;
 use crate::assembly::{BlockMatrix, Pattern};
 use crate::contact::{ContactSet, ContactSpec, ContactStats, CpState};
-use crate::analysis::Model;
 use crate::linear::{Dirichlet, Ordering, Reduced};
 use crate::loads::{self, Loads};
 use crate::nonlinear::{assemble_nl_public, NlState};
@@ -76,14 +76,35 @@ impl ContactStateReport {
 
 /// Classify every point of every interface and decide the derivative semantics. `tol` is the relative distance to a transition below
 /// which a point counts as near it (relative to the interface's peak pressure, and to the penetration that pressure causes).
-pub fn classify_contact(specs: &[ContactSpec], state: &[Vec<CpState>], tol: f64) -> ContactStateReport {
+pub fn classify_contact(
+    specs: &[ContactSpec],
+    state: &[Vec<CpState>],
+    tol: f64,
+) -> ContactStateReport {
     let mut interfaces = Vec::new();
     let mut notes = Vec::new();
     for (spec, pts) in specs.iter().zip(state) {
-        let peak = pts.iter().filter(|s| s.active).fold(0.0f64, |m, s| m.max(s.p));
+        let peak = pts
+            .iter()
+            .filter(|s| s.active)
+            .fold(0.0f64, |m, s| m.max(s.p));
         // characteristic gap: the penetration the peak pressure causes through the normal penalty
-        let g_scale = if spec.eps_n > 0.0 && peak > 0.0 { peak / spec.eps_n } else { f64::INFINITY };
-        let mut st = InterfaceStatus { name: spec.name.clone(), open: 0, stick: 0, slip: 0, near_normal_transition: 0, near_friction_transition: 0, min_gap: f64::INFINITY, peak_pressure: peak, max_friction_ratio: 0.0 };
+        let g_scale = if spec.eps_n > 0.0 && peak > 0.0 {
+            peak / spec.eps_n
+        } else {
+            f64::INFINITY
+        };
+        let mut st = InterfaceStatus {
+            name: spec.name.clone(),
+            open: 0,
+            stick: 0,
+            slip: 0,
+            near_normal_transition: 0,
+            near_friction_transition: 0,
+            min_gap: f64::INFINITY,
+            peak_pressure: peak,
+            max_friction_ratio: 0.0,
+        };
         for s in pts {
             st.min_gap = st.min_gap.min(s.g);
             if !s.active || s.p <= 0.0 {
@@ -102,7 +123,15 @@ pub fn classify_contact(specs: &[ContactSpec], state: &[Vec<CpState>], tol: f64)
                 // Coulomb cone, slip when it is outside. A point that slides always has a *capped* traction exactly on the cone, so
                 // the capped traction cannot tell how near a point is to sticking again; the trial traction can.
                 let n = s.n;
-                let mut slip = if s.has_hist { [s.cur[0] - s.hist[0], s.cur[1] - s.hist[1], s.cur[2] - s.hist[2]] } else { [0.0; 3] };
+                let mut slip = if s.has_hist {
+                    [
+                        s.cur[0] - s.hist[0],
+                        s.cur[1] - s.hist[1],
+                        s.cur[2] - s.hist[2],
+                    ]
+                } else {
+                    [0.0; 3]
+                };
                 let dn = slip[0] * n[0] + slip[1] * n[1] + slip[2] * n[2];
                 for i in 0..3 {
                     slip[i] -= dn * n[i];
@@ -129,7 +158,10 @@ pub fn classify_contact(specs: &[ContactSpec], state: &[Vec<CpState>], tol: f64)
         }
         interfaces.push(st);
     }
-    let near: usize = interfaces.iter().map(|i| i.near_normal_transition + i.near_friction_transition).sum();
+    let near: usize = interfaces
+        .iter()
+        .map(|i| i.near_normal_transition + i.near_friction_transition)
+        .sum();
     let slips: usize = interfaces.iter().map(|i| i.slip).sum();
     let any_contact = interfaces.iter().any(|i| i.stick + i.slip > 0);
     let (semantics, contact) = if near > 0 {
@@ -139,11 +171,19 @@ pub fn classify_contact(specs: &[ContactSpec], state: &[Vec<CpState>], tol: f64)
         if slips > 0 {
             notes.push(format!("{slips} sliding point(s): the friction traction depends on the slip history, which a single-state sensitivity treats as frozen"));
         }
-        (DerivativeSemantics::ActiveBranch, ContactStatus::FixedActiveSet)
+        (
+            DerivativeSemantics::ActiveBranch,
+            ContactStatus::FixedActiveSet,
+        )
     } else {
         (DerivativeSemantics::Classical, ContactStatus::None)
     };
-    ContactStateReport { interfaces, semantics, contact, notes }
+    ContactStateReport {
+        interfaces,
+        semantics,
+        contact,
+        notes,
+    }
 }
 
 /// A parameter of the penalty-contact problem.
@@ -201,18 +241,37 @@ pub struct PenaltyContact<'m> {
 }
 
 impl<'m> PenaltyContact<'m> {
-    pub fn new(model: &'m Model, specs: Vec<ContactSpec>, loads: &Loads, bc: &'m Dirichlet) -> Result<Self, String> {
+    pub fn new(
+        model: &'m Model,
+        specs: Vec<ContactSpec>,
+        loads: &Loads,
+        bc: &'m Dirichlet,
+    ) -> Result<Self, String> {
         if model.mesh.blocks.iter().any(|b| b.plasticity.is_some()) {
             return Err("contact sensitivities are for elastic bodies (the plastic path engine has no contact)".into());
         }
         let set = ContactSet::new(&model.mesh, specs.clone())?;
         if set.n_extra() > 0 {
-            return Err("free rigid-body translations are not supported by the contact sensitivities".into());
+            return Err(
+                "free rigid-body translations are not supported by the contact sensitivities"
+                    .into(),
+            );
         }
-        let pat = Arc::new(Pattern::new_with_extra(&model.mesh, &set.pattern_pairs(&model.mesh))?);
+        let pat = Arc::new(Pattern::new_with_extra(
+            &model.mesh,
+            &set.pattern_pairs(&model.mesh),
+        )?);
         let mut old = NlState::new(&model.mesh);
         old.contact = set.initial_state(&model.mesh, &pat);
-        Ok(Self { model, set, pat, bc, f_ext: loads::assemble(&model.mesh, loads)?, old, specs })
+        Ok(Self {
+            model,
+            set,
+            pat,
+            bc,
+            f_ext: loads::assemble(&model.mesh, loads)?,
+            old,
+            specs,
+        })
     }
 
     /// Freeze the multipliers and slip history at a converged state (`NlSolution::state.contact`) instead of the virgin one.
@@ -228,12 +287,48 @@ impl<'m> PenaltyContact<'m> {
     /// `R(u; lambda)` over all dofs (no constraint rows removed), the tangent `K` (symmetric part) and the unsymmetric blocks `D`
     /// of the exact tangent `K + D`, and the contact statistics. The tangent is only built with `want_k`.
     #[allow(clippy::type_complexity)]
-    pub fn evaluate(&self, u: &[f64], lambda: f64, scale: f64, want_k: bool) -> Result<(Vec<f64>, Option<BlockMatrix>, Vec<(Vec<usize>, Vec<f64>)>, ContactStats, Vec<Vec<CpState>>), String> {
+    pub fn evaluate(
+        &self,
+        u: &[f64],
+        lambda: f64,
+        scale: f64,
+        want_k: bool,
+    ) -> Result<
+        (
+            Vec<f64>,
+            Option<BlockMatrix>,
+            Vec<(Vec<usize>, Vec<f64>)>,
+            ContactStats,
+            Vec<Vec<CpState>>,
+        ),
+        String,
+    > {
         let mut state = self.old.clone();
-        let (mut f, mut k) = assemble_nl_public(&self.model.mesh, &self.pat, u, &self.old, &mut state, want_k)?;
-        let st = self.set.eval(&self.model.mesh, &self.pat, u, &[], lambda, &self.old.contact, &mut state.contact, &mut f, k.as_mut(), None)?;
+        let (mut f, mut k) = assemble_nl_public(
+            &self.model.mesh,
+            &self.pat,
+            u,
+            &self.old,
+            &mut state,
+            want_k,
+        )?;
+        let st = self.set.eval(
+            &self.model.mesh,
+            &self.pat,
+            u,
+            &[],
+            lambda,
+            &self.old.contact,
+            &mut state.contact,
+            &mut f,
+            k.as_mut(),
+            None,
+        )?;
         if !st.missing_pairs.is_empty() {
-            return Err(format!("contact reached node pairs outside the matrix pattern: {:?}", &st.missing_pairs[..st.missing_pairs.len().min(4)]));
+            return Err(format!(
+                "contact reached node pairs outside the matrix pattern: {:?}",
+                &st.missing_pairs[..st.missing_pairs.len().min(4)]
+            ));
         }
         for (r, e) in f.iter_mut().zip(&self.f_ext) {
             *r -= lambda * scale * e;
@@ -244,7 +339,13 @@ impl<'m> PenaltyContact<'m> {
 
     /// `(K + D) v` of the exact tangent at `u` (with `include_defect = false`, only the symmetric part `K`): the Jacobian action a
     /// directional Taylor test compares with differences of the residual.
-    pub fn tangent_product(&self, u: &[f64], lambda: f64, v: &[f64], include_defect: bool) -> Result<Vec<f64>, String> {
+    pub fn tangent_product(
+        &self,
+        u: &[f64],
+        lambda: f64,
+        v: &[f64],
+        include_defect: bool,
+    ) -> Result<Vec<f64>, String> {
         let (_, k, defect, ..) = self.evaluate(u, lambda, 1.0, true)?;
         let k = k.expect("tangent");
         let mut y = vec![0.0; v.len()];
@@ -268,22 +369,40 @@ impl<'m> PenaltyContact<'m> {
     pub fn solve(&self, lambda: f64, tol: f64, max_iter: usize) -> Result<ContactSolution, String> {
         let n = self.model.mesh.n_dofs();
         self.model.check_constrained(self.bc).ok();
-        let red = Reduced::with_ordering(&self.pat, self.bc, Some(&self.model.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+        let red = Reduced::with_ordering(
+            &self.pat,
+            self.bc,
+            Some(&self.model.mesh.nodes),
+            Ordering::Auto,
+        )
+        .map_err(|e| e.to_string())?;
         let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
         let mut u = vec![0.0; n];
         let norm_free = |r: &[f64]| free.iter().fold(0.0f64, |m, &d| m.max(r[d].abs()));
         for it in 0..=max_iter {
             let (r, k, defect, stats, _) = self.evaluate(&u, lambda, 1.0, true)?;
             let rn = norm_free(&r);
-            let scale = free.iter().map(|&d| (lambda * self.f_ext[d]).abs()).fold(0.0f64, f64::max).max(norm_free(&r)).max(1e-300);
+            let scale = free
+                .iter()
+                .map(|&d| (lambda * self.f_ext[d]).abs())
+                .fold(0.0f64, f64::max)
+                .max(norm_free(&r))
+                .max(1e-300);
             if rn <= tol * scale {
-                return Ok(ContactSolution { u, lambda, iterations: it, residual: rn / scale, stats });
+                return Ok(ContactSolution {
+                    u,
+                    lambda,
+                    iterations: it,
+                    residual: rn / scale,
+                    stats,
+                });
             }
             if it == max_iter {
                 break;
             }
             let k = k.expect("tangent");
-            let solver = TangentSolver::new(&red, &self.pat, &k, n, &free, &defect).map_err(|e| e.to_string())?;
+            let solver = TangentSolver::new(&red, &self.pat, &k, n, &free, &defect)
+                .map_err(|e| e.to_string())?;
             let dx = solver.solve(&free.iter().map(|&d| r[d]).collect::<Vec<_>>())?;
             // backtracking on the residual norm
             let mut alpha = 1.0;
@@ -295,7 +414,9 @@ impl<'m> PenaltyContact<'m> {
                     }
                     t
                 };
-                let rt = self.evaluate(&ut, lambda, 1.0, false).map(|e| norm_free(&e.0));
+                let rt = self
+                    .evaluate(&ut, lambda, 1.0, false)
+                    .map(|e| norm_free(&e.0));
                 if let Ok(v) = rt {
                     if v < rn || alpha < 1e-4 {
                         u = ut;
@@ -304,16 +425,25 @@ impl<'m> PenaltyContact<'m> {
                 }
                 alpha *= 0.5;
                 if alpha < 1e-8 {
-                    return Err("the penalty contact Newton iteration could not reduce the residual".into());
+                    return Err(
+                        "the penalty contact Newton iteration could not reduce the residual".into(),
+                    );
                 }
             }
         }
-        Err(format!("the penalty contact solve did not converge in {max_iter} iterations"))
+        Err(format!(
+            "the penalty contact solve did not converge in {max_iter} iterations"
+        ))
     }
 
     /// The report of what regularisation the derivatives belong to.
     pub fn regularisation_report(&self, sol: &ContactSolution) -> RegularisationReport {
-        let peak = sol.stats.master_force.iter().map(|f| (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt()).fold(0.0f64, f64::max);
+        let peak = sol
+            .stats
+            .master_force
+            .iter()
+            .map(|f| (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt())
+            .fold(0.0f64, f64::max);
         let eps: Vec<f64> = self.specs.iter().map(|s| s.eps_n).collect();
         let emin = eps.iter().cloned().fold(f64::INFINITY, f64::min);
         RegularisationReport {
@@ -326,17 +456,32 @@ impl<'m> PenaltyContact<'m> {
 
     /// Sensitivities `result[q][p]` of `J_q = grad_q . u` at `sol` to `params`, direct or adjoint through the exact (possibly
     /// unsymmetric) tangent. Nothing is differentiated through a contact transition: the report carries the semantics.
-    pub fn sensitivities(&self, sol: &ContactSolution, qois: &[Vec<f64>], params: &[ContactParam], method: SensitivityMethod, tol: f64) -> Result<(Vec<Vec<f64>>, ContactSensitivityReport), String> {
+    pub fn sensitivities(
+        &self,
+        sol: &ContactSolution,
+        qois: &[Vec<f64>],
+        params: &[ContactParam],
+        method: SensitivityMethod,
+        tol: f64,
+    ) -> Result<(Vec<Vec<f64>>, ContactSensitivityReport), String> {
         let n = self.model.mesh.n_dofs();
         let (_, k, defect, stats, contact_state) = self.evaluate(&sol.u, sol.lambda, 1.0, true)?;
         let k = k.expect("tangent");
-        let red = Reduced::with_ordering(&self.pat, self.bc, Some(&self.model.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+        let red = Reduced::with_ordering(
+            &self.pat,
+            self.bc,
+            Some(&self.model.mesh.nodes),
+            Ordering::Auto,
+        )
+        .map_err(|e| e.to_string())?;
         let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
-        let solver = TangentSolver::new(&red, &self.pat, &k, n, &free, &defect).map_err(|e| e.to_string())?;
+        let solver = TangentSolver::new(&red, &self.pat, &k, n, &free, &defect)
+            .map_err(|e| e.to_string())?;
         let restrict = |v: &[f64]| -> Vec<f64> { free.iter().map(|&d| v[d]).collect() };
         // dR/dp for each parameter
         let engine_loads = Loads::default();
-        let lin = super::linear_sens::LinearSensitivityEngine::new(self.model, &engine_loads, self.bc);
+        let lin =
+            super::linear_sens::LinearSensitivityEngine::new(self.model, &engine_loads, self.bc);
         let drdp: Vec<Vec<f64>> = params
             .iter()
             .map(|&p| match p {
@@ -347,10 +492,16 @@ impl<'m> PenaltyContact<'m> {
                     let rp = self.evaluate(&sol.u, sol.lambda + h, 1.0, false)?.0;
                     let rm = self.evaluate(&sol.u, sol.lambda - h, 1.0, false)?.0;
                     // both include -lambda f_ext: subtract it back out and add the exact -f_ext
-                    let d_total: Vec<f64> = rp.iter().zip(&rm).map(|(a, b)| (a - b) / (2.0 * h)).collect();
+                    let d_total: Vec<f64> = rp
+                        .iter()
+                        .zip(&rm)
+                        .map(|(a, b)| (a - b) / (2.0 * h))
+                        .collect();
                     Ok(d_total)
                 }
-                ContactParam::ModulusScale(b) => lin.dk_u(super::linear_sens::LinearParam::ModulusScale(b), &sol.u),
+                ContactParam::ModulusScale(b) => {
+                    lin.dk_u(super::linear_sens::LinearParam::ModulusScale(b), &sol.u)
+                }
             })
             .collect::<Result<_, String>>()?;
         let mut out = vec![vec![0.0; params.len()]; qois.len()];
@@ -375,6 +526,16 @@ impl<'m> PenaltyContact<'m> {
         }
         let state = classify_contact(&self.specs, &contact_state, tol);
         let _ = stats;
-        Ok((out, ContactSensitivityReport { method, semantics: state.semantics, state, tangent_solves: solver.n_solves(), krylov_iterations: solver.n_krylov_iterations(), unsymmetric: !defect.is_empty() }))
+        Ok((
+            out,
+            ContactSensitivityReport {
+                method,
+                semantics: state.semantics,
+                state,
+                tangent_solves: solver.n_solves(),
+                krylov_iterations: solver.n_krylov_iterations(),
+                unsymmetric: !defect.is_empty(),
+            },
+        ))
     }
 }

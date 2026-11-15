@@ -28,7 +28,14 @@ fn stress_of(kind: ElementKind, grad: impl Fn(usize, usize) -> f64) -> [f64; 6] 
             h[i][k] = grad(i, k);
         }
     }
-    let strain = [h[0][0], h[1][1], h[2][2], h[0][1] + h[1][0], h[1][2] + h[2][1], h[2][0] + h[0][2]];
+    let strain = [
+        h[0][0],
+        h[1][1],
+        h[2][2],
+        h[0][1] + h[1][0],
+        h[1][2] + h[2][1],
+        h[2][0] + h[0][2],
+    ];
     fea_core::kernel::stress_from_strain(physics_for(kind), &mat, strain, 0.0)
 }
 
@@ -37,17 +44,38 @@ fn spr_is_exact_for_a_linear_stress_field_on_every_element_type() {
     // A quadratic displacement field: quadratic and cubic-free elements reproduce it exactly, so the
     // finite-element stress is the exact linear field and SPR (degree >= 1) must recover it at every
     // node, including boundary and domain corners.
-    let q = [[1e-3, 2e-4, -1e-4], [3e-4, -2e-3, 5e-4], [-2e-4, 1e-4, 4e-4]];
-    let c = [[4e-4, -1e-4, 2e-4], [1e-4, 3e-4, -2e-4], [-3e-4, 2e-4, 1e-4]];
+    let q = [
+        [1e-3, 2e-4, -1e-4],
+        [3e-4, -2e-3, 5e-4],
+        [-2e-4, 1e-4, 4e-4],
+    ];
+    let c = [
+        [4e-4, -1e-4, 2e-4],
+        [1e-4, 3e-4, -2e-4],
+        [-3e-4, 2e-4, 1e-4],
+    ];
     // a pyramid has no grid of its own (tests/pyramid.rs covers it in a hybrid mesh)
-    for kind in ALL_KINDS.into_iter().filter(|k| *k != fea_core::ElementKind::Pyramid5) {
+    for kind in ALL_KINDS
+        .into_iter()
+        .filter(|k| *k != fea_core::ElementKind::Pyramid5)
+    {
         let d = kind.dim();
         let quadratic = kind.n_nodes() > kind.n_corners();
         let div = if d == 2 { [3, 3, 1] } else { [2, 2, 2] };
-        let mesh = grid(physics_for(kind), kind, Elastic::new(E, NU), div, &|p| [p[0] + 0.1 * p[1], p[1] - 0.05 * p[0], p[2] + 0.1 * p[0]]).unwrap();
+        let mesh = grid(physics_for(kind), kind, Elastic::new(E, NU), div, &|p| {
+            [p[0] + 0.1 * p[1], p[1] - 0.05 * p[0], p[2] + 0.1 * p[0]]
+        })
+        .unwrap();
         let model = Model::new(mesh).unwrap();
         // Quadratic elements carry a quadratic field; linear elements only the linear part.
-        let uf = |x: &[f64; 3], i: usize| -> f64 { (0..d).map(|k| c[i][k] * x[k]).sum::<f64>() + if quadratic { (0..d).map(|k| q[i][k] * x[k] * x[(k + 1) % d]).sum::<f64>() } else { 0.0 } };
+        let uf = |x: &[f64; 3], i: usize| -> f64 {
+            (0..d).map(|k| c[i][k] * x[k]).sum::<f64>()
+                + if quadratic {
+                    (0..d).map(|k| q[i][k] * x[k] * x[(k + 1) % d]).sum::<f64>()
+                } else {
+                    0.0
+                }
+        };
         let gradf = |x: &[f64; 3], i: usize, k: usize| -> f64 {
             let mut g = c[i][k];
             if quadratic {
@@ -76,7 +104,13 @@ fn spr_is_exact_for_a_linear_stress_field_on_every_element_type() {
         let sig_at = |x: [f64; 3]| stress_of(kind, |i, k| gradf(&x, i, k));
         let s0 = sig_at([0.0; 3]);
         let mut body = [0.0; 3];
-        let sidx = |i: usize, k: usize| -> usize { if i == k { i } else { [[0, 3, 5], [3, 1, 4], [5, 4, 2]][i][k] } };
+        let sidx = |i: usize, k: usize| -> usize {
+            if i == k {
+                i
+            } else {
+                [[0, 3, 5], [3, 1, 4], [5, 4, 2]][i][k]
+            }
+        };
         for k in 0..d {
             let mut xk = [0.0; 3];
             xk[k] = 1.0;
@@ -85,7 +119,10 @@ fn spr_is_exact_for_a_linear_stress_field_on_every_element_type() {
                 body[i] -= sk[sidx(i, k)] - s0[sidx(i, k)];
             }
         }
-        let loads = Loads { body: Some(body), ..Loads::default() };
+        let loads = Loads {
+            body: Some(body),
+            ..Loads::default()
+        };
         let sol = model.solve_static(&loads, &bc).unwrap();
         let gauss = model.gauss_stresses(&sol.u, 0.0).unwrap();
         let rec = model.recover_spr(&gauss).unwrap();
@@ -99,14 +136,20 @@ fn spr_is_exact_for_a_linear_stress_field_on_every_element_type() {
             }
         }
         eprintln!("{kind:?}: FE Gauss stress vs exact field: {gerr:e}");
-        let scale = stress_of(kind, |i, k| gradf(&[0.5; 3], i, k)).iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1.0);
+        let scale = stress_of(kind, |i, k| gradf(&[0.5; 3], i, k))
+            .iter()
+            .fold(0.0f64, |m, v| m.max(v.abs()))
+            .max(1.0);
         for (n, x) in model.mesh.nodes.iter().enumerate() {
             let ex = stress_of(kind, |i, k| gradf(x, i, k));
             // The kernel stores the in-plane shear in slot 3 only for 2D; compare the used slots.
             let nc = if d == 2 { 4 } else { 6 };
             for s in 0..nc {
                 let err = (rec[n][s] - ex[s]).abs();
-                assert!(err < 1e-8 * scale, "{kind:?} node {n} comp {s}: {err:e} (stress scale {scale:e})");
+                assert!(
+                    err < 1e-8 * scale,
+                    "{kind:?} node {n} comp {s}: {err:e} (stress scale {scale:e})"
+                );
             }
         }
     }
@@ -121,7 +164,14 @@ fn kirsch(sig: f64, a: f64, x: f64, y: f64) -> [f64; 6] {
     let st = 0.5 * sig * (1.0 + q) - 0.5 * sig * (1.0 + 3.0 * q2) * c2;
     let tr = -0.5 * sig * (1.0 + 2.0 * q - 3.0 * q2) * s2;
     let (c, s) = (th.cos(), th.sin());
-    [sr * c * c + st * s * s - 2.0 * tr * s * c, sr * s * s + st * c * c + 2.0 * tr * s * c, 0.0, (sr - st) * s * c + tr * (c * c - s * s), 0.0, 0.0]
+    [
+        sr * c * c + st * s * s - 2.0 * tr * s * c,
+        sr * s * s + st * c * c + 2.0 * tr * s * c,
+        0.0,
+        (sr - st) * s * c + tr * (c * c - s * s),
+        0.0,
+        0.0,
+    ]
 }
 
 struct Run {
@@ -143,7 +193,14 @@ fn kirsch_run(kind: ElementKind, m: usize) -> Run {
         let r = (1.0 - s) * a + s * rho;
         [r * th.cos(), r * th.sin(), 0.0]
     };
-    let mesh = grid(Physics::PlaneStress { thickness: 1.0 }, kind, Elastic::new(E, NU), [6 * m, 8 * m, 1], &map).unwrap();
+    let mesh = grid(
+        Physics::PlaneStress { thickness: 1.0 },
+        kind,
+        Elastic::new(E, NU),
+        [6 * m, 8 * m, 1],
+        &map,
+    )
+    .unwrap();
     let model = Model::new(mesh).unwrap();
     let mut bc = model.dirichlet();
     for &n in model.mesh.node_set("v0").unwrap() {
@@ -156,7 +213,13 @@ fn kirsch_run(kind: ElementKind, m: usize) -> Run {
         let s = kirsch(sig, a, x[0], x[1]);
         [s[0] * n[0] + s[3] * n[1], s[3] * n[0] + s[1] * n[1], 0.0]
     });
-    let loads = Loads { field_faces: model.mesh.surfaces["u1"].iter().map(|f| (f.clone(), field.clone())).collect(), ..Loads::default() };
+    let loads = Loads {
+        field_faces: model.mesh.surfaces["u1"]
+            .iter()
+            .map(|f| (f.clone(), field.clone()))
+            .collect(),
+        ..Loads::default()
+    };
     let sol = model.solve_static(&loads, &bc).unwrap();
     let avg = model.nodal_stresses(&sol.u, 0.0).unwrap();
     let gauss = model.gauss_stresses(&sol.u, 0.0).unwrap();
@@ -167,7 +230,9 @@ fn kirsch_run(kind: ElementKind, m: usize) -> Run {
             let x = model.mesh.nodes[n];
             let (c, s) = (x[0] / a, x[1] / a);
             let hoop = st[n][0] * s * s + st[n][1] * c * c - 2.0 * st[n][3] * s * c;
-            e = e.max((hoop - sig * (1.0 - 2.0 * (2.0 * x[1].atan2(x[0])).cos())).abs() / (3.0 * sig));
+            e = e.max(
+                (hoop - sig * (1.0 - 2.0 * (2.0 * x[1].atan2(x[0])).cos())).abs() / (3.0 * sig),
+            );
         }
         e
     };
@@ -175,29 +240,64 @@ fn kirsch_run(kind: ElementKind, m: usize) -> Run {
         let mut sum = 0.0;
         for (n, x) in model.mesh.nodes.iter().enumerate() {
             let ex = kirsch(sig, a, x[0], x[1]);
-            sum += [0, 1, 3].iter().map(|&c| (st[n][c] - ex[c]).powi(2)).sum::<f64>();
+            sum += [0, 1, 3]
+                .iter()
+                .map(|&c| (st[n][c] - ex[c]).powi(2))
+                .sum::<f64>();
         }
         (sum / model.mesh.nodes.len() as f64).sqrt() / sig
     };
     let zz = model.zz_error(&sol.u, 0.0).unwrap();
-    let exact = model.stress_error_energy(&sol.u, 0.0, |x| kirsch(sig, a, x[0], x[1])).unwrap();
-    Run { avg_hole: hole(&avg), spr_hole: hole(&spr), avg_rms: rms(&avg), spr_rms: rms(&spr), eta: zz.total, exact, dofs: model.mesh.n_dofs() }
+    let exact = model
+        .stress_error_energy(&sol.u, 0.0, |x| kirsch(sig, a, x[0], x[1]))
+        .unwrap();
+    Run {
+        avg_hole: hole(&avg),
+        spr_hole: hole(&spr),
+        avg_rms: rms(&avg),
+        spr_rms: rms(&spr),
+        eta: zz.total,
+        exact,
+        dofs: model.mesh.n_dofs(),
+    }
 }
 
 #[test]
 fn spr_beats_nodal_averaging_and_zz_converges_on_the_kirsch_plate() {
     // The hole region is pre-asymptotic (high stress gradients) so only the trend is asserted here;
     // the effectivity index is checked on the smooth sphere below.
-    for kind in [ElementKind::Quad9, ElementKind::Quad8, ElementKind::Tri6, ElementKind::Quad4] {
+    for kind in [
+        ElementKind::Quad9,
+        ElementKind::Quad8,
+        ElementKind::Tri6,
+        ElementKind::Quad4,
+    ] {
         let runs: Vec<Run> = [2, 4, 8].iter().map(|&m| kirsch_run(kind, m)).collect();
         for (m, r) in [2, 4, 8].iter().zip(&runs) {
             eprintln!("{kind:?} m={m} ({} dofs): hole hoop error averaging {:.2e} -> SPR {:.2e}; nodal RMS error averaging {:.2e} -> SPR {:.2e}; ZZ eta {:.4e} vs exact error {:.4e} (effectivity {:.3})", r.dofs, r.avg_hole, r.spr_hole, r.avg_rms, r.spr_rms, r.eta, r.exact, r.eta / r.exact);
         }
         let last = runs.last().unwrap();
-        assert!(last.spr_rms < 0.8 * last.avg_rms, "{kind:?}: SPR should beat averaging globally ({:e} vs {:e})", last.spr_rms, last.avg_rms);
-        assert!(runs[2].eta < runs[1].eta && runs[1].eta < runs[0].eta && runs[2].eta < runs[0].eta / 1.8, "{kind:?}: eta not converging");
-        assert!(runs[2].exact < runs[0].exact / 1.8, "{kind:?}: true error not converging");
-        assert!((0.9..1.3).contains(&(last.eta / last.exact)), "{kind:?}: effectivity {} at the finest mesh", last.eta / last.exact);
+        assert!(
+            last.spr_rms < 0.8 * last.avg_rms,
+            "{kind:?}: SPR should beat averaging globally ({:e} vs {:e})",
+            last.spr_rms,
+            last.avg_rms
+        );
+        assert!(
+            runs[2].eta < runs[1].eta
+                && runs[1].eta < runs[0].eta
+                && runs[2].eta < runs[0].eta / 1.8,
+            "{kind:?}: eta not converging"
+        );
+        assert!(
+            runs[2].exact < runs[0].exact / 1.8,
+            "{kind:?}: true error not converging"
+        );
+        assert!(
+            (0.9..1.3).contains(&(last.eta / last.exact)),
+            "{kind:?}: effectivity {} at the finest mesh",
+            last.eta / last.exact
+        );
     }
 }
 
@@ -205,9 +305,19 @@ fn spr_beats_nodal_averaging_and_zz_converges_on_the_kirsch_plate() {
 fn sphere_stress(p: f64, a: f64, b: f64, x: f64, z: f64) -> [f64; 6] {
     let r = x.hypot(z);
     let k = p * a.powi(3) / (b.powi(3) - a.powi(3));
-    let (sr, sh) = (k * (1.0 - b.powi(3) / r.powi(3)), k * (1.0 + b.powi(3) / (2.0 * r.powi(3))));
+    let (sr, sh) = (
+        k * (1.0 - b.powi(3) / r.powi(3)),
+        k * (1.0 + b.powi(3) / (2.0 * r.powi(3))),
+    );
     let (c, s) = (x / r, z / r);
-    [sr * c * c + sh * s * s, sr * s * s + sh * c * c, sh, (sr - sh) * s * c, 0.0, 0.0]
+    [
+        sr * c * c + sh * s * s,
+        sr * s * s + sh * c * c,
+        sh,
+        (sr - sh) * s * c,
+        0.0,
+        0.0,
+    ]
 }
 
 #[test]
@@ -219,10 +329,16 @@ fn zz_effectivity_is_near_one_and_spr_is_superconvergent_on_the_smooth_sphere() 
         let mut prev_spr = f64::NAN;
         let mut spr_rate = 0.0;
         for m in [4usize, 8, 16] {
-            let mesh = grid(Physics::Axisymmetric, kind, Elastic::new(E, NU), [m, 2 * m, 1], &move |q| {
-                let (rho, ph) = (a + (b - a) * q[0], 0.5 * PI * q[1]);
-                [rho * ph.cos(), rho * ph.sin(), 0.0]
-            })
+            let mesh = grid(
+                Physics::Axisymmetric,
+                kind,
+                Elastic::new(E, NU),
+                [m, 2 * m, 1],
+                &move |q| {
+                    let (rho, ph) = (a + (b - a) * q[0], 0.5 * PI * q[1]);
+                    [rho * ph.cos(), rho * ph.sin(), 0.0]
+                },
+            )
             .unwrap();
             let model = Model::new(mesh).unwrap();
             let mut bc = model.dirichlet();
@@ -232,20 +348,33 @@ fn zz_effectivity_is_near_one_and_spr_is_superconvergent_on_the_smooth_sphere() 
             for &n in model.mesh.node_set("v1").unwrap() {
                 bc.fix(n, 0, 0.0);
             }
-            let loads = Loads { faces: model.mesh.surfaces["u0"].iter().map(|f| (f.clone(), SurfaceLoad::Pressure(p))).collect(), ..Loads::default() };
+            let loads = Loads {
+                faces: model.mesh.surfaces["u0"]
+                    .iter()
+                    .map(|f| (f.clone(), SurfaceLoad::Pressure(p)))
+                    .collect(),
+                ..Loads::default()
+            };
             let sol = model.solve_static(&loads, &bc).unwrap();
             let avg = model.nodal_stresses(&sol.u, 0.0).unwrap();
-            let spr = model.recover_spr(&model.gauss_stresses(&sol.u, 0.0).unwrap()).unwrap();
+            let spr = model
+                .recover_spr(&model.gauss_stresses(&sol.u, 0.0).unwrap())
+                .unwrap();
             let rms = |st: &[[f64; 6]]| -> f64 {
                 let mut sum = 0.0;
                 for (n, x) in model.mesh.nodes.iter().enumerate() {
                     let ex = sphere_stress(p, a, b, x[0], x[1]);
-                    sum += [0, 1, 2, 3].iter().map(|&c| (st[n][c] - ex[c]).powi(2)).sum::<f64>();
+                    sum += [0, 1, 2, 3]
+                        .iter()
+                        .map(|&c| (st[n][c] - ex[c]).powi(2))
+                        .sum::<f64>();
                 }
                 (sum / model.mesh.nodes.len() as f64).sqrt() / p
             };
             let zz = model.zz_error(&sol.u, 0.0).unwrap();
-            let exact = model.stress_error_energy(&sol.u, 0.0, |x| sphere_stress(p, a, b, x[0], x[1])).unwrap();
+            let exact = model
+                .stress_error_energy(&sol.u, 0.0, |x| sphere_stress(p, a, b, x[0], x[1]))
+                .unwrap();
             eprintln!("sphere {kind:?} m={m}: nodal RMS averaging {:.2e} -> SPR {:.2e}; eta {:.4e}, exact {:.4e}, effectivity {:.3}", rms(&avg), rms(&spr), zz.total, exact, zz.total / exact);
             assert!(zz.total < prev_eta, "{kind:?}: eta must decrease");
             prev_eta = zz.total;
@@ -253,10 +382,22 @@ fn zz_effectivity_is_near_one_and_spr_is_superconvergent_on_the_smooth_sphere() 
             prev_spr = rms(&spr);
             last = (rms(&avg), rms(&spr), zz.total / exact);
         }
-        assert!(last.1 < 0.3 * last.0, "{kind:?}: SPR should cut the nodal RMS error by >3x ({:e} vs {:e})", last.1, last.0);
+        assert!(
+            last.1 < 0.3 * last.0,
+            "{kind:?}: SPR should cut the nodal RMS error by >3x ({:e} vs {:e})",
+            last.1,
+            last.0
+        );
         // Averaging converges as h^2 (x4 per halving); SPR superconverges (x8 would be h^3).
-        assert!(spr_rate > 4.5, "{kind:?}: SPR error ratio per halving {spr_rate}");
-        assert!((0.9..1.1).contains(&last.2), "{kind:?}: effectivity {} at the finest mesh", last.2);
+        assert!(
+            spr_rate > 4.5,
+            "{kind:?}: SPR error ratio per halving {spr_rate}"
+        );
+        assert!(
+            (0.9..1.1).contains(&last.2),
+            "{kind:?}: effectivity {} at the finest mesh",
+            last.2
+        );
     }
 }
 
@@ -281,8 +422,18 @@ fn zero_and_large_finite_error_norms_have_a_defined_relative_estimate() {
 /// Each item is computed independently from read-only data, so the answer must not depend on the thread count.
 #[test]
 fn recovery_is_bit_identical_on_one_thread_and_many() {
-    for (kind, physics, div) in [(ElementKind::Quad9, Physics::PlaneStress { thickness: 1.0 }, [40, 40, 1]), (ElementKind::Tet10, Physics::Solid, [8, 8, 8])] {
-        let mesh = grid(physics, kind, Elastic::new(E, NU), div, &|p| [p[0] * 1.3 + 0.1 * p[1], p[1] + 0.05 * p[0] * p[0], p[2]]).unwrap();
+    for (kind, physics, div) in [
+        (
+            ElementKind::Quad9,
+            Physics::PlaneStress { thickness: 1.0 },
+            [40, 40, 1],
+        ),
+        (ElementKind::Tet10, Physics::Solid, [8, 8, 8]),
+    ] {
+        let mesh = grid(physics, kind, Elastic::new(E, NU), div, &|p| {
+            [p[0] * 1.3 + 0.1 * p[1], p[1] + 0.05 * p[0] * p[0], p[2]]
+        })
+        .unwrap();
         let model = Model::new(mesh).unwrap();
         let d = kind.dim();
         let mut bc = model.dirichlet();
@@ -292,14 +443,21 @@ fn recovery_is_bit_identical_on_one_thread_and_many() {
             }
         }
         let mut loads = Loads::default();
-        for &n in model.mesh.node_set(if d == 2 { "v1" } else { "w1" }).unwrap() {
+        for &n in model
+            .mesh
+            .node_set(if d == 2 { "v1" } else { "w1" })
+            .unwrap()
+        {
             let mut f = [0.0; 3];
             f[d - 1] = 1.0;
             f[0] = 0.3;
             loads.nodal.push((n, f));
         }
         let u = model.solve_static(&loads, &bc).unwrap().u;
-        assert!(model.mesh.nodes.len() >= 2000 && model.mesh.n_elems() >= 1000, "{kind:?} must be above the parallel thresholds");
+        assert!(
+            model.mesh.nodes.len() >= 2000 && model.mesh.n_elems() >= 1000,
+            "{kind:?} must be above the parallel thresholds"
+        );
         let run = || {
             let gauss = model.gauss_stresses(&u, 0.0).unwrap();
             let spr = model.recover_spr(&gauss).unwrap();
@@ -308,8 +466,14 @@ fn recovery_is_bit_identical_on_one_thread_and_many() {
         };
         let many = run();
         let one = fea_core::sequentially(run);
-        assert!(many == one, "{kind:?}: the recovery differs between one thread and many");
-        assert!(many.1.iter().flatten().any(|v| *v != 0.0) && many.3 > 0.0, "{kind:?}: the comparison saw real data");
+        assert!(
+            many == one,
+            "{kind:?}: the recovery differs between one thread and many"
+        );
+        assert!(
+            many.1.iter().flatten().any(|v| *v != 0.0) && many.3 > 0.0,
+            "{kind:?}: the comparison saw real data"
+        );
     }
 }
 
@@ -319,9 +483,26 @@ fn the_zz_estimate_equals_the_true_stress_energy_error_on_a_smooth_field_not_a_f
     // an axial bar (exact stress known) gave an energy error five to seven times too small. With the richer rule the estimate
     // matches the true error on every element family.
     use std::f64::consts::PI;
-    for kind in [ElementKind::Tri3, ElementKind::Tri6, ElementKind::Quad4, ElementKind::Quad8, ElementKind::Quad9] {
-        let n = if matches!(kind, ElementKind::Tri3 | ElementKind::Quad4) { 24 } else { 12 };
-        let mut mesh = fea_core::generate::grid(Physics::PlaneStress { thickness: 1.0 }, kind, Elastic::new(1.0, 0.0), [n, 2, 1], &|p| [p[0], 0.25 * p[1], 0.0]).unwrap();
+    for kind in [
+        ElementKind::Tri3,
+        ElementKind::Tri6,
+        ElementKind::Quad4,
+        ElementKind::Quad8,
+        ElementKind::Quad9,
+    ] {
+        let n = if matches!(kind, ElementKind::Tri3 | ElementKind::Quad4) {
+            24
+        } else {
+            12
+        };
+        let mut mesh = fea_core::generate::grid(
+            Physics::PlaneStress { thickness: 1.0 },
+            kind,
+            Elastic::new(1.0, 0.0),
+            [n, 2, 1],
+            &|p| [p[0], 0.25 * p[1], 0.0],
+        )
+        .unwrap();
         mesh.set_density_all(1.0).unwrap();
         let model = Model::new(mesh).unwrap();
         let mut bc = model.dirichlet();
@@ -331,12 +512,38 @@ fn the_zz_estimate_equals_the_true_stress_energy_error_on_a_smooth_field_not_a_f
                 bc.fix(nd, 0, 0.0);
             }
         }
-        let m = &model.modal(&bc, &fea_core::ModalOptions { n_modes: 1, ..Default::default() }).unwrap().modes[0];
-        let node = model.mesh.nodes.iter().position(|x| (x[0] - 1.0).abs() < 1e-9).unwrap();
-        let u: Vec<f64> = m.shape.iter().map(|v| v * m.shape[2 * node].signum()).collect();
+        let m = &model
+            .modal(
+                &bc,
+                &fea_core::ModalOptions {
+                    n_modes: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .modes[0];
+        let node = model
+            .mesh
+            .nodes
+            .iter()
+            .position(|x| (x[0] - 1.0).abs() < 1e-9)
+            .unwrap();
+        let u: Vec<f64> = m
+            .shape
+            .iter()
+            .map(|v| v * m.shape[2 * node].signum())
+            .collect();
         let (k, c) = (PI / 2.0, 8.0f64.sqrt());
-        let truth = model.stress_error_energy(&u, 0.0, |x| [c * k * (k * x[0]).cos(), 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap();
+        let truth = model
+            .stress_error_energy(&u, 0.0, |x| {
+                [c * k * (k * x[0]).cos(), 0.0, 0.0, 0.0, 0.0, 0.0]
+            })
+            .unwrap();
         let zz = model.zz_error(&u, 0.0).unwrap().total;
-        assert!(zz / truth > 0.8 && zz / truth < 1.25, "{kind:?}: ZZ {zz:.4e} against the true error {truth:.4e} (ratio {})", zz / truth);
+        assert!(
+            zz / truth > 0.8 && zz / truth < 1.25,
+            "{kind:?}: ZZ {zz:.4e} against the true error {truth:.4e} (ratio {})",
+            zz / truth
+        );
     }
 }

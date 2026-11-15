@@ -21,7 +21,11 @@ impl Source {
             Self::Line(a, b) => {
                 let (ab, ap) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
                 let l2 = ab[0] * ab[0] + ab[1] * ab[1];
-                let t = if l2 > 0.0 { ((ap[0] * ab[0] + ap[1] * ab[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                let t = if l2 > 0.0 {
+                    ((ap[0] * ab[0] + ap[1] * ab[1]) / l2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 (p[0] - a[0] - t * ab[0]).hypot(p[1] - a[1] - t * ab[1])
             }
         }
@@ -41,7 +45,11 @@ pub struct GeometryRules {
 
 impl Default for GeometryRules {
     fn default() -> Self {
-        Self { arc_angle: 0.35, corner_fraction: 0.25, reentrant_angle: PI + 0.1 }
+        Self {
+            arc_angle: 0.35,
+            corner_fraction: 0.25,
+            reentrant_angle: PI + 0.1,
+        }
     }
 }
 
@@ -59,20 +67,29 @@ impl SizePredictor2d {
     /// size per unit distance from a source (0.2 to 0.5 is typical; it must be positive).
     pub fn new(base: f64, min: f64, grading: f64) -> Result<Self, String> {
         if !(base > 0.0 && min > 0.0 && min <= base && grading > 0.0 && grading.is_finite()) {
-            return Err("size predictor needs 0 < min <= base and a positive finite grading rate".into());
+            return Err(
+                "size predictor needs 0 < min <= base and a positive finite grading rate".into(),
+            );
         }
-        Ok(Self { base, min, grading, sources: Vec::new() })
+        Ok(Self {
+            base,
+            min,
+            grading,
+            sources: Vec::new(),
+        })
     }
 
     /// A load, restraint or any point of interest that wants size `size` there.
     pub fn add_point(&mut self, p: [f64; 2], size: f64) -> &mut Self {
-        self.sources.push((Source::Point(p), size.clamp(self.min, self.base)));
+        self.sources
+            .push((Source::Point(p), size.clamp(self.min, self.base)));
         self
     }
 
     /// A line of interest (a contact patch, a loaded edge) that wants size `size` along it.
     pub fn add_line(&mut self, a: [f64; 2], b: [f64; 2], size: f64) -> &mut Self {
-        self.sources.push((Source::Line(a, b), size.clamp(self.min, self.base)));
+        self.sources
+            .push((Source::Line(a, b), size.clamp(self.min, self.base)));
         self
     }
 
@@ -99,7 +116,9 @@ impl SizePredictor2d {
 
     /// The predicted size at `p`.
     pub fn size(&self, p: [f64; 2]) -> f64 {
-        self.sources.iter().fold(self.base, |s, (src, size)| s.min(size + self.grading * src.distance(p)))
+        self.sources.iter().fold(self.base, |s, (src, size)| {
+            s.min(size + self.grading * src.distance(p))
+        })
     }
 
     /// The size function the meshers take.
@@ -132,16 +151,38 @@ mod tests {
 
     #[test]
     fn a_hole_and_a_reentrant_corner_ask_for_small_elements_a_convex_corner_does_not() {
-        let l = Loop::polygon(&[[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [2.0, 2.0], [2.0, 4.0], [0.0, 4.0]], "l").unwrap();
+        let l = Loop::polygon(
+            &[
+                [0.0, 0.0],
+                [4.0, 0.0],
+                [4.0, 2.0],
+                [2.0, 2.0],
+                [2.0, 4.0],
+                [0.0, 4.0],
+            ],
+            "l",
+        )
+        .unwrap();
         let mut p = SizePredictor2d::new(1.0, 0.05, 0.3).unwrap();
         p.add_geometry(&region(l, vec![]), GeometryRules::default());
-        assert!((p.size([2.0, 2.0]) - 0.25).abs() < 1e-12, "re-entrant corner {}", p.size([2.0, 2.0]));
-        assert_eq!(p.size([0.0, 0.0]), 1.0, "a convex corner needs no refinement");
+        assert!(
+            (p.size([2.0, 2.0]) - 0.25).abs() < 1e-12,
+            "re-entrant corner {}",
+            p.size([2.0, 2.0])
+        );
+        assert_eq!(
+            p.size([0.0, 0.0]),
+            1.0,
+            "a convex corner needs no refinement"
+        );
         assert_eq!(p.size([4.0, 0.0]), 1.0);
 
         let hole = Loop::circle([5.0, 2.0], 0.5, "hole").unwrap();
         let mut q = SizePredictor2d::new(1.0, 0.05, 0.3).unwrap();
-        q.add_geometry(&region(Loop::rectangle(0.0, 0.0, 10.0, 4.0).unwrap(), vec![hole]), GeometryRules::default());
+        q.add_geometry(
+            &region(Loop::rectangle(0.0, 0.0, 10.0, 4.0).unwrap(), vec![hole]),
+            GeometryRules::default(),
+        );
         let at_hole = q.size([5.5, 2.0]);
         assert!(at_hole <= 0.5 * 0.35 + 1e-12, "arc size {at_hole}");
         assert!(q.size([1.0, 2.0]) > 0.9 && q.size([0.0, 0.0]) == 1.0);
@@ -150,8 +191,11 @@ mod tests {
     #[test]
     fn the_size_field_is_lipschitz_with_the_grading_rate_and_never_exceeds_the_base() {
         let mut p = SizePredictor2d::new(1.0, 0.02, 0.3).unwrap();
-        p.add_point([1.0, 1.0], 0.05).add_line([3.0, 0.0], [3.0, 2.0], 0.1);
-        let pts: Vec<[f64; 2]> = (0..40).flat_map(|i| (0..40).map(move |j| [i as f64 * 0.13, j as f64 * 0.07])).collect();
+        p.add_point([1.0, 1.0], 0.05)
+            .add_line([3.0, 0.0], [3.0, 2.0], 0.1);
+        let pts: Vec<[f64; 2]> = (0..40)
+            .flat_map(|i| (0..40).map(move |j| [i as f64 * 0.13, j as f64 * 0.07]))
+            .collect();
         for a in &pts {
             assert!(p.size(*a) <= 1.0 && p.size(*a) >= 0.02);
             for b in pts.iter().step_by(37) {
@@ -159,11 +203,16 @@ mod tests {
                 assert!((p.size(*a) - p.size(*b)).abs() <= 0.3 * d + 1e-12);
             }
         }
-        assert!((p.size([1.0, 1.0]) - 0.05).abs() < 1e-12 && (p.size([3.0, 1.0]) - 0.1).abs() < 1e-12);
+        assert!(
+            (p.size([1.0, 1.0]) - 0.05).abs() < 1e-12 && (p.size([3.0, 1.0]) - 0.1).abs() < 1e-12
+        );
     }
 
     #[test]
     fn invalid_parameters_are_refused() {
-        assert!(SizePredictor2d::new(1.0, 2.0, 0.3).is_err() && SizePredictor2d::new(1.0, 0.1, 0.0).is_err());
+        assert!(
+            SizePredictor2d::new(1.0, 2.0, 0.3).is_err()
+                && SizePredictor2d::new(1.0, 0.1, 0.0).is_err()
+        );
     }
 }

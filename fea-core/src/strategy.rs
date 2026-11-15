@@ -36,7 +36,12 @@ pub struct Requirements {
 
 impl Default for Requirements {
     fn default() -> Self {
-        Self { residual_tol: 1e-8, max_zz_error: None, allow_iterative: true, force_method: None }
+        Self {
+            residual_tol: 1e-8,
+            max_zz_error: None,
+            allow_iterative: true,
+            force_method: None,
+        }
     }
 }
 
@@ -73,7 +78,10 @@ pub fn iterative_pays_off(dim: usize, n_free: usize, factor_nnz: usize) -> bool 
 fn equilibrium_error(model: &Model, loads: &Loads, sol: &Solution) -> Result<f64, String> {
     let f = loads::assemble(&model.mesh, loads)?;
     let d = model.mesh.dim();
-    let first = usize::from(matches!(model.mesh.physics, crate::mesh::Physics::Axisymmetric)); // radial motion is not rigid
+    let first = usize::from(matches!(
+        model.mesh.physics,
+        crate::mesh::Physics::Axisymmetric
+    )); // radial motion is not rigid
     let (mut sr, mut sf, mut sabs) = (vec![0.0; d], vec![0.0; d], 0.0);
     for i in 0..f.len() {
         sr[i % d] += sol.reactions[i];
@@ -84,18 +92,32 @@ fn equilibrium_error(model: &Model, loads: &Loads, sol: &Solution) -> Result<f64
     // and the sum of loads is zero, so the check degenerates to |sum of reactions| / reaction scale.)
     let rabs: f64 = sol.reactions.iter().map(|v| v.abs()).sum();
     let scale = sabs.max(rabs).max(1e-300);
-    Ok((first..d).map(|c| (sr[c] + sf[c]).abs()).fold(0.0, f64::max) / scale)
+    Ok((first..d)
+        .map(|c| (sr[c] + sf[c]).abs())
+        .fold(0.0, f64::max)
+        / scale)
 }
 
 impl Model {
     /// Linear static solve under the adaptive protocol (see the module documentation).
-    pub fn solve_adaptive(&self, loads: &Loads, bc: &Dirichlet, req: &Requirements) -> Result<Adaptive, String> {
+    pub fn solve_adaptive(
+        &self,
+        loads: &Loads,
+        bc: &Dirichlet,
+        req: &Requirements,
+    ) -> Result<Adaptive, String> {
         let clock = Instant::now();
-        if !req.residual_tol.is_finite() || req.residual_tol <= 0.0 || req.max_zz_error.is_some_and(|e| !e.is_finite() || e < 0.0) {
+        if !req.residual_tol.is_finite()
+            || req.residual_tol <= 0.0
+            || req.max_zz_error.is_some_and(|e| !e.is_finite() || e < 0.0)
+        {
             return Err("adaptive solve: finite positive residual tolerance and finite nonnegative ZZ limit required".into());
         }
         if req.max_zz_error.is_some() && loads.temperature.is_some() {
-            return Err("adaptive solve: ZZ verification of nodal temperature fields is not supported".into());
+            return Err(
+                "adaptive solve: ZZ verification of nodal temperature fields is not supported"
+                    .into(),
+            );
         }
         let issues = self.validate(loads, bc);
         errors_of(&issues)?;
@@ -108,12 +130,27 @@ impl Model {
         if let Some(forced) = req.force_method {
             method = forced.resolve(d, n_free);
             if method != SolveMethod::Direct {
-                events.push(SolveEvent { kind: EventKind::StrategyChange, lambda: 0.0, residual: f64::NAN, detail: format!("method forced by the caller: {method:?}") });
+                events.push(SolveEvent {
+                    kind: EventKind::StrategyChange,
+                    lambda: 0.0,
+                    residual: f64::NAN,
+                    detail: format!("method forced by the caller: {method:?}"),
+                });
             }
         } else if req.allow_iterative && d == 3 && n_free >= AUTO_ANALYSE_DOFS {
-            let nnz = crate::linear::Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), crate::linear::Ordering::Auto).map_err(|e| e.to_string())?.factor_nnz();
+            let nnz = crate::linear::Reduced::with_ordering(
+                &self.pattern,
+                bc,
+                Some(&self.mesh.nodes),
+                crate::linear::Ordering::Auto,
+            )
+            .map_err(|e| e.to_string())?
+            .factor_nnz();
             if iterative_pays_off(d, n_free, nnz) {
-                method = SolveMethod::Iterative { tol: (req.residual_tol * 0.1).clamp(1e-14, 1e-6), max_iter: 400 };
+                method = SolveMethod::Iterative {
+                    tol: (req.residual_tol * 0.1).clamp(1e-14, 1e-6),
+                    max_iter: 400,
+                };
                 events.push(SolveEvent { kind: EventKind::StrategyChange, lambda: 0.0, residual: f64::NAN, detail: format!("iterative PCG + AMG chosen over the direct solve: {n_free} free dofs, factor would hold {nnz} entries") });
             }
         }
@@ -123,8 +160,19 @@ impl Model {
                 Some(_) => Some(self.zz_estimate(&sol.u, loads.delta_t)?),
                 None => None,
             };
-            let passed = sol.u.iter().chain(&sol.reactions).all(|v| v.is_finite()) && sol.rel_residual.is_finite() && equilibrium.is_finite() && zz_error.is_none_or(|e| e.is_finite()) && sol.rel_residual <= req.residual_tol && equilibrium <= req.residual_tol.max(1e-9) && zz_error.zip(req.max_zz_error).is_none_or(|(e, m)| e <= m);
-            Ok(Verification { rel_residual: sol.rel_residual, equilibrium, zz_error, passed })
+            let passed = sol.u.iter().chain(&sol.reactions).all(|v| v.is_finite())
+                && sol.rel_residual.is_finite()
+                && equilibrium.is_finite()
+                && zz_error.is_none_or(|e| e.is_finite())
+                && sol.rel_residual <= req.residual_tol
+                && equilibrium <= req.residual_tol.max(1e-9)
+                && zz_error.zip(req.max_zz_error).is_none_or(|(e, m)| e <= m);
+            Ok(Verification {
+                rel_residual: sol.rel_residual,
+                equilibrium,
+                zz_error,
+                passed,
+            })
         };
         let mut attempt = self.solve_static_with(loads, bc, method);
         if let SolveMethod::Iterative { .. } = method {
@@ -137,7 +185,12 @@ impl Model {
                 },
             };
             if let Some(why) = bad {
-                events.push(SolveEvent { kind: EventKind::StrategyChange, lambda: 0.0, residual: f64::NAN, detail: format!("{why}: reverting to the direct solve") });
+                events.push(SolveEvent {
+                    kind: EventKind::StrategyChange,
+                    lambda: 0.0,
+                    residual: f64::NAN,
+                    detail: format!("{why}: reverting to the direct solve"),
+                });
                 method = SolveMethod::Direct;
                 attempt = self.solve_static_with(loads, bc, SolveMethod::Direct);
             }
@@ -145,13 +198,30 @@ impl Model {
         let solution = attempt?;
         let verification = verify(&solution)?;
         if !verification.passed {
-            let zz = verification.zz_error.map_or(String::new(), |e| format!(", ZZ error estimate {e:.2e} against the allowed {:?}", req.max_zz_error));
+            let zz = verification.zz_error.map_or(String::new(), |e| {
+                format!(
+                    ", ZZ error estimate {e:.2e} against the allowed {:?}",
+                    req.max_zz_error
+                )
+            });
             return Err(format!("the result does not meet the requirements: residual {:.2e}, force balance {:.2e}{zz} (allowed residual {:.1e}); refine the mesh or relax the requirement", verification.rel_residual, verification.equilibrium, req.residual_tol));
         }
         for i in issues.iter().filter(|i| i.severity == Severity::Warning) {
-            events.push(SolveEvent { kind: EventKind::Warning, lambda: 0.0, residual: f64::NAN, detail: format!("{}: {}", i.code, i.message) });
+            events.push(SolveEvent {
+                kind: EventKind::Warning,
+                lambda: 0.0,
+                residual: f64::NAN,
+                detail: format!("{}: {}", i.code, i.message),
+            });
         }
-        Ok(Adaptive { solution, issues, events, verification, method, elapsed_ms: clock.elapsed().as_secs_f64() * 1e3 })
+        Ok(Adaptive {
+            solution,
+            issues,
+            events,
+            verification,
+            method,
+            elapsed_ms: clock.elapsed().as_secs_f64() * 1e3,
+        })
     }
 
     /// ZZ relative energy-norm error estimate of a displacement field.
@@ -170,14 +240,25 @@ impl Adaptive {
             if i > 0 {
                 o.push(',');
             }
-            let _ = write!(o, "{{\"severity\":\"{:?}\",\"code\":\"{}\",\"message\":{}}}", s.severity, s.code, crate::report::json_str(&s.message));
+            let _ = write!(
+                o,
+                "{{\"severity\":\"{:?}\",\"code\":\"{}\",\"message\":{}}}",
+                s.severity,
+                s.code,
+                crate::report::json_str(&s.message)
+            );
         }
         o.push_str("],\"events\":[");
         for (i, e) in self.events.iter().enumerate() {
             if i > 0 {
                 o.push(',');
             }
-            let _ = write!(o, "{{\"kind\":\"{}\",\"detail\":{}}}", e.kind.name(), crate::report::json_str(&e.detail));
+            let _ = write!(
+                o,
+                "{{\"kind\":\"{}\",\"detail\":{}}}",
+                e.kind.name(),
+                crate::report::json_str(&e.detail)
+            );
         }
         o.push_str("]}");
         o
@@ -203,29 +284,59 @@ impl Model {
     /// `verify`; the rungs run from the cheapest to the most robust. A failure of the last rung is the error. `verify` is the
     /// caller's independent check (force balance, a physical bound): convergence of the Newton iteration alone is not
     /// accepted as proof of accuracy.
-    pub fn solve_nonlinear_ladder(&self, loads: &Loads, bc: &Dirichlet, contacts: &[ContactSpec], rungs: &[Rung], verify: &dyn Fn(&NlSolution) -> Result<(), String>) -> Result<Ladder, String> {
+    pub fn solve_nonlinear_ladder(
+        &self,
+        loads: &Loads,
+        bc: &Dirichlet,
+        contacts: &[ContactSpec],
+        rungs: &[Rung],
+        verify: &dyn Fn(&NlSolution) -> Result<(), String>,
+    ) -> Result<Ladder, String> {
         if rungs.is_empty() {
             return Err("an empty ladder".into());
         }
         let mut events = Vec::new();
         let mut last_err = String::new();
         for (i, rung) in rungs.iter().enumerate() {
-            let outcome = self.solve_nonlinear_contact(loads, bc, contacts.to_vec(), &rung.options).and_then(|s| {
-                if !s.complete() {
-                    Err(format!("stopped: {:?}", s.stop))
-                } else {
-                    verify(&s).map(|_| s)
-                }
-            });
+            let outcome = self
+                .solve_nonlinear_contact(loads, bc, contacts.to_vec(), &rung.options)
+                .and_then(|s| {
+                    if !s.complete() {
+                        Err(format!("stopped: {:?}", s.stop))
+                    } else {
+                        verify(&s).map(|_| s)
+                    }
+                });
             match outcome {
-                Ok(solution) => return Ok(Ladder { solution, rung: i, events }),
+                Ok(solution) => {
+                    return Ok(Ladder {
+                        solution,
+                        rung: i,
+                        events,
+                    })
+                }
                 Err(e) => {
-                    events.push(SolveEvent { kind: EventKind::StrategyChange, lambda: 0.0, residual: f64::NAN, detail: format!("rung {i} ({}) rejected: {e}{}", rung.name, if i + 1 < rungs.len() { "; escalating" } else { "" }) });
+                    events.push(SolveEvent {
+                        kind: EventKind::StrategyChange,
+                        lambda: 0.0,
+                        residual: f64::NAN,
+                        detail: format!(
+                            "rung {i} ({}) rejected: {e}{}",
+                            rung.name,
+                            if i + 1 < rungs.len() {
+                                "; escalating"
+                            } else {
+                                ""
+                            }
+                        ),
+                    });
                     last_err = e;
                 }
             }
         }
-        Err(format!("every rung of the ladder failed; the last: {last_err}"))
+        Err(format!(
+            "every rung of the ladder failed; the last: {last_err}"
+        ))
     }
 }
 

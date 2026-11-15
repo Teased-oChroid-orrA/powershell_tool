@@ -69,7 +69,13 @@ impl NlResult {
                 if j > 0 {
                     o.push(',');
                 }
-                let _ = write!(o, "{{\"name\":{},\"value\":{},\"change\":{}}}", json_str(name), num(*v), num(*ch));
+                let _ = write!(
+                    o,
+                    "{{\"name\":{},\"value\":{},\"change\":{}}}",
+                    json_str(name),
+                    num(*v),
+                    num(*ch)
+                );
             }
             o.push_str("]}");
         }

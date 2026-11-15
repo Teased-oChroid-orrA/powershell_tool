@@ -12,20 +12,43 @@ use std::fmt::Write;
 const E: f64 = 10.0e6;
 
 fn opts() -> ImportOptions {
-    ImportOptions::new(Physics::PlaneStress { thickness: 1.0 }, Elastic::new(E, 0.3))
+    ImportOptions::new(
+        Physics::PlaneStress { thickness: 1.0 },
+        Elastic::new(E, 0.3),
+    )
 }
 
 /// An affine skew so no element is a box.
 fn skew(p: [f64; 3]) -> [f64; 3] {
-    [2.0 * p[0] + 0.3 * p[1] + 0.1 * p[2], 0.2 * p[0] + 1.5 * p[1] + 0.2 * p[2], 0.1 * p[0] - 0.1 * p[1] + 1.2 * p[2]]
+    [
+        2.0 * p[0] + 0.3 * p[1] + 0.1 * p[2],
+        0.2 * p[0] + 1.5 * p[1] + 0.2 * p[2],
+        0.1 * p[0] - 0.1 * p[1] + 1.2 * p[2],
+    ]
 }
 
-const HEX_CORNERS: [[f64; 3]; 8] = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.], [0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]];
+const HEX_CORNERS: [[f64; 3]; 8] = [
+    [0., 0., 0.],
+    [1., 0., 0.],
+    [1., 1., 0.],
+    [0., 1., 0.],
+    [0., 0., 1.],
+    [1., 0., 1.],
+    [1., 1., 1.],
+    [0., 1., 1.],
+];
 
 /// Gmsh's own definition of the second-order node positions of one element: corners, then the
 /// edge midpoints (pairs of corner indices, in Gmsh order), then face centres and the body centre.
-fn gmsh_positions(corners: &[[f64; 3]], edges: &[(usize, usize)], faces: &[&[usize]], centre: bool) -> Vec<[f64; 3]> {
-    let mid = |ids: &[usize]| -> [f64; 3] { std::array::from_fn(|i| ids.iter().map(|&k| corners[k][i]).sum::<f64>() / ids.len() as f64) };
+fn gmsh_positions(
+    corners: &[[f64; 3]],
+    edges: &[(usize, usize)],
+    faces: &[&[usize]],
+    centre: bool,
+) -> Vec<[f64; 3]> {
+    let mid = |ids: &[usize]| -> [f64; 3] {
+        std::array::from_fn(|i| ids.iter().map(|&k| corners[k][i]).sum::<f64>() / ids.len() as f64)
+    };
     let mut v: Vec<[f64; 3]> = corners.to_vec();
     v.extend(edges.iter().map(|&(a, b)| mid(&[a, b])));
     v.extend(faces.iter().map(|f| mid(f)));
@@ -63,8 +86,15 @@ fn assert_straight_sided(m: &Mesh) {
         for conn in blk.conn.chunks_exact(kind.n_nodes()) {
             for (k, xi) in kind.node_coords().iter().enumerate() {
                 let (n, _) = lin.shape(*xi);
-                let want: [f64; 3] = std::array::from_fn(|i| (0..kind.n_corners()).map(|a| n[a] * m.nodes[conn[a]][i]).sum());
-                assert!((0..3).all(|i| (m.nodes[conn[k]][i] - want[i]).abs() < 1e-12), "{kind:?} node {k}");
+                let want: [f64; 3] = std::array::from_fn(|i| {
+                    (0..kind.n_corners())
+                        .map(|a| n[a] * m.nodes[conn[a]][i])
+                        .sum()
+                });
+                assert!(
+                    (0..3).all(|i| (m.nodes[conn[k]][i] - want[i]).abs() < 1e-12),
+                    "{kind:?} node {k}"
+                );
             }
         }
     }
@@ -74,31 +104,81 @@ fn assert_straight_sided(m: &Mesh) {
 fn gmsh_second_order_orders_follow_gmsh_definitions() {
     // Tet10 (Gmsh type 11): edge nodes 4..9 on (0,1) (1,2) (2,0) (3,0) (3,2) (3,1).
     let tet = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
-    let p = gmsh_positions(&tet.map(skew), &[(0, 1), (1, 2), (2, 0), (3, 0), (3, 2), (3, 1)], &[], false);
+    let p = gmsh_positions(
+        &tet.map(skew),
+        &[(0, 1), (1, 2), (2, 0), (3, 0), (3, 2), (3, 1)],
+        &[],
+        false,
+    );
     let m = read_gmsh(&msh41_single(11, 3, &p), &opts()).unwrap();
     assert_eq!(m.blocks[0].kind, ElementKind::Tet10);
     assert_straight_sided(&m);
     Model::new(m).unwrap().assemble().unwrap();
     // Hex20 (type 17): edges (0,1) (0,3) (0,4) (1,2) (1,5) (2,3) (2,6) (3,7) (4,5) (4,7) (5,6) (6,7).
     let corners = HEX_CORNERS.map(skew);
-    let e20 = [(0, 1), (0, 3), (0, 4), (1, 2), (1, 5), (2, 3), (2, 6), (3, 7), (4, 5), (4, 7), (5, 6), (6, 7)];
-    let m = read_gmsh(&msh41_single(17, 3, &gmsh_positions(&corners, &e20, &[], false)), &opts()).unwrap();
+    let e20 = [
+        (0, 1),
+        (0, 3),
+        (0, 4),
+        (1, 2),
+        (1, 5),
+        (2, 3),
+        (2, 6),
+        (3, 7),
+        (4, 5),
+        (4, 7),
+        (5, 6),
+        (6, 7),
+    ];
+    let m = read_gmsh(
+        &msh41_single(17, 3, &gmsh_positions(&corners, &e20, &[], false)),
+        &opts(),
+    )
+    .unwrap();
     assert_eq!(m.blocks[0].kind, ElementKind::Hex20);
     assert_straight_sided(&m);
     Model::new(m).unwrap().assemble().unwrap();
     // Hex27 (type 12): faces (0,1,2,3) (0,1,5,4) (0,3,7,4) (1,2,6,5) (2,3,7,6) (4,5,6,7), then the centre.
-    let faces: [&[usize]; 6] = [&[0, 1, 2, 3], &[0, 1, 5, 4], &[0, 3, 7, 4], &[1, 2, 6, 5], &[2, 3, 7, 6], &[4, 5, 6, 7]];
-    let m = read_gmsh(&msh41_single(12, 3, &gmsh_positions(&corners, &e20, &faces, true)), &opts()).unwrap();
+    let faces: [&[usize]; 6] = [
+        &[0, 1, 2, 3],
+        &[0, 1, 5, 4],
+        &[0, 3, 7, 4],
+        &[1, 2, 6, 5],
+        &[2, 3, 7, 6],
+        &[4, 5, 6, 7],
+    ];
+    let m = read_gmsh(
+        &msh41_single(12, 3, &gmsh_positions(&corners, &e20, &faces, true)),
+        &opts(),
+    )
+    .unwrap();
     assert_eq!(m.blocks[0].kind, ElementKind::Hex27);
     assert_straight_sided(&m);
     Model::new(m).unwrap().assemble().unwrap();
     // 2D second order: Quad9 (type 10) is corners, edges (0,1) (1,2) (2,3) (3,0), centre; Tri6 (type 9) edges (0,1) (1,2) (2,0).
-    let quad = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]].map(|p| [2.0 * p[0] + 0.2 * p[1], 1.5 * p[1], 0.0]);
-    let m = read_gmsh(&msh41_single(10, 2, &gmsh_positions(&quad, &[(0, 1), (1, 2), (2, 3), (3, 0)], &[], true)), &opts()).unwrap();
+    let quad = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]]
+        .map(|p| [2.0 * p[0] + 0.2 * p[1], 1.5 * p[1], 0.0]);
+    let m = read_gmsh(
+        &msh41_single(
+            10,
+            2,
+            &gmsh_positions(&quad, &[(0, 1), (1, 2), (2, 3), (3, 0)], &[], true),
+        ),
+        &opts(),
+    )
+    .unwrap();
     assert_eq!(m.blocks[0].kind, ElementKind::Quad9);
     assert_straight_sided(&m);
     let tri = [[0., 0., 0.], [2., 0., 0.], [0., 1., 0.]];
-    let m = read_gmsh(&msh41_single(9, 2, &gmsh_positions(&tri, &[(0, 1), (1, 2), (2, 0)], &[], false)), &opts()).unwrap();
+    let m = read_gmsh(
+        &msh41_single(
+            9,
+            2,
+            &gmsh_positions(&tri, &[(0, 1), (1, 2), (2, 0)], &[], false),
+        ),
+        &opts(),
+    )
+    .unwrap();
     assert_eq!(m.blocks[0].kind, ElementKind::Tri6);
     assert_straight_sided(&m);
 }
@@ -107,19 +187,39 @@ fn gmsh_second_order_orders_follow_gmsh_definitions() {
 fn a_wrong_node_order_is_rejected_not_silently_distorted() {
     // A Tet10 written in VTK order (edges (0,3) (1,3) (2,3) last) is Gmsh's order with 8 and 9 swapped.
     let tet = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
-    let p = gmsh_positions(&tet, &[(0, 1), (1, 2), (2, 0), (3, 0), (1, 3), (2, 3)], &[], false);
+    let p = gmsh_positions(
+        &tet,
+        &[(0, 1), (1, 2), (2, 0), (3, 0), (1, 3), (2, 3)],
+        &[],
+        false,
+    );
     let err = read_gmsh(&msh41_single(11, 3, &p), &opts()).unwrap_err();
     assert!(err.contains("node ordering mismatch"), "{err}");
     // A prism has no element in the library.
-    let prism = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [1., 0., 1.], [0., 1., 1.]];
-    assert!(read_gmsh(&msh41_single(6, 3, &prism), &opts()).unwrap_err().contains("unsupported element type 6"));
+    let prism = [
+        [0., 0., 0.],
+        [1., 0., 0.],
+        [0., 1., 0.],
+        [0., 0., 1.],
+        [1., 0., 1.],
+        [0., 1., 1.],
+    ];
+    assert!(read_gmsh(&msh41_single(6, 3, &prism), &opts())
+        .unwrap_err()
+        .contains("unsupported element type 6"));
 }
 
 /// Write a mesh as Gmsh 4.1 ASCII: node tags 1.., one volume entity, and one surface entity per named
 /// surface (each face written as a Gmsh element of the matching order), with physical names.
 fn write_gmsh41(m: &Mesh, vol: &str, surfaces: &[(&str, Vec<Vec<usize>>)]) -> String {
     let (kind, perm) = match m.blocks[0].kind {
-        ElementKind::Hex27 => (12, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 9, 16, 18, 19, 17, 10, 12, 14, 15, 22, 23, 21, 24, 20, 25, 26]),
+        ElementKind::Hex27 => (
+            12,
+            vec![
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 13, 9, 16, 18, 19, 17, 10, 12, 14, 15, 22, 23, 21,
+                24, 20, 25, 26,
+            ],
+        ),
         ElementKind::Hex8 => (5, (0..8).collect()),
         k => panic!("{k:?}"),
     };
@@ -153,7 +253,14 @@ fn write_gmsh41(m: &Mesh, vol: &str, surfaces: &[(&str, Vec<Vec<usize>>)]) -> St
         for (k, &p) in perm.iter().enumerate() {
             file[p] = c[k] + 1;
         }
-        let _ = writeln!(s, "{tag} {}", file.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" "));
+        let _ = writeln!(
+            s,
+            "{tag} {}",
+            file.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
         tag += 1;
     }
     for (i, (_, faces)) in surfaces.iter().enumerate() {
@@ -162,8 +269,16 @@ fn write_gmsh41(m: &Mesh, vol: &str, surfaces: &[(&str, Vec<Vec<usize>>)]) -> St
         for f in faces {
             // Written with the opposite orientation to prove the importer does not trust the surface
             // element's orientation: reverse the corner cycle and remap the edge nodes to match.
-            let order: [usize; 9] = if f.len() == 9 { [0, 3, 2, 1, 7, 6, 5, 4, 8] } else { [0, 3, 2, 1, 0, 0, 0, 0, 0] };
-            let rev: Vec<String> = order.iter().take(f.len()).map(|&k| (f[k] + 1).to_string()).collect();
+            let order: [usize; 9] = if f.len() == 9 {
+                [0, 3, 2, 1, 7, 6, 5, 4, 8]
+            } else {
+                [0, 3, 2, 1, 0, 0, 0, 0, 0]
+            };
+            let rev: Vec<String> = order
+                .iter()
+                .take(f.len())
+                .map(|&k| (f[k] + 1).to_string())
+                .collect();
             let _ = writeln!(s, "{tag} {}", rev.join(" "));
             tag += 1;
         }
@@ -174,9 +289,23 @@ fn write_gmsh41(m: &Mesh, vol: &str, surfaces: &[(&str, Vec<Vec<usize>>)]) -> St
 
 #[test]
 fn a_gmsh_file_round_trips_a_hex27_bar_with_surfaces_and_solves_identically() {
-    let m2 = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad9, Elastic::new(E, 0.3), [3, 2, 1], &|p| [3.0 * p[0], 1.0 * p[1], 0.0]).unwrap();
+    let m2 = grid(
+        Physics::PlaneStress { thickness: 1.0 },
+        ElementKind::Quad9,
+        Elastic::new(E, 0.3),
+        [3, 2, 1],
+        &|p| [3.0 * p[0], 1.0 * p[1], 0.0],
+    )
+    .unwrap();
     let native = extrude(&m2, &[0.0, 0.5, 1.0]).unwrap();
-    let text = write_gmsh41(&native, "bar", &[("fixed", native.surfaces["start"].clone()), ("loaded", native.surfaces["end"].clone())]);
+    let text = write_gmsh41(
+        &native,
+        "bar",
+        &[
+            ("fixed", native.surfaces["start"].clone()),
+            ("loaded", native.surfaces["end"].clone()),
+        ],
+    );
     let m = read_gmsh(&text, &opts()).unwrap();
     assert_eq!(m.blocks[0].kind, ElementKind::Hex27);
     assert_eq!(m.blocks[0].name, "bar");
@@ -188,15 +317,26 @@ fn a_gmsh_file_round_trips_a_hex27_bar_with_surfaces_and_solves_identically() {
     // Surfaces come back in load orientation whatever the file's element orientation: a pressure on
     // the end face gives the same total force as the native mesh's surface.
     let force = |mesh: &Mesh, name: &str| -> [f64; 3] {
-        let loads = Loads { faces: mesh.surfaces[name].iter().map(|f| (f.clone(), SurfaceLoad::Pressure(1.0))).collect(), ..Loads::default() };
+        let loads = Loads {
+            faces: mesh.surfaces[name]
+                .iter()
+                .map(|f| (f.clone(), SurfaceLoad::Pressure(1.0)))
+                .collect(),
+            ..Loads::default()
+        };
         let f = fea_core::loads::assemble(mesh, &loads).unwrap();
-        (0..mesh.nodes.len()).fold([0.0; 3], |a, n| [a[0] + f[n * 3], a[1] + f[n * 3 + 1], a[2] + f[n * 3 + 2]])
+        (0..mesh.nodes.len()).fold([0.0; 3], |a, n| {
+            [a[0] + f[n * 3], a[1] + f[n * 3 + 1], a[2] + f[n * 3 + 2]]
+        })
     };
     let (fa, fb) = (force(&native, "end"), force(&m, "loaded"));
     for i in 0..3 {
         assert!((fa[i] - fb[i]).abs() < 1e-12, "end force {fa:?} vs {fb:?}");
     }
-    assert!(fb[2] < -2.9, "pressure on the +z end face pushes in -z: {fb:?}");
+    assert!(
+        fb[2] < -2.9,
+        "pressure on the +z end face pushes in -z: {fb:?}"
+    );
     // Same boundary value problem on both meshes: clamp the fixed surface, push on the loaded one.
     let solve = |mesh: &Mesh, fixed: &str, loaded: &str| -> Vec<f64> {
         let model = Model::new(mesh.clone()).unwrap();
@@ -204,16 +344,35 @@ fn a_gmsh_file_round_trips_a_hex27_bar_with_surfaces_and_solves_identically() {
         for &n in model.mesh.node_set(fixed).unwrap() {
             bc.fix_node(n);
         }
-        let loads = Loads { faces: model.mesh.surfaces[loaded].iter().map(|f| (f.clone(), SurfaceLoad::Pressure(500.0))).collect(), ..Loads::default() };
+        let loads = Loads {
+            faces: model.mesh.surfaces[loaded]
+                .iter()
+                .map(|f| (f.clone(), SurfaceLoad::Pressure(500.0)))
+                .collect(),
+            ..Loads::default()
+        };
         model.solve_static(&loads, &bc).unwrap().u
     };
     let mut native2 = native.clone();
-    native2.node_sets.insert("fixed".into(), native.node_sets["start"].clone());
-    native2.surfaces.insert("loaded".into(), native.surfaces["end"].clone());
-    let (ua, ub) = (solve(&native2, "fixed", "loaded"), solve(&m, "fixed", "loaded"));
+    native2
+        .node_sets
+        .insert("fixed".into(), native.node_sets["start"].clone());
+    native2
+        .surfaces
+        .insert("loaded".into(), native.surfaces["end"].clone());
+    let (ua, ub) = (
+        solve(&native2, "fixed", "loaded"),
+        solve(&m, "fixed", "loaded"),
+    );
     let scale = ua.iter().fold(0.0f64, |a, v| a.max(v.abs()));
-    let diff = ua.iter().zip(&ub).fold(0.0f64, |a, (x, y)| a.max((x - y).abs()));
-    assert!(diff < 1e-12 * scale, "round-trip solution differs by {diff:e} of {scale:e}");
+    let diff = ua
+        .iter()
+        .zip(&ub)
+        .fold(0.0f64, |a, (x, y)| a.max((x - y).abs()));
+    assert!(
+        diff < 1e-12 * scale,
+        "round-trip solution differs by {diff:e} of {scale:e}"
+    );
 }
 
 #[test]
@@ -244,14 +403,37 @@ fn abaqus_2d_and_3d_with_continuation_sets_and_materials() {
 *SOLID SECTION, ELSET=PLATE, MATERIAL=STEEL\n 0.25,\n*STEP\n*END STEP\n";
     let m = read_abaqus(inp, &opts()).unwrap();
     assert_eq!(m.blocks[0].kind, ElementKind::Quad8);
-    assert!(matches!(m.physics, Physics::PlaneStress { thickness } if (thickness - 0.25).abs() < 1e-15));
-    assert!((m.blocks[0].material.e - 29.0e6).abs() < 1.0 && (m.blocks[0].material.nu - 0.31).abs() < 1e-15 && (m.blocks[0].material.alpha - 6.5e-6).abs() < 1e-18);
+    assert!(
+        matches!(m.physics, Physics::PlaneStress { thickness } if (thickness - 0.25).abs() < 1e-15)
+    );
+    assert!(
+        (m.blocks[0].material.e - 29.0e6).abs() < 1.0
+            && (m.blocks[0].material.nu - 0.31).abs() < 1e-15
+            && (m.blocks[0].material.alpha - 6.5e-6).abs() < 1e-18
+    );
     assert_eq!(m.blocks[0].name, "PLATE");
     assert_eq!(m.node_sets["LEFT"].len(), 1);
-    assert_eq!(m.node_sets["BOTH"].len(), 2, "a set listing another set's name includes its members");
+    assert_eq!(
+        m.node_sets["BOTH"].len(),
+        2,
+        "a set listing another set's name includes its members"
+    );
     // C3D20: 21 numbers split over two data lines, Abaqus' own corner / edge definition.
     let corners = HEX_CORNERS.map(skew);
-    let e20 = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7)];
+    let e20 = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ];
     let p = gmsh_positions(&corners, &e20, &[], false);
     let mut inp = String::from("*NODE\n");
     for (k, x) in p.iter().enumerate() {
@@ -263,7 +445,12 @@ fn abaqus_2d_and_3d_with_continuation_sets_and_materials() {
     assert_straight_sided(&m);
     // C3D10: Abaqus tet edges (1,2) (2,3) (3,1) (1,4) (2,4) (3,4).
     let tet = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
-    let p = gmsh_positions(&tet.map(skew), &[(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)], &[], false);
+    let p = gmsh_positions(
+        &tet.map(skew),
+        &[(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)],
+        &[],
+        false,
+    );
     let mut inp = String::from("*NODE\n");
     for (k, x) in p.iter().enumerate() {
         let _ = writeln!(inp, "{}, {}, {}, {}", k + 1, x[0], x[1], x[2]);
@@ -276,11 +463,22 @@ fn abaqus_2d_and_3d_with_continuation_sets_and_materials() {
 
 #[test]
 fn abaqus_errors_are_reported() {
-    assert!(read_abaqus("*NODE\n1,0,0\n*ELEMENT, TYPE=WEDGE6\n1,1,1,1,1,1,1\n", &opts()).unwrap_err().contains("unsupported Abaqus element type"));
+    assert!(read_abaqus(
+        "*NODE\n1,0,0\n*ELEMENT, TYPE=WEDGE6\n1,1,1,1,1,1,1\n",
+        &opts()
+    )
+    .unwrap_err()
+    .contains("unsupported Abaqus element type"));
     let missing = "*NODE\n1,0,0\n2,1,0\n3,0,1\n*ELEMENT, TYPE=CPS3, ELSET=A\n1,1,2,3\n*SOLID SECTION, ELSET=A, MATERIAL=NOPE\n";
-    assert!(read_abaqus(missing, &opts()).unwrap_err().contains("no *ELASTIC"));
-    assert!(read_abaqus("*NODE\n1,0,0\n", &opts()).unwrap_err().contains("no supported elements"));
-    assert!(read_gmsh("$MeshFormat\n4.1 1 8\n$EndMeshFormat\n", &opts()).unwrap_err().contains("binary"));
+    assert!(read_abaqus(missing, &opts())
+        .unwrap_err()
+        .contains("no *ELASTIC"));
+    assert!(read_abaqus("*NODE\n1,0,0\n", &opts())
+        .unwrap_err()
+        .contains("no supported elements"));
+    assert!(read_gmsh("$MeshFormat\n4.1 1 8\n$EndMeshFormat\n", &opts())
+        .unwrap_err()
+        .contains("binary"));
 }
 
 #[test]
@@ -290,10 +488,16 @@ fn faces_can_be_selected_from_an_imported_node_set() {
     let faces = m.select_faces_by_nodes("base", "BASE").unwrap().to_vec();
     assert_eq!(faces.len(), 1);
     // The base face z = 0 of the tetrahedron, outward normal -z: pressure pushes up (+z force on the body).
-    let loads = Loads { faces: vec![(faces[0].clone(), SurfaceLoad::Pressure(2.0))], ..Loads::default() };
+    let loads = Loads {
+        faces: vec![(faces[0].clone(), SurfaceLoad::Pressure(2.0))],
+        ..Loads::default()
+    };
     let f = fea_core::loads::assemble(&m, &loads).unwrap();
     let fz: f64 = (0..4).map(|n| f[n * 3 + 2]).sum();
-    assert!((fz - 1.0).abs() < 1e-12, "pressure 2 on area 1/2 pushes with +1 in z: {fz}");
+    assert!(
+        (fz - 1.0).abs() < 1e-12,
+        "pressure 2 on area 1/2 pushes with +1 in z: {fz}"
+    );
 }
 
 /// An element laid out as the mirror image of its reference element is inverted; turning it right side out makes every
@@ -305,41 +509,89 @@ fn inverted_elements_of_every_kind_are_turned_right_side_out() {
     use fea_core::kernel::{self, Work};
     use fea_core::{Elastic, Mesh, Physics};
     for kind in ALL_KINDS {
-        let physics = if kind.dim() == 2 { Physics::PlaneStress { thickness: 1.0 } } else { Physics::Solid };
+        let physics = if kind.dim() == 2 {
+            Physics::PlaneStress { thickness: 1.0 }
+        } else {
+            Physics::Solid
+        };
         let mut mesh = Mesh::new(physics);
         // Nodes at the mirror image of the reference positions: the numbering is then left-handed.
-        let simplex = matches!(kind, fea_core::ElementKind::Tri3 | fea_core::ElementKind::Tri6 | fea_core::ElementKind::Tet4 | fea_core::ElementKind::Tet10 | fea_core::ElementKind::Wedge6 | fea_core::ElementKind::Wedge15);
-        let pos: Vec<[f64; 3]> = kind.node_coords().iter().map(|c| if simplex { [c[1], c[0], c[2]] } else { [-c[0], c[1], c[2]] }).collect();
+        let simplex = matches!(
+            kind,
+            fea_core::ElementKind::Tri3
+                | fea_core::ElementKind::Tri6
+                | fea_core::ElementKind::Tet4
+                | fea_core::ElementKind::Tet10
+                | fea_core::ElementKind::Wedge6
+                | fea_core::ElementKind::Wedge15
+        );
+        let pos: Vec<[f64; 3]> = kind
+            .node_coords()
+            .iter()
+            .map(|c| {
+                if simplex {
+                    [c[1], c[0], c[2]]
+                } else {
+                    [-c[0], c[1], c[2]]
+                }
+            })
+            .collect();
         for p in &pos {
             mesh.add_node(*p);
         }
-        mesh.add_block(kind, (0..pos.len()).collect(), Elastic::new(1.0, 0.3), "b").unwrap();
+        mesh.add_block(kind, (0..pos.len()).collect(), Elastic::new(1.0, 0.3), "b")
+            .unwrap();
         let mut work = Work::new();
-        assert!(kernel::geometry(kind, physics, &pos, &mut work).is_err(), "{kind:?} should start inverted");
+        assert!(
+            kernel::geometry(kind, physics, &pos, &mut work).is_err(),
+            "{kind:?} should start inverted"
+        );
         let r = reorient_inverted(&mut mesh);
         assert_eq!((r.repaired, r.remaining), (1, 0), "{kind:?}");
         let conn = &mesh.blocks[0].conn;
         let xyz: Vec<[f64; 3]> = conn.iter().map(|&n| mesh.nodes[n]).collect();
-        assert!(kernel::geometry(kind, physics, &xyz, &mut work).is_ok(), "{kind:?} usable after the repair");
+        assert!(
+            kernel::geometry(kind, physics, &xyz, &mut work).is_ok(),
+            "{kind:?} usable after the repair"
+        );
         // The same set of points: only the numbering changed.
         let mut a: Vec<usize> = conn.clone();
         a.sort_unstable();
         assert_eq!(a, (0..pos.len()).collect::<Vec<_>>(), "{kind:?}");
         // A good mesh is left alone, a collapsed element is counted and left.
-        assert_eq!(reorient_inverted(&mut mesh), fea_core::import::Reorientation::default(), "{kind:?}");
+        assert_eq!(
+            reorient_inverted(&mut mesh),
+            fea_core::import::Reorientation::default(),
+            "{kind:?}"
+        );
     }
     let mut flat = Mesh::new(Physics::PlaneStress { thickness: 1.0 });
     for p in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]] {
         flat.add_node(p);
     }
-    flat.add_block(fea_core::ElementKind::Tri3, vec![0, 1, 2], Elastic::new(1.0, 0.3), "flat").unwrap();
-    assert_eq!(reorient_inverted(&mut flat), fea_core::import::Reorientation { repaired: 0, remaining: 1 });
+    flat.add_block(
+        fea_core::ElementKind::Tri3,
+        vec![0, 1, 2],
+        Elastic::new(1.0, 0.3),
+        "flat",
+    )
+    .unwrap();
+    assert_eq!(
+        reorient_inverted(&mut flat),
+        fea_core::import::Reorientation {
+            repaired: 0,
+            remaining: 1
+        }
+    );
 }
 
 #[test]
 fn abaqus_without_a_section_keeps_the_callers_plane_thickness() {
-    let text="*NODE\n1,0,0\n2,1,0\n3,1,1\n4,0,1\n*ELEMENT,TYPE=CPS4\n1,1,2,3,4\n";
-    let options=ImportOptions::new(Physics::PlaneStress { thickness: 2.5 },Elastic::new(E,0.3));
-    let mesh=read_abaqus(text,&options).unwrap();
-    assert_eq!(mesh.physics,Physics::PlaneStress { thickness: 2.5 });
+    let text = "*NODE\n1,0,0\n2,1,0\n3,1,1\n4,0,1\n*ELEMENT,TYPE=CPS4\n1,1,2,3,4\n";
+    let options = ImportOptions::new(
+        Physics::PlaneStress { thickness: 2.5 },
+        Elastic::new(E, 0.3),
+    );
+    let mesh = read_abaqus(text, &options).unwrap();
+    assert_eq!(mesh.physics, Physics::PlaneStress { thickness: 2.5 });
 }

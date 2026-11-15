@@ -59,13 +59,18 @@ pub const AUTO_ANALYSE_DOFS: usize = 20_000;
 impl SolveMethod {
     /// The default iterative settings: relative residual `1e-10`.
     pub fn iterative() -> Self {
-        SolveMethod::Iterative { tol: 1e-10, max_iter: 200 }
+        SolveMethod::Iterative {
+            tol: 1e-10,
+            max_iter: 200,
+        }
     }
 
     /// `Auto` replaced by the concrete method for a `dim`-dimensional system of `n_free` unknowns.
     pub fn resolve(self, dim: usize, n_free: usize) -> Self {
         match self {
-            SolveMethod::Auto if dim == 3 && n_free > AUTO_ITERATIVE_DOFS => SolveMethod::iterative(),
+            SolveMethod::Auto if dim == 3 && n_free > AUTO_ITERATIVE_DOFS => {
+                SolveMethod::iterative()
+            }
             SolveMethod::Auto => SolveMethod::Direct,
             m => m,
         }
@@ -147,7 +152,8 @@ impl Model {
                 }
             }
         }
-        let mut groups: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
+        let mut groups: std::collections::BTreeMap<usize, Vec<usize>> =
+            std::collections::BTreeMap::new();
         for i in (0..n).filter(|&i| used[i]) {
             let r = find(&mut parent, i);
             groups.entry(r).or_default().push(i);
@@ -165,7 +171,12 @@ impl Model {
                     c[k] += mesh.nodes[i][k] / nodes.len() as f64;
                 }
             }
-            let span = nodes.iter().flat_map(|&i| (0..d).map(move |k| (i, k))).map(|(i, k)| (mesh.nodes[i][k] - c[k]).abs()).fold(0.0f64, f64::max).max(1e-300);
+            let span = nodes
+                .iter()
+                .flat_map(|&i| (0..d).map(move |k| (i, k)))
+                .map(|(i, k)| (mesh.nodes[i][k] - c[k]).abs())
+                .fold(0.0f64, f64::max)
+                .max(1e-300);
             // Rigid mode values (per unit) at a node, one entry per mode, for component `comp`.
             let mode = |i: usize, comp: usize| -> [f64; 6] {
                 let r: [f64; 3] = std::array::from_fn(|k| (mesh.nodes[i][k] - c[k]) / span);
@@ -206,7 +217,11 @@ impl Model {
             for a in 0..nm {
                 for b in 0..nm {
                     let (da, db) = (diag[a], diag[b]);
-                    g[a][b] = if da > 1e-24 * dmax && db > 1e-24 * dmax { g[a][b] / (da * db).sqrt() } else { 0.0 };
+                    g[a][b] = if da > 1e-24 * dmax && db > 1e-24 * dmax {
+                        g[a][b] / (da * db).sqrt()
+                    } else {
+                        0.0
+                    };
                 }
             }
             let mut rank = 0;
@@ -226,7 +241,10 @@ impl Model {
                 if best <= 1e-9 {
                     break;
                 }
-                let (pi, pj) = (rows.iter().position(|&r| r == bi).unwrap(), cols.iter().position(|&c| c == bj).unwrap());
+                let (pi, pj) = (
+                    rows.iter().position(|&r| r == bi).unwrap(),
+                    cols.iter().position(|&c| c == bj).unwrap(),
+                );
                 rows.swap(k, pi);
                 cols.swap(k, pj);
                 let (pr, pc) = (rows[k], cols[k]);
@@ -239,7 +257,11 @@ impl Model {
                 rank += 1;
             }
             if rank < nm {
-                let which = if groups.len() > 1 { format!(" in piece {} of the mesh", gi + 1) } else { String::new() };
+                let which = if groups.len() > 1 {
+                    format!(" in piece {} of the mesh", gi + 1)
+                } else {
+                    String::new()
+                };
                 return Err(format!("the model is not fully constrained{which} ({} of {nm} rigid-body motions are held): add supports", rank));
             }
         }
@@ -252,7 +274,12 @@ impl Model {
     }
 
     /// Linear static solve with an explicit method.
-    pub fn solve_static_with(&self, loads: &Loads, bc: &Dirichlet, method: SolveMethod) -> Result<Solution, String> {
+    pub fn solve_static_with(
+        &self,
+        loads: &Loads,
+        bc: &Dirichlet,
+        method: SolveMethod,
+    ) -> Result<Solution, String> {
         self.check_constrained(bc)?;
         let (dim, n_free) = (self.mesh.dim(), self.mesh.n_dofs() - bc.n_fixed());
         let auto = method == SolveMethod::Auto;
@@ -261,33 +288,55 @@ impl Model {
             let attempt = self.solve_iterative(loads, bc, tol, max_iter);
             match attempt {
                 Ok(s) if !auto || s.rel_residual <= 1e-8 => Ok(s),
-                Ok(s) => self.solve_direct_many(std::slice::from_ref(loads), bc, None).map(|mut v| {
-                    v[0].fallback = Some(format!("the iterative solve left a residual of {:.1e}", s.rel_residual));
-                    v.remove(0)
-                }),
-                Err(e) if auto => self.solve_direct_many(std::slice::from_ref(loads), bc, None).map(|mut v| {
-                    v[0].fallback = Some(format!("the iterative solve failed: {e}"));
-                    v.remove(0)
-                }),
+                Ok(s) => self
+                    .solve_direct_many(std::slice::from_ref(loads), bc, None)
+                    .map(|mut v| {
+                        v[0].fallback = Some(format!(
+                            "the iterative solve left a residual of {:.1e}",
+                            s.rel_residual
+                        ));
+                        v.remove(0)
+                    }),
+                Err(e) if auto => self
+                    .solve_direct_many(std::slice::from_ref(loads), bc, None)
+                    .map(|mut v| {
+                        v[0].fallback = Some(format!("the iterative solve failed: {e}"));
+                        v.remove(0)
+                    }),
                 Err(e) => Err(e),
             }
         };
         match method.resolve(dim, n_free) {
             SolveMethod::Iterative { tol, max_iter } => iterative(tol, max_iter),
             _ if auto && dim == 3 && n_free >= AUTO_ANALYSE_DOFS => {
-                let red = Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+                let red = Reduced::with_ordering(
+                    &self.pattern,
+                    bc,
+                    Some(&self.mesh.nodes),
+                    Ordering::Auto,
+                )
+                .map_err(|e| e.to_string())?;
                 if red.factor_nnz() >= AUTO_ITERATIVE_FACTOR_NNZ {
-                    let SolveMethod::Iterative { tol, max_iter } = SolveMethod::iterative() else { unreachable!() };
+                    let SolveMethod::Iterative { tol, max_iter } = SolveMethod::iterative() else {
+                        unreachable!()
+                    };
                     iterative(tol, max_iter)
                 } else {
-                    self.solve_direct_many(std::slice::from_ref(loads), bc, Some(red)).map(|mut v| v.remove(0))
+                    self.solve_direct_many(std::slice::from_ref(loads), bc, Some(red))
+                        .map(|mut v| v.remove(0))
                 }
             }
             _ => self.solve_direct(loads, bc),
         }
     }
 
-    fn solve_iterative(&self, loads: &Loads, bc: &Dirichlet, tol: f64, max_iter: usize) -> Result<Solution, String> {
+    fn solve_iterative(
+        &self,
+        loads: &Loads,
+        bc: &Dirichlet,
+        tol: f64,
+        max_iter: usize,
+    ) -> Result<Solution, String> {
         let mut t = Timings::default();
         let clock = Instant::now();
         let k = self.assemble()?;
@@ -297,7 +346,8 @@ impl Model {
         let (cp, ri, vals) = red.csc(&k);
         let a = Csr::from_lower_csc(red.n_free(), cp, ri, &vals);
         let (node_ptr, b, nb) = self.near_null_space(&red);
-        let amg = Amg::new(a.clone(), node_ptr, b, nb, AmgOptions::default()).map_err(|e| e.to_string())?;
+        let amg = Amg::new(a.clone(), node_ptr, b, nb, AmgOptions::default())
+            .map_err(|e| e.to_string())?;
         t.symbolic_ms = clock.elapsed().as_secs_f64() * 1e3;
         let clock = Instant::now();
         let f = loads::assemble(&self.mesh, loads)?;
@@ -316,7 +366,17 @@ impl Model {
                 *r = 0.0;
             }
         }
-        Ok(Solution { u, reactions, n_free: red.n_free(), timings: t, iterations: Some(rep.iterations), method: SolveMethod::Iterative { tol, max_iter }, rel_residual, factor_nnz: 0, fallback: None })
+        Ok(Solution {
+            u,
+            reactions,
+            n_free: red.n_free(),
+            timings: t,
+            iterations: Some(rep.iterations),
+            method: SolveMethod::Iterative { tol, max_iter },
+            rel_residual,
+            factor_nnz: 0,
+            fallback: None,
+        })
     }
 
     /// Node grouping of the reduced dofs and the rigid-body near-null space (row major, `nb`
@@ -378,7 +438,11 @@ impl Model {
     /// Several load cases on one factorisation (direct solver): the stiffness is assembled and
     /// factored once and every case is a back-substitution. `Solution::timings` of the first case
     /// carries the shared assembly / factorisation time (the others only their own solve time).
-    pub fn solve_static_many(&self, cases: &[Loads], bc: &Dirichlet) -> Result<Vec<Solution>, String> {
+    pub fn solve_static_many(
+        &self,
+        cases: &[Loads],
+        bc: &Dirichlet,
+    ) -> Result<Vec<Solution>, String> {
         self.check_constrained(bc)?;
         self.solve_direct_many(cases, bc, None)
     }
@@ -389,15 +453,32 @@ impl Model {
     /// (residual 0.3) on some hosted Windows runners while the same code on one thread, and everywhere else, was exact
     /// (`fea-problem/tests/consistency.rs`, docs/issue-12-phase-26.md). The retry says so in `Solution::fallback`; when it is
     /// no better the retry is returned as it is and the caller's own checks refuse it.
-    fn solve_direct_many(&self, cases: &[Loads], bc: &Dirichlet, red: Option<Reduced>) -> Result<Vec<Solution>, String> {
+    fn solve_direct_many(
+        &self,
+        cases: &[Loads],
+        bc: &Dirichlet,
+        red: Option<Reduced>,
+    ) -> Result<Vec<Solution>, String> {
         const ACCEPT: f64 = 1e-6;
         let out = self.solve_direct_many_once(cases, bc, red)?;
-        let worst = out.iter().map(|s| s.rel_residual).fold(0.0f64, |m, r| if r.is_nan() { f64::INFINITY } else { m.max(r) });
+        let worst = out.iter().map(|s| s.rel_residual).fold(0.0f64, |m, r| {
+            if r.is_nan() {
+                f64::INFINITY
+            } else {
+                m.max(r)
+            }
+        });
         if worst < ACCEPT {
             return Ok(out);
         }
         let mut retry = crate::sequentially(|| self.solve_direct_many_once(cases, bc, None))?;
-        let better = retry.iter().map(|s| s.rel_residual).fold(0.0f64, |m, r| if r.is_nan() { f64::INFINITY } else { m.max(r) });
+        let better = retry.iter().map(|s| s.rel_residual).fold(0.0f64, |m, r| {
+            if r.is_nan() {
+                f64::INFINITY
+            } else {
+                m.max(r)
+            }
+        });
         if better < worst {
             if let Some(first) = retry.first_mut() {
                 first.fallback = Some(format!("the factorisation on several threads returned a residual of {worst:.1e}; it was recomputed on one thread (residual {better:.1e})"));
@@ -407,7 +488,12 @@ impl Model {
         Ok(out)
     }
 
-    fn solve_direct_many_once(&self, cases: &[Loads], bc: &Dirichlet, red: Option<Reduced>) -> Result<Vec<Solution>, String> {
+    fn solve_direct_many_once(
+        &self,
+        cases: &[Loads],
+        bc: &Dirichlet,
+        red: Option<Reduced>,
+    ) -> Result<Vec<Solution>, String> {
         let mut shared = Timings::default();
         let clock = Instant::now();
         let k = self.assemble()?;
@@ -415,7 +501,10 @@ impl Model {
         let clock = Instant::now();
         let red = match red {
             Some(r) => r,
-            None => Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?,
+            None => {
+                Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), Ordering::Auto)
+                    .map_err(|e| e.to_string())?
+            }
         };
         shared.symbolic_ms = clock.elapsed().as_secs_f64() * 1e3;
         let clock = Instant::now();
@@ -435,7 +524,17 @@ impl Model {
                     *r = 0.0;
                 }
             }
-            out.push(Solution { u, reactions, n_free: red.n_free(), timings: t, iterations: None, method: SolveMethod::Direct, rel_residual, factor_nnz: red.factor_nnz(), fallback: None });
+            out.push(Solution {
+                u,
+                reactions,
+                n_free: red.n_free(),
+                timings: t,
+                iterations: None,
+                method: SolveMethod::Direct,
+                rel_residual,
+                factor_nnz: red.factor_nnz(),
+                fallback: None,
+            });
         }
         Ok(out)
     }
@@ -457,7 +556,12 @@ impl Model {
 
     /// As [`gauss_stresses`](Self::gauss_stresses) with a nodal temperature field (`Loads::temperature`) on top of the
     /// uniform `delta_t`: the thermal strain is that of the temperature interpolated to each Gauss point.
-    pub fn gauss_stresses_field(&self, u: &[f64], delta_t: f64, field: Option<&[f64]>) -> Result<Vec<Vec<GaussStress>>, String> {
+    pub fn gauss_stresses_field(
+        &self,
+        u: &[f64],
+        delta_t: f64,
+        field: Option<&[f64]>,
+    ) -> Result<Vec<Vec<GaussStress>>, String> {
         use rayon::prelude::*;
         /// Elements per block from which the stress evaluation runs in parallel (each element is independent).
         const PARALLEL_ELEMS: usize = 1000;
@@ -467,15 +571,24 @@ impl Model {
             let t = blk.kind.table();
             let (nn, ngp) = (t.nn, t.ngp);
             let init = || (Work::new(), vec![[0.0; 3]; nn], vec![0.0; nn * d]);
-            let one = |(work, xyz, ue): &mut (Work, Vec<[f64; 3]>, Vec<f64>), o: &mut [GaussStress], conn: &[usize]| -> Result<(), String> {
+            let one = |(work, xyz, ue): &mut (Work, Vec<[f64; 3]>, Vec<f64>),
+                       o: &mut [GaussStress],
+                       conn: &[usize]|
+             -> Result<(), String> {
                 for (a, &nd) in conn.iter().enumerate() {
                     xyz[a] = self.mesh.nodes[nd];
                     for i in 0..d {
                         ue[a * d + i] = u[nd * d + i];
                     }
                 }
-                kernel::geometry(blk.kind, self.mesh.physics, xyz, work).map_err(|e| e.to_string())?;
-                let gauss_t = field.map(|tf| kernel::gauss_temperatures(blk.kind, &conn.iter().map(|&n| tf[n]).collect::<Vec<_>>()));
+                kernel::geometry(blk.kind, self.mesh.physics, xyz, work)
+                    .map_err(|e| e.to_string())?;
+                let gauss_t = field.map(|tf| {
+                    kernel::gauss_temperatures(
+                        blk.kind,
+                        &conn.iter().map(|&n| tf[n]).collect::<Vec<_>>(),
+                    )
+                });
                 for (g, slot) in o.iter_mut().enumerate() {
                     let n = t.n_at(g);
                     let mut pos = [0.0; 3];
@@ -485,13 +598,23 @@ impl Model {
                         }
                     }
                     let strain = kernel::strain_at(blk.kind, self.mesh.physics, work, g, ue);
-                    *slot = (pos, kernel::stress_from_strain(self.mesh.physics, &blk.material, strain, delta_t + gauss_t.as_ref().map_or(0.0, |gt| gt[g])));
+                    *slot = (
+                        pos,
+                        kernel::stress_from_strain(
+                            self.mesh.physics,
+                            &blk.material,
+                            strain,
+                            delta_t + gauss_t.as_ref().map_or(0.0, |gt| gt[g]),
+                        ),
+                    );
                 }
                 Ok(())
             };
             let mut v: Vec<GaussStress> = vec![([0.0; 3], [0.0; 6]); blk.n_elems() * ngp];
             if blk.n_elems() >= PARALLEL_ELEMS {
-                v.par_chunks_mut(ngp).zip(blk.conn.par_chunks_exact(nn)).try_for_each_init(init, |st, (o, conn)| one(st, o, conn))?;
+                v.par_chunks_mut(ngp)
+                    .zip(blk.conn.par_chunks_exact(nn))
+                    .try_for_each_init(init, |st, (o, conn)| one(st, o, conn))?;
             } else {
                 let mut st = init();
                 for (o, conn) in v.chunks_mut(ngp).zip(blk.conn.chunks_exact(nn)) {
@@ -510,7 +633,12 @@ impl Model {
     }
 
     /// As [`nodal_stresses`](Self::nodal_stresses) with a nodal temperature field.
-    pub fn nodal_stresses_field(&self, u: &[f64], delta_t: f64, field: Option<&[f64]>) -> Result<Vec<[f64; 6]>, String> {
+    pub fn nodal_stresses_field(
+        &self,
+        u: &[f64],
+        delta_t: f64,
+        field: Option<&[f64]>,
+    ) -> Result<Vec<[f64; 6]>, String> {
         let d = self.mesh.dim();
         let n = self.mesh.nodes.len();
         let mut sum = vec![[0.0f64; 6]; n];
@@ -529,7 +657,15 @@ impl Model {
                 }
                 for (a, &nd) in conn.iter().enumerate() {
                     // Gradients at node `a` itself: build a one-point table on the fly.
-                    let s = node_stress(kind, self.mesh.physics, &blk.material, &xyz, &ue, a, delta_t + field.map_or(0.0, |tf| tf[nd]))?;
+                    let s = node_stress(
+                        kind,
+                        self.mesh.physics,
+                        &blk.material,
+                        &xyz,
+                        &ue,
+                        a,
+                        delta_t + field.map_or(0.0, |tf| tf[nd]),
+                    )?;
                     for c in 0..6 {
                         sum[nd][c] += s[c];
                     }
@@ -549,12 +685,28 @@ impl Model {
 }
 
 /// Stress at node `a` of one element (strain from the shape-function derivatives there).
-fn node_stress(kind: crate::element::ElementKind, physics: crate::mesh::Physics, mat: &crate::mesh::Elastic, xyz: &[[f64; 3]], ue: &[f64], a: usize, delta_t: f64) -> Result<[f64; 6], String> {
+fn node_stress(
+    kind: crate::element::ElementKind,
+    physics: crate::mesh::Physics,
+    mat: &crate::mesh::Elastic,
+    xyz: &[[f64; 3]],
+    ue: &[f64],
+    a: usize,
+    delta_t: f64,
+) -> Result<[f64; 6], String> {
     stress_at_xi(kind, physics, mat, xyz, ue, kind.node_coords()[a], delta_t)
 }
 
 /// Stress of one element at natural coordinates `xi` (strain from the shape-function derivatives there).
-pub(crate) fn stress_at_xi(kind: crate::element::ElementKind, physics: crate::mesh::Physics, mat: &crate::mesh::Elastic, xyz: &[[f64; 3]], ue: &[f64], xi: [f64; 3], delta_t: f64) -> Result<[f64; 6], String> {
+pub(crate) fn stress_at_xi(
+    kind: crate::element::ElementKind,
+    physics: crate::mesh::Physics,
+    mat: &crate::mesh::Elastic,
+    xyz: &[[f64; 3]],
+    ue: &[f64],
+    xi: [f64; 3],
+    delta_t: f64,
+) -> Result<[f64; 6], String> {
     let d = kind.dim();
     let nn = kind.n_nodes();
     let (n, dn) = kind.shape(xi);
@@ -582,12 +734,23 @@ pub(crate) fn stress_at_xi(kind: crate::element::ElementKind, physics: crate::me
         }
     }
     let strain = match physics {
-        crate::mesh::Physics::Solid => [h[0][0], h[1][1], h[2][2], h[0][1] + h[1][0], h[1][2] + h[2][1], h[2][0] + h[0][2]],
+        crate::mesh::Physics::Solid => [
+            h[0][0],
+            h[1][1],
+            h[2][2],
+            h[0][1] + h[1][0],
+            h[1][2] + h[2][1],
+            h[2][0] + h[0][2],
+        ],
         crate::mesh::Physics::Axisymmetric => {
             let r: f64 = (0..nn).map(|b| n[b] * xyz[b][0]).sum();
             let ur: f64 = (0..nn).map(|b| n[b] * ue[b * 2]).sum();
             // On the axis (r = 0) hoop strain equals radial strain by symmetry.
-            let tt = if r > 1e-12 * (1.0 + xyz[0][0].abs()) { ur / r } else { h[0][0] };
+            let tt = if r > 1e-12 * (1.0 + xyz[0][0].abs()) {
+                ur / r
+            } else {
+                h[0][0]
+            };
             [h[0][0], h[1][1], tt, h[0][1] + h[1][0], 0.0, 0.0]
         }
         _ => [h[0][0], h[1][1], 0.0, h[0][1] + h[1][0], 0.0, 0.0],
@@ -601,7 +764,11 @@ fn invert(j: &[[f64; 3]; 3], d: usize) -> Option<[[f64; 3]; 3]> {
         if det == 0.0 || !det.is_finite() {
             return None;
         }
-        Some([[j[1][1] / det, -j[0][1] / det, 0.0], [-j[1][0] / det, j[0][0] / det, 0.0], [0.0; 3]])
+        Some([
+            [j[1][1] / det, -j[0][1] / det, 0.0],
+            [-j[1][0] / det, j[0][0] / det, 0.0],
+            [0.0; 3],
+        ])
     } else {
         let c00 = j[1][1] * j[2][2] - j[1][2] * j[2][1];
         let c01 = j[1][2] * j[2][0] - j[1][0] * j[2][2];
@@ -611,9 +778,21 @@ fn invert(j: &[[f64; 3]; 3], d: usize) -> Option<[[f64; 3]; 3]> {
             return None;
         }
         Some([
-            [c00 / det, (j[0][2] * j[2][1] - j[0][1] * j[2][2]) / det, (j[0][1] * j[1][2] - j[0][2] * j[1][1]) / det],
-            [c01 / det, (j[0][0] * j[2][2] - j[0][2] * j[2][0]) / det, (j[0][2] * j[1][0] - j[0][0] * j[1][2]) / det],
-            [c02 / det, (j[0][1] * j[2][0] - j[0][0] * j[2][1]) / det, (j[0][0] * j[1][1] - j[0][1] * j[1][0]) / det],
+            [
+                c00 / det,
+                (j[0][2] * j[2][1] - j[0][1] * j[2][2]) / det,
+                (j[0][1] * j[1][2] - j[0][2] * j[1][1]) / det,
+            ],
+            [
+                c01 / det,
+                (j[0][0] * j[2][2] - j[0][2] * j[2][0]) / det,
+                (j[0][2] * j[1][0] - j[0][0] * j[1][2]) / det,
+            ],
+            [
+                c02 / det,
+                (j[0][1] * j[2][0] - j[0][0] * j[2][1]) / det,
+                (j[0][0] * j[1][1] - j[0][1] * j[1][0]) / det,
+            ],
         ])
     }
 }
@@ -624,9 +803,22 @@ mod tests {
 
     #[test]
     fn auto_goes_iterative_without_looking_only_for_huge_3d_systems() {
-        assert_eq!(SolveMethod::Auto.resolve(3, AUTO_ITERATIVE_DOFS), SolveMethod::Direct);
-        assert_eq!(SolveMethod::Auto.resolve(3, AUTO_ITERATIVE_DOFS + 1), SolveMethod::iterative());
-        assert_eq!(SolveMethod::Auto.resolve(2, 10 * AUTO_ITERATIVE_DOFS), SolveMethod::Direct, "2D factorizations stay cheap");
-        assert_eq!(SolveMethod::Direct.resolve(3, 10 * AUTO_ITERATIVE_DOFS), SolveMethod::Direct);
+        assert_eq!(
+            SolveMethod::Auto.resolve(3, AUTO_ITERATIVE_DOFS),
+            SolveMethod::Direct
+        );
+        assert_eq!(
+            SolveMethod::Auto.resolve(3, AUTO_ITERATIVE_DOFS + 1),
+            SolveMethod::iterative()
+        );
+        assert_eq!(
+            SolveMethod::Auto.resolve(2, 10 * AUTO_ITERATIVE_DOFS),
+            SolveMethod::Direct,
+            "2D factorizations stay cheap"
+        );
+        assert_eq!(
+            SolveMethod::Direct.resolve(3, 10 * AUTO_ITERATIVE_DOFS),
+            SolveMethod::Direct
+        );
     }
 }

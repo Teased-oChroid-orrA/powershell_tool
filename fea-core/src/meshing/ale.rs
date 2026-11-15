@@ -37,7 +37,11 @@ fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -77,9 +81,19 @@ fn area_vector(piece: &[usize], x: &dyn Fn(usize) -> V3) -> V3 {
 /// by the piece, both outward.
 fn integrated(piece: &[usize], old: &Mesh, new: &Mesh) -> (V3, f64) {
     let at = |s: f64| move |n: usize| lerp(old.nodes[n], new.nodes[n], s);
-    let (a0, ah, a1) = (area_vector(piece, &at(0.0)), area_vector(piece, &at(0.5)), area_vector(piece, &at(1.0)));
+    let (a0, ah, a1) = (
+        area_vector(piece, &at(0.0)),
+        area_vector(piece, &at(0.5)),
+        area_vector(piece, &at(1.0)),
+    );
     let mean: V3 = std::array::from_fn(|k| (a0[k] + 4.0 * ah[k] + a1[k]) / 6.0);
-    let w: V3 = std::array::from_fn(|k| piece.iter().map(|&n| new.nodes[n][k] - old.nodes[n][k]).sum::<f64>() / piece.len() as f64);
+    let w: V3 = std::array::from_fn(|k| {
+        piece
+            .iter()
+            .map(|&n| new.nodes[n][k] - old.nodes[n][k])
+            .sum::<f64>()
+            / piece.len() as f64
+    });
     (mean, dot(w, mean))
 }
 
@@ -108,20 +122,46 @@ fn measure(mesh: &Mesh, faces: &[Vec<usize>], corners: &[usize]) -> f64 {
 /// Nodal mesh velocity `(new - old) / dt`.
 pub fn mesh_velocity(old: &Mesh, new: &Mesh, dt: f64) -> Result<Vec<V3>, MeshError> {
     if old.nodes.len() != new.nodes.len() || dt <= 0.0 || !dt.is_finite() {
-        return Err(MeshError::Failed("mesh velocity needs two meshes of the same node count and a positive time step".into()));
+        return Err(MeshError::Failed(
+            "mesh velocity needs two meshes of the same node count and a positive time step".into(),
+        ));
     }
-    Ok(old.nodes.iter().zip(&new.nodes).map(|(a, b)| std::array::from_fn(|k| (b[k] - a[k]) / dt)).collect())
+    Ok(old
+        .nodes
+        .iter()
+        .zip(&new.nodes)
+        .map(|(a, b)| std::array::from_fn(|k| (b[k] - a[k]) / dt))
+        .collect())
 }
 
 /// One conservative upwind step. `c` holds one value per element (blocks in order); `u` is the material velocity at a point;
 /// `inflow` is the value carried in through a boundary face where the relative flux enters.
-pub fn transport_step(old: &Mesh, new: &Mesh, c: &[f64], u: &dyn Fn(V3) -> V3, dt: f64, inflow: f64) -> Result<(Vec<f64>, TransportReport), MeshError> {
+pub fn transport_step(
+    old: &Mesh,
+    new: &Mesh,
+    c: &[f64],
+    u: &dyn Fn(V3) -> V3,
+    dt: f64,
+    inflow: f64,
+) -> Result<(Vec<f64>, TransportReport), MeshError> {
     let n_elems = old.n_elems();
-    if new.nodes.len() != old.nodes.len() || new.n_elems() != n_elems || new.blocks.len() != old.blocks.len() || new.blocks.iter().zip(&old.blocks).any(|(a, b)| a.conn != b.conn || a.kind != b.kind) {
-        return Err(MeshError::Failed("transport needs two meshes with identical connectivity".into()));
+    if new.nodes.len() != old.nodes.len()
+        || new.n_elems() != n_elems
+        || new.blocks.len() != old.blocks.len()
+        || new
+            .blocks
+            .iter()
+            .zip(&old.blocks)
+            .any(|(a, b)| a.conn != b.conn || a.kind != b.kind)
+    {
+        return Err(MeshError::Failed(
+            "transport needs two meshes with identical connectivity".into(),
+        ));
     }
     if c.len() != n_elems || dt <= 0.0 || !dt.is_finite() || c.iter().any(|v| !v.is_finite()) {
-        return Err(MeshError::Failed("transport needs one finite value per element and a positive time step".into()));
+        return Err(MeshError::Failed(
+            "transport needs one finite value per element and a positive time step".into(),
+        ));
     }
     let d = old.dim();
     // Per element: corners and outward faces (corner nodes), flattened in global element order.
@@ -131,7 +171,13 @@ pub fn transport_step(old: &Mesh, new: &Mesh, c: &[f64], u: &dyn Fn(V3) -> V3, d
         let nc = b.kind.n_corners();
         for e in 0..b.n_elems() {
             let nodes = b.elem(e);
-            elements.push((nodes[..nc].to_vec(), local.iter().map(|f| f.iter().map(|&i| nodes[i]).collect()).collect()));
+            elements.push((
+                nodes[..nc].to_vec(),
+                local
+                    .iter()
+                    .map(|f| f.iter().map(|&i| nodes[i]).collect())
+                    .collect(),
+            ));
         }
     }
     // Faces by sorted corner nodes: the (element, face) copies that share them.
@@ -143,10 +189,22 @@ pub fn transport_step(old: &Mesh, new: &Mesh, c: &[f64], u: &dyn Fn(V3) -> V3, d
             owners.entry(key).or_default().push((g, k));
         }
     }
-    let v_old: Vec<f64> = elements.iter().map(|(corners, faces)| measure(old, faces, corners)).collect();
-    let v_new: Vec<f64> = elements.iter().map(|(corners, faces)| measure(new, faces, corners)).collect();
-    if v_old.iter().chain(&v_new).any(|v| !(*v > 0.0 && v.is_finite())) {
-        return Err(MeshError::Failed("an element has a non-positive measure on one of the meshes".into()));
+    let v_old: Vec<f64> = elements
+        .iter()
+        .map(|(corners, faces)| measure(old, faces, corners))
+        .collect();
+    let v_new: Vec<f64> = elements
+        .iter()
+        .map(|(corners, faces)| measure(new, faces, corners))
+        .collect();
+    if v_old
+        .iter()
+        .chain(&v_new)
+        .any(|v| !(*v > 0.0 && v.is_finite()))
+    {
+        return Err(MeshError::Failed(
+            "an element has a non-positive measure on one of the meshes".into(),
+        ));
     }
     let mean_measure = v_old.iter().sum::<f64>() / n_elems as f64;
     let mut content: Vec<f64> = (0..n_elems).map(|g| c[g] * v_old[g]).collect();
@@ -154,7 +212,9 @@ pub fn transport_step(old: &Mesh, new: &Mesh, c: &[f64], u: &dyn Fn(V3) -> V3, d
     let (mut boundary_outflow, mut max_ratio) = (0.0f64, 0.0f64);
     for copies in owners.values() {
         if copies.len() > 2 {
-            return Err(MeshError::NonConforming("a face is shared by more than two elements".into()));
+            return Err(MeshError::NonConforming(
+                "a face is shared by more than two elements".into(),
+            ));
         }
         // Flux across the face as seen from its first element; the second sees the exact opposite.
         let (g, k) = copies[0];
@@ -163,7 +223,13 @@ pub fn transport_step(old: &Mesh, new: &Mesh, c: &[f64], u: &dyn Fn(V3) -> V3, d
         let mut swept = 0.0;
         for piece in pieces(face) {
             let (mean, s) = integrated(&piece, old, new);
-            let mid: V3 = std::array::from_fn(|i| piece.iter().map(|&n| 0.5 * (old.nodes[n][i] + new.nodes[n][i])).sum::<f64>() / piece.len() as f64);
+            let mid: V3 = std::array::from_fn(|i| {
+                piece
+                    .iter()
+                    .map(|&n| 0.5 * (old.nodes[n][i] + new.nodes[n][i]))
+                    .sum::<f64>()
+                    / piece.len() as f64
+            });
             let uv = u(mid);
             q += dt * dot(if d == 2 { [uv[0], uv[1], 0.0] } else { uv }, mean) - s;
             swept += s;
@@ -175,7 +241,8 @@ pub fn transport_step(old: &Mesh, new: &Mesh, c: &[f64], u: &dyn Fn(V3) -> V3, d
                 let upwind = if q >= 0.0 { c[g] } else { c[h] };
                 content[g] -= upwind * q;
                 content[h] += upwind * q;
-                max_ratio = max_ratio.max(q.abs() / v_old[g].min(v_new[g]).min(v_old[h]).min(v_new[h]));
+                max_ratio =
+                    max_ratio.max(q.abs() / v_old[g].min(v_new[g]).min(v_old[h]).min(v_new[h]));
             }
             None => {
                 let carried = if q >= 0.0 { c[g] } else { inflow };
@@ -184,9 +251,19 @@ pub fn transport_step(old: &Mesh, new: &Mesh, c: &[f64], u: &dyn Fn(V3) -> V3, d
             }
         }
     }
-    let gcl = (0..n_elems).map(|g| (v_new[g] - v_old[g] - swept_sum[g]).abs()).fold(0.0, f64::max) / mean_measure;
+    let gcl = (0..n_elems)
+        .map(|g| (v_new[g] - v_old[g] - swept_sum[g]).abs())
+        .fold(0.0, f64::max)
+        / mean_measure;
     let out: Vec<f64> = (0..n_elems).map(|g| content[g] / v_new[g]).collect();
-    Ok((out, TransportReport { gcl_defect: gcl, boundary_outflow, max_flux_ratio: max_ratio }))
+    Ok((
+        out,
+        TransportReport {
+            gcl_defect: gcl,
+            boundary_outflow,
+            max_flux_ratio: max_ratio,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -197,11 +274,25 @@ mod tests {
     use crate::mesh::{Elastic, Physics};
 
     fn cells2(n: usize) -> Mesh {
-        grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad4, Elastic::new(1., 0.3), [n, n, 1], &|p| p).unwrap()
+        grid(
+            Physics::PlaneStress { thickness: 1.0 },
+            ElementKind::Quad4,
+            Elastic::new(1., 0.3),
+            [n, n, 1],
+            &|p| p,
+        )
+        .unwrap()
     }
 
     fn cells3(kind: ElementKind, n: usize) -> Mesh {
-        grid(Physics::Solid, kind, Elastic::new(1., 0.3), [n, n, n], &|p| p).unwrap()
+        grid(
+            Physics::Solid,
+            kind,
+            Elastic::new(1., 0.3),
+            [n, n, n],
+            &|p| p,
+        )
+        .unwrap()
     }
 
     /// Interior nodes moved by a deterministic pseudo-random amount of up to `amp` times the cell size; the boundary stays.
@@ -209,7 +300,9 @@ mod tests {
         let mut out = m.clone();
         let mut s = seed;
         let mut next = || {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((s >> 33) as f64) / (1u64 << 31) as f64 - 0.5
         };
         for x in &mut out.nodes {
@@ -230,7 +323,20 @@ mod tests {
         // with no velocity at all. A closed polyhedron has a vanishing sum of area vectors, so a constant velocity has no net
         // flux through any element.
         let wind = |_: V3| [0.7, -0.3, 0.2];
-        for (name, base) in [("quad4", cells2(6)), ("hex8", cells3(ElementKind::Hex8, 4)), ("wedge6", cells3(ElementKind::Wedge6, 4)), ("tet4", crate::meshing::transition::tetrahedralize(&cells3(ElementKind::Hex8, 3), &|_, _, _| true).unwrap().0)] {
+        for (name, base) in [
+            ("quad4", cells2(6)),
+            ("hex8", cells3(ElementKind::Hex8, 4)),
+            ("wedge6", cells3(ElementKind::Wedge6, 4)),
+            (
+                "tet4",
+                crate::meshing::transition::tetrahedralize(
+                    &cells3(ElementKind::Hex8, 3),
+                    &|_, _, _| true,
+                )
+                .unwrap()
+                .0,
+            ),
+        ] {
             let n = if base.dim() == 2 { 6 } else { 4 };
             let mut mesh = base.clone();
             let mut c = vec![1.0; mesh.n_elems()];
@@ -239,7 +345,10 @@ mod tests {
                 let (c2, r) = transport_step(&mesh, &next, &c, &wind, 0.01, 1.0).unwrap();
                 assert!(r.gcl_defect < 1e-13, "{name}: GCL defect {}", r.gcl_defect);
                 let worst = c2.iter().map(|v| (v - 1.0).abs()).fold(0.0, f64::max);
-                assert!(worst < 1e-12, "{name} step {step}: uniform field changed by {worst}");
+                assert!(
+                    worst < 1e-12,
+                    "{name} step {step}: uniform field changed by {worst}"
+                );
                 c = c2;
                 mesh = next;
             }
@@ -250,7 +359,11 @@ mod tests {
                 let next = jiggle(&base, n, 0.3, 100 + step);
                 let (c2, r) = transport_step(&mesh, &next, &c, &|_| [0.0; 3], 0.01, 1.0).unwrap();
                 assert!(r.gcl_defect < 1e-13, "{name}: GCL defect {}", r.gcl_defect);
-                assert!(c2.iter().all(|v| (v - 1.0).abs() < 1e-13), "{name}: c = 1 not preserved: {:?}", c2.iter().map(|v| (v - 1.0).abs()).fold(0.0, f64::max));
+                assert!(
+                    c2.iter().all(|v| (v - 1.0).abs() < 1e-13),
+                    "{name}: c = 1 not preserved: {:?}",
+                    c2.iter().map(|v| (v - 1.0).abs()).fold(0.0, f64::max)
+                );
                 c = c2;
                 mesh = next;
             }
@@ -267,37 +380,50 @@ mod tests {
                 let local = corner_faces(b.kind);
                 for e in 0..b.n_elems() {
                     let nodes = b.elem(e);
-                    let faces: Vec<Vec<usize>> = local.iter().map(|f| f.iter().map(|&i| nodes[i]).collect()).collect();
+                    let faces: Vec<Vec<usize>> = local
+                        .iter()
+                        .map(|f| f.iter().map(|&i| nodes[i]).collect())
+                        .collect();
                     v.push(measure(m, &faces, &nodes[..b.kind.n_corners()]));
                 }
             }
             v
         };
         let v0 = measure_of(&base);
-        let mut c: Vec<f64> = (0..base.n_elems()).map(|e| {
-            let nodes = base.blocks[0].elem(e);
-            centre(std::array::from_fn(|k| nodes.iter().map(|&n| base.nodes[n][k]).sum::<f64>() / 4.0))
-        }).collect();
+        let mut c: Vec<f64> = (0..base.n_elems())
+            .map(|e| {
+                let nodes = base.blocks[0].elem(e);
+                centre(std::array::from_fn(|k| {
+                    nodes.iter().map(|&n| base.nodes[n][k]).sum::<f64>() / 4.0
+                }))
+            })
+            .collect();
         let total0: f64 = c.iter().zip(&v0).map(|(a, b)| a * b).sum();
         let mut mesh = base.clone();
         let mut exchanged = 0.0;
         for step in 0..8u64 {
             let next = jiggle(&base, 10, 0.35, 7 + step);
             // A uniform translation of the material through the box: the boundary now carries content.
-            let (c2, r) = transport_step(&mesh, &next, &c, &|_| [0.5, 0.0, 0.0], 0.02, 0.0).unwrap();
+            let (c2, r) =
+                transport_step(&mesh, &next, &c, &|_| [0.5, 0.0, 0.0], 0.02, 0.0).unwrap();
             exchanged += r.boundary_outflow;
             c = c2;
             mesh = next;
         }
         let total1: f64 = c.iter().zip(&measure_of(&mesh)).map(|(a, b)| a * b).sum();
-        assert!((total0 - total1 - exchanged).abs() < 1e-13 * total0, "content {total0} -> {total1}, boundary {exchanged}");
+        assert!(
+            (total0 - total1 - exchanged).abs() < 1e-13 * total0,
+            "content {total0} -> {total1}, boundary {exchanged}"
+        );
         // With closed boundaries (zero material velocity, fixed boundary) the content is conserved to round-off.
         let mut mesh = base.clone();
         let mut c2: Vec<f64> = c.clone();
         let t0: f64 = c2.iter().zip(&measure_of(&mesh)).map(|(a, b)| a * b).sum();
         for step in 0..8u64 {
             let next = jiggle(&base, 10, 0.35, 70 + step);
-            c2 = transport_step(&mesh, &next, &c2, &|_| [0.0; 3], 0.02, 0.0).unwrap().0;
+            c2 = transport_step(&mesh, &next, &c2, &|_| [0.0; 3], 0.02, 0.0)
+                .unwrap()
+                .0;
             mesh = next;
         }
         let t1: f64 = c2.iter().zip(&measure_of(&mesh)).map(|(a, b)| a * b).sum();
@@ -305,7 +431,8 @@ mod tests {
     }
 
     #[test]
-    fn a_static_field_seen_on_a_mesh_that_oscillates_returns_to_itself_with_an_error_that_falls_with_the_mesh_size() {
+    fn a_static_field_seen_on_a_mesh_that_oscillates_returns_to_itself_with_an_error_that_falls_with_the_mesh_size(
+    ) {
         let c0 = |x: V3| (-((x[0] - 0.5).powi(2) + (x[1] - 0.5).powi(2)) / 0.1).exp();
         let mut errors = Vec::new();
         for n in [12usize, 24, 48] {
@@ -313,7 +440,8 @@ mod tests {
             let displaced = |t: f64| -> Mesh {
                 let mut m = base.clone();
                 for x in &mut m.nodes {
-                    let g = (std::f64::consts::PI * x[0]).sin() * (std::f64::consts::PI * x[1]).sin();
+                    let g =
+                        (std::f64::consts::PI * x[0]).sin() * (std::f64::consts::PI * x[1]).sin();
                     let phase = (2.0 * std::f64::consts::PI * t).sin();
                     x[0] += 0.02 * phase * g;
                     x[1] += 0.012 * phase * g;
@@ -329,11 +457,29 @@ mod tests {
                 let (mut num, mut den) = (0.0, 0.0);
                 for (i, &xi) in g.iter().enumerate() {
                     for (j, &eta) in g.iter().enumerate() {
-                        let sh = [0.25 * (1.0 - xi) * (1.0 - eta), 0.25 * (1.0 + xi) * (1.0 - eta), 0.25 * (1.0 + xi) * (1.0 + eta), 0.25 * (1.0 - xi) * (1.0 + eta)];
-                        let dxi = [-0.25 * (1.0 - eta), 0.25 * (1.0 - eta), 0.25 * (1.0 + eta), -0.25 * (1.0 + eta)];
-                        let deta = [-0.25 * (1.0 - xi), -0.25 * (1.0 + xi), 0.25 * (1.0 + xi), 0.25 * (1.0 - xi)];
+                        let sh = [
+                            0.25 * (1.0 - xi) * (1.0 - eta),
+                            0.25 * (1.0 + xi) * (1.0 - eta),
+                            0.25 * (1.0 + xi) * (1.0 + eta),
+                            0.25 * (1.0 - xi) * (1.0 + eta),
+                        ];
+                        let dxi = [
+                            -0.25 * (1.0 - eta),
+                            0.25 * (1.0 - eta),
+                            0.25 * (1.0 + eta),
+                            -0.25 * (1.0 + eta),
+                        ];
+                        let deta = [
+                            -0.25 * (1.0 - xi),
+                            -0.25 * (1.0 + xi),
+                            0.25 * (1.0 + xi),
+                            0.25 * (1.0 - xi),
+                        ];
                         let x: V3 = std::array::from_fn(|k| (0..4).map(|a| sh[a] * p[a][k]).sum());
-                        let jac = (0..4).map(|a| dxi[a] * p[a][0]).sum::<f64>() * (0..4).map(|a| deta[a] * p[a][1]).sum::<f64>() - (0..4).map(|a| dxi[a] * p[a][1]).sum::<f64>() * (0..4).map(|a| deta[a] * p[a][0]).sum::<f64>();
+                        let jac = (0..4).map(|a| dxi[a] * p[a][0]).sum::<f64>()
+                            * (0..4).map(|a| deta[a] * p[a][1]).sum::<f64>()
+                            - (0..4).map(|a| dxi[a] * p[a][1]).sum::<f64>()
+                                * (0..4).map(|a| deta[a] * p[a][0]).sum::<f64>();
                         num += w[i] * w[j] * jac * c0(x);
                         den += w[i] * w[j] * jac;
                     }
@@ -345,14 +491,21 @@ mod tests {
             let mut c: Vec<f64> = (0..mesh.n_elems()).map(|e| mean_of(&mesh, e)).collect();
             for s in 0..steps {
                 let next = displaced((s + 1) as f64 / steps as f64);
-                c = transport_step(&mesh, &next, &c, &|_| [0.0; 3], 1.0 / steps as f64, 0.0).unwrap().0;
+                c = transport_step(&mesh, &next, &c, &|_| [0.0; 3], 1.0 / steps as f64, 0.0)
+                    .unwrap()
+                    .0;
                 mesh = next;
             }
-            let err = (0..mesh.n_elems()).map(|e| (c[e] - mean_of(&mesh, e)).abs()).fold(0.0, f64::max);
+            let err = (0..mesh.n_elems())
+                .map(|e| (c[e] - mean_of(&mesh, e)).abs())
+                .fold(0.0, f64::max);
             eprintln!("n {n}: max cell-average error after one period {err:.3e}");
             errors.push(err);
         }
-        assert!(errors[1] < 0.75 * errors[0] && errors[2] < 0.75 * errors[1], "{errors:?}");
+        assert!(
+            errors[1] < 0.75 * errors[0] && errors[2] < 0.75 * errors[1],
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -371,6 +524,13 @@ mod tests {
         assert!(transport_step(&m, &folded, &c, &zero, 0.1, 0.0).is_err());
         assert!(mesh_velocity(&m, &cells2(4), 0.1).is_err());
         let w = mesh_velocity(&m, &folded, 0.5).unwrap();
-        assert_eq!(w[5], [(-1.0 - m.nodes[5][0]) / 0.5, (-1.0 - m.nodes[5][1]) / 0.5, 0.0]);
+        assert_eq!(
+            w[5],
+            [
+                (-1.0 - m.nodes[5][0]) / 0.5,
+                (-1.0 - m.nodes[5][1]) / 0.5,
+                0.0
+            ]
+        );
     }
 }

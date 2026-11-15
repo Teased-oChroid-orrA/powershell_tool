@@ -47,7 +47,14 @@ pub fn nested_dissection(coords: &[[f64; 3]], pat: &Pattern) -> Vec<usize> {
     order
 }
 
-fn dissect(coords: &[[f64; 3]], ptr: &[usize], adj: &[u32], mut nodes: Vec<u32>, side: &mut [u8], order: &mut Vec<usize>) {
+fn dissect(
+    coords: &[[f64; 3]],
+    ptr: &[usize],
+    adj: &[u32],
+    mut nodes: Vec<u32>,
+    side: &mut [u8],
+    order: &mut Vec<usize>,
+) {
     if nodes.len() <= LEAF {
         order.extend(nodes.iter().map(|&v| v as usize));
         return;
@@ -59,22 +66,56 @@ fn dissect(coords: &[[f64; 3]], ptr: &[usize], adj: &[u32], mut nodes: Vec<u32>,
             hi[c] = hi[c].max(coords[v as usize][c]);
         }
     }
-    let axis = (0..3).max_by(|&a, &b| (hi[a] - lo[a]).total_cmp(&(hi[b] - lo[b]))).unwrap();
-    nodes.sort_unstable_by(|&a, &b| coords[a as usize][axis].total_cmp(&coords[b as usize][axis]).then(a.cmp(&b)));
+    let axis = (0..3)
+        .max_by(|&a, &b| (hi[a] - lo[a]).total_cmp(&(hi[b] - lo[b])))
+        .unwrap();
+    nodes.sort_unstable_by(|&a, &b| {
+        coords[a as usize][axis]
+            .total_cmp(&coords[b as usize][axis])
+            .then(a.cmp(&b))
+    });
     let half = nodes.len() / 2;
     for (k, &v) in nodes.iter().enumerate() {
         side[v as usize] = if k < half { 1 } else { 2 };
     }
     // Vertex separator: the nodes of one half that touch the other half; take the smaller.
-    let touches = |v: u32, other: u8| adj[ptr[v as usize]..ptr[v as usize + 1]].iter().any(|&w| side[w as usize] == other);
-    let sep_a: Vec<u32> = nodes[..half].iter().copied().filter(|&v| touches(v, 2)).collect();
-    let sep_b: Vec<u32> = nodes[half..].iter().copied().filter(|&v| touches(v, 1)).collect();
+    let touches = |v: u32, other: u8| {
+        adj[ptr[v as usize]..ptr[v as usize + 1]]
+            .iter()
+            .any(|&w| side[w as usize] == other)
+    };
+    let sep_a: Vec<u32> = nodes[..half]
+        .iter()
+        .copied()
+        .filter(|&v| touches(v, 2))
+        .collect();
+    let sep_b: Vec<u32> = nodes[half..]
+        .iter()
+        .copied()
+        .filter(|&v| touches(v, 1))
+        .collect();
     let (sep, left, right): (Vec<u32>, Vec<u32>, Vec<u32>) = if sep_a.len() <= sep_b.len() {
         let in_sep: std::collections::HashSet<u32> = sep_a.iter().copied().collect();
-        (sep_a, nodes[..half].iter().copied().filter(|v| !in_sep.contains(v)).collect(), nodes[half..].to_vec())
+        (
+            sep_a,
+            nodes[..half]
+                .iter()
+                .copied()
+                .filter(|v| !in_sep.contains(v))
+                .collect(),
+            nodes[half..].to_vec(),
+        )
     } else {
         let in_sep: std::collections::HashSet<u32> = sep_b.iter().copied().collect();
-        (sep_b, nodes[..half].to_vec(), nodes[half..].iter().copied().filter(|v| !in_sep.contains(v)).collect())
+        (
+            sep_b,
+            nodes[..half].to_vec(),
+            nodes[half..]
+                .iter()
+                .copied()
+                .filter(|v| !in_sep.contains(v))
+                .collect(),
+        )
     };
     for &v in &nodes {
         side[v as usize] = 0;

@@ -82,7 +82,10 @@ fn positive(points: &[Point], t: [usize; 4]) -> Result<Option<[usize; 4]>, MeshE
 }
 /// A tetrahedron whose scaled Jacobian is below 1e-7 at every corner: flat to the rounding of its coordinates.
 fn nearly_flat(points: &[Point], t: [usize; 4]) -> bool {
-    element_quality(ElementKind::Tet4, &t.map(|v| points[v])).scaled_jacobian.abs() < 1e-7
+    element_quality(ElementKind::Tet4, &t.map(|v| points[v]))
+        .scaled_jacobian
+        .abs()
+        < 1e-7
 }
 fn key3(mut f: [usize; 3]) -> [usize; 3] {
     f.sort_unstable();
@@ -256,12 +259,19 @@ impl Pass<'_> {
     fn boundary_edge_removal(&self, edge: [usize; 2]) -> Result<Option<Candidate>, MeshError> {
         let ring_cells = &self.edge_cells[&edge];
         let n_cells = ring_cells.len();
-        if n_cells < 2 || n_cells + 1 > self.options.max_link || ring_cells.iter().any(|&c| self.touched[c]) {
+        if n_cells < 2
+            || n_cells + 1 > self.options.max_link
+            || ring_cells.iter().any(|&c| self.touched[c])
+        {
             return Ok(None);
         }
         let [p, q] = edge;
         let others = |c: usize| -> [usize; 2] {
-            let v: Vec<usize> = self.cells[c].iter().copied().filter(|x| *x != p && *x != q).collect();
+            let v: Vec<usize> = self.cells[c]
+                .iter()
+                .copied()
+                .filter(|x| *x != p && *x != q)
+                .collect();
             [v[0], v[1]]
         };
         // The two boundary faces on the edge, and the path of link vertices between them.
@@ -270,7 +280,11 @@ impl Pass<'_> {
             .flat_map(|&c| others(c).into_iter().map(move |u| (c, u)))
             .filter(|&(_, u)| self.face_cells[&key3([p, q, u])].len() == 1)
             .collect();
-        if boundary_apex.len() != 2 || boundary_apex.iter().any(|&(_, u)| self.protected.contains(&key3([p, q, u]))) {
+        if boundary_apex.len() != 2
+            || boundary_apex
+                .iter()
+                .any(|&(_, u)| self.protected.contains(&key3([p, q, u])))
+        {
             return Ok(None);
         }
         let (start_cell, u0) = boundary_apex[0];
@@ -288,7 +302,10 @@ impl Pass<'_> {
             if at == uk && link.len() == n_cells + 1 {
                 break;
             }
-            let Some(&next) = ring_cells.iter().find(|&&c| c != prev && others(c).contains(&at)) else {
+            let Some(&next) = ring_cells
+                .iter()
+                .find(|&&c| c != prev && others(c).contains(&at))
+            else {
                 return Ok(None);
             };
             cell = next;
@@ -301,18 +318,38 @@ impl Pass<'_> {
             return Ok(None);
         }
         // Flat patch: p, q, u0, uk exactly coplanar; the quadrilateral p u0 q uk convex (strictly).
-        if orientation(self.points[p], self.points[q], self.points[u0], self.points[uk])? != Ordering::Equal {
+        if orientation(
+            self.points[p],
+            self.points[q],
+            self.points[u0],
+            self.points[uk],
+        )? != Ordering::Equal
+        {
             return Ok(None);
         }
         let reference = link[1];
-        let side = |a: usize, b: usize, c: usize| orientation(self.points[a], self.points[b], self.points[c], self.points[reference]);
+        let side = |a: usize, b: usize, c: usize| {
+            orientation(
+                self.points[a],
+                self.points[b],
+                self.points[c],
+                self.points[reference],
+            )
+        };
         let (s0, sk) = (side(p, q, u0)?, side(p, q, uk)?);
         let (sp, sq) = (side(u0, uk, p)?, side(u0, uk, q)?);
         if [s0, sk, sp, sq].contains(&Ordering::Equal) || s0 == sk || sp == sq {
             return Ok(None);
         }
         // The old fan must wind one way.
-        let turn = |i: usize| orientation(self.points[p], self.points[q], self.points[link[i]], self.points[link[i + 1]]);
+        let turn = |i: usize| {
+            orientation(
+                self.points[p],
+                self.points[q],
+                self.points[link[i]],
+                self.points[link[i + 1]],
+            )
+        };
         let sigma = turn(0)?;
         if sigma == Ordering::Equal {
             return Ok(None);
@@ -325,8 +362,16 @@ impl Pass<'_> {
         let Some((new_min, new)) = self.triangulate_link(&link, p, q, sigma)? else {
             return Ok(None);
         };
-        let old_min = ring_cells.iter().map(|&c| self.q(self.cells[c])).fold(f64::INFINITY, f64::min);
-        Ok(Some(Candidate { gain: new_min - old_min, old: ring_cells.clone(), new, link: Some(n) }))
+        let old_min = ring_cells
+            .iter()
+            .map(|&c| self.q(self.cells[c]))
+            .fold(f64::INFINITY, f64::min);
+        Ok(Some(Candidate {
+            gain: new_min - old_min,
+            old: ring_cells.clone(),
+            new,
+            link: Some(n),
+        }))
     }
     fn edge_removal(&self, edge: [usize; 2]) -> Result<Option<Candidate>, MeshError> {
         if self.locked_edges.contains(&edge) {
@@ -561,17 +606,30 @@ pub fn improve_by(
                     let [a, b, c] = f.map(|i| points[i]);
                     let u: Point = std::array::from_fn(|i| b[i] - a[i]);
                     let v: Point = std::array::from_fn(|i| c[i] - a[i]);
-                    0.5 * ((u[1] * v[2] - u[2] * v[1]).powi(2) + (u[2] * v[0] - u[0] * v[2]).powi(2) + (u[0] * v[1] - u[1] * v[0]).powi(2)).sqrt()
+                    0.5 * ((u[1] * v[2] - u[2] * v[1]).powi(2)
+                        + (u[2] * v[0] - u[0] * v[2]).powi(2)
+                        + (u[0] * v[1] - u[1] * v[0]).powi(2))
+                    .sqrt()
                 })
                 .sum()
         };
         let (a0, a1) = (area(top.boundary()), area(result.boundary()));
-        let vertices = |faces: &[[usize; 3]]| -> BTreeSet<usize> { faces.iter().flatten().copied().collect() };
-        if (a0 - a1).abs() > 1e-9 * a0.max(f64::MIN_POSITIVE) || vertices(top.boundary()) != vertices(result.boundary()) {
-            return Err(MeshError::NonConforming("planar boundary reconnection changed the boundary surface".into()));
+        let vertices =
+            |faces: &[[usize; 3]]| -> BTreeSet<usize> { faces.iter().flatten().copied().collect() };
+        if (a0 - a1).abs() > 1e-9 * a0.max(f64::MIN_POSITIVE)
+            || vertices(top.boundary()) != vertices(result.boundary())
+        {
+            return Err(MeshError::NonConforming(
+                "planar boundary reconnection changed the boundary surface".into(),
+            ));
         }
-        if protected.iter().any(|f| !boundary_after.contains(f) && boundary_before.contains(f)) {
-            return Err(MeshError::NonConforming("a protected boundary face was changed".into()));
+        if protected
+            .iter()
+            .any(|f| !boundary_after.contains(f) && boundary_before.contains(f))
+        {
+            return Err(MeshError::NonConforming(
+                "a protected boundary face was changed".into(),
+            ));
         }
     } else if boundary_after != boundary_before {
         return Err(MeshError::NonConforming(
@@ -727,21 +785,43 @@ mod tests {
                     let [x, y, z] = f.map(|i| points[i]);
                     let u: Point = std::array::from_fn(|i| y[i] - x[i]);
                     let v: Point = std::array::from_fn(|i| z[i] - x[i]);
-                    0.5 * ((u[1] * v[2] - u[2] * v[1]).powi(2) + (u[2] * v[0] - u[0] * v[2]).powi(2) + (u[0] * v[1] - u[1] * v[0]).powi(2)).sqrt()
+                    0.5 * ((u[1] * v[2] - u[2] * v[1]).powi(2)
+                        + (u[2] * v[0] - u[0] * v[2]).powi(2)
+                        + (u[0] * v[1] - u[1] * v[0]).powi(2))
+                    .sqrt()
                 })
                 .sum::<f64>()
         };
-        let locked = FlipOptions { target: 1.0, ..FlipOptions::default() };
+        let locked = FlipOptions {
+            target: 1.0,
+            ..FlipOptions::default()
+        };
         let (same, r) = improve(&top, &BTreeSet::new(), locked).unwrap();
-        assert_eq!(same.cells(), top.cells(), "boundary edges are locked by default: {r:?}");
-        let flat = FlipOptions { planar_boundary: true, ..locked };
+        assert_eq!(
+            same.cells(),
+            top.cells(),
+            "boundary edges are locked by default: {r:?}"
+        );
+        let flat = FlipOptions {
+            planar_boundary: true,
+            ..locked
+        };
         let (out, r) = improve(&top, &BTreeSet::new(), flat).unwrap();
         assert_eq!(r.edge_removals.get(&3), Some(&1), "{r:?}");
-        assert!(r.min_radius_ratio_after > 5.0 * r.min_radius_ratio_before, "{r:?}");
+        assert!(
+            r.min_radius_ratio_after > 5.0 * r.min_radius_ratio_before,
+            "{r:?}"
+        );
         // The short diagonal replaced the long one; the volume and the boundary surface are unchanged.
-        let has_edge = |t: &TetTopology, e: [usize; 2]| t.cells().iter().any(|c| c.contains(&e[0]) && c.contains(&e[1]));
+        let has_edge = |t: &TetTopology, e: [usize; 2]| {
+            t.cells()
+                .iter()
+                .any(|c| c.contains(&e[0]) && c.contains(&e[1]))
+        };
         assert!(has_edge(&out, [u0, uk]) && !has_edge(&out, [p, q]));
-        assert!((volume(out.points(), out.cells()) - volume(top.points(), top.cells())).abs() < 1e-14);
+        assert!(
+            (volume(out.points(), out.cells()) - volume(top.points(), top.cells())).abs() < 1e-14
+        );
         assert!((area(&out) - area(&top)).abs() < 1e-14);
         // Protecting one of the faces keeps the edge.
         let mut protected = BTreeSet::new();
@@ -767,12 +847,18 @@ mod tests {
         for seed in 1..=10 {
             let points = cloud(80, seed);
             let top = tetrahedralize(&points, Limits::default()).unwrap();
-            let options = FlipOptions { planar_boundary: true, ..FlipOptions::default() };
+            let options = FlipOptions {
+                planar_boundary: true,
+                ..FlipOptions::default()
+            };
             let (out, report) = improve(&top, &BTreeSet::new(), options).unwrap();
             let (plain, _) = improve(&top, &BTreeSet::new(), FlipOptions::default()).unwrap();
             // Never worse than the interior-only reconnection.
             assert!(report.min_radius_ratio_after >= report.min_radius_ratio_before);
-            assert!((volume(out.points(), out.cells()) - 1.).abs() < 1e-12, "seed {seed}");
+            assert!(
+                (volume(out.points(), out.cells()) - 1.).abs() < 1e-12,
+                "seed {seed}"
+            );
             // `TetTopology::new` rejected any negatively oriented or flat cell; the boundary stays the surface of the unit cube.
             for f in out.boundary() {
                 let pts = f.map(|i| out.points()[i]);

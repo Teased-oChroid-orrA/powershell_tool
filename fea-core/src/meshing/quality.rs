@@ -42,7 +42,11 @@ pub struct QualityThresholds {
 
 impl Default for QualityThresholds {
     fn default() -> Self {
-        Self { min_scaled_jacobian: 0.1, max_edge_ratio: 50.0, max_size_jump: 6.0 }
+        Self {
+            min_scaled_jacobian: 0.1,
+            max_edge_ratio: 50.0,
+            max_size_jump: 6.0,
+        }
     }
 }
 
@@ -66,13 +70,19 @@ pub struct QualityReport {
 
 impl QualityReport {
     pub fn acceptable(&self, thr: &QualityThresholds) -> bool {
-        self.inverted == 0 && self.min_scaled_jacobian >= thr.min_scaled_jacobian && self.max_edge_ratio <= thr.max_edge_ratio && self.max_size_jump <= thr.max_size_jump
+        self.inverted == 0
+            && self.min_scaled_jacobian >= thr.min_scaled_jacobian
+            && self.max_edge_ratio <= thr.max_edge_ratio
+            && self.max_size_jump <= thr.max_size_jump
     }
 
     /// `Ok` if acceptable, else the reason as a typed error.
     pub fn require(&self, thr: &QualityThresholds) -> Result<(), super::MeshError> {
         if let Some(first) = self.first_inverted {
-            return Err(super::MeshError::InvalidElements { count: self.inverted, first });
+            return Err(super::MeshError::InvalidElements {
+                count: self.inverted,
+                first,
+            });
         }
         if self.acceptable(thr) {
             Ok(())
@@ -103,9 +113,41 @@ impl QualityReport {
 const TRI_EDGES: [(usize, usize); 3] = [(0, 1), (1, 2), (2, 0)];
 const QUAD_EDGES: [(usize, usize); 4] = [(0, 1), (1, 2), (2, 3), (3, 0)];
 const TET_EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
-const HEX_EDGES: [(usize, usize); 12] = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7)];
-const PYRAMID_EDGES: [(usize, usize); 8] = [(0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (1, 4), (2, 4), (3, 4)];
-const WEDGE_EDGES: [(usize, usize); 9] = [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5)];
+const HEX_EDGES: [(usize, usize); 12] = [
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+];
+const PYRAMID_EDGES: [(usize, usize); 8] = [
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (0, 4),
+    (1, 4),
+    (2, 4),
+    (3, 4),
+];
+const WEDGE_EDGES: [(usize, usize); 9] = [
+    (0, 1),
+    (1, 2),
+    (2, 0),
+    (3, 4),
+    (4, 5),
+    (5, 3),
+    (0, 3),
+    (1, 4),
+    (2, 5),
+];
 
 fn edges(kind: ElementKind) -> &'static [(usize, usize)] {
     match kind {
@@ -126,7 +168,11 @@ fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 fn norm(a: V3) -> f64 {
     dot(a, a).sqrt()
@@ -137,7 +183,11 @@ fn unit_det(cols: &[V3], dim: usize) -> f64 {
     // no allocation: this runs for every corner of every element of a quality pass
     let unit = |c: V3| {
         let n = norm(if dim == 2 { [c[0], c[1], 0.0] } else { c });
-        if n > 0.0 { [c[0] / n, c[1] / n, if dim == 2 { 0.0 } else { c[2] / n }] } else { [0.0; 3] }
+        if n > 0.0 {
+            [c[0] / n, c[1] / n, if dim == 2 { 0.0 } else { c[2] / n }]
+        } else {
+            [0.0; 3]
+        }
     };
     if dim == 2 {
         let (a, b) = (unit(cols[0]), unit(cols[1]));
@@ -151,7 +201,11 @@ fn unit_det(cols: &[V3], dim: usize) -> f64 {
 /// regular simplex's, negative when inverted.
 fn simplex_scaled_jacobian(corners: &[V3], dim: usize) -> f64 {
     let orient = simplex_orientation(corners, dim);
-    let ideal = if dim == 2 { 3f64.sqrt() / 2.0 } else { 0.5f64.sqrt() };
+    let ideal = if dim == 2 {
+        3f64.sqrt() / 2.0
+    } else {
+        0.5f64.sqrt()
+    };
     let mut worst = f64::INFINITY;
     for i in 0..corners.len() {
         let mut others = [[0.0; 3]; 3];
@@ -161,7 +215,11 @@ fn simplex_scaled_jacobian(corners: &[V3], dim: usize) -> f64 {
         worst = worst.min(unit_det(&others[..dim], dim).abs());
     }
     let v = worst / ideal;
-    if orient > 0.0 { v } else { -v }
+    if orient > 0.0 {
+        v
+    } else {
+        -v
+    }
 }
 
 /// Scaled Jacobian of a tetrahedron, exactly what [`element_quality`] reports for `Tet4`, without its other measures.
@@ -181,7 +239,11 @@ fn simplex_orientation(p: &[V3], dim: usize) -> f64 {
 /// Angle in degrees between the edges from `a` to `b` and from `a` to `c`.
 fn angle(a: V3, b: V3, c: V3, dim: usize) -> f64 {
     let (u, v) = (sub(b, a), sub(c, a));
-    let (u, v) = if dim == 2 { ([u[0], u[1], 0.0], [v[0], v[1], 0.0]) } else { (u, v) };
+    let (u, v) = if dim == 2 {
+        ([u[0], u[1], 0.0], [v[0], v[1], 0.0])
+    } else {
+        (u, v)
+    };
     let cs = (dot(u, v) / (norm(u) * norm(v))).clamp(-1.0, 1.0);
     cs.acos().to_degrees()
 }
@@ -199,7 +261,11 @@ pub fn element_quality(kind: ElementKind, xyz: &[V3]) -> ElementQuality {
         lsum += l;
     }
     let n_edges = edges(kind).len() as f64;
-    let edge_ratio = if lmin > 0.0 { lmax / lmin } else { f64::INFINITY };
+    let edge_ratio = if lmin > 0.0 {
+        lmax / lmin
+    } else {
+        f64::INFINITY
+    };
 
     let scaled_jacobian = if kind.is_simplex() {
         simplex_scaled_jacobian(corners, dim)
@@ -219,37 +285,73 @@ pub fn element_quality(kind: ElementKind, xyz: &[V3]) -> ElementQuality {
             worst = worst.min(unit_det(&cols[..dim], dim));
         }
         // a right prism on an equilateral triangle has the sine of the triangle's corner as its best value
-        if matches!(kind, ElementKind::Wedge6 | ElementKind::Wedge15) { worst / (3f64.sqrt() / 2.0) } else { worst }
+        if matches!(kind, ElementKind::Wedge6 | ElementKind::Wedge15) {
+            worst / (3f64.sqrt() / 2.0)
+        } else {
+            worst
+        }
     };
 
     let (mut min_angle, mut max_angle, mut skew) = (f64::NAN, f64::NAN, f64::NAN);
     if dim == 2 {
         let mut angles = Vec::with_capacity(nc);
         for i in 0..nc {
-            angles.push(angle(corners[i], corners[(i + 1) % nc], corners[(i + nc - 1) % nc], 2));
+            angles.push(angle(
+                corners[i],
+                corners[(i + 1) % nc],
+                corners[(i + nc - 1) % nc],
+                2,
+            ));
         }
         min_angle = angles.iter().cloned().fold(f64::INFINITY, f64::min);
         max_angle = angles.iter().cloned().fold(0.0, f64::max);
         let ideal = if nc == 3 { 60.0 } else { 90.0 };
-        skew = ((max_angle - ideal) / (180.0 - ideal)).max((ideal - min_angle) / ideal).max(0.0);
+        skew = ((max_angle - ideal) / (180.0 - ideal))
+            .max((ideal - min_angle) / ideal)
+            .max(0.0);
     }
 
     let mut radius_ratio = f64::NAN;
     if matches!(kind, ElementKind::Tet4 | ElementKind::Tet10) {
         let vol = simplex_orientation(corners, 3).abs() / 6.0;
-        let area = |a: usize, b: usize, c: usize| 0.5 * norm(cross(sub(corners[b], corners[a]), sub(corners[c], corners[a])));
+        let area = |a: usize, b: usize, c: usize| {
+            0.5 * norm(cross(
+                sub(corners[b], corners[a]),
+                sub(corners[c], corners[a]),
+            ))
+        };
         let surface = area(0, 1, 2) + area(0, 1, 3) + area(0, 2, 3) + area(1, 2, 3);
-        let r_in = if surface > 0.0 { 3.0 * vol / surface } else { 0.0 };
+        let r_in = if surface > 0.0 {
+            3.0 * vol / surface
+        } else {
+            0.0
+        };
         // circumradius from the opposite-edge products: 24 V R = sqrt(s (s-a)(s-b)(s-c)) * 4 for products a=|01||23| etc.
         let l = |a: usize, b: usize| norm(sub(corners[a], corners[b]));
         let (pa, pb, pc) = (l(0, 1) * l(2, 3), l(0, 2) * l(1, 3), l(0, 3) * l(1, 2));
         let s = 0.5 * (pa + pb + pc);
         let heron = (s * (s - pa) * (s - pb) * (s - pc)).max(0.0).sqrt();
-        let r_circ = if vol > 0.0 { heron / (6.0 * vol) } else { f64::INFINITY };
-        radius_ratio = if r_circ.is_finite() { 3.0 * r_in / r_circ } else { 0.0 };
+        let r_circ = if vol > 0.0 {
+            heron / (6.0 * vol)
+        } else {
+            f64::INFINITY
+        };
+        radius_ratio = if r_circ.is_finite() {
+            3.0 * r_in / r_circ
+        } else {
+            0.0
+        };
     }
 
-    ElementQuality { scaled_jacobian, edge_ratio, min_angle, max_angle, skew, radius_ratio, size: lsum / n_edges }
+    ElementQuality {
+        scaled_jacobian,
+        edge_ratio,
+        min_angle,
+        max_angle,
+        skew,
+        radius_ratio,
+        size: lsum / n_edges,
+    }
 }
 
 impl Mesh {
@@ -265,8 +367,13 @@ impl Mesh {
             let xyz: Vec<V3> = blk.elem(e).iter().map(|&n| self.nodes[n]).collect();
             element_quality(blk.kind, &xyz)
         };
-        let elements: Vec<ElementQuality> = if index.len() >= 2000 { index.par_iter().map(one).collect() } else { index.iter().map(one).collect() };
-        let (mut inverted, mut first, mut minj, mut sumj, mut maxr) = (0usize, None, f64::INFINITY, 0.0, 1.0f64);
+        let elements: Vec<ElementQuality> = if index.len() >= 2000 {
+            index.par_iter().map(one).collect()
+        } else {
+            index.iter().map(one).collect()
+        };
+        let (mut inverted, mut first, mut minj, mut sumj, mut maxr) =
+            (0usize, None, f64::INFINITY, 0.0, 1.0f64);
         let mut histogram = [0usize; 10];
         for (q, &(b, e)) in elements.iter().zip(&index) {
             if q.scaled_jacobian.is_nan() || q.scaled_jacobian <= 0.0 {
@@ -280,7 +387,16 @@ impl Mesh {
             histogram[bin] += 1;
         }
         let n = elements.len().max(1) as f64;
-        QualityReport { elements, inverted, first_inverted: first, min_scaled_jacobian: minj, mean_scaled_jacobian: sumj / n, max_edge_ratio: maxr, histogram, max_size_jump: 1.0 }
+        QualityReport {
+            elements,
+            inverted,
+            first_inverted: first,
+            min_scaled_jacobian: minj,
+            mean_scaled_jacobian: sumj / n,
+            max_edge_ratio: maxr,
+            histogram,
+            max_size_jump: 1.0,
+        }
     }
 }
 
@@ -294,29 +410,101 @@ mod tests {
 
     #[test]
     fn ideal_shapes_score_one() {
-        let tri = element_quality(ElementKind::Tri3, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, S3 / 2.0, 0.0]]);
-        assert!((tri.scaled_jacobian - 1.0).abs() < 1e-12 && (tri.edge_ratio - 1.0).abs() < 1e-12 && tri.skew.abs() < 1e-12);
+        let tri = element_quality(
+            ElementKind::Tri3,
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, S3 / 2.0, 0.0]],
+        );
+        assert!(
+            (tri.scaled_jacobian - 1.0).abs() < 1e-12
+                && (tri.edge_ratio - 1.0).abs() < 1e-12
+                && tri.skew.abs() < 1e-12
+        );
         assert!((tri.min_angle - 60.0).abs() < 1e-9);
-        let quad = element_quality(ElementKind::Quad4, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]);
+        let quad = element_quality(
+            ElementKind::Quad4,
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+        );
         assert!((quad.scaled_jacobian - 1.0).abs() < 1e-12 && quad.skew.abs() < 1e-12);
-        let tet = element_quality(ElementKind::Tet4, &[[1.0, 1.0, 1.0], [1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, 1.0]]);
-        assert!((tet.radius_ratio - 1.0).abs() < 1e-12, "{}", tet.radius_ratio);
+        let tet = element_quality(
+            ElementKind::Tet4,
+            &[
+                [1.0, 1.0, 1.0],
+                [1.0, -1.0, -1.0],
+                [-1.0, 1.0, -1.0],
+                [-1.0, -1.0, 1.0],
+            ],
+        );
+        assert!(
+            (tet.radius_ratio - 1.0).abs() < 1e-12,
+            "{}",
+            tet.radius_ratio
+        );
         assert!((tet.scaled_jacobian.abs() - 1.0).abs() < 1e-12);
-        let prism = element_quality(ElementKind::Wedge6, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 3f64.sqrt() / 2.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.5, 3f64.sqrt() / 2.0, 1.0]]);
-        assert!((prism.scaled_jacobian - 1.0).abs() < 1e-12 && (prism.edge_ratio - 1.0).abs() < 1e-12, "{prism:?}");
-        let hex = grid(Physics::Solid, ElementKind::Hex8, Elastic::new(1.0, 0.3), [1, 1, 1], &|p| p).unwrap().quality();
+        let prism = element_quality(
+            ElementKind::Wedge6,
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.5, 3f64.sqrt() / 2.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [0.5, 3f64.sqrt() / 2.0, 1.0],
+            ],
+        );
+        assert!(
+            (prism.scaled_jacobian - 1.0).abs() < 1e-12 && (prism.edge_ratio - 1.0).abs() < 1e-12,
+            "{prism:?}"
+        );
+        let hex = grid(
+            Physics::Solid,
+            ElementKind::Hex8,
+            Elastic::new(1.0, 0.3),
+            [1, 1, 1],
+            &|p| p,
+        )
+        .unwrap()
+        .quality();
         assert!((hex.min_scaled_jacobian - 1.0).abs() < 1e-12);
     }
 
     #[test]
     fn degenerate_and_inverted_elements_are_flagged() {
-        let sliver = element_quality(ElementKind::Tri3, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1e-4, 0.0]]);
-        assert!(sliver.scaled_jacobian > 0.0 && sliver.scaled_jacobian < 1e-3 && sliver.skew > 0.99);
-        let flipped = element_quality(ElementKind::Tri3, &[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]);
+        let sliver = element_quality(
+            ElementKind::Tri3,
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1e-4, 0.0]],
+        );
+        assert!(
+            sliver.scaled_jacobian > 0.0 && sliver.scaled_jacobian < 1e-3 && sliver.skew > 0.99
+        );
+        let flipped = element_quality(
+            ElementKind::Tri3,
+            &[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+        );
         assert!(flipped.scaled_jacobian < 0.0);
-        let bowtie = element_quality(ElementKind::Quad4, &[[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
+        let bowtie = element_quality(
+            ElementKind::Quad4,
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+        );
         assert!(bowtie.scaled_jacobian <= 0.0);
-        let flat_tet = element_quality(ElementKind::Tet4, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]);
+        let flat_tet = element_quality(
+            ElementKind::Tet4,
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+        );
         assert!(flat_tet.scaled_jacobian.abs() < 1e-12 && flat_tet.radius_ratio.abs() < 1e-12);
     }
 
@@ -324,23 +512,52 @@ mod tests {
     fn the_tetrahedron_scaled_jacobian_is_the_element_quality_value_bit_for_bit() {
         let mut state = 3u64;
         let mut next = move || {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
         };
-        let mut tets: Vec<[V3; 4]> = (0..500).map(|_| std::array::from_fn(|_| std::array::from_fn(|_| next()))).collect();
+        let mut tets: Vec<[V3; 4]> = (0..500)
+            .map(|_| std::array::from_fn(|_| std::array::from_fn(|_| next())))
+            .collect();
         // flat, with a repeated corner, and inverted
-        tets.push([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]);
-        tets.push([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
-        tets.push([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+        tets.push([
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ]);
+        tets.push([
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]);
+        tets.push([
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]);
         for t in &tets {
-            let (got, want) = (tet_scaled_jacobian(t), element_quality(ElementKind::Tet4, t).scaled_jacobian);
+            let (got, want) = (
+                tet_scaled_jacobian(t),
+                element_quality(ElementKind::Tet4, t).scaled_jacobian,
+            );
             assert_eq!(got.to_bits(), want.to_bits(), "{t:?}");
         }
     }
 
     #[test]
     fn a_report_counts_inverted_elements_and_fills_the_histogram() {
-        let mut m = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad4, Elastic::new(1.0, 0.3), [3, 3, 1], &|p| p).unwrap();
+        let mut m = grid(
+            Physics::PlaneStress { thickness: 1.0 },
+            ElementKind::Quad4,
+            Elastic::new(1.0, 0.3),
+            [3, 3, 1],
+            &|p| p,
+        )
+        .unwrap();
         let ok = m.quality();
         assert_eq!(ok.inverted, 0);
         assert!(ok.acceptable(&QualityThresholds::default()));
@@ -350,16 +567,25 @@ mod tests {
         m.nodes[5] = [0.9, 0.9, 0.0];
         let bad = m.quality();
         assert!(bad.inverted > 0 && bad.first_inverted.is_some());
-        assert!(matches!(bad.require(&QualityThresholds::default()), Err(crate::meshing::MeshError::InvalidElements { .. })));
+        assert!(matches!(
+            bad.require(&QualityThresholds::default()),
+            Err(crate::meshing::MeshError::InvalidElements { .. })
+        ));
     }
 
     #[test]
     fn curved_quadratic_elements_are_judged_on_their_real_map() {
         // a quarter annulus of Quad8: well shaped, positive everywhere
-        let m = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad8, Elastic::new(1.0, 0.3), [4, 2, 1], &|p| {
-            let (r, th) = (1.0 + p[0], p[1] * std::f64::consts::FRAC_PI_2);
-            [r * th.cos(), r * th.sin(), 0.0]
-        })
+        let m = grid(
+            Physics::PlaneStress { thickness: 1.0 },
+            ElementKind::Quad8,
+            Elastic::new(1.0, 0.3),
+            [4, 2, 1],
+            &|p| {
+                let (r, th) = (1.0 + p[0], p[1] * std::f64::consts::FRAC_PI_2);
+                [r * th.cos(), r * th.sin(), 0.0]
+            },
+        )
         .unwrap();
         let q = m.quality();
         assert_eq!(q.inverted, 0);
@@ -368,7 +594,14 @@ mod tests {
 
     #[test]
     fn size_progression_sees_a_graded_mesh() {
-        let m = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad4, Elastic::new(1.0, 0.3), [4, 1, 1], &|p| [p[0] * p[0], p[1] * 0.01, 0.0]).unwrap();
+        let m = grid(
+            Physics::PlaneStress { thickness: 1.0 },
+            ElementKind::Quad4,
+            Elastic::new(1.0, 0.3),
+            [4, 1, 1],
+            &|p| [p[0] * p[0], p[1] * 0.01, 0.0],
+        )
+        .unwrap();
         let q = m.quality().with_progression(&m.adjacency());
         assert!(q.max_size_jump > 1.5, "{}", q.max_size_jump);
     }

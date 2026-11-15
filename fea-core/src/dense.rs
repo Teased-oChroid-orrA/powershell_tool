@@ -12,7 +12,10 @@ pub fn sym_eigen(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         v[i * n + i] = 1.0;
     }
     for _sweep in 0..100 {
-        let off: f64 = (0..n).flat_map(|i| (0..i).map(move |j| (i, j))).map(|(i, j)| a[i * n + j] * a[i * n + j]).sum();
+        let off: f64 = (0..n)
+            .flat_map(|i| (0..i).map(move |j| (i, j)))
+            .map(|(i, j)| a[i * n + j] * a[i * n + j])
+            .sum();
         let diag: f64 = (0..n).map(|i| a[i * n + i] * a[i * n + i]).sum();
         if off <= 1e-30 * diag.max(1e-300) {
             break;

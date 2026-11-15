@@ -862,7 +862,14 @@ mod tests {
                 .collect();
             assert_eq!(corner.len(), 8);
             let mut tets = Vec::new();
-            for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            for order in [
+                [0, 1, 2],
+                [0, 2, 1],
+                [1, 0, 2],
+                [1, 2, 0],
+                [2, 0, 1],
+                [2, 1, 0],
+            ] {
                 let mut bits = [0usize; 3];
                 let mut path = vec![corner[&bits]];
                 for k in order {
@@ -901,7 +908,12 @@ mod tests {
                 assert_eq!(blk.kind, ElementKind::Tet4);
                 for e in 0..blk.n_elems() {
                     let t = blk.elem(e);
-                    for f in [[t[0], t[1], t[2]], [t[0], t[1], t[3]], [t[0], t[2], t[3]], [t[1], t[2], t[3]]] {
+                    for f in [
+                        [t[0], t[1], t[2]],
+                        [t[0], t[1], t[3]],
+                        [t[0], t[2], t[3]],
+                        [t[1], t[2], t[3]],
+                    ] {
                         let mut k = f;
                         k.sort_unstable();
                         *count.entry(k).or_default() += 1;
@@ -910,10 +922,15 @@ mod tests {
             }
             let on_surface = |f: &[usize; 3]| {
                 (0..3).any(|a| {
-                    [0.0, 1.0].iter().any(|&c| f.iter().all(|&n| (out.nodes[n][a] - c).abs() < 1e-12))
+                    [0.0, 1.0]
+                        .iter()
+                        .any(|&c| f.iter().all(|&n| (out.nodes[n][a] - c).abs() < 1e-12))
                 })
             };
-            match count.iter().find(|(f, &n)| n > 2 || (n == 1 && !on_surface(f))) {
+            match count
+                .iter()
+                .find(|(f, &n)| n > 2 || (n == 1 && !on_surface(f)))
+            {
                 Some((f, n)) => Err(format!("face {f:?} used {n} times away from the surface")),
                 None => Ok(()),
             }
