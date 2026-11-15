@@ -52,6 +52,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | #11 — Pressure Vessel Stress/Failure-Mode/Min-Thickness Analyzer | `docs/issue-11-status.md` → `docs/issue-11-phase-1.md` .. `phase-15.md` (no phase-8; folded elsewhere) (**closed**, 15 phases shipped). Also summarized in root `CLAUDE.md` — that summary is being trimmed to point here instead of duplicating it |
 | #12 — FEA Audit 2.0 and core roadmap | `docs/issue-12-claude-handoff.md` (current verification/limitations/next steps) → `docs/issue-12-phase-12.md` .. `phase-19.md` (audit/core roadmap, direct-wgpu playback and interactive native workbench extension; draft PR #13) |
 | #234 — Bushing edge-check uncertainty controls | `docs/issue-234-uncertainty-controls.md` (editable CVs, stale-run behavior, verification) |
+| #234 — Bushings / pin loads on holes of every sketch region | `docs/issue-234-multi-region-bushings.md` (global hole numbering, scope, evidence) |
 
 ### Find It Fast — by current/live status
 | Looking for current status of... | Go to |

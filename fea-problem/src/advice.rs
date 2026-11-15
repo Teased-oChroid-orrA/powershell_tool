@@ -136,7 +136,7 @@ pub fn add_boundary(p: &mut Problem, surface: &str, kind: BcKind) -> Result<(), 
         }
         BcKind::Pressure => p.loads.push(Load::Pressure { edge: surface.to_string(), p: 1000.0 }),
         BcKind::Bearing => {
-            let n: usize = surface.strip_prefix("hole").and_then(|d| d.parse().ok()).ok_or("a bearing load acts on a hole")?;
+            let n = p.hole_number(surface).ok_or("a bearing load acts on a hole")?;
             if p.analysis == Analysis::Axisymmetric {
                 return Err("a bearing load is for plane problems and extruded sketches".into());
             }
@@ -210,10 +210,10 @@ pub(crate) fn edge_of_support(s: &Support) -> Option<&str> {
         Support::Point { .. } => None,
     }
 }
-pub(crate) fn edge_of_load(l: &Load) -> Option<String> {
+pub(crate) fn edge_of_load(p: &Problem, l: &Load) -> Option<String> {
     match l {
         Load::Pressure { edge, .. } | Load::Traction { edge, .. } | Load::Force { edge, .. } => Some(edge.clone()),
-        Load::Bearing { hole, .. } => Some(format!("hole{hole}")),
+        Load::Bearing { hole, .. } => Some(p.hole_at(*hole).map_or_else(|| format!("hole{hole}"), |h| h.2)),
         Load::Point { .. } | Load::Body { .. } => None,
     }
 }
@@ -223,7 +223,7 @@ pub fn recommend(p: &Problem) -> Vec<Advice> {
     let mut out = Vec::new();
     let cents = surface_centroids(p);
     let support_names: Vec<&str> = p.supports.iter().filter_map(edge_of_support).collect();
-    let load_names_owned: Vec<String> = p.loads.iter().filter_map(edge_of_load).collect();
+    let load_names_owned: Vec<String> = p.loads.iter().filter_map(|l| edge_of_load(p, l)).collect();
     let load_names: Vec<&str> = load_names_owned.iter().map(String::as_str).collect();
     let outer_edges: Vec<&(String, [f64; 2])> = cents.iter().filter(|(n, _)| surface_kind(n) == SurfaceKind::OuterEdge).collect();
     let plane = matches!(p.analysis, Analysis::PlaneStress | Analysis::PlaneStrain);
@@ -440,14 +440,14 @@ pub fn refinement_regions(p: &Problem) -> Vec<Region> {
         let level = level_order(kind, loaded)[0];
         out.push(Region { centre, to, radius, blend, level, kind, loaded, resolution: resolution(feature), applied: applied(centre, level), reason });
     };
+    let mut hole_base = 0;
     for (prefix, outer, holes) in &regions {
-        // Pin loads and bushings belong to the first region's holes (a bushed sketch has one region).
         let first = prefix.is_empty();
         for (i, h) in holes.iter().enumerate() {
             let r = h.reach();
-            let n = i + 1;
-            let loaded = first && (p.loads.iter().any(|l| matches!(l, Load::Bearing { hole, .. } if *hole == n)) || p.bushings.iter().any(|b| b.hole == n));
-            let label = format!("hole {n}{}", if first { String::new() } else { format!(" of region {}", prefix.trim_end_matches('/').trim_start_matches('r')) });
+            let n = hole_base + i + 1;
+            let loaded = p.loads.iter().any(|l| matches!(l, Load::Bearing { hole, .. } if *hole == n)) || p.bushings.iter().any(|b| b.hole == n);
+            let label = format!("hole {n}{}", if first { String::new() } else { format!(" (hole {} of region {})", i + 1, prefix.trim_end_matches('/').trim_start_matches('r')) });
             let why = if loaded { format!("{label} carries a pin or bushing load: the peak stress is at its edge and falls off within about two radii") } else { format!("{label} concentrates stress (about 3x the nominal at its edge) over about two radii") };
             push(h.centre(), None, 1.25 * r, 0.75 * r, RegionKind::Hole, loaded, r, why);
         }
@@ -457,6 +457,7 @@ pub fn refinement_regions(p: &Problem) -> Vec<Region> {
                 push(c, None, 0.03 * diag, 0.03 * diag, RegionKind::ReentrantCorner, false, 0.04 * diag, format!("{label}: the stress rises steeply towards a concave corner"));
             }
         }
+        hole_base += holes.len();
     }
     let cents = surface_centroids(p);
     let edges = surface_edges(p);
@@ -474,7 +475,7 @@ pub fn refinement_regions(p: &Problem) -> Vec<Region> {
         if matches!(l, Load::Bearing { .. }) {
             continue;
         }
-        if let Some((c, to)) = edge_of_load(l).as_deref().and_then(place) {
+        if let Some((c, to)) = edge_of_load(p, l).as_deref().and_then(place) {
             push(c, to, band, band, RegionKind::Load, true, 0.06 * diag, "the load enters here; the local stress field needs a few elements".into());
         }
     }
