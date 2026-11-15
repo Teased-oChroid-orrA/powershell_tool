@@ -15,5 +15,6 @@
 - Never loosen the `tests/junction.rs` tolerances to pass; they are tied to measured errors that fall with `R/t`.
 
 ## Pitfalls
+- The closed-form Geckeler estimate for a cylinder-ellipsoid junction underestimates the head-side peak bending (35 % at R/t 50, 7 % at 400; `docs/pressure-vessel-heads.md`). Do not quote it as conservative.
 - The Lame hoop stress is not uniform through the wall, so a far-field "bending" hoop of about 1 % at `R/t` = 50 is real, not an error.
 - The first release build of `fea-core` in a fresh worktree takes ~15 minutes.

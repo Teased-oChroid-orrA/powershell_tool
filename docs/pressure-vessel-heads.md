@@ -43,3 +43,19 @@ API only: no window (waits on the owner's mockup).
 - Observed (R/t 100, `p` = 100): 2:1 ellipsoid peak meridional surface stress 12.3e3 against 6.5e3 for the hemisphere (membrane 5.0e3): the ellipsoid's
   discontinuity is large (hoop compression in the head), which is why a code-rule thickness alone is not a junction check. Values are linear-elastic stresses to
   compare as secondary stress (3S limits), not against the primary allowable.
+
+### Ellipsoid: the closed-form Geckeler estimate underestimates the head side (checked against two papers)
+
+The equal-wall closed form for a cylinder joined to an ellipsoidal head (Balicevic, Kozak, Mrcela, "Strength of Pressure Vessels with Ellipsoidal
+Heads", Strojniski vestnik 54(2008)10, 685-692) was checked formula by formula: `M0 = 0`, `Q0 = p (1+gamma)/(8 beta) = p a^2/(8 beta b^2)`
+(eq. 14), `beta = (3(1-nu^2))^(1/4)/sqrt(R t)` (eq. 13), seam meridional stress `pR/2t` (Table 1), seam hoop `(pR/t)(1 - R^2/(4b^2))` (eqs. 2, 19, 20; zero for
+2:1), moment decay `M = -(Q0/beta) e^(-x) sin x` (eq. 17; eq. 18 flips the sign on the cylinder side), peak at `x = pi/4` giving `6 (0.3224) Q0/(beta t^2)` (derived;
+it matches Table 1 within the grid). These hold. Corrections: the hoop stress away from the seam is the membrane value plus
+`(pR/4t)(1+gamma) e^(-x) cos x` (head `+`, cylinder `-`), not a constant plus the bending term; the paper's `x = int beta ds` uses the local `R2`, so a constant-`beta`
+`e^(-beta x)` is exact only on the cylinder. Unequal thicknesses (`M0 != 0`, the 2x2 system of eqs. 11-12) are not solved in either paper (NASA SP-8083 only lists references).
+
+**Measured here (not in the papers):** the formula is an asymptotic result and is not conservative at ordinary `R/t`. For a 2:1 head the FE head-side peak bending
+is 1.35 / 1.25 / 1.23 / 1.14 / 1.07 times the formula at `R/t` = 50 / 87 / 100 / 200 / 400 (cylinder side about 7 % below it at `R/t` = 100), against the paper's claimed
+`O(h/R)` (< 5 %) error: about 25 % at the paper's own `R/h` = 87. The head's meridian curvature (`R1 = b^2/a` at the equator) changes its decay, which the symmetric
+cylinder-like model omits. Do not use the closed form as a design value for the head side; use `solve_junction`. Locked by
+`the_ellipsoid_geckeler_formula_underestimates_the_head_side_peak` in `tests/junction.rs`.

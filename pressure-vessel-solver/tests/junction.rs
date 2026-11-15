@@ -131,3 +131,24 @@ fn bad_input_is_refused() {
         assert!(matches!(solve_junction(bad), Err(JunctionError::InvalidInput(_))), "{bad:?}");
     }
 }
+
+/// Characterisation, not a tolerance on the solver: the equal-wall Geckeler formula for an ellipsoidal head (Balicevic, Kozak,
+/// Mrcela, Strojniski vestnik 54(2008)10 eqs. 14 and 17: `Q0 = p a^2 / (8 beta b^2)`, `M0 = 0`, peak surface bending
+/// `6 * 0.3224 Q0 / (beta t^2)`) underestimates the head-side peak of a 2:1 head, by a margin that shrinks with `R/t`. The paper
+/// claims an `O(h/R)` (< 5 %) error; the FE shows 35 / 23 / 14 / 7 % at R/t = 50 / 100 / 200 / 400.
+#[test]
+fn the_ellipsoid_geckeler_formula_underestimates_the_head_side_peak() {
+    let ratio = |rt: f64| {
+        let (a, b) = (rt + 0.5, 0.5 * rt + 0.5);
+        let beta = (3.0 * (1.0 - NU * NU)).powf(0.25) / a.sqrt();
+        let formula = 6.0 * 0.3224 * P * a * a / (8.0 * beta * b * b) / beta;
+        let s = run(rt, 1.0, HeadShape::Ellipsoidal { inside_depth: 0.5 * rt }, 4);
+        let head = s.stations.iter().filter(|x| x.s > 0.0).map(|x| x.bending[0].abs()).fold(0.0, f64::max);
+        let cyl = s.stations.iter().filter(|x| x.s < 0.0).map(|x| x.bending[0].abs()).fold(0.0, f64::max);
+        assert!(head > cyl, "R/t {rt}: head side {head} should carry the larger peak than the cylinder side {cyl}");
+        head / formula
+    };
+    let r: Vec<f64> = [50.0, 100.0, 200.0, 400.0].iter().map(|&x| ratio(x)).collect();
+    assert!(r.windows(2).all(|w| w[1] < w[0]), "ratio does not shrink with R/t: {r:?}");
+    assert!((1.25..1.45).contains(&r[0]) && (1.15..1.30).contains(&r[1]) && (1.07..1.20).contains(&r[2]) && (1.02..1.12).contains(&r[3]), "{r:?}");
+}
