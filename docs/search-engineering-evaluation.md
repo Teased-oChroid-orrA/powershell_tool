@@ -138,3 +138,17 @@ Reading.
 - **Headings:** prefixing the section heading to each line grows the chunk count by 28% and lowers every page-level metric except hit@1 (nDCG@10 0.373 against 0.383). Not adopted. Heading text as its own line (already kept) stays.
 - **Boxes:** not measured, not available. yolowpdf 0.1.2 returns Markdown per page with no text-layer boxes (only OCR lines have them), and a citation box does not change retrieval, so `pdf_folder_eval` could not score it. A box for text-layer lines needs our own content-stream interpretation or an upstream change; not started.
 - **Limits:** one machine, 10 judged documents, 160 queries, binary relevance, shuffle uses one fixed hash order. OCR text has no recognised-text cache on this path and ocrs reports no score (#0116).
+
+## 2026-11-15: ColQwen2 late-interaction probe against the text pipeline (research only, nothing shipped)
+
+Same 160 judged queries, restricted to the 10 documents that hold judged pages (1,088 pages; the 4,861-page, 27-document figure above is a different corpus). `scripts/colqwen_probe.py` renders each page at max side 896, embeds it with `vidore/colqwen2-v1.0` on MPS (bf16), and ranks by MaxSim. Ours is `pdf_folder_eval` with `PDF_EVAL_JUDGED_ONLY=1`, backend `yolow-ocr`, default hybrid ranking.
+
+| | doc hit@1 | doc hit@5 | page hit@1 | page hit@10 | page nDCG@10 | page recall@100 | index time | index size |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Text pipeline (yolowpdf + OCR) | 0.688 | 0.969 | 0.375 | 0.800 | 0.395 | 0.751 | 165 s | 12.1 MB (SQLite) |
+| ColQwen2 | 0.763 | 0.975 | 0.469 | 0.813 | 0.464 | 0.852 | 25,442 s (about 23 s/page) | 203 MB fp16 (about 651 vectors x 128 per page) |
+
+- **Quality:** ColQwen2 wins on page nDCG@10 (+0.069) and recall@100 (+0.10); page hit@10 is nearly level (+0.013) and doc hit@5 level (+0.006).
+- **Cost:** about 150x the indexing time on this 8 GB M1 (measured; the first part of the run competed with a Rust eval and swapped, so an uncontended rate would be better but not 150x better), about 17x the index size, a 4.6 GB model, and a VLM forward pass per query (43 s for 160 queries, plus 18 s to score) that must run on a GPU or large CPU model.
+- **Verdict:** no. The gain is real but is mostly in deep recall and page-level ordering; the top-10 hit rate, which is what a reader sees, barely moves. It does not justify GBs of model, a GPU requirement, and a multi-hour first index on the target machine, so it is not delivered. Revisit only if a much smaller late-interaction model or an accelerator becomes available, or if recall@100 for a reranker candidate set becomes the binding limit.
+- **Limits:** one machine, 10 documents, 160 queries, binary relevance, one image size (896); no tuning of either side; MaxSim over all pages (no ANN), which is exact and would only get less accurate at scale. Scratch venv and model cache (about 9 GB) lived in `/private/tmp`.

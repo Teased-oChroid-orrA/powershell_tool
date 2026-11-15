@@ -29,6 +29,7 @@ def main():
     ap.add_argument("work")
     ap.add_argument("--max-side", type=int, default=896)
     ap.add_argument("--limit-docs", type=int, default=0)
+    ap.add_argument("--limit-pages", type=int, default=0, help="smoke test: only the first N pages of each document")
     ap.add_argument("--device", default="mps")
     a = ap.parse_args()
     vidore, work = Path(a.vidore), Path(a.work)
@@ -51,7 +52,7 @@ def main():
     vectors = {}
     for doc in judged:
         pdf = pdfium.PdfDocument(str(vidore / "pdfs" / f"{doc}.pdf"))
-        for i in range(len(pdf)):
+        for i in range(min(len(pdf), a.limit_pages or len(pdf))):
             key = (doc, i + 1)
             f = work / "emb" / f"{doc}_{i + 1}.npy"
             if f.exists():
