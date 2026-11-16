@@ -39,7 +39,7 @@ impl Gui {
             ui.painter().rect_filled(rect, 0.0, p.bg);
             let content = Rect::from_min_max(Pos2::new(rect.left() + 16.0, rect.top() + 6.0), Pos2::new(rect.right() - 16.0, rect.bottom()));
             ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
-                egui::ScrollArea::vertical().id_salt("model-page-scroll").auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::both().id_salt("model-page-scroll").auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing = Vec2::new(8.0, 10.0);
                     ui.set_max_width(content.width().min(1120.0));
                     for item in items {
