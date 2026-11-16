@@ -105,12 +105,17 @@ impl Tube {
 }
 
 /// A support at station `x`: transversely pinned in `y` and `z`. `axial_anchor` also holds `x`;
-/// `rotation_fixed` clamps the slope (a rigid fixture, not a clip or saddle).
+/// `rotation_fixed` clamps the slope (a rigid fixture, not a clip or saddle). `rotation_stiffness` is
+/// a rotational spring to ground (moment per radian, the same in both bending planes): a clip or a
+/// segment end cut from a continuous run lies between pinned (`None` or `Some(0.0)`) and clamped
+/// (`rotation_fixed`, the infinite stiffness). It conflicts with `rotation_fixed` (refused). Supports
+/// at one station add their stiffnesses.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Support {
     pub x: f64,
     pub axial_anchor: bool,
     pub rotation_fixed: bool,
+    pub rotation_stiffness: Option<f64>,
 }
 
 /// A point load at `x`. `weight` is a lumped weight scaled by the case's load factors; `force` is
@@ -553,12 +558,13 @@ fn evaluate_case(run: &LineRun, class: &MaterialClass, mesh: &Mesh, case: &LoadC
     }
     let (qx, qy, qz) = (w * n[0], w * n[1], w * n[2]);
     // Boundary conditions.
-    let mut bc = vec![NodeBc { fix_w: false, fix_theta: false }; nn];
+    let mut bc = vec![NodeBc { fix_w: false, fix_theta: false, k_theta: 0.0 }; nn];
     let mut fix_u = vec![false; nn];
     for s in &run.supports {
         let i = node_of(mesh, s.x, tol);
         bc[i].fix_w = true;
         bc[i].fix_theta |= s.rotation_fixed;
+        bc[i].k_theta += s.rotation_stiffness.unwrap_or(0.0);
         fix_u[i] |= s.axial_anchor;
     }
     let ei = run.tube.e * inertia;
@@ -693,6 +699,17 @@ pub fn analyze(run: &LineRun, class: &MaterialClass, cases: &[LoadCase]) -> Resu
     if run.supports.is_empty() {
         return Err(LineRunError::Unstable("no supports".into()));
     }
+    for s in &run.supports {
+        match s.rotation_stiffness {
+            Some(k) if !(k.is_finite() && k >= 0.0) => {
+                return Err(LineRunError::InvalidInput(format!("support at x = {}: rotation_stiffness must be finite and non-negative", s.x)));
+            }
+            Some(_) if s.rotation_fixed => {
+                return Err(LineRunError::InvalidInput(format!("support at x = {}: rotation_fixed (infinite stiffness) conflicts with rotation_stiffness; set one", s.x)));
+            }
+            _ => {}
+        }
+    }
     let mesh = build_mesh(run, cases)?;
     let mut out = Vec::new();
     for c in cases {
@@ -700,6 +717,9 @@ pub fn analyze(run: &LineRun, class: &MaterialClass, cases: &[LoadCase]) -> Resu
     }
     Ok(LineResult { cases: out })
 }
+
+mod segment;
+pub use segment::*;
 
 #[cfg(test)]
 mod tests;

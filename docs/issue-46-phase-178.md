@@ -28,7 +28,7 @@ Fix (no tolerance or limit was loosened):
 | ctc_02 rc, ctc_02 ap203, ctc_05 e1 | tangent spline faces ~1e-2 mm apart: over the 5e-3 geometry tolerance after healing. Correct refusal; whether to widen is an owner decision (Phase 177). |
 | ctc_05 ap203 | heals, then a degenerate/inverted boundary triangle (face #572) |
 | ftc_07 e2, ftc_10 e2 | chart region traversal budget exceeded |
-| ftc_11 e2 | degenerate/inverted triangle (face #1199); not compared against the pre-heal run |
+| ftc_11 e2 | refused before the heal too (edge/surface disagreement 8.2e-3 mm, Phase 177); the heal admits that edge and the file then stops at a degenerate/inverted triangle (face #1199), a later stage, not a regression |
 | ctc_02 e2, ctc_05 rd, ftc_08 e1-tg, stc_07 | unchanged from Phase 177 |
 
 ctc_05 e1 also showed a vertex 5.16e-2 mm from its common point, just over the 5e-2 limit: left refused. No OCCT parity or solve measured; `occt_retirement_approved` untouched.

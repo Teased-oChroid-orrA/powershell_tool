@@ -39,7 +39,7 @@ fn line_run_reactions_match_the_frame_solver() {
         tube,
         x_start: 0.0,
         x_end: 250.0,
-        supports: supports.iter().map(|&i| Support { x: xs[i], axial_anchor: i == 0, rotation_fixed: false }).collect(),
+        supports: supports.iter().map(|&i| Support { x: xs[i], axial_anchor: i == 0, rotation_fixed: false, rotation_stiffness: None }).collect(),
         contents_weight_per_length: w,
         insulation_weight_per_length: 0.0,
         point_loads: vec![PointLoad { x: 20.0, force: f20, ..Default::default() }, PointLoad { x: 190.0, force: f190, ..Default::default() }],

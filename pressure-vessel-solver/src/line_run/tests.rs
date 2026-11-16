@@ -12,7 +12,7 @@ fn ductile() -> MaterialClass {
 }
 
 fn sup(x: f64) -> Support {
-    Support { x, axial_anchor: false, rotation_fixed: false }
+    Support { x, axial_anchor: false, rotation_fixed: false, rotation_stiffness: None }
 }
 
 fn run(supports: Vec<Support>, x_end: f64, w: f64) -> LineRun {
@@ -59,7 +59,7 @@ fn simply_supported_udl_matches_wl2_over_8_and_wl_over_2() {
 #[test]
 fn fixed_fixed_udl_matches_wl2_over_12_and_wl2_over_24() {
     let (l, w) = (80.0, 3.0);
-    let fixed = |x| Support { x, axial_anchor: false, rotation_fixed: true };
+    let fixed = |x| Support { x, axial_anchor: false, rotation_fixed: true, rotation_stiffness: None };
     let r = one(&run(vec![fixed(0.0), fixed(l)], l, w), case([0.0, 0.0, 1.0]));
     let (lo, hi) = extreme(&r, |s| s.bend_z);
     close(hi, w * l * l / 12.0, 1e-11, "end moment magnitude");
@@ -72,7 +72,7 @@ fn fixed_fixed_udl_matches_wl2_over_12_and_wl2_over_24() {
 #[test]
 fn cantilever_tip_load_gives_root_moment_pl_and_reaction_p() {
     let (l, p) = (50.0, 120.0);
-    let mut rn = run(vec![Support { x: 0.0, axial_anchor: false, rotation_fixed: true }], l, 0.0);
+    let mut rn = run(vec![Support { x: 0.0, axial_anchor: false, rotation_fixed: true, rotation_stiffness: None }], l, 0.0);
     rn.point_loads.push(PointLoad { x: l, force: [0.0, p, 0.0], ..Default::default() });
     let r = one(&rn, case([0.0; 3]));
     close(extreme(&r, |s| s.bend_y.abs()).1, p * l, 1e-12, "root moment");
@@ -188,7 +188,7 @@ fn open_end_line_has_no_pressure_axial_stress() {
 // ---- thermal -------------------------------------------------------------------------------
 
 fn anchored(x: f64, rot: bool) -> Support {
-    Support { x, axial_anchor: true, rotation_fixed: rot }
+    Support { x, axial_anchor: true, rotation_fixed: rot, rotation_stiffness: None }
 }
 
 #[test]
@@ -447,5 +447,200 @@ fn station_margins_minimum_equals_the_case_margins() {
     for m in &c.margins {
         let lowest = c.station_margins.iter().flat_map(|s| s.iter()).filter(|(k, _)| *k == m.criterion).map(|(_, v)| *v).fold(f64::INFINITY, f64::min);
         assert!((lowest - m.margin).abs() <= 1e-9 * (1.0 + m.margin.abs()), "{:?}: {lowest} vs {}", m.criterion, m.margin);
+    }
+}
+
+// ---- rotational spring supports and segment mode --------------------------------------------
+
+fn spring(x: f64, k: f64) -> Support {
+    Support { x, axial_anchor: false, rotation_fixed: false, rotation_stiffness: Some(k) }
+}
+
+fn end(f: EndFixity) -> SegmentEnd {
+    SegmentEnd { fixity: f, axial_anchor: false }
+}
+
+fn ei() -> f64 {
+    E * tube().inertia()
+}
+
+/// Support moment of a uniformly loaded span with a spring `k` at both ends: `k w L^3 / 24 EI / (1 + k L / 2 EI)`
+/// (end slope of the simply supported span minus the end-moment slope, set equal to `M / k`).
+fn spring_end_moment(k: f64, w: f64, l: f64) -> f64 {
+    k * w * l.powi(3) / (24.0 * ei()) / (1.0 + k * l / (2.0 * ei()))
+}
+
+#[test]
+fn spring_ends_match_the_closed_form_and_the_pinned_and_clamped_limits() {
+    let (l, w) = (100.0, 2.0);
+    let c = || case([0.0, 0.0, 1.0]);
+    for k in [0.0, 1e-3 * ei() / l, 0.3 * ei() / l, ei() / l, 7.0 * ei() / l, 1e3 * ei() / l] {
+        let r = one(&run(vec![spring(0.0, k), spring(l, k)], l, w), c());
+        let m = spring_end_moment(k, w, l);
+        let (lo, hi) = extreme(&r, |s| s.bend_z);
+        close(hi, m, 1e-10, "end moment");
+        close(lo, -(w * l * l / 8.0 - m), 1e-10, "midspan moment");
+        for q in &r.reactions {
+            close(q.moment[1].abs(), m, 1e-10, "spring reaction moment is the end moment");
+        }
+        assert!(r.residual < 1e-12, "residual {}", r.residual);
+    }
+    // k = 0 is exactly pinned; a huge k is clamped to O(2 EI / kL).
+    let pin = one(&run(vec![sup(0.0), sup(l)], l, w), c());
+    let zero = one(&run(vec![spring(0.0, 0.0), spring(l, 0.0)], l, w), c());
+    assert_eq!(extreme(&pin, |s| s.bend_z), extreme(&zero, |s| s.bend_z));
+    let fixed = Support { rotation_fixed: true, ..sup(0.0) };
+    let clamped = one(&run(vec![fixed, Support { x: l, ..fixed }], l, w), c());
+    let stiff = one(&run(vec![spring(0.0, 1e12 * ei() / l), spring(l, 1e12 * ei() / l)], l, w), c());
+    close(extreme(&stiff, |s| s.bend_z).1, extreme(&clamped, |s| s.bend_z).1, 1e-9, "k -> infinity equals clamped");
+    close(extreme(&stiff, |s| s.bend_z).0, extreme(&clamped, |s| s.bend_z).0, 1e-9, "k -> infinity equals clamped (midspan)");
+}
+
+#[test]
+fn spring_stiffness_moves_the_moment_monotonically_from_midspan_to_the_ends() {
+    let (l, w) = (100.0, 2.0);
+    let mut prev: Option<(f64, f64)> = None;
+    for i in 0..12 {
+        let k = ei() / l * 10f64.powi(i - 4);
+        let r = one(&run(vec![spring(0.0, k), spring(l, k)], l, w), case([0.0, 0.0, 1.0]));
+        let (lo, hi) = extreme(&r, |s| s.bend_z);
+        if let Some((plo, phi)) = prev {
+            assert!(hi > phi, "end moment rises with k");
+            assert!(-lo < -plo, "midspan moment falls with k");
+        }
+        prev = Some((lo, hi));
+    }
+}
+
+#[test]
+fn spring_with_a_single_pin_is_stable_and_conflicts_and_bad_values_are_refused() {
+    // One pin with a clip spring holds a cantilever-like line: tip load P at distance a gives a pin
+    // reaction and a spring moment P a (statics), no mechanism.
+    let (a, p) = (50.0, 10.0);
+    let mut rn = run(vec![spring(0.0, 5.0 * ei() / a)], a, 0.0);
+    rn.point_loads.push(PointLoad { x: a, force: [0.0, 0.0, p], ..Default::default() });
+    let r = one(&rn, case([0.0; 3]));
+    close(r.reactions[0].moment[1].abs(), p * a, 1e-10, "spring moment equals P a");
+    assert!(analyze(&run(vec![sup(0.0)], a, 0.0), &ductile(), &[case([0.0; 3])]).is_err(), "a bare pin is still a mechanism");
+    let refuse = |s: Support| analyze(&run(vec![s, sup(a)], a, 1.0), &ductile(), &[case([0.0, 0.0, 1.0])]).unwrap_err();
+    for k in [-1.0, f64::NAN, f64::INFINITY] {
+        assert!(matches!(refuse(spring(0.0, k)), LineRunError::InvalidInput(_)), "k = {k}");
+    }
+    assert!(matches!(refuse(Support { rotation_fixed: true, ..spring(0.0, 1.0) }), LineRunError::InvalidInput(_)));
+}
+
+#[test]
+fn segment_end_fixities_match_closed_forms() {
+    let (l, w) = (100.0, 2.0);
+    let c = || case([0.0, 0.0, 1.0]);
+    let seg = |a, b, w| analyze_segment(&run(vec![], l, w), [end(a), end(b)], &ductile(), &[c()]).unwrap().cases.remove(0);
+    // Clamped-clamped: wL^2/12 at the ends, wL^2/24 at midspan.
+    let ff = seg(EndFixity::Clamped, EndFixity::Clamped, w);
+    let (lo, hi) = extreme(&ff, |s| s.bend_z);
+    close(hi, w * l * l / 12.0, 1e-11, "fixed-fixed end moment");
+    close(lo, -w * l * l / 24.0, 1e-11, "fixed-fixed midspan");
+    // Propped cantilever: clamp at 0, pin at L. Pin reaction 3wL/8, clamp moment wL^2/8, sagging peak 9wL^2/128.
+    let pc = seg(EndFixity::Clamped, EndFixity::Pinned, w);
+    let (lo, hi) = extreme(&pc, |s| s.bend_z);
+    close(hi, w * l * l / 8.0, 1e-11, "propped clamp moment");
+    close(lo, -9.0 * w * l * l / 128.0, 1e-11, "propped sagging peak");
+    close(reaction_z(&pc, l), -3.0 * w * l / 8.0, 1e-11, "propped pin reaction");
+    // Clamp + valve: clamped root, free tip with a weight and offset gives M = P L at the root.
+    let mut rn = run(vec![], l, 0.0);
+    rn.point_loads.push(PointLoad { x: l, force: [0.0, 0.0, 12.0], ..Default::default() });
+    let cv = analyze_segment(&rn, [end(EndFixity::Clamped), end(EndFixity::Free)], &ductile(), &[case([0.0; 3])]).unwrap().cases.remove(0);
+    close(extreme(&cv, |s| s.bend_z).1.abs().max(extreme(&cv, |s| s.bend_z).0.abs()), 12.0 * l, 1e-11, "root moment P L");
+    // A spring end sits between pinned and clamped.
+    let k = ei() / l;
+    let sp = seg(EndFixity::Spring(k), EndFixity::Spring(k), w);
+    close(extreme(&sp, |s| s.bend_z).1, spring_end_moment(k, w, l), 1e-10, "spring segment end moment");
+}
+
+#[test]
+fn segment_refuses_misplaced_supports_and_a_free_anchor() {
+    let l = 100.0;
+    let both = [end(EndFixity::Pinned), end(EndFixity::Pinned)];
+    let cs = [case([0.0, 0.0, 1.0])];
+    assert!(analyze_segment(&run(vec![sup(0.0)], l, 1.0), both, &ductile(), &cs).is_err(), "support on a segment end");
+    let free_anchor = SegmentEnd { fixity: EndFixity::Free, axial_anchor: true };
+    assert!(analyze_segment(&run(vec![], l, 1.0), [free_anchor, end(EndFixity::Pinned)], &ductile(), &cs).is_err());
+}
+
+/// Middle span of three equal spans (`[l, 2l]`), cut from the full run.
+fn middle_span_cut(l: f64, w: f64) -> (CaseResult, LineRun) {
+    let full = one(&run(vec![sup(0.0), sup(l), sup(2.0 * l), sup(3.0 * l)], 3.0 * l, w), case([0.0, 0.0, 1.0]));
+    let mut seg = run(vec![], 2.0 * l, w);
+    seg.x_start = l;
+    (full, seg)
+}
+
+#[test]
+fn cut_end_moments_from_a_full_run_reproduce_the_span_exactly() {
+    let (l, w) = (60.0, 1.5);
+    let (full, mut seg) = middle_span_cut(l, w);
+    // Moment of the full solution at each cut (bending moment M(x) = EI w'', hogging positive here).
+    let at = |x: f64, right: bool| -> Station {
+        let v: Vec<&Station> = full.stations.iter().filter(|s| (s.x - x).abs() < 1e-9).collect();
+        **if right { v.last() } else { v.first() }.unwrap()
+    };
+    let (m_left, m_right) = (at(l, true).bend_z, at(2.0 * l, false).bend_z);
+    close(m_left, w * l * l / 10.0, 1e-11, "full-run support moment");
+    // Plane-z bending moment M of a cut enters as `moment: [0, M, 0]` at the span's left end and
+    // `[0, -M, 0]` at its right end (the slope-conjugate load is -m_y, and M(0) = -load, M(L) = +load).
+    seg.point_loads.push(PointLoad { x: l, moment: [0.0, m_left, 0.0], ..Default::default() });
+    seg.point_loads.push(PointLoad { x: 2.0 * l, moment: [0.0, -m_right, 0.0], ..Default::default() });
+    let r = analyze_segment(&seg, [end(EndFixity::Pinned), end(EndFixity::Pinned)], &ductile(), &[case([0.0, 0.0, 1.0])]).unwrap().cases.remove(0);
+    // Moments are continuous across a node, so the span's extremes compare directly.
+    let span_m = |c: &CaseResult| extreme(&CaseResult { stations: c.stations.iter().filter(|s| s.x >= l - 1e-9 && s.x <= 2.0 * l + 1e-9).cloned().collect(), ..c.clone() }, |s| s.bend_z);
+    let (a, b) = (span_m(&full), span_m(&r));
+    close(b.0, a.0, 1e-10, "span sagging moment");
+    close(b.1, a.1, 1e-10, "span end moment");
+    // Shear jumps at a support: take the span side (right of the left cut, left of the right cut).
+    let in_seg = |x: f64| r.stations.iter().find(|s| (s.x - x).abs() < 1e-9).unwrap().shear_z;
+    close(in_seg(l), at(l, true).shear_z, 1e-10, "left cut shear");
+    close(in_seg(2.0 * l), at(2.0 * l, false).shear_z, 1e-10, "right cut shear");
+    assert!(r.residual < 1e-12);
+}
+
+#[test]
+fn bounds_bracket_the_continuous_two_and_three_span_margins() {
+    let (l, w) = (60.0, 1.5);
+    let c = || case([0.0, 0.0, 1.0]);
+    // Two spans: segment = the first span. Pinned-pinned peak wL^2/8 equals the true support moment.
+    let two = one(&run(vec![sup(0.0), sup(l), sup(2.0 * l)], 2.0 * l, w), c());
+    let sb = analyze_segment_bounds(&run(vec![], l, w), [end(EndFixity::Pinned), end(EndFixity::Pinned)], &ductile(), &[c()]).unwrap();
+    // Three spans: segment = the middle span (true support moment 0.1 wL^2 > the clamped 1/12).
+    let (three, seg3) = middle_span_cut(l, w);
+    let mb = analyze_segment_bounds(&seg3, [end(EndFixity::Pinned), end(EndFixity::Pinned)], &ductile(), &[c()]).unwrap();
+    assert_eq!(sb.worst.len(), two.margins.len());
+    for (i, real) in two.margins.iter().enumerate() {
+        assert!(sb.worst[i].margin.margin <= real.margin * (1.0 + 1e-9), "two-span criterion {i}");
+    }
+    for (i, real) in three.margins.iter().enumerate() {
+        assert!(mb.worst[i].margin.margin <= real.margin * (1.0 + 1e-9), "three-span criterion {i}");
+    }
+    assert_eq!(mb.worst[0].bound, Bound::Pinned, "midspan moment wL^2/8 governs the middle span");
+    assert!(mb.worst[0].margin.margin < three.margins[0].margin, "the bound is conservative, not exact");
+    // Honest limit: the clamped end moment (1/12) is below the true continuous one (1/10) because the
+    // loaded neighbours rotate the joint the other way; the stress margin is bracketed, end actions are not.
+    let ends_clamped = extreme(&mb.clamped.cases[0], |s| s.bend_z).1;
+    assert!(ends_clamped < extreme(&three, |s| s.bend_z).1);
+    close(ends_clamped, w * l * l / 12.0, 1e-11, "clamped-clamped end moment");
+}
+
+#[test]
+fn bounds_need_two_held_ends_and_report_the_governing_bound_per_criterion() {
+    let l = 100.0;
+    let mut rn = run(vec![], l, 0.0);
+    rn.point_loads.push(PointLoad { x: l, force: [0.0, 0.0, 12.0], ..Default::default() });
+    // A free end has no restraint to bracket (pinned root + free tip is a mechanism): refused, not guessed.
+    let e = analyze_segment_bounds(&rn, [end(EndFixity::Clamped), end(EndFixity::Free)], &ductile(), &[case([0.0; 3])]).unwrap_err();
+    assert!(matches!(e, LineRunError::InvalidInput(_)), "{e}");
+    // Two held ends: per-criterion worst equals the lower of the two bounds' governing margins.
+    let b = analyze_segment_bounds(&run(vec![], l, 2.0), [end(EndFixity::Spring(1.0)), end(EndFixity::Spring(1.0))], &ductile(), &[case([0.0, 0.0, 1.0])]).unwrap();
+    for (i, w) in b.worst.iter().enumerate() {
+        let (p, c) = (b.pinned.cases[0].margins[i].margin, b.clamped.cases[0].margins[i].margin);
+        assert_eq!(w.margin.margin, p.min(c));
+        assert_eq!(w.bound, if c < p { Bound::Clamped } else { Bound::Pinned });
     }
 }

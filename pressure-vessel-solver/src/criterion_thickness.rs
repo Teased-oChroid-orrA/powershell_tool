@@ -565,7 +565,7 @@ mod tests {
 
     fn line() -> LineRun {
         let tube = Tube { outer_diameter: 1.0, wall: 0.05, e: 10.0e6, alpha: 12.8e-6, weight_density: 0.1 };
-        let s = |x| Support { x, axial_anchor: false, rotation_fixed: false };
+        let s = |x| Support { x, axial_anchor: false, rotation_fixed: false, rotation_stiffness: None };
         LineRun { tube, x_start: 0.0, x_end: 100.0, supports: vec![s(0.0), s(100.0)], contents_weight_per_length: 0.05, insulation_weight_per_length: 0.0, point_loads: vec![], subdivisions: 4 }
     }
     fn class() -> MaterialClass {

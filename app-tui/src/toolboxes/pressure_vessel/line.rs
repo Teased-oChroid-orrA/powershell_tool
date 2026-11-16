@@ -80,7 +80,7 @@ impl LineRunInputs {
             tube,
             x_start: 0.0,
             x_end: self.length,
-            supports: self.supports.iter().map(|s| Support { x: s.x, axial_anchor: s.axial_anchor, rotation_fixed: s.rotation_fixed }).collect(),
+            supports: self.supports.iter().map(|s| Support { x: s.x, axial_anchor: s.axial_anchor, rotation_fixed: s.rotation_fixed, rotation_stiffness: None }).collect(),
             contents_weight_per_length: self.contents_weight,
             insulation_weight_per_length: 0.0,
             point_loads: self.loads.iter().map(|l| PointLoad { x: l.x, force: l.force, weight: l.weight, ..PointLoad::default() }).collect(),
