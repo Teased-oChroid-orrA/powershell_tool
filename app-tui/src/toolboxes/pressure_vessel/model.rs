@@ -386,6 +386,20 @@ pub struct PressureVesselModel {
     pub thickness_outcome: Option<ThicknessSolverOutcome>,
     /// The UG-27 / UG-32 code check; independent of the Lame analysis, so it is present even when `geometry` is invalid.
     pub heads: HeadsCheck,
+
+    /// "Minimum wall by requirement": the rows the person checks (seeded neutral from the material's class), the class and
+    /// allowable overrides, the supported line run and what they give.
+    pub requirements: Vec<super::requirements::Requirement>,
+    pub kind_override: Option<super::requirements::MaterialKind>,
+    /// Overrides of the material's yield, ultimate and ultimate compression strengths (ksi); `None`: the catalog's.
+    pub allowable_override: [Option<f64>; 3],
+    pub line: super::line::LineRunInputs,
+    /// The minimum walls and margins at the wall entered; for a line run `None` while the solve runs.
+    pub walls: Option<Result<super::walls::Walls, String>>,
+    /// The line run at the wall entered, every case; `None` when the line run is off.
+    pub line_result: Option<Result<pressure_vessel_solver::line_run::LineResult, String>>,
+    /// Counts the edits that change the line run's walls, so the answer of an older solve is dropped.
+    pub walls_revision: u64,
 }
 
 impl Default for PressureVesselModel {
@@ -414,7 +428,15 @@ impl Default for PressureVesselModel {
             rows: Vec::new(),
             buckling: BucklingApplicability::NotApplicable,
             thickness_outcome: None,
+            requirements: Vec::new(),
+            kind_override: None,
+            allowable_override: [None; 3],
+            line: super::line::LineRunInputs::new(5000.0, 0.0, true, 0.0),
+            walls: None,
+            line_result: None,
+            walls_revision: 0,
         };
+        model.requirements = super::requirements::seeds(model.kind());
         model.recompute();
         model
     }
@@ -435,7 +457,7 @@ impl PressureVesselModel {
     pub fn select_material(&mut self, index: usize) {
         if index < self.material_catalog().len() {
             self.material_index = index;
-            self.recompute();
+            self.material_changed();
         }
     }
 
@@ -447,7 +469,7 @@ impl PressureVesselModel {
         let material = leak_custom_material(name, e_ksi, sy_ksi, ftu_ksi, nu, alpha_u_f);
         self.custom_materials.push(material);
         self.material_index = self.material_catalog().len() - 1;
-        self.recompute();
+        self.material_changed();
     }
 
     /// The user-added materials as they are saved between runs (`persistence::save`).
@@ -548,10 +570,11 @@ impl PressureVesselModel {
             self.rows = Vec::new();
             self.buckling = BucklingApplicability::NotApplicable;
             self.thickness_outcome = None;
+            self.recompute_walls();
             return;
         };
 
-        let material = *self.material();
+        let material = self.effective_material();
         let thermal = self.thermal_loading(&material);
         let mut rows = evaluate_failure_modes_with_thermal(&geometry, &pressure, &material, thermal.as_ref());
         let buckling = evaluate_buckling(&geometry, &pressure, &material, Some(self.unsupported_length));
@@ -566,6 +589,7 @@ impl PressureVesselModel {
             100,
             1e-6,
         ));
+        self.recompute_walls();
     }
 
     /// The code check at the vessel's remaining wall (the thickness left after corrosion and mill undertolerance).

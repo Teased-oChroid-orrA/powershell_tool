@@ -136,6 +136,12 @@ pub enum DockItem {
     Bars { rows: Vec<Bar>, lo: f64, hi: f64 },
     /// A small x-y plot.
     Plot(Plot),
+    /// Chips side by side (case choices, a state and a button).
+    Pills(Vec<super::page::Pill>),
+    /// A supported line to scale with its margin curve.
+    Run(Box<super::page::LineDrawing>),
+    /// A table (the requirements).
+    Table(Box<super::page::DockTable>),
 }
 
 /// One large figure: its label, value and unit, and dim lines under it.
@@ -297,6 +303,11 @@ impl DockItem {
             DockItem::Verdict { headline, detail, .. } => Some(format!("{headline}  {detail}")),
             DockItem::Figures(f) => Some(f.iter().map(|f| format!("{}  {} {}  {}", f.label, f.value, f.unit, f.detail.join("  "))).collect::<Vec<_>>().join("  |  ")),
             DockItem::Bars { rows, .. } => Some(rows.iter().map(|b| format!("{}  {}  {}", b.label, b.text, b.tag).trim_end().to_string()).collect::<Vec<_>>().join("  |  ")),
+            DockItem::Pills(p) => Some(p.iter().map(|p| p.text.clone()).collect::<Vec<_>>().join("  |  ")),
+            DockItem::Table(t) => Some(t.rows.iter().map(|r| r.cells.iter().filter_map(|c| match c {
+                super::page::Cell::Text { text, .. } | super::page::Cell::Wall { text, .. } | super::page::Cell::Chip { text, .. } => Some(text.clone()),
+                super::page::Cell::Button { .. } => None,
+            }).collect::<Vec<_>>().join("  ")).collect::<Vec<_>>().join("\n")),
             _ => None,
         }
     }

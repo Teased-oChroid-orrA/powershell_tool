@@ -174,6 +174,17 @@ fn factored(unfactored_margin: f64, factor: f64) -> f64 {
     }
 }
 
+/// The factored margin (`allowable / (factor * applied) - 1`) of one requirement at a given wall, the number a row of
+/// [`solve_per_criterion`] is solved against. `None` when the criterion does not apply to these inputs; an unbounded or
+/// beyond-validity buckling margin is `INFINITY`. Reads the same stresses as the solve (pressure only, no thermal).
+pub fn margin_at_geometry(inputs: &PerCriterionInputs, req: &CriterionRequirement, geometry: &CylinderGeometry) -> Option<f64> {
+    match probe(req.criterion, geometry, inputs) {
+        Probe::Margin(m) => Some(factored(m, req.factor)),
+        Probe::BeyondValidity => Some(f64::INFINITY),
+        Probe::Unavailable(_) => None,
+    }
+}
+
 fn solve_row(inputs: &PerCriterionInputs, req: &CriterionRequirement, max_iterations: u32, radius_tolerance: f64) -> CriterionOutcome {
     let a = inputs.inner_radius;
     // Applicability is decided on a thin real wall (the formulas' validity range only cuts off thick walls).
@@ -383,6 +394,16 @@ mod tests {
             Probe::Margin(m) => factored(m, r.factor),
             _ => panic!("no margin"),
         }
+    }
+
+    #[test]
+    fn margin_at_geometry_is_the_margin_the_solve_reaches_and_none_when_not_evaluable() {
+        let inp = inputs(EndCondition::Closed, 5000.0, 0.0, vec![req(ThicknessCriterion::VonMisesYield, 1.5, 0.2), req(ThicknessCriterion::Buckling, 1.0, 0.0)]);
+        let sol = solve_per_criterion(&inp, 200, TOL).unwrap();
+        let CriterionOutcome::Converged { outer_radius, margin: Some(m), .. } = sol.rows[0].outcome else { panic!("converged") };
+        let g = CylinderGeometry::new(2.0, outer_radius).unwrap();
+        assert!((margin_at_geometry(&inp, &inp.requirements[0], &g).unwrap() - m).abs() < 1e-12);
+        assert_eq!(margin_at_geometry(&inp, &inp.requirements[1], &g), None, "no external pressure");
     }
 
     /// Open-end Lame: Tresca stress at the bore is `2 p b^2/(b^2-a^2)`; setting it to

@@ -282,6 +282,12 @@ pub trait Authoring {
     /// The text of input `id` of the document changed.
     fn document_field(&mut self, _id: u8, _text: String) {}
 
+    /// A page drawn over the model's viewport, left of the inspector, that scrolls (the Pressure Vessel's requirements table
+    /// and line run). Empty: none, the model shows.
+    fn page(&self) -> Vec<crate::gpu_viewer::ui::DockItem> {
+        Vec::new()
+    }
+
     /// A workbench drawn as three fixed panes (inputs, views, results) instead of the tree, ribbon and inspector.
     /// `None`: the usual chrome.
     fn workbench(&self) -> Option<crate::gpu_viewer::ui::Workbench> {

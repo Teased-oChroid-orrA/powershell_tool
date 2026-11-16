@@ -8,6 +8,7 @@ pub mod editor;
 pub mod gui;
 pub mod menu;
 pub mod menus;
+pub mod page;
 pub mod progress;
 pub mod results;
 #[cfg(feature = "gpu-viewer")]

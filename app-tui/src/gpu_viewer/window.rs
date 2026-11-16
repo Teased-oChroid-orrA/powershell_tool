@@ -2583,6 +2583,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// The Pressure Vessel line run: the switch opens the page over the viewport, its table takes clicks and typing, and
+    /// the wall solve answers through the worker.
+    #[test]
+    fn the_pressure_vessel_line_run_page_takes_clicks_in_its_table() {
+        let dir = std::env::temp_dir().join(format!("window-vessel-line-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let session =
+            crate::gpu_viewer::editor::vessel::VesselSession::open(&dir.join("case.json")).unwrap();
+        let mut v = viewer(Some(Box::new(session)));
+        frame(&mut v);
+        assert!(v.editor.as_ref().unwrap().page().is_empty());
+        let at = target(&v, "Supported line run");
+        click(&mut v, at);
+        let t = Instant::now();
+        while v.editor.as_ref().unwrap().solving() {
+            v.editor.as_mut().unwrap().poll();
+            frame(&mut v);
+            assert!(t.elapsed().as_secs() < 60, "timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        v.editor.as_mut().unwrap().poll();
+        frame(&mut v);
+        let page = |v: &Viewer| {
+            v.editor
+                .as_ref()
+                .unwrap()
+                .page()
+                .iter()
+                .filter_map(|i| i.plain_text())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(page(&v).contains("Sum of reactions"), "{} / {:?} / {:?}", page(&v), v.editor.as_ref().unwrap().status(), v.gui.target_labels());
+        // The table's add row and a label cell are clickable controls of the page.
+        let at = target(&v, "Add requirement");
+        click(&mut v, at);
+        frame(&mut v);
+        let label = v.editor.as_ref().unwrap().page().iter().find_map(|i| i.plain_text().filter(|t| t.contains("Requirement ")));
+        assert!(label.is_some(), "{}", page(&v));
+        let name = target_label_with(&v, "Requirement ");
+        let at = target(&v, &name);
+        click(&mut v, at);
+        assert!(v.editor.as_ref().unwrap().prompting(), "a click on a label cell types into it");
+        v.input(Input::Key(Key::Character("x".into())));
+        v.input(Input::Key(Key::Named(NamedKey::Enter)));
+        frame(&mut v);
+        assert!(page(&v).contains(&format!("{name}x")), "{}", page(&v));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    fn target_label_with(v: &Viewer, prefix: &str) -> String {
+        v.gui
+            .target_labels()
+            .into_iter()
+            .find(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no control starting {prefix:?}"))
+    }
+
     /// The Preload Analysis window: a click on Applied Torque types it and the preload follows; the Bolt row opens the
     /// bolt picker card.
     #[test]

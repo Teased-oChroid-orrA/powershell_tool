@@ -1648,6 +1648,9 @@ impl Gui {
             }
             DockItem::Bars { rows, lo, hi } => self.bars(ui, rows, *lo, *hi, p, out),
             DockItem::Plot(plot) => plot_ui(ui, plot, p),
+            DockItem::Pills(pills) => self.pills(ui, pills, p, out),
+            DockItem::Run(d) => self.line_drawing(ui, d, p),
+            DockItem::Table(t) => self.dock_table(ui, t, p, out),
         }
     }
 

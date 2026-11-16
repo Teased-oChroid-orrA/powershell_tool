@@ -42,5 +42,24 @@ narrower than the scan ratio (~1.2) could be missed: stated limit.
 - Line run: reproduction and minimality per criterion through `analyze`, the thin-limit wall `t = FS p r_o / Ftu`, class refusal.
 - Tolerances are never loosened; invalid rows (factor `<= 0`, non-finite) are rejected, not defaulted.
 
+## Window (Pressure Vessel, `app-tui`)
+The window shows this as "Minimum wall by requirement" (owner-approved mockup): Requirement, Criterion, Factor, Required MS, Minimum
+wall (a number and a bar against the wall entered, tick at the wall entered) and Margin at wall (met / short). The governing row is
+tinted; the footer states the governing wall (and, for the cylinder, the nominal equivalent with the allowances).
+- **Seeding.** Rows start from the material's class (`requirements::MaterialKind`: catalog elongation under 5 % is brittle, id `cfrp*`
+  composite; the person can flip ductile / brittle): ductile yield von Mises and Tresca plus ultimate, brittle maximum principal against
+  ultimate. Allowables come from the catalog and can be overridden (yield, ultimate, ultimate compression; compression defaults to the
+  ultimate tension for a brittle line run and the window says so). Factor 1.0 and required MS 0.0 are neutral and shown with a hint to
+  enter the program's values; a factor is never invented. A new material re-seeds only unedited rows and clears the overrides.
+- **Cylinder:** `solve_per_criterion` inline on every edit (milliseconds); Results step card. Coulomb-Mohr is not evaluable for a plain
+  cylinder: the row says so instead of being dropped.
+- **Line run** (supports, point loads such as a valve, load cases): analysed inline for the drawing, its walls solved by
+  `solve_line_run_walls` on the window's worker (stale answers dropped by `walls_revision`). The class safety factors are fixed at 1; a
+  row's factor `f` and required margin `r` are folded in as the equivalent `required_ms' = f (1 + r) - 1`. Margin at wall is the
+  factored margin at the wall entered, lowest over all cases. The margin curve under the drawing is, per station of the selected case,
+  the lowest over the rows of `factored margin - required margin`, so zero is "just met"; the marker is its minimum.
+- The rows travel in the case file (format 4; older cases load seeded) and the table is in the exported report.
+- Live in the page, not the title bar: the equilibrium chip (sum of reactions against load) and Export report are the page's first row.
+
 ## Not done
-No window: the Pressure Vessel window result card has no table for this and a new layout needs an approved mockup.
+- The line run's Tube / Governing / Reactions cards show the selected case only for reactions; there is no per-case table.

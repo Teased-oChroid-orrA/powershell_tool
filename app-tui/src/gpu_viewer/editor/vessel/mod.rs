@@ -6,6 +6,7 @@
 //! checks follow every edit in their own cards, the ribbon has the steps Inputs, Results and Report. Nothing here
 //! computes a stress: `pressure-vessel-solver` does, through `PressureVesselModel::commit_number` / `recompute`.
 mod cards;
+mod page;
 pub mod drawing;
 pub mod file;
 mod picker;
@@ -23,9 +24,12 @@ use crate::gpu_viewer::{
     Scene,
 };
 use crate::toolboxes::pressure_vessel::{
-    model::{self, FieldRow, PressureVesselModel},
+    edit::Edit,
+    model::{FieldRow, PressureVesselModel},
     persistence, report,
+    walls::WallOutcome,
 };
+use super::worker::Worker;
 use file::VesselFile;
 use std::path::{Path, PathBuf};
 
@@ -44,6 +48,25 @@ pub enum VesselAct {
     /// Check the form and add its material to the catalog.
     AddMaterial,
     ClosePicker,
+    /// Type into a field of the requirements table, the allowables or the line run.
+    Edit(Edit),
+    /// The next criterion of a requirement row; add or remove a row.
+    CycleRequirement(usize),
+    AddRequirement,
+    RemoveRequirement(usize),
+    /// The material class (ductile / brittle) the rows follow.
+    ToggleKind,
+    ToggleLineRun,
+    SelectCase(usize),
+    AddCase,
+    AddSupport,
+    AddLoad,
+    RemoveCase(usize),
+    RemoveSupport(usize),
+    RemoveLoad(usize),
+    /// A support's axial anchor (`false`) or rotation fixity (`true`), and a case's end condition.
+    ToggleSupport(usize, bool),
+    ToggleCaseEnds(usize),
     Undo,
     Redo,
     Save,
@@ -51,7 +74,7 @@ pub enum VesselAct {
 }
 
 struct Prompt {
-    row: FieldRow,
+    edit: Edit,
     text: String,
     /// Nothing typed yet: the first character replaces the value instead of extending it.
     fresh: bool,
@@ -73,6 +96,8 @@ pub struct VesselSession {
     saved_revision: Option<String>,
     /// The picture is rebuilt only after an edit.
     drawn: bool,
+    /// The line run's minimum walls, solved off the window's thread (tag: `PressureVesselModel::walls_revision`).
+    walls: Worker<Vec<WallOutcome>>,
 }
 
 const UNDO_LIMIT: usize = 100;
@@ -96,6 +121,7 @@ impl VesselSession {
             status,
             step: "Inputs",
             drawn: false,
+            walls: Worker::new("vessel-walls"),
         }
     }
 
@@ -110,6 +136,28 @@ impl VesselSession {
         &self.model
     }
 
+    /// Start the line run's wall solve when the model waits for one and the worker holds no job for this revision. An
+    /// older job is told to stop, its answer is dropped (`set_line_walls`), and `poll` starts the new one once it ends.
+    fn kick_walls(&mut self) {
+        if self.model.walls.is_some() || !self.model.line.enabled {
+            return;
+        }
+        match self.walls.tag() {
+            Some(t) if t == self.model.walls_revision => return,
+            Some(_) => {
+                self.walls.cancel();
+                return;
+            }
+            None => {}
+        }
+        if self.walls.is_busy() {
+            return;
+        }
+        if let Some((revision, job)) = self.model.line_wall_job() {
+            let _ = self.walls.start(revision, move || job.run());
+        }
+    }
+
     // ------------------------------------------------------------------ editing
 
     fn snapshot(&self) -> VesselFile {
@@ -117,7 +165,11 @@ impl VesselSession {
     }
     /// Record the state before an edit so Undo can return to it.
     fn checkpoint(&mut self) {
-        self.undo.push(self.snapshot());
+        let before = self.snapshot();
+        self.checkpoint_with(before);
+    }
+    fn checkpoint_with(&mut self, before: VesselFile) {
+        self.undo.push(before);
         if self.undo.len() > UNDO_LIMIT {
             self.undo.remove(0);
         }
@@ -126,6 +178,14 @@ impl VesselSession {
     fn changed(&mut self) {
         self.dirty = true;
         self.drawn = false;
+        self.kick_walls();
+    }
+    /// One undo step around a model edit that has no typed text: a switch, a row added or removed.
+    fn edit_model(&mut self, f: impl FnOnce(&mut PressureVesselModel)) {
+        self.prompt = None;
+        self.checkpoint();
+        f(&mut self.model);
+        self.changed();
     }
     fn set_from(&mut self, file: &VesselFile) {
         let skipped = file.apply(&mut self.model);
@@ -177,10 +237,7 @@ impl VesselSession {
     fn activate_row(&mut self, row: FieldRow) {
         match row {
             FieldRow::Header(_) => {}
-            FieldRow::Number(target) => {
-                self.picker = None;
-                self.prompt = Some(Prompt { row, text: model::format_for_edit(self.model.number_value(target)), fresh: true });
-            }
+            FieldRow::Number(target) => self.begin_edit(Edit::Number(target)),
             FieldRow::ToggleEndCondition => {
                 self.prompt = None;
                 self.checkpoint();
@@ -196,24 +253,30 @@ impl VesselSession {
             FieldRow::OpenMaterialPicker => self.open_picker(),
         }
     }
+    /// Open the typed edit of a field; a number starts selected (the first character replaces it), a name does not.
+    fn begin_edit(&mut self, edit: Edit) {
+        self.picker = None;
+        if let Some(text) = self.model.edit_text(edit) {
+            self.prompt = Some(Prompt { edit, text, fresh: !edit.is_text() });
+        }
+    }
     fn commit_prompt(&mut self) {
         let Some(p) = self.prompt.take() else { return };
-        let FieldRow::Number(target) = p.row else { return };
-        let label = model::row_label(p.row);
-        match p.text.trim().parse::<f64>() {
+        let before = self.snapshot();
+        match self.model.apply_edit(p.edit, &p.text) {
             // Typing the value it already has is not an edit: no undo step.
-            Ok(v) if v.is_finite() && v == self.model.number_value(target) => {}
-            Ok(v) if v.is_finite() => {
-                self.checkpoint();
-                self.model.commit_number(target, v);
+            Ok(false) => {}
+            Ok(true) => {
+                self.checkpoint_with(before);
                 self.changed();
             }
-            _ => self.status = format!("{label} not changed: {:?} is not a number.", p.text.trim()),
+            Err(e) => self.status = e,
         }
     }
     fn prompt_char(&mut self, c: char) {
         let Some(p) = &mut self.prompt else { return };
-        if (c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E')) && p.text.len() < 40 {
+        let typed = if p.edit.is_text() { !c.is_control() } else { c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E') };
+        if typed && p.text.len() < 40 {
             if std::mem::take(&mut p.fresh) {
                 p.text.clear();
             }
@@ -232,6 +295,25 @@ impl VesselSession {
             VesselAct::ListMaterials => self.new_material(false),
             VesselAct::AddMaterial => self.add_material(),
             VesselAct::ClosePicker => self.picker = None,
+            VesselAct::Edit(e) => self.begin_edit(e),
+            VesselAct::CycleRequirement(i) => self.edit_model(|m| m.cycle_requirement(i)),
+            VesselAct::AddRequirement => self.edit_model(|m| m.add_requirement()),
+            VesselAct::RemoveRequirement(i) => self.edit_model(|m| m.remove_requirement(i)),
+            VesselAct::ToggleKind => self.edit_model(|m| m.toggle_kind()),
+            VesselAct::ToggleLineRun => self.edit_model(|m| m.toggle_line_run()),
+            VesselAct::AddCase => self.edit_model(|m| m.add_case()),
+            VesselAct::AddSupport => self.edit_model(|m| m.add_support()),
+            VesselAct::AddLoad => self.edit_model(|m| m.add_load()),
+            VesselAct::RemoveCase(i) => self.edit_model(|m| m.remove_case(i)),
+            VesselAct::RemoveSupport(i) => self.edit_model(|m| m.remove_support(i)),
+            VesselAct::RemoveLoad(i) => self.edit_model(|m| m.remove_load(i)),
+            VesselAct::ToggleSupport(i, rotation) => self.edit_model(|m| m.toggle_support(i, rotation)),
+            VesselAct::ToggleCaseEnds(i) => self.edit_model(|m| m.toggle_case_ends(i)),
+            // Which case is drawn is not an edit: no undo step, the case file keeps it.
+            VesselAct::SelectCase(i) => {
+                self.model.select_case(i);
+                self.changed();
+            }
             VesselAct::Undo => self.undo(),
             VesselAct::Redo => self.redo(),
             VesselAct::Save => self.save(),
@@ -313,13 +395,21 @@ impl Authoring for VesselSession {
         !self.drawn
     }
     fn poll(&mut self) -> bool {
-        false
+        let answered = match self.walls.poll() {
+            Some((revision, answer)) => self.model.set_line_walls(revision, answer),
+            None => false,
+        };
+        self.kick_walls();
+        answered
+    }
+    fn page(&self) -> Vec<DockItem> {
+        self.page_items()
     }
     fn prompting(&self) -> bool {
         self.prompt.is_some()
     }
     fn solving(&self) -> bool {
-        false
+        self.walls.is_running()
     }
     fn status(&self) -> String {
         if !self.status.is_empty() {
