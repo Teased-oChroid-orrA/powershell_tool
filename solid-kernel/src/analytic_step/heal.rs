@@ -158,6 +158,12 @@ impl AnalyticModel {
             return Err(format!("no convergence (worst distance {:e} mm, stalled {stalled}, {} faces; {kinds:?}; cosines {cosines:?})", worst(&f), surfaces.len()));
         }
         let moved = norm(sub(p, start));
+        if std::env::var("DIAG_HEAL").is_ok() && moved > 0.01 {
+            let r0 = residuals(start).map(|(_, f0)| worst(&f0)).unwrap_or(f64::NAN);
+            let kinds: Vec<String> = surfaces.iter().map(|s| format!("{s:?}").chars().take(14).collect::<String>()).collect();
+            let cosines: Vec<String> = (0..normals.len()).flat_map(|i| (i + 1..normals.len()).map(move |j| (i, j))).map(|(i, j)| format!("{:.5}", dot(normals[i], normals[j]))).collect();
+            eprintln!("DIAGHEAL moved {moved:e} initial {r0:e} final {:e} faces {faces:?} {kinds:?} cos {cosines:?} start {start:?} end {p:?}", worst(&f));
+        }
         if moved <= self.heal_limit_mm {
             Ok(p)
         } else {

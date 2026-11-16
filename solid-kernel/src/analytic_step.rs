@@ -1422,6 +1422,11 @@ impl AnalyticModel {
         }
         Ok(())
     }
+    /// The most a foreign-CAD read moved an edge or accepts a chord triangle to be inverted by (`Options::heal_limit_mm`; 0
+    /// for a strict read).
+    pub fn heal_limit_mm(&self) -> f64 {
+        self.heal_limit_mm
+    }
     pub fn geometry_tolerance_mm(&self) -> f64 {
         self.geometry_tolerance_mm
     }
