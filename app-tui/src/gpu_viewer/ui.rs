@@ -136,6 +136,8 @@ pub enum DockItem {
     Bars { rows: Vec<Bar>, lo: f64, hi: f64 },
     /// A small x-y plot.
     Plot(Plot),
+    /// Toggle chips side by side (`checked` is each one's state); a click runs the entry's action.
+    Chips { label: String, chips: Vec<crate::gpu_viewer::menu::Entry> },
 }
 
 /// One large figure: its label, value and unit, and dim lines under it.
@@ -297,6 +299,7 @@ impl DockItem {
             DockItem::Verdict { headline, detail, .. } => Some(format!("{headline}  {detail}")),
             DockItem::Figures(f) => Some(f.iter().map(|f| format!("{}  {} {}  {}", f.label, f.value, f.unit, f.detail.join("  "))).collect::<Vec<_>>().join("  |  ")),
             DockItem::Bars { rows, .. } => Some(rows.iter().map(|b| format!("{}  {}  {}", b.label, b.text, b.tag).trim_end().to_string()).collect::<Vec<_>>().join("  |  ")),
+            DockItem::Chips { label, chips } => Some(format!("{label} {}", chips.iter().map(|c| format!("[{}] {}", if c.checked == Some(true) { "x" } else { " " }, c.label)).collect::<Vec<_>>().join(" "))),
             _ => None,
         }
     }

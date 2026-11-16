@@ -545,6 +545,8 @@ pub struct CatalogSize {
 pub struct BushingModel {
     /// The Advanced section of the field list is open.
     pub advanced_open: bool,
+    /// Values the user declared critical: the options offered avoid changing them.
+    pub keep: super::advice::Keeps,
     pub fit_type: FitType,
     pub tolerance_mode: ToleranceMode,
     pub bore_dia: f64,
@@ -624,6 +626,7 @@ impl Default for BushingModel {
     fn default() -> Self {
         let mut model = Self {
             advanced_open: false,
+            keep: super::advice::Keeps::default(),
             fit_type: FitType::default(),
             tolerance_mode: ToleranceMode::default(),
             bore_dia: 0.5,
