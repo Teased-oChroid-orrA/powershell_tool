@@ -18,42 +18,68 @@ fn fail(detail: String) -> Error {
     Error { offset: 0, kind: ErrorKind::Geometry, detail }
 }
 
-/// Solve `(G + damping I) x = f` for a small dense symmetric `G` by Gaussian elimination with partial pivoting.
+/// Faces whose normals differ by less than a few degrees do not fix the point along the difference of their normals: the
+/// Gram matrix of their unit normals has an eigenvalue below this fraction of the largest, and that direction is not
+/// corrected (a truncated pseudo-inverse). Following it would slide the point along tangent faces by many times the gap
+/// it removes, far from where the edge is.
+const TANGENT_EIGENVALUE: f64 = 1e-3;
+
+/// The truncated Levenberg-Marquardt solve of `(G + damping I) x = f` for a small dense symmetric `G`: the eigenvectors of
+/// `G` (cyclic Jacobi) whose eigenvalue is at least [`TANGENT_EIGENVALUE`] of the largest carry `x`; the rest are dropped.
 fn solve_damped(gram: &[Vec<f64>], f: &[f64], damping: f64) -> Option<Vec<f64>> {
     let n = f.len();
-    let mut a: Vec<Vec<f64>> = (0..n)
-        .map(|i| {
-            let mut row = gram[i].clone();
-            row[i] += damping;
-            row.push(f[i]);
-            row
-        })
-        .collect();
-    for col in 0..n {
-        let pivot = (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
-        if !(a[pivot][col].abs() > 1e-300) {
-            return None;
+    let mut a: Vec<Vec<f64>> = gram.to_vec();
+    let mut v: Vec<Vec<f64>> = (0..n).map(|i| (0..n).map(|j| f64::from(i == j)).collect()).collect();
+    for _ in 0..50 {
+        let off: f64 = (0..n).flat_map(|i| (0..i).map(move |j| (i, j))).map(|(i, j)| a[i][j] * a[i][j]).sum();
+        if off < 1e-30 {
+            break;
         }
-        a.swap(col, pivot);
-        for row in col + 1..n {
-            let m = a[row][col] / a[col][col];
-            for k in col..=n {
-                a[row][k] -= m * a[col][k];
+        for p in 0..n {
+            for q in p + 1..n {
+                if a[p][q].abs() < 1e-300 {
+                    continue;
+                }
+                let theta = (a[q][q] - a[p][p]) / (2. * a[p][q]);
+                let t = theta.signum() / (theta.abs() + (theta * theta + 1.).sqrt());
+                let (c, s) = (1. / (t * t + 1.).sqrt(), t / (t * t + 1.).sqrt());
+                for k in 0..n {
+                    let (akp, akq) = (a[k][p], a[k][q]);
+                    a[k][p] = c * akp - s * akq;
+                    a[k][q] = s * akp + c * akq;
+                }
+                for k in 0..n {
+                    let (apk, aqk) = (a[p][k], a[q][k]);
+                    a[p][k] = c * apk - s * aqk;
+                    a[q][k] = s * apk + c * aqk;
+                }
+                for row in v.iter_mut() {
+                    let (vp, vq) = (row[p], row[q]);
+                    row[p] = c * vp - s * vq;
+                    row[q] = s * vp + c * vq;
+                }
             }
         }
     }
+    let largest = (0..n).map(|k| a[k][k]).fold(0f64, f64::max);
     let mut x = vec![0.; n];
-    for i in (0..n).rev() {
-        let tail: f64 = (i + 1..n).map(|k| a[i][k] * x[k]).sum();
-        x[i] = (a[i][n] - tail) / a[i][i];
+    for k in 0..n {
+        let lambda = a[k][k];
+        if lambda < TANGENT_EIGENVALUE * largest || !(lambda + damping > 0.) {
+            continue;
+        }
+        let coefficient = (0..n).map(|i| v[i][k] * f[i]).sum::<f64>() / (lambda + damping);
+        for i in 0..n {
+            x[i] += coefficient * v[i][k];
+        }
     }
-    x.iter().all(|v| v.is_finite()).then_some(x)
+    x.iter().all(|c| c.is_finite()).then_some(x)
 }
 
 impl AnalyticModel {
     /// The point nearest `start` (by a minimum-norm Newton iteration) that lies on the surface of every face in `faces`: on
     /// their common curve for two faces, at their common corner for three. `None` when the iteration does not converge
-    /// to 1e-10 relative, a surface has no projection or normal there, or the point would move by more than the heal limit.
+    /// to 1e-10 relative (or stalls on faces with no common point, within the geometry tolerance), a surface has no projection or normal there, or the point would move by more than the heal limit.
     /// Distinct surfaces only need to intersect; the same surface repeated is harmless (the damped normal equations split the
     /// correction between the duplicates).
     pub(crate) fn heal_point(&self, start: V3, faces: &[u64]) -> Result<V3, String> {
@@ -86,6 +112,7 @@ impl AnalyticModel {
         let converged = |p: V3| 1e-10 * (1. + p.iter().fold(0f64, |m, x| m.max(x.abs())));
         let (mut p, mut damping) = (start, 1e-9);
         let (mut normals, mut f) = residuals(p)?;
+        let (mut stalled, mut creeping) = (false, false);
         for _ in 0..MAX_ITERATIONS {
             if worst(&f) <= converged(p) {
                 break;
@@ -105,6 +132,8 @@ impl AnalyticModel {
                 if norm(sub(trial, start)) <= 2. * self.heal_limit_mm {
                     if let Ok((n2, f2)) = residuals(trial) {
                         if worst(&f2) < worst(&f) {
+                            // a step that removes under a thousandth of the distance is the creep of a compromise
+                            creeping = worst(&f) - worst(&f2) < 1e-3 * worst(&f);
                             (p, normals, f) = (trial, n2, f2);
                             damping = (damping * 0.1).max(1e-12);
                             accepted = true;
@@ -114,13 +143,19 @@ impl AnalyticModel {
                 }
                 damping *= 10.;
             }
-            if !accepted {
+            if !accepted || creeping {
+                stalled = true;
                 break;
             }
         }
-        // a point on the surfaces to a nanometre-scale fraction of the geometry tolerance is healed
-        if worst(&f) > converged(p).max(1e-4 * self.geometry_tolerance_mm) {
-            return Err(format!("no convergence (worst distance {:e} mm, {} faces)", worst(&f), surfaces.len()));
+        // Exactly on every surface, or the compromise of surfaces that have no common point: tangent faces separated by a
+        // gap meet nowhere, and the iteration then stalls halfway between them. A stalled iteration is a heal only when
+        // every face is within the geometry tolerance, the file's own measure of conformance.
+        let exact = worst(&f) <= converged(p).max(1e-4 * self.geometry_tolerance_mm);
+        if !exact && !(stalled && worst(&f) <= self.geometry_tolerance_mm) {
+            let kinds: Vec<String> = surfaces.iter().zip(&f).map(|(s, r)| format!("{}:{r:.2e}", format!("{s:?}").chars().take(12).collect::<String>())).collect();
+            let cosines: Vec<String> = (0..normals.len()).flat_map(|i| (i + 1..normals.len()).map(move |j| (i, j))).map(|(i, j)| format!("{:.6}", dot(normals[i], normals[j]))).collect();
+            return Err(format!("no convergence (worst distance {:e} mm, stalled {stalled}, {} faces; {kinds:?}; cosines {cosines:?})", worst(&f), surfaces.len()));
         }
         let moved = norm(sub(p, start));
         if moved <= self.heal_limit_mm {
@@ -223,5 +258,63 @@ impl AnalyticModel {
             self.healed.insert(*id, edge_faces.get(id).cloned().unwrap_or_default());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analytic_step::{Options, Surface};
+    use crate::step::{inventory, Limits};
+
+    fn model(radius: f64) -> AnalyticModel {
+        let plain = include_str!("../../tests/data/edit-plate-centre-hole.step");
+        let text = plain.replace("#282 = CYLINDRICAL_SURFACE('',#283,4.);", &format!("#282 = CYLINDRICAL_SURFACE('',#283,{radius:.3});"));
+        AnalyticModel::read(&inventory(&text, Limits::default()).unwrap(), Options::foreign_cad(0.05)).unwrap()
+    }
+
+    /// The top plane (z = 10) and the hole cylinder (radius 4.008, axis z) meet in a circle: a point 3 microns outside
+    /// it in the plane and 2 above is healed onto the circle, to the nearest point (the radial and axial corrections).
+    #[test]
+    fn a_point_beside_a_plane_cylinder_intersection_is_healed_to_the_nearest_circle_point() {
+        let m = model(4.008);
+        let cylinder = *m.surfaces.iter().find(|(_, s)| matches!(s, Surface::Cylinder { .. })).unwrap().0;
+        let plane = *m
+            .surfaces
+            .iter()
+            .find(|(_, s)| matches!(s, Surface::Plane(_)) && s.point([0., 0.]).is_some_and(|p| (p[2] - 10.).abs() < 1e-9))
+            .unwrap()
+            .0;
+        let Surface::Cylinder { frame, .. } = &m.surfaces[&cylinder] else { unreachable!() };
+        assert!(frame.z[0].abs() < 1e-12 && frame.z[1].abs() < 1e-12, "axis along z");
+        // the axis point in the top plane (z = 10), then the circle point radius 4.008 out along `x`
+        let centre = add(frame.origin, mul(frame.z, (10. - frame.origin[2]) / frame.z[2]));
+        let x = frame.x;
+        let start = add(add(centre, mul(x, 4.005)), [0., 0., 0.002]);
+        let p = m.heal_point(start, &[plane, cylinder]).unwrap();
+        for id in [plane, cylinder] {
+            let s = &m.surfaces[&id];
+            assert!(s.project(p).unwrap().residual_mm < 1e-9, "residual {:e}", s.project(p).unwrap().residual_mm);
+        }
+        let moved = norm(sub(p, start));
+        let nearest = norm(sub(add(centre, mul(x, 4.008)), start));
+        assert!((moved - nearest).abs() < 1e-9, "moved {moved:e}, nearest circle point {nearest:e}");
+    }
+
+    /// Two parallel faces 0.2 mm apart (the compromise case: no common point) heal to halfway, never beyond the gap.
+    #[test]
+    fn tangent_faces_with_a_gap_heal_to_the_midway_compromise() {
+        let m = model(4.);
+        let planes: Vec<u64> = m
+            .surfaces
+            .iter()
+            .filter(|(_, s)| s.point([0., 0.]).is_some_and(|p| matches!(s, Surface::Plane(_)) && (p[2].abs() < 1e-9 || (p[2] - 10.).abs() < 1e-9)))
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(planes.len() >= 2);
+        // z = 0 and z = 10 are parallel and 10 apart: too far for the geometry tolerance, so refused, not healed
+        let bottom = planes.iter().copied().find(|id| m.surfaces[id].point([0., 0.]).unwrap()[2].abs() < 1e-9).unwrap();
+        let top = planes.iter().copied().find(|id| m.surfaces[id].point([0., 0.]).unwrap()[2] > 1.).unwrap();
+        assert!(m.heal_point([1., 1., 5.], &[bottom, top]).is_err());
     }
 }

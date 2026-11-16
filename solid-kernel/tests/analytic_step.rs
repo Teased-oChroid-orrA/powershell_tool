@@ -1429,6 +1429,62 @@ fn a_single_declared_outer_that_is_the_hole_reads_like_the_correct_labels() {
     assert!(a.signed_volume_mm3 > 0.);
 }
 
+/// The hole cylinder of the centre-hole plate (`#282`, radius 4) is moved to radius 4.008 while its edge circles stay at 4:
+/// a gap of 8 microns, beyond the foreign-CAD geometry tolerance (chord / 10 = 5 microns) and inside its heal limit.
+fn plate_with_hole_radius(radius: f64) -> String {
+    let plain = include_str!("data/edit-plate-centre-hole.step");
+    let edited = plain.replace("#282 = CYLINDRICAL_SURFACE('',#283,4.);", &format!("#282 = CYLINDRICAL_SURFACE('',#283,{radius:.3});"));
+    assert_ne!(plain, edited);
+    edited
+}
+
+#[test]
+fn a_hole_cylinder_off_its_edge_circles_is_healed_onto_the_cylinder_with_the_closed_form_volume() {
+    let text = plate_with_hole_radius(4.008);
+    let data = inventory(&text, Limits::default()).unwrap();
+    // strictly read, the 8 micron disagreement is refused
+    assert!(AnalyticModel::read(&data, Options::default()).is_err());
+    let model = AnalyticModel::read(&data, Options::foreign_cad(0.05)).unwrap();
+    let hole = model.surface(402).unwrap();
+    let mut samples = 0;
+    for bound in &model.body().faces[&402].bounds {
+        for e in &bound.edges {
+            for &p in model.edge_points(e.edge).unwrap() {
+                samples += 1;
+                let residual = hole.project(p).unwrap().residual_mm;
+                assert!(residual < 1e-7, "edge #{} sample {residual:e} mm off the cylinder", e.edge);
+            }
+        }
+    }
+    assert!(samples > 20, "{samples}");
+    let volume = |model: &AnalyticModel| {
+        model.sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true).unwrap().signed_volume_mm3
+    };
+    // the plate without the hole is the strict read of the unmodified file plus its hole (radius 4, height 10)
+    let strict = AnalyticModel::read(&inventory(include_str!("data/edit-plate-centre-hole.step"), Limits::default()).unwrap(), Options::default()).unwrap();
+    let solid = volume(&strict) + std::f64::consts::PI * 16. * 10.;
+    let exact = solid - std::f64::consts::PI * 4.008 * 4.008 * 10.;
+    let got = volume(&model);
+    assert!((got - exact).abs() < 2e-3 * exact, "{got} against {exact}");
+}
+
+/// Healing is for foreign CAD only: a conforming file reads the same as it did, and a strict read still refuses the gap.
+#[test]
+fn a_strict_read_never_heals_and_a_conforming_file_reads_the_same_either_way() {
+    let plain = include_str!("data/edit-plate-centre-hole.step");
+    let data = inventory(plain, Limits::default()).unwrap();
+    let strict = AnalyticModel::read(&data, Options::default()).unwrap();
+    let foreign = AnalyticModel::read(&data, Options::foreign_cad(0.05)).unwrap();
+    for &edge in strict.body().edges.keys() {
+        let (a, b) = (strict.edge_points(edge).unwrap(), foreign.edge_points(edge).unwrap());
+        // the foreign read samples to a coarser chord, but never moves a vertex of a conforming edge
+        assert_eq!(a[0], b[0], "edge #{edge}");
+        assert_eq!(a.last(), b.last(), "edge #{edge}");
+    }
+    let gap = inventory(&plate_with_hole_radius(4.008), Limits::default()).unwrap();
+    assert!(AnalyticModel::read(&gap, Options::default()).is_err());
+}
+
 /// A half cone (apex at (0, 0, 8), base circle radius 5 in z = 0, the y >= 0 half) with the cone's apex as a vertex: three
 /// faces, the cone face bounded by two generators and a half-circle arc (a wedge, as the NIST AP242 files write drill
 /// points). The head and the units come from the OpenCASCADE cone fixture.

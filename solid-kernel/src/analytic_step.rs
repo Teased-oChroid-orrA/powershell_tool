@@ -2674,7 +2674,7 @@ mod conversion_tests {
         let b = [1., 0., 0.75e-7];
         let opt = Options::default();
         assert!(samples(&e, &line, a, b, false, true, opt, 10).is_ok());
-        assert!(on_surface(&e, &surface, &line, a, b, opt.geometry_tolerance_mm).is_err());
+        assert!(on_surface(&e, &surface, &line, a, b, opt.geometry_tolerance_mm, 0.).is_err());
         let near = Curve::Line {
             origin: [0., 0., 0.5e-7],
             direction: [1., 0., 0.],
@@ -2682,7 +2682,7 @@ mod conversion_tests {
         let a = [0., 0., 1.25e-7];
         let b = [1., 0., 1.25e-7];
         assert!(samples(&e, &near, a, b, false, true, opt, 10).is_ok());
-        assert!(on_surface(&e, &surface, &near, a, b, opt.geometry_tolerance_mm).is_err());
+        assert!(on_surface(&e, &surface, &near, a, b, opt.geometry_tolerance_mm, 0.).is_err());
 
         let cylinder = Surface::Cylinder {
             frame: Frame {
@@ -2700,6 +2700,6 @@ mod conversion_tests {
         let a = [1. + 0.75e-7, 0., 0.];
         let b = [1. + 0.75e-7, 0., 1.];
         assert!(samples(&e, &generator, a, b, false, true, opt, 10).is_ok());
-        assert!(on_surface(&e, &cylinder, &generator, a, b, opt.geometry_tolerance_mm).is_err());
+        assert!(on_surface(&e, &cylinder, &generator, a, b, opt.geometry_tolerance_mm, 0.).is_err());
     }
 }

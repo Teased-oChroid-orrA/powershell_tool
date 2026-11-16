@@ -122,3 +122,5 @@ Open, in the order the evidence points to:
 Hosted Windows evidence (the `Workbench qualification` workflow runs `scripts/qualify.py` on ubuntu, macos and windows for every PR; `gh run list`): since Phase 95 the Windows job failed for two reasons found in its logs and fixed: STEP fixtures arriving with CRLF line ends (`.gitattributes` pins `*.step` to LF) and a graded torus that stopped at the 12-round limit, whose result then depended on last-bit differences of the platform's `sin`/`cos` (24.2 against 19.1 degrees; `GradeOptions::max_rounds` is now 40 and the test asserts convergence). Ubuntu and macOS passed throughout.
 
 The root `CLAUDE.md` now authorizes qualified PR creation, squash merge and short-lived branch cleanup without a per-action request. The agent never rewrites history or force-pushes.
+
+**2026-11-15 import healing:** [Phase 178](issue-46-phase-178.md): `Options::foreign_cad` heals edge/surface disagreement up to the chord (samples and vertices moved onto all incident faces; tangent faces with a gap take a truncated-eigenvalue compromise within the geometry tolerance): native import reads 22 of 33. Retirement remains unapproved.
