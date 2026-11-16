@@ -2478,6 +2478,50 @@ mod snapshot_tests {
         shoot(&mut session, "bushing-quick-fe", true, (1360, 860), None);
     }
 
+    /// The Bushing fit section when the bore band is wider than the interference band: Advanced settings open, the
+    /// tolerance bands entered, and the fit routes card showing: `FEA_SNAPSHOT_BUSHING_OUT=/dir cargo test ... bushing_fit_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_BUSHING_OUT"]
+    fn bushing_fit_snapshot() {
+        use crate::gpu_viewer::editor::bushing::{file::BushingFile, BushingAct, BushingSession};
+        use crate::gpu_viewer::editor::session::EditorAction;
+        use crate::toolboxes::bushing::advice::Keep;
+        use crate::toolboxes::bushing::model::{BushingModel, NumberTarget};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_BUSHING_OUT") else {
+            return;
+        };
+        let _guard = headless_guard();
+        let mut model = BushingModel::default();
+        model.commit_number(NumberTarget::BoreTolPlus, 0.0010);
+        model.commit_number(NumberTarget::BoreTolMinus, 0.0);
+        model.commit_number(NumberTarget::InterferenceTolPlus, 0.0003);
+        model.commit_number(NumberTarget::InterferenceTolMinus, 0.0003);
+        let mut session = BushingSession::new(
+            &BushingFile::capture(&model, "Fit routes"),
+            std::env::temp_dir().join("bushing-fit-snapshot.json"),
+        );
+        let shoot = |session: &mut BushingSession, name: &str| {
+            pollster::block_on(async {
+                let (w, h) = (1360u32, 860u32);
+                let adapter = test_adapter().await.expect("adapter required");
+                let scene = session.scene().unwrap();
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(egui::Theme::Dark);
+                let view = ViewState::new(&scene);
+                let scenes = [scene];
+                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&*session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        };
+        shoot(&mut session, "bushing-fit-open");
+        session.act(EditorAction::Bushing(BushingAct::ToggleKeep(Keep::Bore)));
+        shoot(&mut session, "bushing-fit-keep-bore");
+    }
+
     /// The Fastener Hole workbench (regular fit, countersink dark and light, the Report step), as raw RGBA dumps:
     /// `FEA_SNAPSHOT_FASTENER_OUT=/dir cargo test ... fastener_snapshot -- --ignored`.
     #[test]

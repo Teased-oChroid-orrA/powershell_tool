@@ -178,6 +178,80 @@ impl Recommendation {
     pub fn is_applicable(&self) -> bool {
         !self.edits.is_empty()
     }
+
+    /// The critical values this option would change (its bore, interference, edge distance, load), in display order.
+    pub fn changes(&self) -> Vec<Keep> {
+        Keep::ALL.into_iter().filter(|k| self.edits.iter().any(|e| Keep::of(e.target) == Some(*k))).collect()
+    }
+}
+
+/// A value the user can declare critical: the options offered never change it unless nothing else works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keep {
+    /// The bore size, its nominal and its tolerance band.
+    Bore,
+    /// The interference requirement: target and tolerance band.
+    Interference,
+    EdgeDist,
+    Load,
+}
+
+impl Keep {
+    pub const ALL: [Keep; 4] = [Keep::Bore, Keep::Interference, Keep::EdgeDist, Keep::Load];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Keep::Bore => "Bore",
+            Keep::Interference => "Interference",
+            Keep::EdgeDist => "Edge distance",
+            Keep::Load => "Load",
+        }
+    }
+
+    pub fn of(target: NumberTarget) -> Option<Keep> {
+        match target {
+            NumberTarget::BoreDia | NumberTarget::BoreTolPlus | NumberTarget::BoreTolMinus => Some(Keep::Bore),
+            NumberTarget::Interference | NumberTarget::InterferenceTolPlus | NumberTarget::InterferenceTolMinus => Some(Keep::Interference),
+            NumberTarget::EdgeDist => Some(Keep::EdgeDist),
+            NumberTarget::Load => Some(Keep::Load),
+            _ => None,
+        }
+    }
+}
+
+/// Which values are critical for the case; saved with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Keeps {
+    pub bore: bool,
+    pub interference: bool,
+    pub edge_dist: bool,
+    pub load: bool,
+}
+
+impl Keeps {
+    pub fn has(&self, k: Keep) -> bool {
+        match k {
+            Keep::Bore => self.bore,
+            Keep::Interference => self.interference,
+            Keep::EdgeDist => self.edge_dist,
+            Keep::Load => self.load,
+        }
+    }
+
+    pub fn toggle(&mut self, k: Keep) {
+        let v = match k {
+            Keep::Bore => &mut self.bore,
+            Keep::Interference => &mut self.interference,
+            Keep::EdgeDist => &mut self.edge_dist,
+            Keep::Load => &mut self.load,
+        };
+        *v = !*v;
+    }
+
+    /// The critical values `r` would change.
+    pub fn broken_by(&self, r: &Recommendation) -> Vec<Keep> {
+        r.changes().into_iter().filter(|k| self.has(*k)).collect()
+    }
 }
 
 fn failing_kinds(model: &BushingModel) -> Vec<CheckKind> {
