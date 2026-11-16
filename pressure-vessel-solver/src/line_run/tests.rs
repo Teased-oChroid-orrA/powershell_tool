@@ -438,6 +438,18 @@ fn stations_converge_independent_of_subdivisions() {
     close(a.margins[0].margin, b.margins[0].margin, 1e-12, "margin does not depend on the station count");
 }
 
+#[test]
+fn station_margins_minimum_equals_the_case_margins() {
+    let rn = run(vec![sup(0.0), sup(100.0)], 100.0, 1.0);
+    let res = analyze(&rn, &ductile(), &[case([0.0, 0.0, -1.0])]).unwrap();
+    let c = &res.cases[0];
+    assert_eq!(c.station_margins.len(), c.stations.len());
+    for m in &c.margins {
+        let lowest = c.station_margins.iter().flat_map(|s| s.iter()).filter(|(k, _)| *k == m.criterion).map(|(_, v)| *v).fold(f64::INFINITY, f64::min);
+        assert!((lowest - m.margin).abs() <= 1e-9 * (1.0 + m.margin.abs()), "{:?}: {lowest} vs {}", m.criterion, m.margin);
+    }
+}
+
 // ---- rotational spring supports and segment mode --------------------------------------------
 
 fn spring(x: f64, k: f64) -> Support {

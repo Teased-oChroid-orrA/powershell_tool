@@ -289,6 +289,9 @@ pub struct CaseResult {
     pub stations: Vec<Station>,
     pub reactions: Vec<Reaction>,
     pub margins: Vec<LineMargin>,
+    /// Margin of each criterion at each of `stations` (same order; worst surface and circumferential angle there), for the
+    /// curve along the line. The case's `margins` are the minima of these.
+    pub station_margins: Vec<Vec<(Criterion, f64)>>,
     /// Largest relative equilibrium / backward-error residual of the case's solves.
     pub residual: f64,
 }
@@ -650,10 +653,12 @@ fn evaluate_case(run: &LineRun, class: &MaterialClass, mesh: &Mesh, case: &LoadC
     let criteria = criteria_of(class);
     let r_m = g.mean_radius();
     let mut margins: Vec<LineMargin> = Vec::new();
+    let mut station_margins: Vec<Vec<(Criterion, f64)>> = vec![Vec::new(); stations.len()];
     for &crit in criteria {
         let (allowable, fs) = allowable_and_fs(class, crit);
         let mut best: Option<(f64, f64, Location, PointStress)> = None; // utilization, applied, loc, stress
-        for st in &stations {
+        for (si, st) in stations.iter().enumerate() {
+            let mut station_u = 0.0_f64;
             for (surface, lame, r) in [(Surface::Inner, &inner, g.inner_radius), (Surface::Outer, &outer, g.outer_radius)] {
                 let point = |theta: f64| PointStress {
                     sigma_x: lame.axial + st.axial_force / a - (st.bend_y * r * theta.cos() + st.bend_z * r * theta.sin()) / inertia,
@@ -662,18 +667,20 @@ fn evaluate_case(run: &LineRun, class: &MaterialClass, mesh: &Mesh, case: &LoadC
                     tau: wall_shear_stress(st.shear_y, st.shear_z, theta, r_m, g.wall_thickness()),
                 };
                 let (theta, u) = worst_theta(|t| utilization_of(class, crit, &point(t), r).0);
+                station_u = station_u.max(u);
                 if best.as_ref().map_or(true, |b| u > b.0) {
                     let ps = point(theta);
                     let applied = utilization_of(class, crit, &ps, r).1;
                     best = Some((u, applied, Location { case: case.name.clone(), x: st.x, surface, theta }, ps));
                 }
             }
+            station_margins[si].push((crit, if station_u > 0.0 { 1.0 / station_u - 1.0 } else { f64::INFINITY }));
         }
         let (u, applied, location, stress) = best.expect("at least one station");
         let margin = if u > 0.0 { 1.0 / u - 1.0 } else { f64::INFINITY };
         margins.push(LineMargin { criterion: crit, margin, applied, allowable, factor_of_safety: fs, location, stress });
     }
-    Ok(CaseResult { name: case.name.clone(), stations, reactions, margins, residual })
+    Ok(CaseResult { name: case.name.clone(), stations, reactions, margins, station_margins, residual })
 }
 
 /// Runs every load case and returns the member actions, reactions and margins per case.

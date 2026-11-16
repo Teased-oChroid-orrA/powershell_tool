@@ -131,8 +131,67 @@ pub fn build_report_text(model: &PressureVesselModel) -> String {
         None => {}
     }
 
+    walls_report(model, &mut out);
     heads_report(model, &mut out);
     out
+}
+
+/// "Minimum wall by requirement" (and, with the line run on, its cases, reactions and governing station).
+fn walls_report(model: &PressureVesselModel, out: &mut String) {
+    use super::walls::WallOutcome;
+    if model.requirements.is_empty() {
+        return;
+    }
+    out.push_str("\nMinimum wall by requirement");
+    out.push_str(if model.line.enabled { " (supported line run, every case):\n" } else { " (cylinder, remaining wall):\n" });
+    let walls = match &model.walls {
+        Some(Ok(w)) => w,
+        Some(Err(e)) => {
+            out.push_str(&format!("  Not solved: {e}\n"));
+            return;
+        }
+        None => {
+            out.push_str("  Not solved yet.\n");
+            return;
+        }
+    };
+    out.push_str(&format!("  Material class {}; yield {:.1} ksi, ultimate {:.1} ksi{}.\n", model.kind().label(), model.effective_material().sy_ksi, model.effective_material().ftu_ksi, if model.allowable_override.iter().any(Option::is_some) { " (overrides entered)" } else { "" }));
+    out.push_str(&format!("  {:<28} {:<26} {:>7} {:>8} {:>16} {:>18}\n", "Requirement", "Criterion", "Factor", "Req. MS", "Minimum wall in", "Margin at wall"));
+    let governing = walls.governing();
+    for (i, (r, w)) in model.requirements.iter().zip(&walls.rows).enumerate() {
+        let wall = match &w.outcome {
+            WallOutcome::Wall { wall, .. } => format!("{wall:.4}"),
+            WallOutcome::Infeasible { .. } => "no wall".to_string(),
+            WallOutcome::NotEvaluable(_) => "not evaluable".to_string(),
+        };
+        let margin = w.margin_at_wall.map_or("-".to_string(), |ms| format!("{} {}", fmt_margin(ms), if ms >= r.required_ms { "met" } else { "short" }));
+        out.push_str(&format!("{} {:<28} {:<26} {:>7} {:>8} {:>16} {:>18}\n", if governing == Some(i) { '*' } else { ' ' }, r.label, r.criterion.label(), r.factor, r.required_ms, wall, margin));
+        if let WallOutcome::NotEvaluable(why) = &w.outcome {
+            out.push_str(&format!("      {why}\n"));
+        }
+    }
+    if let Some(g) = governing {
+        match walls.rows[g].outcome {
+            WallOutcome::Wall { wall, .. } => out.push_str(&format!("  Governing wall {wall:.4} in remaining ({}); the wall entered is {:.4} in.\n", model.requirements[g].label, walls.current_wall)),
+            WallOutcome::Infeasible { best_margin } => out.push_str(&format!("  No wall meets {} (best margin {}).\n", model.requirements[g].label, fmt_margin(best_margin))),
+            WallOutcome::NotEvaluable(_) => {}
+        }
+    }
+    if model.requirements.iter().any(|r| r.is_neutral()) {
+        out.push_str("  Rows at factor 1 and required MS 0 are the unedited seeds, not a program's values.\n");
+    }
+    if model.line.enabled {
+        out.push_str(&format!("  Run length {} in; {} support(s), {} point load(s), {} case(s).\n", model.line.length, model.line.supports.len(), model.line.loads.len(), model.line.cases.len()));
+        if let Some(Ok(res)) = &model.line_result {
+            for case in &res.cases {
+                let sum: Vec<String> = (0..3).map(|k| format!("{:.1}", case.reactions.iter().map(|r| r.force[k]).sum::<f64>())).collect();
+                out.push_str(&format!("  Case {}: reactions sum to ({}) lbf.\n", case.name, sum.join(", ")));
+            }
+        }
+        if let Some(x) = model.worst_point() {
+            out.push_str(&format!("  Lowest margin over the requirements, selected case: {:+.3} at x {:.2} in.\n", x[1], x[0]));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -148,6 +207,18 @@ mod tests {
         for r in &model.rows {
             assert!(text.contains(r.name), "report must mention check `{}`", r.name);
         }
+    }
+
+    #[test]
+    fn the_report_lists_every_requirement_and_marks_the_governing_one() {
+        let model = PressureVesselModel::default();
+        let text = build_report_text(&model);
+        assert!(text.contains("Minimum wall by requirement"), "{text}");
+        for r in &model.requirements {
+            assert!(text.contains(&r.label), "{}", r.label);
+        }
+        assert!(text.contains("\n* "), "the governing row is starred: {text}");
+        assert!(text.contains("unedited seeds"));
     }
 
     #[test]

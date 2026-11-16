@@ -5,13 +5,16 @@
 use crate::toolboxes::pressure_vessel::{
     model::{is_custom, HeadComponent, HeadInputs, NumberTarget, PressureVesselModel},
     persistence::PersistedMaterial,
+    requirements::{self, MaterialKind, Requirement},
+    line::LineRunInputs,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 // Older readers must not silently ignore wall-loss inputs and show optimistic checks.
 // Format 3 adds the code check's inputs; an older build would drop them and show a different check.
-const FORMAT_VERSION: u32 = 3;
+// Format 4 adds the requirement rows, the material class, the allowable overrides and the line run.
+const FORMAT_VERSION: u32 = 4;
 
 /// Every number input with its key in the file.
 pub const NUMBERS: [(NumberTarget, &str); 15] = [
@@ -57,6 +60,17 @@ pub struct VesselFile {
     /// The material's properties when it is a user-added one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_material: Option<PersistedMaterial>,
+    /// "Minimum wall by requirement" rows; absent in cases older than format 4 (seeded from the material then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirements: Option<Vec<Requirement>>,
+    /// The person's material class when it differs from the catalog's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_kind: Option<MaterialKind>,
+    /// Overrides of yield, ultimate and ultimate compression strength (ksi).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowables: Option<[Option<f64>; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_run: Option<LineRunInputs>,
 }
 
 impl VesselFile {
@@ -70,6 +84,10 @@ impl VesselFile {
             material: material.name.to_string(),
             head_component: Some(m.head.component.label().to_string()),
             custom_material: is_custom(material).then(|| material.into()),
+            requirements: Some(m.requirements.clone()),
+            material_kind: m.kind_override,
+            allowables: Some(m.allowable_override),
+            line_run: Some(m.line.clone()),
         }
     }
 
@@ -99,13 +117,25 @@ impl VesselFile {
         }
         if !self.material.is_empty() {
             match m.material_catalog().iter().position(|c| c.name == self.material) {
-                Some(i) => m.material_index = i,
+                Some(i) => m.select_material(i),
                 None => match self.custom_material.as_ref().filter(|c| c.name == self.material) {
                     Some(c) => m.add_custom_material(c.name.clone(), c.e_ksi, c.sy_ksi, c.ftu_ksi, c.nu, c.alpha_u_f),
                     None => skipped.push(format!("material: {}", self.material)),
                 },
             }
         }
+        // Format 4 inputs come after the material (a material change reseeds and resets overrides); older cases carry none:
+        // the seeds and the defaults, also over an edited model.
+        m.kind_override = self.material_kind;
+        m.allowable_override = self.allowables.unwrap_or([None; 3]);
+        m.requirements = match &self.requirements {
+            Some(rows) if self.version >= 4 => rows.clone(),
+            _ => requirements::seeds(m.kind()),
+        };
+        m.line = match &self.line_run {
+            Some(l) if self.version >= 4 => l.clone(),
+            _ => LineRunInputs::new(m.internal_pressure, m.external_pressure, m.closed_ends, m.temperature_differential),
+        };
         m.recompute();
         skipped
     }

@@ -7,6 +7,7 @@
 //! `menus::bar`) and reports clicks as `Outcome`s; availability rules stay with the model that owns them.
 mod dashboard;
 mod document;
+mod page;
 mod page_layout;
 mod panels;
 pub mod theme;
@@ -565,11 +566,21 @@ impl Gui {
             };
             self.document(ui, area, &doc, &p, out, hint);
         }
+        if let Some(ed) = input.editor {
+            let items = ed.page();
+            if !items.is_empty() {
+                let top = self.pill_rect.map_or(free.top() + 8.0, |r| r.bottom() + 8.0).clamp(free.top(), free.bottom());
+                self.page_over_model(ui, Rect::from_min_max(Pos2::new(free.left(), top), free.max), &items, &p, out);
+            }
+        }
         self.model_labels(ui.ctx(), input, &p);
         self.start_card(ui.ctx(), input, &p, out, hint);
         self.selection_box(ui.ctx(), input, &p);
         self.floating_list(ui.ctx(), &p, out, hint);
-        self.contour_legend(ui.ctx(), input, &p, out);
+        // A page over the viewport hides the model, and with it the colour legend.
+        if !input.editor.is_some_and(|e| !e.page().is_empty()) {
+            self.contour_legend(ui.ctx(), input, &p, out);
+        }
         self.value_card(ui.ctx(), input, &p, out, hint);
         self.background_picker(ui.ctx(), input.view.background, &p, out);
         self.palette_window(ui.ctx(), &menus, &p, out);

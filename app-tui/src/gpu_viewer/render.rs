@@ -2737,6 +2737,30 @@ mod snapshot_tests {
             true,
             (1440, 900),
         );
+        // The line run: its page over the viewport (a valve on the run), then the cylinder's table card.
+        session.act(EditorAction::Vessel(VesselAct::ClosePicker));
+        session.act(EditorAction::Vessel(VesselAct::ToggleLineRun));
+        session.act(EditorAction::Vessel(VesselAct::AddLoad));
+        for text in ["150"] {
+            use crate::toolboxes::pressure_vessel::edit::{Edit, LineField};
+            session.act(EditorAction::Vessel(VesselAct::Edit(Edit::Line(LineField::LoadWeight(0)))));
+            for c in text.chars() {
+                session.key(Key::Char(c), Mods::default());
+            }
+            session.key(Key::Enter, Mods::default());
+        }
+        let t = std::time::Instant::now();
+        while session.model().walls.is_none() {
+            session.poll();
+            assert!(t.elapsed().as_secs() < 60, "the wall solve did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        session.act(EditorAction::Vessel(VesselAct::Step("Results")));
+        shoot(&mut session, "Results", "vessel-line-dark", true, (1440, 900));
+        shoot(&mut session, "Results", "vessel-line-light", false, (1440, 900));
+        shoot(&mut session, "Results", "vessel-line-narrow", true, (860, 760));
+        session.act(EditorAction::Vessel(VesselAct::Step("Inputs")));
+        shoot(&mut session, "Inputs", "vessel-line-inputs", true, (1440, 900));
     }
 
     /// The Preload Analysis workbench (inputs dark, light and in a narrow window; the parts picture before the member FE

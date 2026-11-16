@@ -174,6 +174,17 @@ fn factored(unfactored_margin: f64, factor: f64) -> f64 {
     }
 }
 
+/// The factored margin (`allowable / (factor * applied) - 1`) of one requirement at a given wall, the number a row of
+/// [`solve_per_criterion`] is solved against. `None` when the criterion does not apply to these inputs; an unbounded or
+/// beyond-validity buckling margin is `INFINITY`. Reads the same stresses as the solve (pressure only, no thermal).
+pub fn margin_at_geometry(inputs: &PerCriterionInputs, req: &CriterionRequirement, geometry: &CylinderGeometry) -> Option<f64> {
+    match probe(req.criterion, geometry, inputs) {
+        Probe::Margin(m) => Some(factored(m, req.factor)),
+        Probe::BeyondValidity => Some(f64::INFINITY),
+        Probe::Unavailable(_) => None,
+    }
+}
+
 fn solve_row(inputs: &PerCriterionInputs, req: &CriterionRequirement, max_iterations: u32, radius_tolerance: f64) -> CriterionOutcome {
     let a = inputs.inner_radius;
     // Applicability is decided on a thin real wall (the formulas' validity range only cuts off thick walls).
@@ -276,12 +287,24 @@ const WALL_SCAN_SAMPLES: usize = 64;
 const WALL_FLOOR_FRACTION: f64 = 1e-4;
 const WALL_CEILING_FRACTION: f64 = 0.95;
 
-/// Lowest margin of `criterion` over all cases, `None` when the material class does not evaluate it.
-fn line_margin(run: &LineRun, class: &MaterialClass, cases: &[LoadCase], criterion: Criterion, wall: f64) -> Result<Option<f64>, LineRunError> {
+/// Lowest margin of each criterion over all cases at `wall` (one analysis for every criterion).
+fn line_margins(run: &LineRun, class: &MaterialClass, cases: &[LoadCase], wall: f64) -> Result<Vec<(Criterion, f64)>, LineRunError> {
     let mut r = run.clone();
     r.tube.wall = wall;
     let result = analyze(&r, class, cases)?;
-    Ok(result.cases.iter().flat_map(|c| c.margins.iter()).filter(|m| m.criterion == criterion).map(|m| m.margin).min_by(f64::total_cmp))
+    let mut lowest: Vec<(Criterion, f64)> = Vec::new();
+    for m in result.cases.iter().flat_map(|c| c.margins.iter()) {
+        match lowest.iter_mut().find(|(c, _)| *c == m.criterion) {
+            Some(slot) => slot.1 = slot.1.min(m.margin),
+            None => lowest.push((m.criterion, m.margin)),
+        }
+    }
+    Ok(lowest)
+}
+
+/// Lowest margin of `criterion` in `margins`, `None` when the material class does not evaluate it.
+fn pick(margins: &[(Criterion, f64)], criterion: Criterion) -> Option<f64> {
+    margins.iter().find(|(c, _)| *c == criterion).map(|(_, m)| *m)
 }
 
 /// Minimum wall of a supported tube (outer diameter, supports and loads fixed, wall varied) at each
@@ -305,21 +328,14 @@ pub fn solve_line_run_walls(
     let ratio = (ceiling / floor).powf(1.0 / (WALL_SCAN_SAMPLES as f64 - 1.0));
     let walls: Vec<f64> = (0..WALL_SCAN_SAMPLES).map(|i| if i + 1 == WALL_SCAN_SAMPLES { ceiling } else { floor * ratio.powi(i as i32) }).collect();
 
+    // The scan is the same for every row: one analysis per sample wall, shared.
+    let profiles = walls.iter().map(|&w| line_margins(run, class, cases, w)).collect::<Result<Vec<_>, _>>()?;
     let mut rows = Vec::new();
     for req in requirements {
-        let margin_at = |w: f64| line_margin(run, class, cases, req.criterion, w);
+        let margin_at = |w: f64| line_margins(run, class, cases, w).map(|m| pick(&m, req.criterion));
         // Scan: margin per sample; `None` (criterion not evaluated for this class) ends the row.
-        let mut scan = Vec::with_capacity(walls.len());
-        let mut applicable = true;
-        for &w in &walls {
-            match margin_at(w)? {
-                Some(m) => scan.push(m),
-                None => {
-                    applicable = false;
-                    break;
-                }
-            }
-        }
+        let scan: Vec<f64> = profiles.iter().filter_map(|p| pick(p, req.criterion)).collect();
+        let applicable = scan.len() == walls.len();
         let outcome = if !applicable {
             LineWallOutcome::NotEvaluable("criterion is not evaluated for this material class")
         } else {
@@ -383,6 +399,16 @@ mod tests {
             Probe::Margin(m) => factored(m, r.factor),
             _ => panic!("no margin"),
         }
+    }
+
+    #[test]
+    fn margin_at_geometry_is_the_margin_the_solve_reaches_and_none_when_not_evaluable() {
+        let inp = inputs(EndCondition::Closed, 5000.0, 0.0, vec![req(ThicknessCriterion::VonMisesYield, 1.5, 0.2), req(ThicknessCriterion::Buckling, 1.0, 0.0)]);
+        let sol = solve_per_criterion(&inp, 200, TOL).unwrap();
+        let CriterionOutcome::Converged { outer_radius, margin: Some(m), .. } = sol.rows[0].outcome else { panic!("converged") };
+        let g = CylinderGeometry::new(2.0, outer_radius).unwrap();
+        assert!((margin_at_geometry(&inp, &inp.requirements[0], &g).unwrap() - m).abs() < 1e-12);
+        assert_eq!(margin_at_geometry(&inp, &inp.requirements[1], &g), None, "no external pressure");
     }
 
     /// Open-end Lame: Tresca stress at the bore is `2 p b^2/(b^2-a^2)`; setting it to
@@ -561,9 +587,9 @@ mod tests {
         for row in &sol.rows {
             let LineWallOutcome::Converged { wall, margin, .. } = row.outcome else { panic!("{row:?}") };
             let c = row.requirement.criterion;
-            let m = line_margin(&run, &cls, &cases, c, wall).unwrap().unwrap();
+            let m = pick(&line_margins(&run, &cls, &cases, wall).unwrap(), c).unwrap();
             assert!(m >= row.requirement.required_ms && (m - margin).abs() < 1e-12, "{c:?}: {m}");
-            assert!(line_margin(&run, &cls, &cases, c, wall - 1e-6).unwrap().unwrap() < row.requirement.required_ms, "{c:?}: thinner passes");
+            assert!(pick(&line_margins(&run, &cls, &cases, wall - 1e-6).unwrap(), c).unwrap() < row.requirement.required_ms, "{c:?}: thinner passes");
         }
         let max = sol.rows.iter().map(|r| match r.outcome { LineWallOutcome::Converged { wall, .. } => wall, _ => 0.0 }).fold(0.0, f64::max);
         let LineWallOutcome::Converged { wall, .. } = sol.governing().unwrap().outcome else { panic!() };
