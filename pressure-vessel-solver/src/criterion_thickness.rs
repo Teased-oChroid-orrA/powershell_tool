@@ -287,12 +287,24 @@ const WALL_SCAN_SAMPLES: usize = 64;
 const WALL_FLOOR_FRACTION: f64 = 1e-4;
 const WALL_CEILING_FRACTION: f64 = 0.95;
 
-/// Lowest margin of `criterion` over all cases, `None` when the material class does not evaluate it.
-fn line_margin(run: &LineRun, class: &MaterialClass, cases: &[LoadCase], criterion: Criterion, wall: f64) -> Result<Option<f64>, LineRunError> {
+/// Lowest margin of each criterion over all cases at `wall` (one analysis for every criterion).
+fn line_margins(run: &LineRun, class: &MaterialClass, cases: &[LoadCase], wall: f64) -> Result<Vec<(Criterion, f64)>, LineRunError> {
     let mut r = run.clone();
     r.tube.wall = wall;
     let result = analyze(&r, class, cases)?;
-    Ok(result.cases.iter().flat_map(|c| c.margins.iter()).filter(|m| m.criterion == criterion).map(|m| m.margin).min_by(f64::total_cmp))
+    let mut lowest: Vec<(Criterion, f64)> = Vec::new();
+    for m in result.cases.iter().flat_map(|c| c.margins.iter()) {
+        match lowest.iter_mut().find(|(c, _)| *c == m.criterion) {
+            Some(slot) => slot.1 = slot.1.min(m.margin),
+            None => lowest.push((m.criterion, m.margin)),
+        }
+    }
+    Ok(lowest)
+}
+
+/// Lowest margin of `criterion` in `margins`, `None` when the material class does not evaluate it.
+fn pick(margins: &[(Criterion, f64)], criterion: Criterion) -> Option<f64> {
+    margins.iter().find(|(c, _)| *c == criterion).map(|(_, m)| *m)
 }
 
 /// Minimum wall of a supported tube (outer diameter, supports and loads fixed, wall varied) at each
@@ -316,21 +328,14 @@ pub fn solve_line_run_walls(
     let ratio = (ceiling / floor).powf(1.0 / (WALL_SCAN_SAMPLES as f64 - 1.0));
     let walls: Vec<f64> = (0..WALL_SCAN_SAMPLES).map(|i| if i + 1 == WALL_SCAN_SAMPLES { ceiling } else { floor * ratio.powi(i as i32) }).collect();
 
+    // The scan is the same for every row: one analysis per sample wall, shared.
+    let profiles = walls.iter().map(|&w| line_margins(run, class, cases, w)).collect::<Result<Vec<_>, _>>()?;
     let mut rows = Vec::new();
     for req in requirements {
-        let margin_at = |w: f64| line_margin(run, class, cases, req.criterion, w);
+        let margin_at = |w: f64| line_margins(run, class, cases, w).map(|m| pick(&m, req.criterion));
         // Scan: margin per sample; `None` (criterion not evaluated for this class) ends the row.
-        let mut scan = Vec::with_capacity(walls.len());
-        let mut applicable = true;
-        for &w in &walls {
-            match margin_at(w)? {
-                Some(m) => scan.push(m),
-                None => {
-                    applicable = false;
-                    break;
-                }
-            }
-        }
+        let scan: Vec<f64> = profiles.iter().filter_map(|p| pick(p, req.criterion)).collect();
+        let applicable = scan.len() == walls.len();
         let outcome = if !applicable {
             LineWallOutcome::NotEvaluable("criterion is not evaluated for this material class")
         } else {
@@ -582,9 +587,9 @@ mod tests {
         for row in &sol.rows {
             let LineWallOutcome::Converged { wall, margin, .. } = row.outcome else { panic!("{row:?}") };
             let c = row.requirement.criterion;
-            let m = line_margin(&run, &cls, &cases, c, wall).unwrap().unwrap();
+            let m = pick(&line_margins(&run, &cls, &cases, wall).unwrap(), c).unwrap();
             assert!(m >= row.requirement.required_ms && (m - margin).abs() < 1e-12, "{c:?}: {m}");
-            assert!(line_margin(&run, &cls, &cases, c, wall - 1e-6).unwrap().unwrap() < row.requirement.required_ms, "{c:?}: thinner passes");
+            assert!(pick(&line_margins(&run, &cls, &cases, wall - 1e-6).unwrap(), c).unwrap() < row.requirement.required_ms, "{c:?}: thinner passes");
         }
         let max = sol.rows.iter().map(|r| match r.outcome { LineWallOutcome::Converged { wall, .. } => wall, _ => 0.0 }).fold(0.0, f64::max);
         let LineWallOutcome::Converged { wall, .. } = sol.governing().unwrap().outcome else { panic!() };
