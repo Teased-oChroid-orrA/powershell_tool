@@ -28,7 +28,20 @@ fn the_native_import_over_a_local_corpus() {
         n += 1;
         ok += usize::from(r.is_ok());
         let what = match &r {
-            Ok(i) => format!("ok: {} faces, {} triangles, size {:.3}", i.cache.face_names().len(), i.cache.triangles.len(), i.size),
+            Ok(i) => {
+                // Signed volume of the closed triangle mesh (divergence theorem), model units cubed.
+                let v = |k: usize| i.cache.vertices[k];
+                let volume: f64 = i
+                    .cache
+                    .triangles
+                    .iter()
+                    .map(|t| {
+                        let (a, b, c) = (v(t[0]), v(t[1]), v(t[2]));
+                        (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.
+                    })
+                    .sum();
+                format!("ok: {} faces, {} triangles, size {:.3}, volume {volume:.3}", i.cache.face_names().len(), i.cache.triangles.len(), i.size)
+            }
             Err(e) => format!("REFUSED: {}", e.chars().take(600).collect::<String>()),
         };
         eprintln!("{:<42} {:>6.1}s  {what}", p.file_name().unwrap().to_string_lossy(), t.elapsed().as_secs_f64());

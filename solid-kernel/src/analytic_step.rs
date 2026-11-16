@@ -2092,6 +2092,15 @@ impl AnalyticModel {
                 continue;
             };
             let apex = add(frame.origin, mul(frame.z, -radius / semi_angle.tan()));
+            // A loop that already has the apex as a vertex (a wedge of a cone, two generators and an arc) reaches it by
+            // itself, and the apex has no angle, so its turn count above means nothing: leave it to the chart code.
+            if uses
+                .iter()
+                .filter_map(|u| self.use_start(u))
+                .any(|v| norm(sub(self.vertices[&v], apex)) <= tolerance)
+            {
+                continue;
+            }
             let pa = self.vertices[&va];
             let length = norm(sub(apex, pa));
             if length <= tolerance {

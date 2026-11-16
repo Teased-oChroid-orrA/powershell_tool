@@ -254,18 +254,9 @@ impl AnalyticModel {
                 is_outer: false,
             });
         }
+        // Declared bound roles are not consulted, whatever their number: Onshape labels holes `FACE_OUTER_BOUND` and the NIST
+        // stc_06 file labels the true outer `FACE_BOUND` and the hole `FACE_OUTER_BOUND`. Both are read by the loop geometry.
         classify(&mut loops, remaining)?;
-        // A single declared outer bound must be the geometric one; several declared outers (Onshape labels holes that way)
-        // carry no usable role information.
-        let single_declared_outer = face.bounds.iter().filter(|b| b.explicitly_outer).count() == 1;
-        for (l, b) in loops.iter().zip(&face.bounds) {
-            if single_declared_outer && b.explicitly_outer && !l.is_outer {
-                return Err(fail(
-                    ErrorKind::Geometry,
-                    "declared outer bound is geometrically nested",
-                ));
-            }
-        }
         Ok(PlanarTrims { face_id, loops })
     }
 }
