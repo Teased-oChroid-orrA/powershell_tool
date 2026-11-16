@@ -290,9 +290,15 @@ impl AnalyticModel {
                     _ => self.declared_face_normal(face.id, center).unwrap(),
                 };
                 let orientation = dot(cross(sub(b, a), sub(c, a)), normal);
+                // A chord triangle of a curved boundary leaves the surface by up to the chord error: a sliver of the chart
+                // beside a boundary chord (a vertex nearer the boundary than the chord's sagitta) is inverted in space by
+                // less than that. A foreign-CAD read (`heal_limit_mm` = the chord) accepts an inversion of that depth, the
+                // height of the triangle over its longest edge; a strict read accepts none.
+                let longest = [sub(b, a), sub(c, b), sub(a, c)].iter().map(|e| dot(*e, *e).sqrt()).fold(0., f64::max);
+                let shallow = orientation.is_finite() && orientation != 0. && orientation.abs() <= self.heal_limit_mm() * longest;
                 if !orientation.is_finite()
                     || orientation == 0.
-                    || (orientation > 0.) != face.same_sense
+                    || ((orientation > 0.) != face.same_sense && !shallow)
                 {
                     return Err(fail(
                         ErrorKind::Geometry,

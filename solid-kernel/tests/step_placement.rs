@@ -230,6 +230,20 @@ fn a_solid_listed_by_several_representations_of_one_context_or_beside_a_curve_se
         "#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15,#520),#429);\n#520 = GEOMETRIC_CURVE_SET('datum target',(#12));",
     );
     same_vertices(&read(&curves).unwrap(), &bare);
+    // sketch wireframe (a composite curve) and fill surfaces (an open shell, a surface model of it) enclose no volume
+    for (name, item) in [
+        ("composite curve", "#520 = COMPOSITE_CURVE('',(),.F.);"),
+        ("open shell", "#520 = OPEN_SHELL('',());"),
+        ("surface model", "#520 = SHELL_BASED_SURFACE_MODEL('',(#521));\n#521 = OPEN_SHELL('',());"),
+    ] {
+        let beside = sub(
+            PLATE,
+            "#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15),#429);",
+            &format!("#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15,#520),#429);\n{item}"),
+        );
+        let model = read(&beside).unwrap_or_else(|e| panic!("{name}: {e}"));
+        same_vertices(&model, &bare);
+    }
     // a general geometric set may hold surfaces: still refused
     refused(
         read(&sub(

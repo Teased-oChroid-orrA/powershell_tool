@@ -124,10 +124,14 @@ impl BodyContext {
                                         && !ie.components.iter().all(|c| {
                                             matches!(
                                                 c.name.as_str(),
-                                                // a curve set (datum targets, supplemental wireframe) has no volume
+                                                // a curve set, composite curve or open shell (datum targets, supplemental or
+                                                // sketch wireframe, fill surfaces) encloses no volume
                                                 "AXIS2_PLACEMENT_3D"
                                                     | "MANIFOLD_SOLID_BREP"
                                                     | "GEOMETRIC_CURVE_SET"
+                                                    | "COMPOSITE_CURVE"
+                                                    | "OPEN_SHELL"
+                                                    | "SHELL_BASED_SURFACE_MODEL"
                                             )
                                         })
                                     {

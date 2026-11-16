@@ -124,3 +124,5 @@ Hosted Windows evidence (the `Workbench qualification` workflow runs `scripts/qu
 The root `CLAUDE.md` now authorizes qualified PR creation, squash merge and short-lived branch cleanup without a per-action request. The agent never rewrites history or force-pushes.
 
 **2026-11-15 import healing:** [Phase 178](issue-46-phase-178.md): `Options::foreign_cad` heals edge/surface disagreement up to the chord (samples and vertices moved onto all incident faces; tangent faces with a gap take a truncated-eigenvalue compromise within the geometry tolerance): native import reads 22 of 33. Retirement remains unapproved.
+
+**2026-11-16 import fixes:** [Phase 179](issue-46-phase-179.md): a shallow chord-triangle inversion is accepted in foreign-CAD reads, wireframe/open-shell items beside the solid are ignored, and the angle branch after a cone's apex is the one that closes the loop: native import reads 27 of 33. Retirement remains unapproved.
