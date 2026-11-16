@@ -12,6 +12,7 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{FRAC_PI_2, TAU};
+mod heal;
 fn add(a: V3, b: V3) -> V3 {
     std::array::from_fn(|i| a[i] + b[i])
 }
@@ -587,6 +588,10 @@ pub struct Options {
     /// Opt-in: split every straight edge into equal pieces no longer than this (mm), so long edges do not force needle
     /// triangles on the faces they bound.
     pub max_line_mm: Option<f64>,
+    /// How far (mm) healing may move an edge sample or vertex onto the surfaces of its faces. An edge whose declared curve
+    /// disagrees with a face's surface by more than `geometry_tolerance_mm` but no more than this is healed (see
+    /// `AnalyticModel::heal`); a larger disagreement is refused as before. 0 never heals.
+    pub heal_limit_mm: f64,
 }
 impl Options {
     /// Options for a file written by another CAD kernel (Onshape/Parasolid, SolidWorks, ...). Those kernels model to
@@ -604,6 +609,7 @@ impl Options {
         Self {
             chord_mm,
             geometry_tolerance_mm: chord_mm / 10.,
+            heal_limit_mm: chord_mm,
             ..Self::default()
         }
     }
@@ -616,6 +622,7 @@ impl Default for Options {
             max_edge_points: 100_000,
             max_total_points: 1_000_000,
             max_line_mm: None,
+            heal_limit_mm: 0.,
         }
     }
 }
@@ -630,6 +637,10 @@ pub struct AnalyticModel {
     chord_mm: f64,
     geometry_tolerance_mm: f64,
     curves: BTreeMap<u64, Curve>,
+    /// Healed edges (see [`Self::heal`]) and the faces whose surfaces their samples lie on: a sample inserted later is healed
+    /// the same way.
+    healed: BTreeMap<u64, Vec<u64>>,
+    heal_limit_mm: f64,
 }
 /// The two bounds of a face (by index) that each wind once around a periodic coordinate, in opposite senses, when every other
 /// bound does not wind at all (a hole): the loops of a band that a seam joins. `turns` are the signed turns of each bound.
@@ -1159,12 +1170,17 @@ fn sample_spline_range(
     }
     Ok((keep.iter().map(|&k| params[k]).collect(), keep.iter().map(|&k| points[k]).collect()))
 }
-fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Result<(), Error> {
+/// Whether the declared edge lies on the surface: `Ok(false)` within `tol`, `Ok(true)` beyond it but within `limit` (the edge
+/// is to be healed), an error beyond both.
+fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64, limit: f64) -> Result<bool, Error> {
+    let reach = limit.max(tol);
+    let mut heal = false;
     for point in [a, b] {
         let projection = s
             .project(point)
             .ok_or_else(|| error(e, "unresolved edge endpoint/surface projection"))?;
-        if projection.residual_mm > tol {
+        heal |= projection.residual_mm > tol;
+        if projection.residual_mm > reach {
             return Err(error(
                 e,
                 format!(
@@ -1279,13 +1295,13 @@ fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Res
             worst
         }
     };
-    if !deviation.is_finite() || deviation > tol {
+    if !deviation.is_finite() || deviation > reach {
         Err(error(
             e,
             format!("declared edge/surface geometry disagrees by {deviation:e} mm"),
         ))
     } else {
-        Ok(())
+        Ok(heal || deviation > tol)
     }
 }
 impl AnalyticModel {
@@ -1373,6 +1389,14 @@ impl AnalyticModel {
                         new_param = Some(u);
                         p
                     }
+                };
+                // an edge healed at read time keeps its samples on its faces
+                let p = match self.healed.get(&edge) {
+                    Some(faces) => match self.heal_point(p, faces) {
+                        Ok(h) => h,
+                        Err(_) => continue,
+                    },
+                    None => p,
                 };
                 // Rounding noise around an exact zero would sit below the exact predicates' arithmetic envelope.
                 let scale = w[0].iter().chain(&w[1]).fold(0f64, |m, x| m.max(x.abs()));
@@ -1485,9 +1509,10 @@ impl AnalyticModel {
             || opt.chord_mm <= 0.
             || opt.geometry_tolerance_mm <= 0.
             || opt.geometry_tolerance_mm > opt.chord_mm
+            || !(opt.heal_limit_mm >= 0. && opt.heal_limit_mm.is_finite())
         {
             return Err(fail(
-                "require finite 0 < geometry tolerance <= chord tolerance",
+                "require finite 0 < geometry tolerance <= chord tolerance and a finite heal limit >= 0",
             ));
         }
         // a placed instance is read from the moved copy of the document
@@ -1629,6 +1654,7 @@ impl AnalyticModel {
             curves.insert(edge.id, c);
         }
         let mut surfaces = BTreeMap::new();
+        let mut to_heal: BTreeSet<u64> = BTreeSet::new();
         for face in body.faces.values() {
             let source_surface = &data.entities()[&face.surface];
             let (s, patch) = if source_surface
@@ -1788,7 +1814,10 @@ impl AnalyticModel {
                         // lie on it elsewhere).
                         for p in &edges[&edge.id] {
                             let d = s.distance(*p).unwrap_or(f64::INFINITY);
-                            if !(d <= opt.geometry_tolerance_mm) {
+                            if d > opt.geometry_tolerance_mm && d <= opt.heal_limit_mm {
+                                to_heal.insert(edge.id);
+                            }
+                            if !(d <= opt.geometry_tolerance_mm.max(opt.heal_limit_mm)) {
                                 return Err(error(
                                     &data.entities()[&face.id],
                                     format!("an edge sample is {d:e} mm off the face's spline surface (edge #{}, {} samples, face #{})", edge.id, edges[&edge.id].len(), face.id),
@@ -1801,23 +1830,29 @@ impl AnalyticModel {
                         // Validate the actual spline locus as well as authoritative
                         // source-vertex chords; endpoint agreement alone is not
                         // an edge/surface certificate.
-                        on_surface(
+                        if on_surface(
                             &data.entities()[&face.id],
                             &s,
                             &curves[&edge.id],
                             points[0],
                             points[1],
                             opt.geometry_tolerance_mm,
-                        )?;
+                            opt.heal_limit_mm,
+                        )? {
+                            to_heal.insert(edge.id);
+                        }
                     }
-                    on_surface(
+                    if on_surface(
                         &data.entities()[&face.id],
                         &s,
                         &curves[&edge.id],
                         vertices[&edge.start],
                         vertices[&edge.end],
                         opt.geometry_tolerance_mm,
-                    )?;
+                        opt.heal_limit_mm,
+                    )? {
+                        to_heal.insert(edge.id);
+                    }
                 }
             }
             surfaces.insert(face.id, s);
@@ -1833,7 +1868,10 @@ impl AnalyticModel {
             chord_mm: opt.chord_mm,
             geometry_tolerance_mm: opt.geometry_tolerance_mm,
             curves,
+            healed: BTreeMap::new(),
+            heal_limit_mm: opt.heal_limit_mm,
         };
+        model.heal(&to_heal)?;
         let first_synthetic_id = data.entities().keys().next_back().map_or(1, |k| k + 1);
         model.seam_unseamed_cylinder_bands(first_synthetic_id);
         Ok(model)
@@ -2467,6 +2505,10 @@ impl AnalyticModel {
         self.body.edges.remove(&edge);
         self.edges.remove(&edge);
         self.curves.remove(&edge);
+        if let Some(faces) = self.healed.remove(&edge) {
+            self.healed.insert(lower, faces.clone());
+            self.healed.insert(upper, faces);
+        }
         let mut use_id = *next;
         for face in self.body.faces.values_mut() {
             for bound in &mut face.bounds {
@@ -2632,7 +2674,7 @@ mod conversion_tests {
         let b = [1., 0., 0.75e-7];
         let opt = Options::default();
         assert!(samples(&e, &line, a, b, false, true, opt, 10).is_ok());
-        assert!(on_surface(&e, &surface, &line, a, b, opt.geometry_tolerance_mm).is_err());
+        assert!(on_surface(&e, &surface, &line, a, b, opt.geometry_tolerance_mm, 0.).is_err());
         let near = Curve::Line {
             origin: [0., 0., 0.5e-7],
             direction: [1., 0., 0.],
@@ -2640,7 +2682,7 @@ mod conversion_tests {
         let a = [0., 0., 1.25e-7];
         let b = [1., 0., 1.25e-7];
         assert!(samples(&e, &near, a, b, false, true, opt, 10).is_ok());
-        assert!(on_surface(&e, &surface, &near, a, b, opt.geometry_tolerance_mm).is_err());
+        assert!(on_surface(&e, &surface, &near, a, b, opt.geometry_tolerance_mm, 0.).is_err());
 
         let cylinder = Surface::Cylinder {
             frame: Frame {
@@ -2658,6 +2700,6 @@ mod conversion_tests {
         let a = [1. + 0.75e-7, 0., 0.];
         let b = [1. + 0.75e-7, 0., 1.];
         assert!(samples(&e, &generator, a, b, false, true, opt, 10).is_ok());
-        assert!(on_surface(&e, &cylinder, &generator, a, b, opt.geometry_tolerance_mm).is_err());
+        assert!(on_surface(&e, &cylinder, &generator, a, b, opt.geometry_tolerance_mm, 0.).is_err());
     }
 }
