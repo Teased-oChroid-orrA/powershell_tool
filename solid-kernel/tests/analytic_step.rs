@@ -1567,6 +1567,146 @@ fn a_cone_wedge_through_its_apex_samples_its_closed_form_volume() {
     );
 }
 
+/// A wedge of a cone (apex at (0, 0, 8), base circle radius 5 in z = 0, the sector from angle 0 to `wedge` radians about the
+/// axis, `wedge` over half a turn) with the apex and the axis foot as vertices: four faces. The cone face is the wedge bounded by
+/// two generators and a rim arc, which turns at the apex by `wedge`; `loop_start` picks which of its three edges the loop
+/// starts with. The head and the units come from the OpenCASCADE cone fixture.
+fn cone_wedge_document(turn: f64, wedge: f64, loop_start: usize, semi_angle: f64) -> String {
+    let cone = include_str!("data/cone.step");
+    let head = &cone[..cone.find("#15 = MANIFOLD_SOLID_BREP").unwrap()];
+    let tail = &cone[cone.find("#82 = ").unwrap()..];
+    let (s0, c0) = turn.sin_cos();
+    let (sw, cw) = (turn + wedge).sin_cos();
+    let height = 5. / semi_angle.tan();
+    let (rim, drop) = (semi_angle.sin(), semi_angle.cos());
+    let order = [["#301", "#302", "#303"], ["#302", "#303", "#301"], ["#303", "#301", "#302"]][loop_start];
+    let body = format!(
+        "\
+#15 = MANIFOLD_SOLID_BREP('',#16);
+#16 = CLOSED_SHELL('',(#100,#101,#102,#103));
+#200 = CARTESIAN_POINT('',(0.,0.,{height:e}));
+#201 = VERTEX_POINT('',#200);
+#202 = CARTESIAN_POINT('',({p0x:e},{p0y:e},0.));
+#203 = VERTEX_POINT('',#202);
+#204 = CARTESIAN_POINT('',({px:e},{py:e},0.));
+#205 = VERTEX_POINT('',#204);
+#206 = CARTESIAN_POINT('',(0.,0.,0.));
+#207 = VERTEX_POINT('',#206);
+#210 = EDGE_CURVE('',#201,#203,#211,.T.);
+#211 = LINE('',#200,#212);
+#212 = VECTOR('',#213,1.);
+#213 = DIRECTION('',({r0x:e},{r0y:e},{nd:e}));
+#214 = EDGE_CURVE('',#201,#205,#215,.T.);
+#215 = LINE('',#200,#216);
+#216 = VECTOR('',#217,1.);
+#217 = DIRECTION('',({qx:e},{qy:e},{nd:e}));
+#218 = EDGE_CURVE('',#203,#205,#219,.T.);
+#219 = CIRCLE('',#220,5.);
+#220 = AXIS2_PLACEMENT_3D('',#206,#221,#222);
+#221 = DIRECTION('',(0.,0.,1.));
+#222 = DIRECTION('',({c0:e},{s0:e},0.));
+#223 = EDGE_CURVE('',#207,#203,#224,.T.);
+#224 = LINE('',#206,#225);
+#225 = VECTOR('',#222,1.);
+#226 = EDGE_CURVE('',#207,#205,#227,.T.);
+#227 = LINE('',#206,#228);
+#228 = VECTOR('',#229,1.);
+#229 = DIRECTION('',({cw:e},{sw:e},0.));
+#230 = EDGE_CURVE('',#201,#207,#231,.T.);
+#231 = LINE('',#200,#232);
+#232 = VECTOR('',#233,1.);
+#233 = DIRECTION('',(0.,0.,-1.));
+#240 = AXIS2_PLACEMENT_3D('',#206,#241,#222);
+#241 = DIRECTION('',(0.,0.,-1.));
+#242 = PLANE('',#240);
+#243 = AXIS2_PLACEMENT_3D('',#206,#244,#222);
+#244 = DIRECTION('',({s0:e},{nc0:e},0.));
+#245 = PLANE('',#243);
+#246 = AXIS2_PLACEMENT_3D('',#206,#247,#248);
+#247 = DIRECTION('',({nx:e},{ny:e},0.));
+#248 = DIRECTION('',(0.,0.,1.));
+#249 = PLANE('',#246);
+#250 = AXIS2_PLACEMENT_3D('',#200,#241,#222);
+#251 = CONICAL_SURFACE('',#250,0.,{semi_angle:e});
+#260 = ORIENTED_EDGE('',*,*,#226,.T.);
+#261 = ORIENTED_EDGE('',*,*,#218,.F.);
+#262 = ORIENTED_EDGE('',*,*,#223,.F.);
+#263 = EDGE_LOOP('',(#260,#261,#262));
+#264 = FACE_BOUND('',#263,.T.);
+#270 = ORIENTED_EDGE('',*,*,#223,.T.);
+#271 = ORIENTED_EDGE('',*,*,#210,.F.);
+#272 = ORIENTED_EDGE('',*,*,#230,.T.);
+#273 = EDGE_LOOP('',(#270,#271,#272));
+#274 = FACE_BOUND('',#273,.T.);
+#280 = ORIENTED_EDGE('',*,*,#230,.F.);
+#281 = ORIENTED_EDGE('',*,*,#214,.T.);
+#282 = ORIENTED_EDGE('',*,*,#226,.F.);
+#283 = EDGE_LOOP('',(#280,#281,#282));
+#284 = FACE_BOUND('',#283,.T.);
+#301 = ORIENTED_EDGE('',*,*,#218,.T.);
+#302 = ORIENTED_EDGE('',*,*,#214,.F.);
+#303 = ORIENTED_EDGE('',*,*,#210,.T.);
+#304 = EDGE_LOOP('',({o0},{o1},{o2}));
+#305 = FACE_BOUND('',#304,.T.);
+#100 = ADVANCED_FACE('',(#264),#242,.T.);
+#101 = ADVANCED_FACE('',(#274),#245,.T.);
+#102 = ADVANCED_FACE('',(#284),#249,.T.);
+#103 = ADVANCED_FACE('',(#305),#251,.T.);
+",
+        p0x = 5. * c0,
+        p0y = 5. * s0,
+        r0x = rim * c0,
+        r0y = rim * s0,
+        s0 = s0,
+        c0 = c0,
+        nc0 = -c0,
+        px = 5. * cw,
+        py = 5. * sw,
+        qx = rim * cw,
+        qy = rim * sw,
+        nd = -drop,
+        height = height,
+        semi_angle = semi_angle,
+        nx = -sw,
+        ny = cw,
+        cw = cw,
+        sw = sw,
+        o0 = order[0],
+        o1 = order[1],
+        o2 = order[2],
+    );
+    format!("{head}{body}{tail}")
+}
+
+/// The apex is on the cone face's boundary, and the loop turns there by `wedge`: nearest-angle continuation across the apex
+/// goes the short way round for a wedge over half a turn (the face's chart is then folded and the refinement of its chord rule
+/// never ends), so the branch after the apex is the one that closes the loop in the angle. Volume: `wedge / 2 pi` of the cone.
+#[test]
+fn a_cone_wedge_wider_than_half_a_turn_samples_its_closed_form_volume() {
+    let mut failures = Vec::new();
+    for degrees in [180., 180.00001, 180.001, 180.5, 200., 240., 300., 350.] {
+        for (loop_start, turn, semi_angle) in (0..3).flat_map(|l| {
+            (0..24).flat_map(move |k| [0.5586, 1.0297].map(move |sa| (l, 0.1 + 0.2617993877991494 * k as f64, sa)))
+        }) {
+            let wedge = f64::to_radians(degrees);
+            let text = cone_wedge_document(turn, wedge, loop_start, semi_angle);
+            let exact = wedge * 25. * (5. / semi_angle.tan()) / 6.;
+            let outcome = inventory(&text, Limits::default())
+                .and_then(|data| AnalyticModel::read(&data, Options::default()))
+                .and_then(|model| model.sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true))
+                .map_err(|e| e.to_string())
+                .and_then(|sampled| {
+                    let v = sampled.signed_volume_mm3;
+                    if (v - exact).abs() < 2e-2 * exact { Ok(()) } else { Err(format!("volume {v} against {exact}")) }
+                });
+            if let Err(e) = outcome {
+                failures.push(format!("wedge {degrees}, loop start {loop_start}, turn {turn:.3}, semi-angle {semi_angle}: {e}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// A committed fixture merged with a copy of itself (ids of the copy shifted): a multi-body part with two equal solids.
 fn two_body_document() -> String {
     let a = include_str!("data/edit-plate.step").to_string();
