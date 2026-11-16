@@ -2440,6 +2440,8 @@ mod tests {
         let mut v = viewer(Some(Box::new(session)));
         v.size_override = Some((1600, 1800));
         frame(&mut v);
+        // The ways to fix are open whenever something fails and would push the cross-check out of view.
+        v.gui.set_card_open("bushing-fixes", false);
         v.gui.set_card_open("bushing-edge-check", true);
         frame(&mut v);
         frame(&mut v);

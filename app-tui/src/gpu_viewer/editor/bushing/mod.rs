@@ -29,7 +29,7 @@ use crate::gpu_viewer::{
     Scene,
 };
 use crate::toolboxes::bushing::{
-    advice::{CheckKind, Severity},
+    advice::{CheckKind, Keep, Severity},
     edge_check::{self, EdgeCheckRun},
     model::{self, FieldRow, NumberTarget},
     BushingState, EdgeRequest,
@@ -62,6 +62,8 @@ pub enum BushingAct {
     /// Show the fixes for a failing check, or all of them.
     ShowFixes(CheckKind),
     AllFixes,
+    /// Declare a value critical (or not): the options offered stop changing it.
+    ToggleKeep(Keep),
     SelectFix(usize),
     ApplyFix(usize),
     /// Show the Send dialog; close it; send (the case is saved first and opens in the FEA workbench, and comes back
@@ -123,8 +125,6 @@ pub struct BushingSession {
     edge_jobs: Vec<(u64, Receiver<Option<EdgeCheckRun>>)>,
     /// Only the fixes of this check are listed (`None`: all of them).
     fix_kind: Option<CheckKind>,
-    /// The fixes card was asked for (a fixes link): it opens unfolded.
-    show_fixes: bool,
     /// The checks behind the verdict are listed.
     why: bool,
     /// What the 3D picture is coloured by, and whether a quarter is cut away.
@@ -179,7 +179,6 @@ impl BushingSession {
             fe_key: None,
             edge_jobs: Vec::new(),
             fix_kind: None,
-            show_fixes: false,
             why: false,
             field: drawing::Field::Hoop,
             quarter_cut: true,
@@ -514,13 +513,15 @@ impl BushingSession {
             }
             BushingAct::ShowFixes(k) => {
                 self.fix_kind = Some(k);
-                self.show_fixes = true;
                 self.st.rec_selected = self.st.model.recommendations.iter().position(|r| r.fixes == k).unwrap_or(0);
             }
             BushingAct::AllFixes => {
                 self.fix_kind = None;
-                self.show_fixes = true;
                 self.st.rec_selected = 0;
+            }
+            BushingAct::ToggleKeep(k) => {
+                self.st.model.keep.toggle(k);
+                self.dirty = true;
             }
             BushingAct::SelectFix(i) => self.st.rec_selected = i,
             BushingAct::ApplyFix(i) => self.apply_fix(i),

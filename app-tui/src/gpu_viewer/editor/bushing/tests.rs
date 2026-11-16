@@ -70,7 +70,8 @@ fn it_opens_on_three_panes_with_install_force_first_and_no_tree_ribbon_or_inspec
     assert!(texts(&w.inputs).contains("Bore Diameter  0.5000 in"));
     // Results: the verdict, then install force.
     let ids: Vec<_> = w.results.iter().map(|c| c.id.as_str()).collect();
-    assert_eq!(&ids[..2], ["bushing-verdict", "bushing-install"]);
+    // The default case fails a check, so the ways to fix come right under the verdict; install force follows.
+    assert_eq!(&ids[..3], ["bushing-verdict", "bushing-fixes", "bushing-install"]);
     assert_eq!(w.sketches.len(), 2, "the axial section and the cross-section");
     assert_eq!(w.show, WorkbenchView::Split);
     assert!(w.dialog.is_none());
@@ -206,12 +207,12 @@ fn a_fixes_link_unfolds_the_fixes_card_and_applying_a_fix_clears_that_failure() 
     let n_before = s.failing();
     assert!(n_before > 0, "an edge distance this small fails: {:?}", s.model().checks);
     assert!(texts(&[card(&s.result_cards(), "bushing-verdict")]).starts_with("REVIEW"));
-    assert!(card(&s.result_cards(), "bushing-fixes").folded, "folded until asked for");
+    assert!(!card(&s.result_cards(), "bushing-fixes").folded, "open as soon as something fails, nothing to switch on");
     let kind = s.model().recommendations.first().map(|r| r.fixes).expect("a fix is offered");
     act(&mut s, BushingAct::ShowFixes(kind));
     let fixes = card(&s.result_cards(), "bushing-fixes");
-    assert!(!fixes.folded && fixes.title == format!("Fixes for {}", kind.label()));
-    let apply = fixes.items.iter().find_map(|i| if let DockItem::Line { text, action: Some(UiAction::Editor(EditorAction::Bushing(a @ BushingAct::ApplyFix(_)))), .. } = i { (text == "Apply this fix").then_some(*a) } else { None }).expect("an Apply row");
+    assert!(!fixes.folded && fixes.title == format!("Ways to fix {}", kind.label()));
+    let apply = fixes.items.iter().find_map(|i| if let DockItem::Line { text, action: Some(UiAction::Editor(EditorAction::Bushing(a @ BushingAct::ApplyFix(_)))), .. } = i { (text == "Apply this option").then_some(*a) } else { None }).expect("an Apply row");
     s.do_act(apply);
     assert!(s.failing() < n_before, "the fix reduced the failures: {n_before} -> {}", s.failing());
     assert!(results(&s).contains("ok Applied:"));
@@ -624,4 +625,57 @@ fn escape_steps_back_from_the_form_then_closes_to_the_picker() {
     assert!(s.manager.is_some() && card_text(&s).contains("Add an entry"));
     s.key(Key::Escape, Mods::default());
     assert!(s.manager.is_none() && s.picker.is_some());
+}
+
+fn tolerance_case() -> BushingSession {
+    // A bore band (0.0010) wider than the interference band (0.0006): the three routes of a tolerance failure.
+    let mut m = BushingModel::default();
+    m.commit_number(NumberTarget::BoreTolPlus, 0.0010);
+    m.commit_number(NumberTarget::BoreTolMinus, 0.0);
+    m.commit_number(NumberTarget::InterferenceTolPlus, 0.0003);
+    m.commit_number(NumberTarget::InterferenceTolMinus, 0.0003);
+    let dir = std::env::temp_dir().join(format!("bushing-session-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    BushingSession::new(&BushingFile::capture(&m, "fit"), dir.join(format!("keep-{:?}.json", std::thread::current().id()).replace(['(', ')'], "")))
+}
+fn offered(s: &BushingSession) -> String {
+    texts(&[card(&s.result_cards(), "bushing-fixes")])
+}
+
+#[test]
+fn keeping_the_interference_or_the_bore_offers_the_options_that_leave_it_alone() {
+    use crate::toolboxes::bushing::advice::Keep;
+    let mut s = tolerance_case();
+    let all = offered(&s);
+    assert!(all.contains("Tighten the bore band") && all.contains("Widen the interference band"), "every route is open at first: {all}");
+    assert!(!card(&s.result_cards(), "bushing-fixes").folded);
+    act(&mut s, BushingAct::ToggleKeep(Keep::Interference));
+    let keep_int = offered(&s);
+    assert!(!keep_int.contains("Widen the interference band") && keep_int.contains("Tighten the bore band") && keep_int.contains("changes Bore"), "{keep_int}");
+    act(&mut s, BushingAct::ToggleKeep(Keep::Interference));
+    act(&mut s, BushingAct::ToggleKeep(Keep::Bore));
+    let keep_bore = offered(&s);
+    assert!(keep_bore.contains("Widen the interference band") && !keep_bore.contains("Tighten the bore band") && !keep_bore.contains("different reamer"), "{keep_bore}");
+}
+
+#[test]
+fn when_no_option_keeps_everything_critical_the_card_says_what_each_gives_up() {
+    use crate::toolboxes::bushing::advice::Keep;
+    let mut s = tolerance_case();
+    act(&mut s, BushingAct::ToggleKeep(Keep::Bore));
+    act(&mut s, BushingAct::ToggleKeep(Keep::Interference));
+    let t = offered(&s);
+    assert!(t.contains("Nothing here keeps Bore and Interference") && t.contains("(you keep Bore)"), "{t}");
+}
+
+#[test]
+fn the_critical_values_are_saved_with_the_case() {
+    use crate::toolboxes::bushing::advice::Keep;
+    let mut s = tolerance_case();
+    act(&mut s, BushingAct::ToggleKeep(Keep::Load));
+    assert!(s.dirty, "marking a value critical is a change to the case");
+    let back = BushingFile::from_json(&BushingFile::capture(s.model(), "x").to_json()).unwrap();
+    let mut m = BushingModel::default();
+    back.apply(&mut m);
+    assert!(m.keep.load && !m.keep.bore);
 }

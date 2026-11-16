@@ -142,6 +142,8 @@ pub enum DockItem {
     Run(Box<super::page::LineDrawing>),
     /// A table (the requirements).
     Table(Box<super::page::DockTable>),
+    /// Toggle chips side by side (`checked` is each one's state); a click runs the entry's action.
+    Chips { label: String, chips: Vec<crate::gpu_viewer::menu::Entry> },
 }
 
 /// One large figure: its label, value and unit, and dim lines under it.
@@ -308,6 +310,7 @@ impl DockItem {
                 super::page::Cell::Text { text, .. } | super::page::Cell::Wall { text, .. } | super::page::Cell::Chip { text, .. } => Some(text.clone()),
                 super::page::Cell::Button { .. } => None,
             }).collect::<Vec<_>>().join("  ")).collect::<Vec<_>>().join("\n")),
+            DockItem::Chips { label, chips } => Some(format!("{label} {}", chips.iter().map(|c| format!("[{}] {}", if c.checked == Some(true) { "x" } else { " " }, c.label)).collect::<Vec<_>>().join(" "))),
             _ => None,
         }
     }
