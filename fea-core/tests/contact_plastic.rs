@@ -154,3 +154,19 @@ fn per_body_yield_stress_selects_the_body_that_yields() {
     assert!(h1 > 1e-4 && s1 == 0.0);
     assert!(s2 > 1e-4 && h2 == 0.0);
 }
+
+/// A plastic law that never yields takes the cap-sized steps under `NlOptions::ep_step` (not the fixed 8) and lands on the
+/// fixed-step solution; a fit that does yield is shortened where it yields and keeps Hill's pressure.
+#[test]
+fn the_plastic_increment_control_takes_long_steps_while_the_fit_stays_elastic() {
+    let delta = 0.002;
+    let f = fit(NU, delta, Some(1.0e12), Some(1.0e12));
+    let specs = || -> Vec<ContactSpec> { ContactSpec::two_pass("fit", f.shaft_face.clone(), f.hub_face.clone(), 1.0e9).into_iter().map(|s| s.with_margin(0.1)).collect() };
+    let fixed = f.model.solve_nonlinear_contact(&Loads::default(), &f.bc, specs(), &NlOptions { steps: 8, ..NlOptions::default() }).unwrap();
+    let adaptive = f.model.solve_nonlinear_contact(&Loads::default(), &f.bc, specs(), &NlOptions { steps: 2, ep_step: 1e-3, ..NlOptions::default() }).unwrap();
+    assert!(fixed.complete() && adaptive.complete());
+    assert_eq!(fixed.steps.len(), 8);
+    assert_eq!(adaptive.steps.len(), 2, "no plastic strain: the steps stay at the cap");
+    let du: f64 = fixed.u.iter().zip(&adaptive.u).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+    assert!(du < 1e-3 * delta, "max displacement difference {du:e}");
+}
