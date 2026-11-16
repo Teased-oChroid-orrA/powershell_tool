@@ -1405,6 +1405,112 @@ fn hole_loops_declared_as_outer_bounds_read_like_face_bounds() {
     assert!(a.signed_volume_mm3 > 0.);
 }
 
+/// Some writers (the NIST `stc_06` file) label the hole loop of a planar face `FACE_OUTER_BOUND` and the true outer loop
+/// `FACE_BOUND`, a single declared outer that is geometrically nested. The loop geometry decides, as with several declared
+/// outers, so declaring the hole of each holed face (bounds #262 and #369) the only `FACE_OUTER_BOUND` must not change the
+/// sampled shell or its volume.
+#[test]
+fn a_single_declared_outer_that_is_the_hole_reads_like_the_correct_labels() {
+    let plain = include_str!("data/edit-plate-centre-hole.step");
+    let swapped = plain
+        .replace("#262 = FACE_BOUND(", "#262 = FACE_OUTER_BOUND(")
+        .replace("#369 = FACE_BOUND(", "#369 = FACE_OUTER_BOUND(");
+    assert_ne!(plain, swapped);
+    let sample = |text: &str| {
+        let data = inventory(text, Limits::default()).unwrap();
+        AnalyticModel::read(&data, Options::default())
+            .unwrap()
+            .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+            .unwrap()
+    };
+    let (a, b) = (sample(plain), sample(&swapped));
+    assert_eq!(a.mesh.triangles.len(), b.mesh.triangles.len());
+    assert_eq!(a.signed_volume_mm3, b.signed_volume_mm3);
+    assert!(a.signed_volume_mm3 > 0.);
+}
+
+/// A half cone (apex at (0, 0, 8), base circle radius 5 in z = 0, the y >= 0 half) with the cone's apex as a vertex: three
+/// faces, the cone face bounded by two generators and a half-circle arc (a wedge, as the NIST AP242 files write drill
+/// points). The head and the units come from the OpenCASCADE cone fixture.
+fn half_cone_document() -> String {
+    let cone = include_str!("data/cone.step");
+    let head = &cone[..cone.find("#15 = MANIFOLD_SOLID_BREP").unwrap()];
+    let tail = &cone[cone.find("#82 = ").unwrap()..];
+    let body = "\
+#15 = MANIFOLD_SOLID_BREP('',#16);
+#16 = CLOSED_SHELL('',(#100,#101,#102));
+#20 = CARTESIAN_POINT('',(0.,0.,8.));
+#21 = VERTEX_POINT('',#20);
+#22 = CARTESIAN_POINT('',(5.,0.,0.));
+#23 = VERTEX_POINT('',#22);
+#24 = CARTESIAN_POINT('',(-5.,0.,0.));
+#25 = VERTEX_POINT('',#24);
+#26 = EDGE_CURVE('',#21,#23,#27,.T.);
+#27 = LINE('',#20,#28);
+#28 = VECTOR('',#29,1.);
+#29 = DIRECTION('',(0.529998940003,0.,-0.847998304005));
+#30 = EDGE_CURVE('',#21,#25,#31,.T.);
+#31 = LINE('',#20,#32);
+#32 = VECTOR('',#33,1.);
+#33 = DIRECTION('',(-0.529998940003,0.,-0.847998304005));
+#34 = EDGE_CURVE('',#23,#25,#35,.T.);
+#35 = CIRCLE('',#36,5.);
+#36 = AXIS2_PLACEMENT_3D('',#37,#38,#39);
+#37 = CARTESIAN_POINT('',(0.,0.,0.));
+#38 = DIRECTION('',(0.,0.,1.));
+#39 = DIRECTION('',(1.,0.,0.));
+#40 = EDGE_CURVE('',#25,#23,#41,.T.);
+#41 = LINE('',#24,#42);
+#42 = VECTOR('',#43,1.);
+#43 = DIRECTION('',(1.,0.,0.));
+#44 = AXIS2_PLACEMENT_3D('',#37,#45,#39);
+#45 = DIRECTION('',(0.,0.,-1.));
+#46 = PLANE('',#44);
+#47 = AXIS2_PLACEMENT_3D('',#37,#48,#39);
+#48 = DIRECTION('',(0.,-1.,0.));
+#49 = PLANE('',#47);
+#50 = AXIS2_PLACEMENT_3D('',#20,#45,#39);
+#51 = CONICAL_SURFACE('',#50,0.,0.558599315344);
+#52 = ORIENTED_EDGE('',*,*,#40,.F.);
+#53 = ORIENTED_EDGE('',*,*,#34,.F.);
+#54 = EDGE_LOOP('',(#52,#53));
+#55 = FACE_BOUND('',#54,.T.);
+#56 = ORIENTED_EDGE('',*,*,#40,.T.);
+#57 = ORIENTED_EDGE('',*,*,#26,.F.);
+#58 = ORIENTED_EDGE('',*,*,#30,.T.);
+#59 = EDGE_LOOP('',(#56,#57,#58));
+#60 = FACE_BOUND('',#59,.T.);
+#61 = ORIENTED_EDGE('',*,*,#34,.T.);
+#62 = ORIENTED_EDGE('',*,*,#30,.F.);
+#63 = ORIENTED_EDGE('',*,*,#26,.T.);
+#64 = EDGE_LOOP('',(#61,#62,#63));
+#65 = FACE_BOUND('',#64,.T.);
+#100 = ADVANCED_FACE('',(#55),#46,.T.);
+#101 = ADVANCED_FACE('',(#60),#49,.T.);
+#102 = ADVANCED_FACE('',(#65),#51,.T.);
+";
+    format!("{head}{body}{tail}")
+}
+
+/// The apex is a vertex of the wedge's loop, which then has no angle there: the cone-tip seam (for a circle that winds once
+/// around the axis) must leave it alone, and the half-turn arc (exactly half a period in the developed chart, to rounding)
+/// must chart. Volume: half of pi r^2 h / 3.
+#[test]
+fn a_cone_wedge_through_its_apex_samples_its_closed_form_volume() {
+    let text = half_cone_document();
+    let data = inventory(&text, Limits::default()).unwrap();
+    let sampled = AnalyticModel::read(&data, Options::default())
+        .unwrap()
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap();
+    let exact = std::f64::consts::PI * 25. * 8. / 6.;
+    assert!(
+        (sampled.signed_volume_mm3 - exact).abs() < 2e-2 * exact,
+        "{} against {exact}",
+        sampled.signed_volume_mm3
+    );
+}
+
 /// A committed fixture merged with a copy of itself (ids of the copy shifted): a multi-body part with two equal solids.
 fn two_body_document() -> String {
     let a = include_str!("data/edit-plate.step").to_string();
