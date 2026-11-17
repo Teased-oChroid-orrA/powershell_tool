@@ -150,6 +150,16 @@ fn content_hash(lines: &[String], pages: Option<&[Option<std::num::NonZeroU32>]>
     hasher.finalize().to_vec()
 }
 
+/// The write counter as an SQL value, for stamping a document row inside the transaction that bumped it.
+const GENERATION_NOW: &str = "(SELECT value FROM semantic_meta WHERE key='generation')";
+
+/// Identity of this database file (`semantic_meta.instance`, a random number set when it was created): a snapshot of
+/// one file is never brought up to date from another that happens to sit at the same path.
+fn instance(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("SELECT value FROM semantic_meta WHERE key='instance'", [], |row| row.get(0))
+        .map_err(|error| error.to_string())
+}
+
 fn generation(conn: &Connection) -> Result<i64, String> {
     conn.query_row("SELECT value FROM semantic_meta WHERE key='generation'", [], |row| row.get(0))
         .optional()
@@ -208,6 +218,13 @@ impl SemanticIndex {
         ensure_column(&tx, "semantic_chunks", "page", "INTEGER")?;
         ensure_column(&tx, "semantic_documents", "content_hash", "BLOB")?;
         tx.execute_batch("CREATE INDEX IF NOT EXISTS semantic_documents_hash ON semantic_documents(content_hash);")?;
+        // The write generation each document row was last written at: the in-memory snapshot reads only the rows
+        // newer than itself (`semantic_cache::Snapshot::updated`).
+        ensure_column(&tx, "semantic_documents", "generation", "INTEGER NOT NULL DEFAULT 0")?;
+        tx.execute_batch("CREATE INDEX IF NOT EXISTS semantic_documents_generation ON semantic_documents(generation);")?;
+        use std::hash::BuildHasher;
+        let random = std::collections::hash_map::RandomState::new().hash_one(std::time::SystemTime::now()) as i64;
+        tx.execute("INSERT OR IGNORE INTO semantic_meta(key,value) VALUES('instance',?1)", [random])?;
         tx.commit()?;
         // SQLite ignores this pragma inside a transaction, so it must be set here: replacing or removing a document
         // relies on the cascade to drop its chunks.
@@ -295,11 +312,16 @@ impl SemanticIndex {
             if stored.is_some_and(|(stored_hash, version)| {
                 version == citation_version && stored_hash.as_deref() == Some(hash.as_slice())
             }) {
-                conn.execute(
-                    "UPDATE semantic_documents SET modified=?2,size=?3 WHERE path=?1",
+                // The snapshot holds each document's stamp (it checks the file against it on every query), so this
+                // is a write too: without the bump a cached snapshot kept the old time and dropped the file's hits.
+                let tx = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+                bump_generation(&tx).map_err(|error| error.to_string())?;
+                tx.execute(
+                    &format!("UPDATE semantic_documents SET modified=?2,size=?3,generation={GENERATION_NOW} WHERE path=?1"),
                     params![path, modified, size],
                 )
                 .map_err(|error| error.to_string())?;
+                tx.commit().map_err(|error| error.to_string())?;
                 return conn
                     .query_row(
                         "SELECT COUNT(*) FROM semantic_chunks WHERE path=?1",
@@ -325,8 +347,9 @@ impl SemanticIndex {
         let tx = conn.transaction().map_err(|error| error.to_string())?;
         tx.execute("DELETE FROM semantic_documents WHERE path=?1", [path])
             .map_err(|error| error.to_string())?;
+        bump_generation(&tx).map_err(|error| error.to_string())?;
         tx.execute(
-            "INSERT INTO semantic_documents(path,modified,size,citation_version,content_hash) VALUES(?1,?2,?3,?4,?5)",
+            &format!("INSERT INTO semantic_documents(path,modified,size,citation_version,content_hash,generation) VALUES(?1,?2,?3,?4,?5,{GENERATION_NOW})"),
             params![path, modified, size, citation_version, hash.as_slice()],
         )
         .map_err(|error| error.to_string())?;
@@ -337,7 +360,6 @@ impl SemanticIndex {
                 params![path, chunk_index as i64, chunk.first_line as i64, chunk.last_line as i64, chunk.text, vector, chunk.page.map(|page| page.get() as i64)],
             ).map_err(|error| error.to_string())?;
         }
-        bump_generation(&tx).map_err(|error| error.to_string())?;
         tx.commit().map_err(|error| error.to_string())?;
         Ok((chunks.len(), embedded))
     }
@@ -456,19 +478,40 @@ impl SemanticIndex {
             .conn
             .lock()
             .map_err(|_| "semantic index lock poisoned".to_string())?;
-        let generation = generation(&conn)?;
-        if crate::semantic_cache::cached(&self.path, stem, generation).is_some() {
-            return Ok(true);
+        Ok(self.snapshot(&conn, stem, self.cache_limit)?.is_some())
+    }
+
+    /// The in-memory snapshot of the index as it is now; `None` when the index holds more than `limit` chunks. A
+    /// snapshot of an earlier state of this database is brought up to date (only the documents written or removed
+    /// since are read); otherwise it is built from every chunk.
+    fn snapshot(
+        &self,
+        conn: &Connection,
+        stem: bool,
+        limit: usize,
+    ) -> Result<Option<std::sync::Arc<crate::semantic_cache::Snapshot>>, String> {
+        use crate::semantic_cache::{self, Snapshot};
+        // The generation is read before the rows: a write in between leaves a snapshot that is stale, never wrong
+        // (a document read ahead of its generation is simply read again by the next update).
+        let (instance, generation) = (instance(conn)?, generation(conn)?);
+        if let Some(snapshot) = semantic_cache::cached(&self.path, stem, instance, generation) {
+            return Ok(Some(snapshot));
         }
         let chunks: i64 = conn
             .query_row("SELECT COUNT(*) FROM semantic_chunks", [], |row| row.get(0))
             .map_err(|error| error.to_string())?;
-        if chunks as usize > self.cache_limit {
-            return Ok(false);
+        if chunks as usize > limit {
+            return Ok(None);
         }
-        let snapshot = std::sync::Arc::new(crate::semantic_cache::Snapshot::build(&conn, generation, stem, EMBEDDING_DIMENSIONS)?);
-        crate::semantic_cache::store(&self.path, stem, snapshot);
-        Ok(true)
+        let stale = semantic_cache::take(&self.path, stem)
+            .filter(|stale| stale.instance == instance && stale.generation < generation);
+        let snapshot = match stale {
+            Some(stale) => std::sync::Arc::unwrap_or_clone(stale).updated(conn, generation, stem)?,
+            None => Snapshot::build(conn, instance, generation, stem, EMBEDDING_DIMENSIONS)?,
+        };
+        let snapshot = std::sync::Arc::new(snapshot);
+        semantic_cache::store(&self.path, stem, snapshot.clone());
+        Ok(Some(snapshot))
     }
 
     /// Semantic results are separate, cited suggestions. This method never
@@ -532,15 +575,7 @@ impl SemanticIndex {
             return Err("semantic model returned no embedding".into());
         };
         let conn = self.conn.lock().map_err(|_| "semantic index lock poisoned".to_string())?;
-        let generation = generation(&conn)?;
-        let snapshot = match crate::semantic_cache::cached(&self.path, stem, generation) {
-            Some(snapshot) => snapshot,
-            None => {
-                let snapshot = std::sync::Arc::new(crate::semantic_cache::Snapshot::build(&conn, generation, stem, EMBEDDING_DIMENSIONS)?);
-                crate::semantic_cache::store(&self.path, stem, snapshot.clone());
-                snapshot
-            }
-        };
+        let Some(snapshot) = self.snapshot(&conn, stem, usize::MAX)? else { return Ok(None) };
         Ok(crate::ranking::feature_set(&snapshot, embedding.values(), query, stem))
     }
 
@@ -568,7 +603,7 @@ impl SemanticIndex {
         self.search_streaming(query, &query_embedding, limit, settings, excluded_path, hybrid, config)
     }
 
-    /// Search from the in-memory snapshot (rebuilt when the index changed); `None` when the index is too large for one.
+    /// Search from the in-memory snapshot (brought up to date when the index changed); `None` when the index is too large for one.
     #[allow(clippy::too_many_arguments)]
     fn search_snapshot(
         &self,
@@ -584,27 +619,7 @@ impl SemanticIndex {
             .conn
             .lock()
             .map_err(|_| "semantic index lock poisoned".to_string())?;
-        // The generation is read before the rows: a write in between leaves a snapshot that is stale, never wrong.
-        let generation = generation(&conn)?;
-        let snapshot = match crate::semantic_cache::cached(&self.path, config.stem, generation) {
-            Some(snapshot) => snapshot,
-            None => {
-                let chunks: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM semantic_chunks", [], |row| row.get(0))
-                    .map_err(|error| error.to_string())?;
-                if chunks as usize > self.cache_limit {
-                    return Ok(None);
-                }
-                let snapshot = std::sync::Arc::new(crate::semantic_cache::Snapshot::build(
-                    &conn,
-                    generation,
-                    config.stem,
-                    EMBEDDING_DIMENSIONS,
-                )?);
-                crate::semantic_cache::store(&self.path, config.stem, snapshot.clone());
-                snapshot
-            }
-        };
+        let Some(snapshot) = self.snapshot(&conn, config.stem, self.cache_limit)? else { return Ok(None) };
         let query_values = query_embedding.values();
         if query_values.len() != EMBEDDING_DIMENSIONS {
             return Ok(Some(Vec::new()));
@@ -1044,7 +1059,7 @@ fn embed_lines_with_pages(
         })
         .collect();
     let pending: Vec<usize> = (0..bounded.len()).filter(|&i| embedded[i].is_none()).collect();
-    for batch in pending.chunks(EMBED_BATCH) {
+    for batch in embed_calls(&pending, |i| bounded[i].3.len()) {
         let inputs = batch.iter().map(|&i| bounded[i].3.as_str()).collect::<Vec<_>>();
         let vectors = search_ml::embed_batch(&inputs)?;
         for (&i, embedding) in batch.iter().zip(vectors) {
@@ -1059,6 +1074,29 @@ fn embed_lines_with_pages(
         }
     }
     Ok((embedded.into_iter().flatten().collect(), pending.len()))
+}
+
+/// Split the chunks to embed into model calls. The model pads every text of a call to the longest one, so a call
+/// is kept to about one full chunk of padded text (`texts x longest <= CHUNK_CHARS`, at most `EMBED_BATCH` texts):
+/// a full chunk goes alone, short ones (tails, page fragments) go together. Measured in
+/// `docs/search-benchmarks.md` (2026-11-16): full chunks embed 45% faster one per call than 16 per call, 80 to 200
+/// character texts 10% to 50% faster batched; the vectors are bit-identical either way.
+fn embed_calls(pending: &[usize], length: impl Fn(usize) -> usize) -> Vec<&[usize]> {
+    let mut calls = Vec::new();
+    let (mut start, mut longest) = (0usize, 0usize);
+    for (at, &chunk) in pending.iter().enumerate() {
+        let widest = longest.max(length(chunk));
+        if at > start && (widest * (at - start + 1) > CHUNK_CHARS || at - start == EMBED_BATCH) {
+            calls.push(&pending[start..at]);
+            (start, longest) = (at, length(chunk));
+        } else {
+            longest = widest;
+        }
+    }
+    if start < pending.len() {
+        calls.push(&pending[start..]);
+    }
+    calls
 }
 
 fn split_to_token_budget(
@@ -1303,6 +1341,32 @@ mod tests {
     }
 
     #[test]
+    fn model_calls_hold_one_full_chunk_or_several_short_ones() {
+        let lengths = [800usize, 800, 100, 100, 100, 700, 40, 40, 800];
+        let pending: Vec<usize> = (0..lengths.len()).collect();
+        let calls = embed_calls(&pending, |i| lengths[i]);
+        assert_eq!(calls, [&[0usize][..], &[1], &[2, 3, 4], &[5], &[6, 7], &[8]]);
+        // Never more than `EMBED_BATCH` texts in a call, every chunk in exactly one call, order kept.
+        let many: Vec<usize> = (0..40).collect();
+        let calls = embed_calls(&many, |_| 10);
+        assert_eq!(calls.iter().map(|call| call.len()).collect::<Vec<_>>(), [16, 16, 8]);
+        assert_eq!(calls.concat(), many);
+        assert!(embed_calls(&[], |_| 0).is_empty());
+    }
+
+    #[test]
+    fn batching_does_not_change_a_vector() {
+        let long = "Torque the M8x1.25 flange bolts to 25 newton metres in a cross pattern. ".repeat(10);
+        let texts = ["Hydrostatic test pressure was recorded.", long.as_str(), "Corrosion was blended out."];
+        let together = search_ml::embed_batch(&texts).unwrap();
+        for (text, batched) in texts.iter().zip(&together) {
+            let alone = search_ml::embed_batch(&[text]).unwrap().remove(0);
+            let bits = |e: &Embedding| e.values().iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&alone), bits(batched), "{text}");
+        }
+    }
+
+    #[test]
     fn semantic_chunks_preserve_line_ranges_and_keep_limits() {
         let lines = (0..100)
             .map(|i| format!("line {i} {}", "engineering text ".repeat(20)))
@@ -1488,9 +1552,8 @@ mod tests {
         let generation_of = |index: &SemanticIndex| generation(&index.conn.lock().unwrap()).unwrap();
         index.index_document("a.txt", 100, 40, &lines).unwrap();
         let written = generation_of(&index);
-        // Touched, same text: stamp moves, no re-embedding (the write counter stays put), still searchable.
-        assert_eq!(index.index_document("a.txt", 200, 40, &lines).unwrap(), 1);
-        assert_eq!(generation_of(&index), written);
+        // Touched, same text: stamp moves, no re-embedding (the model is not called), still searchable.
+        assert_eq!(index.index_document_counting("a.txt", 200, 40, &lines, None).unwrap(), (1, 0));
         assert!(index.is_current("a.txt", 200, 40).unwrap());
         assert!(!index.is_current("a.txt", 100, 40).unwrap());
         // Different text is embedded again.
@@ -1510,8 +1573,8 @@ mod tests {
         index.index_document(&path.to_string_lossy(), modified, size, &["Torque the bolt.".to_string()]).unwrap();
         let stem = crate::lexical::LexicalConfig::default().stem;
         let ready = |index: &SemanticIndex| {
-            let generation = generation(&index.conn.lock().unwrap()).unwrap();
-            crate::semantic_cache::cached(&index.path, stem, generation).is_some()
+            let conn = index.conn.lock().unwrap();
+            crate::semantic_cache::cached(&index.path, stem, instance(&conn).unwrap(), generation(&conn).unwrap()).is_some()
         };
         assert!(!ready(&index));
         assert!(index.warm().unwrap());
@@ -1563,6 +1626,148 @@ mod tests {
         assert!(index.search("hydrostatic pressure", 1).unwrap()[0].path.ends_with("d.txt"));
         index.remove_document(&d).unwrap();
         assert!(index.search("hydrostatic pressure", 5).unwrap().iter().all(|hit| !hit.path.ends_with("d.txt")));
+    }
+
+    /// The stamps of `path` as the index would record them.
+    fn stamp(path: &Path) -> (String, i64, i64) {
+        let (modified, size) = source_metadata(path);
+        (path.to_string_lossy().into_owned(), modified, size)
+    }
+
+    #[test]
+    fn a_touched_file_with_unchanged_text_stays_in_cached_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SemanticIndex::open(&dir.path().join("semantic.sqlite")).unwrap();
+        let file = dir.path().join("a.txt");
+        let lines = vec!["Torque the M8x1.25 bolt to 25 newton metres.".to_string()];
+        std::fs::write(&file, &lines[0]).unwrap();
+        let (path, modified, size) = stamp(&file);
+        index.index_document(&path, modified, size, &lines).unwrap();
+        assert_eq!(index.search("bolt torque", 5).unwrap().len(), 1, "snapshot built");
+        // Same text, new time (a copy, a checkout, a sync tool): the vectors are kept and the file is re-stamped.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(later).unwrap();
+        let (_, touched, _) = stamp(&file);
+        assert_ne!(touched, modified);
+        assert_eq!(index.index_document_counting(&path, touched, size, &lines, None).unwrap(), (1, 0));
+        assert_eq!(index.search("bolt torque", 5).unwrap().len(), 1, "the snapshot follows the new stamp");
+    }
+
+    #[test]
+    fn incremental_snapshot_equals_a_rebuilt_one_through_adds_edits_and_deletes() {
+        use crate::semantic_cache::{Snapshot, FULL_BUILDS};
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = SemanticIndex::open(&dir.path().join("semantic.sqlite")).unwrap();
+        let write = |index: &SemanticIndex, name: &str, lines: &[&str]| {
+            let file = dir.path().join(name);
+            std::fs::write(&file, lines.join("\n")).unwrap();
+            let (path, modified, size) = stamp(&file);
+            let lines: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
+            index.index_document(&path, modified, size, &lines).unwrap();
+            path
+        };
+        // A document of several chunks: each line is longer than half a chunk, so no two share one.
+        let long = |topic: &str, lines: usize| -> Vec<String> {
+            (0..lines).map(|i| format!("{topic} record {i}: {}", format!("{topic} inspection step {i} ").repeat(24))).collect()
+        };
+        let config = crate::lexical::LexicalConfig::default();
+        let queries = ["M8 bolt torque", "shaft stress", "blended corrosion", "hydrostatic pressure", "weld inspection step", "newton"];
+        // After every write: the snapshot the index serves equals one built from scratch, field for field (chunk
+        // order, vectors, lengths, postings), it was reached without a full build, and the hits and scores equal the
+        // streaming path's.
+        let check = |index: &mut SemanticIndex, step: &str| {
+            let builds = FULL_BUILDS.with(|builds| builds.get());
+            let (served, rebuilt) = {
+                let conn = index.conn.lock().unwrap();
+                let served = index.snapshot(&conn, config.stem, usize::MAX).unwrap().unwrap();
+                assert_eq!(FULL_BUILDS.with(|builds| builds.get()), builds, "{step}: updated, not rebuilt");
+                let rebuilt = Snapshot::build(&conn, served.instance, served.generation, config.stem, EMBEDDING_DIMENSIONS).unwrap();
+                (served, rebuilt)
+            };
+            assert!(*served == rebuilt, "{step}: the updated snapshot differs from a rebuilt one");
+            for query in queries {
+                for hybrid in [true, false] {
+                    index.cache_limit = MAX_CACHED_CHUNKS;
+                    let cached = index.search_tuned(query, 50, hybrid, &config).unwrap();
+                    index.cache_limit = 0;
+                    let streamed = index.search_tuned(query, 50, hybrid, &config).unwrap();
+                    index.cache_limit = MAX_CACHED_CHUNKS;
+                    assert_eq!(cached.len(), streamed.len(), "{step}: {query} hybrid={hybrid}");
+                    for (c, s) in cached.iter().zip(&streamed) {
+                        assert_eq!((&c.path, c.first_line), (&s.path, s.first_line), "{step}: {query} hybrid={hybrid}");
+                        assert!((c.similarity - s.similarity).abs() < 1e-5, "{step}: {query}");
+                    }
+                }
+            }
+        };
+        write(&index, "c.txt", &["Torque the M8x1.25 bolt to 25 newton metres."]);
+        write(&index, "e.txt", &["The shaft experiences torsional stress under load."]);
+        let weld: Vec<String> = long("weld", 4);
+        let weld_lines: Vec<&str> = weld.iter().map(String::as_str).collect();
+        let g = write(&index, "g.txt", &weld_lines);
+        index.search("bolt", 1).unwrap();
+        check(&mut index, "first build");
+        // Adds: before every stored path, between two, after all of them; one of several chunks.
+        write(&index, "a.txt", &["Corrosion was blended out and the surface filled."]);
+        check(&mut index, "add first");
+        let d = write(&index, "d.txt", &["Hydrostatic test pressure was recorded."]);
+        check(&mut index, "add middle");
+        let pump: Vec<String> = long("pump", 3);
+        write(&index, "z.txt", &pump.iter().map(String::as_str).collect::<Vec<_>>());
+        check(&mut index, "add last");
+        // Edits: new text, more chunks, fewer chunks, and two documents between two queries.
+        write(&index, "d.txt", &["Hydrostatic proof pressure was 1.5 times the design pressure."]);
+        check(&mut index, "edit text");
+        let more: Vec<String> = long("weld", 6);
+        write(&index, "g.txt", &more.iter().map(String::as_str).collect::<Vec<_>>());
+        check(&mut index, "edit grows");
+        write(&index, "g.txt", &weld_lines[..2]);
+        check(&mut index, "edit shrinks");
+        write(&index, "c.txt", &["Torque the M10 bolt to 49 newton metres."]);
+        write(&index, "y.txt", &["Shaft keyway stress concentration."]);
+        check(&mut index, "two writes");
+        // Same text with a new stamp.
+        let (path, modified, size) = stamp(&dir.path().join("e.txt"));
+        index.index_document(&path, modified + 10, size, &["The shaft experiences torsional stress under load.".to_string()]).unwrap();
+        check(&mut index, "restamp");
+        // Deletes: one document, one of several chunks, then an add and a delete together, then everything.
+        index.remove_document(&d).unwrap();
+        check(&mut index, "remove one");
+        index.remove_document(&g).unwrap();
+        write(&index, "b.txt", &["Blended corrosion limits for the flange."]);
+        check(&mut index, "remove and add");
+        for name in ["a.txt", "b.txt", "c.txt", "e.txt", "y.txt", "z.txt"] {
+            index.remove_document(&dir.path().join(name).to_string_lossy()).unwrap();
+        }
+        check(&mut index, "remove all");
+        write(&index, "c.txt", &["Torque the M8x1.25 bolt to 25 newton metres."]);
+        check(&mut index, "add to empty");
+    }
+
+    #[test]
+    fn a_recreated_database_never_updates_the_old_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("semantic.sqlite");
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "Torque the bolt.").unwrap();
+        let (path, modified, size) = stamp(&file);
+        {
+            let index = SemanticIndex::open(&db).unwrap();
+            index.index_document(&path, modified, size, &["Torque the bolt.".to_string()]).unwrap();
+            assert!(index.search("bolt torque", 5).unwrap()[0].excerpt.contains("bolt"));
+        }
+        // The same path holds a new database whose write counter passes the old one with other content.
+        std::fs::remove_file(&db).unwrap();
+        let index = SemanticIndex::open(&db).unwrap();
+        let other = dir.path().join("b.txt");
+        std::fs::write(&other, "Corrosion was blended out.").unwrap();
+        let (other_path, other_modified, other_size) = stamp(&other);
+        index.index_document(&other_path, other_modified, other_size, &["Corrosion was blended out.".to_string()]).unwrap();
+        index.index_document(&path, modified, size, &["Hydrostatic test pressure.".to_string()]).unwrap();
+        index.index_document(&path, modified, size, &["Hydrostatic proof pressure.".to_string()]).unwrap();
+        let hits = index.search("blended corrosion", 5).unwrap();
+        assert_eq!(hits.len(), 2, "both documents of the new database, none of the old");
+        assert!(hits[0].excerpt.contains("Corrosion"), "{}", hits[0].excerpt);
     }
 
     #[test]
