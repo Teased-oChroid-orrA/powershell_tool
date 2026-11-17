@@ -227,7 +227,7 @@ fn allowances_drive_the_checks_contour_minimum_wall_and_undo() {
 fn invalid_allowances_clear_results_and_old_cases_reset_losses_to_zero() {
     let mut s = session("invalid-allowances");
     let mut old = s.snapshot();
-    assert_eq!(old.version, 4, "older readers must reject cases whose wall losses they cannot apply");
+    assert_eq!(old.version, 5, "older readers must reject cases whose wall losses they cannot apply");
     old.version = 1;
     old.numbers.remove("corrosion allowance");
     old.numbers.remove("mill undertolerance percent");
@@ -457,7 +457,13 @@ fn the_line_run_page_shows_the_drawing_the_table_and_a_balanced_chip_once_the_wa
 }
 
 fn page_text(s: &VesselSession) -> String {
-    s.page().iter().filter_map(|i| i.plain_text()).collect::<Vec<_>>().join("\n")
+    // Headings and the drawing's note (where a refused run says why) carry no plain text of their own; the page tests
+    // read them too.
+    s.page().iter().filter_map(|i| match i {
+        DockItem::Heading(t) => Some(t.clone()),
+        DockItem::Run(d) => Some(d.note.clone()),
+        i => i.plain_text(),
+    }).collect::<Vec<_>>().join("\n")
 }
 
 #[test]

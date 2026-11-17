@@ -1,8 +1,8 @@
 # Pressure line run: stress check of a supported tube (#234)
 
 `pressure-vessel-solver/src/line_run.rs` (+ `line_beam.rs`): a long aircraft pressure line (hydraulic / fuel / pneumatic tube)
-supported at `x` positions, checked with the standard failure criterion of its material class. API only: no window yet (a window
-needs an owner-approved mockup; see "Proposed window" below).
+supported at `x` positions, checked with the standard failure criterion of its material class. The Pressure Vessel
+window shows it as its line-run page (`app-tui/src/gpu_viewer/editor/vessel/`, #292; segment mode below).
 
 ## Pipeline
 1. **Member actions per load case.** Two orthogonal bending planes (y, z) plus an axial bar on one station list (support, load and
@@ -88,11 +88,11 @@ approximation; supports are pinned in both transverse directions (optionally cla
 thermal restraint is uniaxial (no Poisson coupling). Ductile ultimate is checked both ways (maximum |principal| per the crate's
 convention, and von Mises, owner request 2026-11-14).
 
-## Proposed window (needs owner approval before any code)
+## Proposed window (historical: built as the Pressure Vessel window's line-run page, #292)
 A "Line Run" page in the native Pressure Vessel family: left, tube inputs (OD, wall, material class and allowables, FS) and a
 support / load table (x, kind, anchor, force, weight, offset); right, a station plot of moment resultant and axial force over `x` with
 supports marked, a margin card per criterion (governing case, `x`, surface, angle), and the reactions table. Case selector for load
-cases (1g, crash factors, thermal). No window is built here.
+cases (1g, crash factors, thermal). (Written before the page existed.)
 
 ## Segment mode in the window (2026-11-16)
 The Pressure Vessel window's line-run page takes the solver's segment mode (`line_run::segment`), per the owner's pressure-line workflow
