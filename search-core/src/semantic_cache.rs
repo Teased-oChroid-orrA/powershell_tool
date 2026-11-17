@@ -314,7 +314,12 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
 
 /// Snapshots kept per (index file, stemming), the two most recently built.
 static CACHE: Mutex<Vec<(PathBuf, bool, Arc<Snapshot>)>> = Mutex::new(Vec::new());
+#[cfg(not(test))]
 const KEPT: usize = 2;
+/// Tests run in parallel on many index files and share this cache: none may evict another's snapshot, or a test that
+/// asserts "updated, not rebuilt" fails by timing.
+#[cfg(test)]
+const KEPT: usize = 4096;
 
 pub(crate) fn cached(path: &Path, stem: bool, instance: i64, generation: i64) -> Option<Arc<Snapshot>> {
     let cache = CACHE.lock().ok()?;
