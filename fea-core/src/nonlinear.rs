@@ -417,6 +417,10 @@ const STAGNATION_ITERATIONS: usize = 8;
 /// Step cuts a stagnating load step gets under `stick_slip_guard`: halving the step released none of the stick-slip cycles
 /// seen (a failing first attempt cost 59 s with all 12 cuts, 13 s with 3), and the caller has other attempts to try.
 const STAGNATION_CUTS: usize = 3;
+/// Default `NlOptions::max_cuts_total`: far above what a converging analysis needs (the Hill and fit proofs cut a few
+/// dozen times), far below the run that cycles cut / short step / cut for hours.
+pub const DEFAULT_MAX_CUTS_TOTAL: usize = 200;
+
 /// Shortest step of the plastic-increment control (`NlOptions::ep_step`), as a fraction of the cap.
 const EP_STEP_FLOOR: f64 = 64.0;
 /// Iterations a solve gets on top of `max_iter` once its active set is held.
@@ -458,6 +462,10 @@ pub struct NlOptions {
     pub line_search: bool,
     /// Step halvings allowed before giving up.
     pub max_cuts: usize,
+    /// Step halvings allowed over the whole load-controlled analysis (`max_cuts` is per load step and resets after
+    /// every accepted step, so a cut / short accepted step / cut cycle near a limit state would never end). Reaching it
+    /// ends the run with `Stop::NoConvergence`. Default `DEFAULT_MAX_CUTS_TOTAL`.
+    pub max_cuts_total: usize,
     /// Stop the analysis when the equivalent plastic strain anywhere reaches this.
     pub failure_ep: Option<f64>,
     /// Chord (modified) Newton: reuse one factorization of the tangent for up to this many
@@ -521,7 +529,7 @@ impl NlOptions {
 
 impl Default for NlOptions {
     fn default() -> Self {
-        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0, ep_step: 0.0, interrupt: Interrupt::default(), stick_slip_guard: false, observer: None }
+        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, max_cuts_total: DEFAULT_MAX_CUTS_TOTAL, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0, ep_step: 0.0, interrupt: Interrupt::default(), stick_slip_guard: false, observer: None }
     }
 }
 
@@ -1601,7 +1609,7 @@ impl Ctx<'_> {
         let (mut u, mut state, lambda0) = self.initial_with_start()?;
         let (mut lambda, dl_max) = (lambda0, 1.0 / self.opt.steps.max(1) as f64);
         let mut dl = self.opt.first_step * dl_max;
-        let (mut steps, mut cuts_total, mut stagnated_cuts) = (Vec::new(), 0usize, 0usize);
+        let (mut steps, mut cuts_total, mut stagnated_cuts, mut cuts_all) = (Vec::new(), 0usize, 0usize, 0usize);
         while lambda < 1.0 - 1e-12 {
             if self.opt.interrupt.triggered() {
                 return Ok(self.finish(u, state, lambda, steps, Stop::Interrupted));
@@ -1666,6 +1674,7 @@ impl Ctx<'_> {
                         eprintln!("step to lambda {target:.4} cut: {e}");
                     }
                     cuts_total += 1;
+                    cuts_all += 1;
                     self.note(EventKind::StepCut, target, f64::NAN, e.clone());
                     if self.opt.stick_slip_guard && e.starts_with(STAGNATED) {
                         stagnated_cuts += 1;
@@ -1681,6 +1690,10 @@ impl Ctx<'_> {
                     }
                     if cuts_total > self.opt.max_cuts {
                         return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(e)));
+                    }
+                    if cuts_all > self.opt.max_cuts_total {
+                        let msg = format!("{} step cuts over the analysis (budget {}) without reaching the full load; last failure: {e}", cuts_all, self.opt.max_cuts_total);
+                        return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(msg)));
                     }
                 }
             }
