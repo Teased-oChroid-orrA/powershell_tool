@@ -67,6 +67,12 @@ pub enum VesselAct {
     /// A support's axial anchor (`false`) or rotation fixity (`true`), and a case's end condition.
     ToggleSupport(usize, bool),
     ToggleCaseEnds(usize),
+    /// Segment mode: on / off, the pinned-and-clamped bound, an end's condition (0 left, 1 right) and axial anchor, a valve at an end.
+    ToggleSegment,
+    ToggleBound,
+    CycleFixity(usize),
+    ToggleEndAnchor(usize),
+    AddEndLoad(usize),
     Undo,
     Redo,
     Save,
@@ -309,6 +315,11 @@ impl VesselSession {
             VesselAct::RemoveLoad(i) => self.edit_model(|m| m.remove_load(i)),
             VesselAct::ToggleSupport(i, rotation) => self.edit_model(|m| m.toggle_support(i, rotation)),
             VesselAct::ToggleCaseEnds(i) => self.edit_model(|m| m.toggle_case_ends(i)),
+            VesselAct::ToggleSegment => self.edit_model(|m| m.toggle_segment()),
+            VesselAct::ToggleBound => self.edit_model(|m| m.toggle_bound()),
+            VesselAct::CycleFixity(i) => self.edit_model(|m| m.cycle_fixity(i)),
+            VesselAct::ToggleEndAnchor(i) => self.edit_model(|m| m.toggle_end_anchor(i)),
+            VesselAct::AddEndLoad(i) => self.edit_model(|m| m.add_end_load(i)),
             // Which case is drawn is not an edit: no undo step, the case file keeps it.
             VesselAct::SelectCase(i) => {
                 self.model.select_case(i);

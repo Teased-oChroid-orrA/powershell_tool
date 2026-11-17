@@ -6,7 +6,28 @@ use super::requirements::{self, MaterialKind, Req};
 use super::walls::{self, LineWallJob, WallOutcome, WallRow, Walls};
 use mechanics_core::materials::Material;
 use pressure_vessel_solver::criterion_thickness::{margin_at_geometry, solve_per_criterion, CriterionRequirement, PerCriterionInputs};
-use pressure_vessel_solver::line_run::{analyze, Criterion, MaterialClass, Reaction, Tube};
+use pressure_vessel_solver::line_run::{analyze, analyze_segment, analyze_segment_bounds, Bound, CaseResult, Criterion, LineResult, MaterialClass, Reaction, Tube};
+
+/// The lowest margin of `criterion` over every case of a line result.
+fn lowest_margin(res: &LineResult, criterion: Criterion) -> Option<f64> {
+    res.cases.iter().flat_map(|c| c.margins.iter()).filter(|m| m.criterion == criterion).map(|m| m.margin).min_by(f64::total_cmp)
+}
+
+/// One requirement's factored margin with the segment held pinned and held clamped, and the worse of the two.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoundRow {
+    pub label: String,
+    pub pinned: f64,
+    pub clamped: f64,
+    pub bound: Bound,
+    pub required_ms: f64,
+}
+
+impl BoundRow {
+    pub fn worse(&self) -> f64 {
+        self.pinned.min(self.clamped)
+    }
+}
 
 /// A load balance: what the supports react against what is applied, per axis.
 #[derive(Clone, Debug, PartialEq)]
@@ -109,12 +130,51 @@ impl PressureVesselModel {
         self.walls_revision += 1;
         let material = self.effective_material();
         if self.line.enabled {
-            self.line_result = self.line_tube(&material).map(|tube| analyze(&self.line.solver_run(tube), &self.line_class(&material), &self.line.solver_cases()).map_err(|e| e.to_string()));
+            let (result, bounds) = match self.line_tube(&material) {
+                Some(tube) => {
+                    let (result, bounds) = self.analyze_line(tube, &material);
+                    (Some(result), bounds)
+                }
+                None => (None, None),
+            };
+            self.line_result = result;
+            self.bounds = bounds;
             self.walls = None;
         } else {
             self.line_result = None;
+            self.bounds = None;
             self.walls = self.cylinder_walls(&material);
         }
+    }
+
+    /// The line run, the segment, or the segment's two bounds. With the bound, the result is the bound with the lowest
+    /// margin (the one the picture, reactions and curve follow) and the bounds come with it.
+    fn analyze_line(&self, tube: Tube, m: &Material) -> (Result<LineResult, String>, Option<pressure_vessel_solver::line_run::SegmentBounds>) {
+        let (run, class, cases) = (self.line.solver_run(tube), self.line_class(m), self.line.solver_cases());
+        let seg = &self.line.segment;
+        if !seg.enabled {
+            return (analyze(&run, &class, &cases).map_err(|e| e.to_string()), None);
+        }
+        if !seg.bound {
+            return (analyze_segment(&run, self.line.segment_ends(), &class, &cases).map_err(|e| e.to_string()), None);
+        }
+        if seg.ends.iter().any(|e| e.fixity == super::line::FixityIn::Free) {
+            return (Err(super::line::BOUND_NEEDS_HELD_ENDS.into()), None);
+        }
+        match analyze_segment_bounds(&run, self.line.segment_ends(), &class, &cases) {
+            Ok(b) => {
+                let lowest = b.worst.iter().min_by(|x, y| x.margin.margin.total_cmp(&y.margin.margin)).map_or(Bound::Pinned, |w| w.bound);
+                (Ok(if lowest == Bound::Clamped { b.clamped.clone() } else { b.pinned.clone() }), Some(b))
+            }
+            Err(e) => (Err(e.to_string()), None),
+        }
+    }
+
+    /// Which bound `line_result` is (when the bound is on).
+    pub fn governing_bound(&self) -> Option<Bound> {
+        let b = self.bounds.as_ref()?;
+        let Some(Ok(res)) = &self.line_result else { return None };
+        Some(if *res == b.clamped && *res != b.pinned { Bound::Clamped } else { Bound::Pinned })
     }
 
     fn cylinder_walls(&self, material: &Material) -> Option<Result<Walls, String>> {
@@ -154,7 +214,7 @@ impl PressureVesselModel {
         }
         let m = self.effective_material();
         let tube = self.line_tube(&m)?;
-        Some((self.walls_revision, LineWallJob { run: self.line.solver_run(tube), class: self.line_class(&m), cases: self.line.solver_cases(), rows: self.requirements.clone() }))
+        Some((self.walls_revision, LineWallJob { runs: self.line.wall_runs(tube), class: self.line_class(&m), cases: self.line.solver_cases(), rows: self.requirements.clone() }))
     }
 
     /// Takes the answer of a line wall solve; an answer to an older revision is dropped (false).
@@ -173,15 +233,35 @@ impl PressureVesselModel {
     /// A row's factored margin at the wall entered: the lowest of its criterion over every case.
     fn line_margin_at_wall(&self, r: &requirements::Requirement) -> Option<f64> {
         let criterion = r.criterion.line().filter(|_| walls::invalid(r).is_none())?;
-        let Some(Ok(res)) = &self.line_result else { return None };
-        let lowest = res.cases.iter().flat_map(|c| c.margins.iter()).filter(|m| m.criterion == criterion).map(|m| m.margin).min_by(f64::total_cmp)?;
+        let lowest = match &self.bounds {
+            Some(b) => b.worst.iter().find(|w| w.margin.criterion == criterion).map(|w| w.margin.margin)?,
+            None => {
+                let Some(Ok(res)) = &self.line_result else { return None };
+                lowest_margin(res, criterion)?
+            }
+        };
         Some(walls::factored(lowest, r.factor))
+    }
+
+    /// With the bound on, each requirement row's factored margin at both bounds, the worse of them and which bound that is.
+    pub fn bound_rows(&self) -> Vec<BoundRow> {
+        let Some(b) = &self.bounds else { return Vec::new() };
+        self.requirements
+            .iter()
+            .filter_map(|r| {
+                let c = r.criterion.line().filter(|_| walls::invalid(r).is_none())?;
+                let at = |res: &LineResult| lowest_margin(res, c).map(|m| walls::factored(m, r.factor));
+                let (pinned, clamped) = (at(&b.pinned)?, at(&b.clamped)?);
+                let bound = if clamped < pinned { Bound::Clamped } else { Bound::Pinned };
+                Some(BoundRow { label: r.label.clone(), pinned, clamped, bound, required_ms: r.required_ms })
+            })
+            .collect()
     }
 
     // ------------------------------------------------------------------ the line run's picture and reactions
 
-    /// The selected case's result when the line run solved.
-    pub fn selected_case(&self) -> Option<&pressure_vessel_solver::line_run::CaseResult> {
+    /// The selected case's result when the line run solved (with the bound: the governing bound's).
+    pub fn selected_case(&self) -> Option<&CaseResult> {
         let Some(Ok(res)) = &self.line_result else { return None };
         res.cases.get(self.line.selected())
     }
@@ -195,16 +275,32 @@ impl PressureVesselModel {
         if rows.is_empty() {
             rows = case.margins.iter().map(|m| (m.criterion, 1.0, 0.0)).collect();
         }
-        let mut pts: Vec<[f64; 2]> = case
-            .stations
-            .iter()
-            .zip(&case.station_margins)
-            .filter_map(|(st, ms)| {
-                let v = rows.iter().filter_map(|(c, f, req)| ms.iter().find(|(k, _)| k == c).map(|(_, m)| walls::factored(*m, *f) - req)).fold(f64::INFINITY, f64::min);
-                v.is_finite().then_some([st.x, v])
-            })
-            .collect();
-        pts.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        let curve = |case: &CaseResult| -> Vec<[f64; 2]> {
+            let mut pts: Vec<[f64; 2]> = case
+                .stations
+                .iter()
+                .zip(&case.station_margins)
+                .filter_map(|(st, ms)| {
+                    let v = rows.iter().filter_map(|(c, f, req)| ms.iter().find(|(k, _)| k == c).map(|(_, m)| walls::factored(*m, *f) - req)).fold(f64::INFINITY, f64::min);
+                    v.is_finite().then_some([st.x, v])
+                })
+                .collect();
+            pts.sort_by(|a, b| a[0].total_cmp(&b[0]));
+            pts
+        };
+        let mut pts = curve(case);
+        // With the bound the curve is the worse of the two at every station (both runs share one station grid).
+        if let Some(b) = &self.bounds {
+            let sel = self.line.selected();
+            for other in [&b.pinned, &b.clamped].into_iter().filter_map(|r| r.cases.get(sel)) {
+                let o = curve(other);
+                if o.len() == pts.len() && o.iter().zip(&pts).all(|(a, p)| (a[0] - p[0]).abs() < 1e-9) {
+                    for (p, a) in pts.iter_mut().zip(&o) {
+                        p[1] = p[1].min(a[1]);
+                    }
+                }
+            }
+        }
         pts
     }
 
@@ -235,7 +331,10 @@ impl PressureVesselModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::toolboxes::pressure_vessel::edit::{Allowable, Edit, LineField, ReqField};
+    use crate::toolboxes::pressure_vessel::line::{EndIn, FixityIn};
     use crate::toolboxes::pressure_vessel::model::NumberTarget;
+    use crate::toolboxes::pressure_vessel::walls::LineWallJob;
 
     fn model() -> PressureVesselModel {
         let mut m = PressureVesselModel::default();
@@ -365,5 +464,192 @@ mod tests {
         let w = m.walls.as_ref().unwrap().as_ref().unwrap();
         assert!(matches!(&w.rows[0].outcome, WallOutcome::NotEvaluable(why) if why.contains("factor")));
         assert!(matches!(w.rows[1].outcome, WallOutcome::Wall { .. }), "the other rows still solve");
+    }
+
+    // ------------------------------------------------------------------ rows follow the material (class and allowables)
+
+    #[test]
+    fn rows_default_from_the_materials_class_and_catalog_allowables_and_survive_edits() {
+        use mechanics_core::materials::builtin_catalog;
+        let mut m = model();
+        m.line.enabled = true;
+        m.recompute();
+        let MaterialClass::Ductile { yield_strength, ultimate_strength, .. } = m.line_class(&m.effective_material()) else { panic!("al7075 is ductile") };
+        assert_eq!((yield_strength, ultimate_strength), (m.material().sy_ksi * 1000.0, m.material().ftu_ksi * 1000.0), "the solve reads the catalog's allowables");
+        assert!(m.requirements.iter().all(|r| Req::choices(MaterialKind::Ductile).contains(&r.criterion) && r.is_neutral()), "neutral factor 1.0 / required MS 0.0 until entered");
+        // An edited row sticks through a change of material; the unedited ones follow the new material's class and allowables.
+        m.apply_edit(Edit::Req(0, ReqField::Factor), "1.4").unwrap();
+        let other = builtin_catalog().position(|x| x.id == "steel").unwrap();
+        m.select_material(other);
+        assert_eq!(m.requirements.iter().find(|r| r.edited).map(|r| r.factor), Some(1.4));
+        let MaterialClass::Ductile { yield_strength, .. } = m.line_class(&m.effective_material()) else { panic!() };
+        assert_eq!(yield_strength, m.material().sy_ksi * 1000.0, "the new material's allowable, not the old one's");
+        // An allowable the person types wins until the material changes again.
+        m.apply_edit(Edit::Allowable(Allowable::Yield), "50").unwrap();
+        let MaterialClass::Ductile { yield_strength, .. } = m.line_class(&m.effective_material()) else { panic!() };
+        assert_eq!(yield_strength, 50_000.0);
+    }
+
+    // ------------------------------------------------------------------ segment mode
+
+    /// A held-held segment with a valve at midspan: the bending is what separates the bounds.
+    fn segment_model() -> PressureVesselModel {
+        let mut m = model();
+        m.commit_number(NumberTarget::WallThickness, 0.1);
+        m.commit_number(NumberTarget::InternalPressure, 100.0);
+        m.line.enabled = true;
+        m.line.density = 0.1;
+        m.line.cases[0].load_factors = [0.0, 0.0, -1.0];
+        m.toggle_segment();
+        m.add_load();
+        m.apply_edit(Edit::Line(LineField::LoadWeight(0)), "200").unwrap();
+        m
+    }
+
+    #[test]
+    fn the_stated_ends_are_solved_and_the_supports_at_the_end_stations_are_superseded() {
+        let mut m = segment_model();
+        // Default supports sit at x = 0 and x = length: pinned-pinned ends, same as the whole-run solve.
+        let whole = {
+            let mut w = segment_model();
+            w.toggle_segment();
+            w.selected_case().unwrap().clone()
+        };
+        let seg = m.selected_case().unwrap().clone();
+        assert_eq!(seg.margins, whole.margins);
+        // Clamp and valve: clamped root, free tip. One support (the clamp); the stored supports at the ends are not solved.
+        m.cycle_fixity(0); // Pinned -> Spring
+        m.cycle_fixity(0); // -> Clamped
+        for _ in 0..3 {
+            m.cycle_fixity(1); // Pinned -> Spring -> Clamped -> Free
+        }
+        assert_eq!(m.line.segment.ends[1].fixity, FixityIn::Free);
+        assert_eq!(m.line.supports.len(), 2, "the list keeps them");
+        let c = m.selected_case().unwrap();
+        assert_eq!(c.reactions.len(), 1, "only the clamp reacts");
+        assert!(c.reactions[0].moment[1].abs() > 0.0);
+    }
+
+    #[test]
+    fn a_valve_at_a_free_end_loads_the_clamp() {
+        let mut m = segment_model();
+        m.line.loads.clear();
+        m.line.segment.ends = [EndIn { fixity: FixityIn::Clamped, ..EndIn::default() }, EndIn { fixity: FixityIn::Free, ..EndIn::default() }];
+        m.line.density = 0.0;
+        m.line.cases[0].load_factors = [0.0, 0.0, -1.0];
+        m.add_end_load(1);
+        assert_eq!((m.line.loads[0].x, m.line.loads[0].label.as_str()), (m.line.length, "Valve 1"));
+        m.apply_edit(Edit::Line(LineField::LoadWeight(0)), "30").unwrap();
+        let r = &m.selected_case().unwrap().reactions[0];
+        // P = 30 lbf at L = 60 in from the clamp: root moment P L, reaction P.
+        let moment = (r.moment[0].powi(2) + r.moment[1].powi(2) + r.moment[2].powi(2)).sqrt();
+        assert!((moment - 30.0 * 60.0).abs() < 1e-6 * 1800.0, "{moment}");
+        assert!((r.force[2] - 30.0).abs() < 1e-8, "{:?}", r.force);
+    }
+
+    #[test]
+    fn the_bound_gives_both_results_and_the_worse_margin_per_requirement() {
+        let mut m = segment_model();
+        m.toggle_bound();
+        assert!(m.bounds.is_some(), "both held: bounds solved");
+        // The pressure dominates this tube, so the bounds differ in the fourth digit and the criteria disagree on which is worse:
+        // the governing bound is the one of the lowest worst margin.
+        let b = m.bounds.as_ref().unwrap();
+        let lowest = b.worst.iter().min_by(|x, y| x.margin.margin.total_cmp(&y.margin.margin)).unwrap();
+        assert_eq!(m.governing_bound(), Some(lowest.bound));
+        let rows = m.bound_rows();
+        assert_eq!(rows.len(), 3);
+        for r in &rows {
+            assert!(r.pinned != r.clamped, "{r:?}");
+            assert_eq!(r.worse(), r.pinned.min(r.clamped));
+            assert_eq!(r.bound, if r.clamped < r.pinned { Bound::Clamped } else { Bound::Pinned });
+        }
+        // The per-row margin at the wall is the worse bound's, the solver's own worst over cases and bounds.
+        m.requirements[0].factor = 1.25;
+        m.recompute();
+        let rows = m.bound_rows();
+        let (rev, job) = m.line_wall_job().unwrap();
+        assert_eq!(job.runs.as_ref().unwrap().len(), 2, "one run per bound");
+        assert!(m.set_line_walls(rev, job.run()));
+        let w = m.walls.as_ref().unwrap().as_ref().unwrap();
+        assert!((w.rows[0].margin_at_wall.unwrap() - rows[0].worse()).abs() < 1e-12);
+        assert_eq!(m.bounds.as_ref().unwrap().worst.len(), 4, "one per criterion of the class");
+    }
+
+    #[test]
+    fn the_curve_is_the_worse_of_both_bounds_at_every_station() {
+        let mut m = segment_model();
+        let stated = m.margin_curve();
+        m.toggle_bound();
+        let bound = m.margin_curve();
+        assert_eq!(bound.len(), stated.len());
+        assert!(bound.iter().zip(&stated).all(|(b, s)| b[1] <= s[1] + 1e-12), "a bound is never better than the pinned ends");
+    }
+
+    #[test]
+    fn the_wall_of_the_bound_is_the_thicker_of_the_two_runs() {
+        let mut m = segment_model();
+        m.toggle_bound();
+        m.apply_edit(Edit::Req(0, ReqField::RequiredMs), "0.5").unwrap();
+        let wall = |job: LineWallJob| match job.run().unwrap()[0] {
+            WallOutcome::Wall { wall, .. } => wall,
+            ref o => panic!("{o:?}"),
+        };
+        let (_, both) = m.line_wall_job().unwrap();
+        let runs = both.runs.clone().unwrap();
+        let one = |i: usize| {
+            let (_, mut j) = m.line_wall_job().unwrap();
+            j.runs = Ok(vec![runs[i].clone()]);
+            wall(j)
+        };
+        let (p, c) = (one(0), one(1));
+        assert!(p != c, "the bounds need different walls: {p} {c}");
+        assert_eq!(wall(both), p.max(c));
+    }
+
+    #[test]
+    fn a_free_end_has_no_bound_and_says_so() {
+        let mut m = segment_model();
+        m.line.segment.ends[1].fixity = FixityIn::Free;
+        m.toggle_bound();
+        assert!(m.bounds.is_none());
+        assert_eq!(m.line_result, Some(Err(crate::toolboxes::pressure_vessel::line::BOUND_NEEDS_HELD_ENDS.to_string())));
+        let (rev, job) = m.line_wall_job().unwrap();
+        assert!(job.runs.is_err());
+        let out = job.run();
+        assert_eq!(out, Err(crate::toolboxes::pressure_vessel::line::BOUND_NEEDS_HELD_ENDS.to_string()));
+        assert!(m.set_line_walls(rev, out));
+        // The bound off again: pinned-free is a mechanism, which the solver says (no silent fallback).
+        m.toggle_bound();
+        assert!(matches!(m.line_result, Some(Err(_))));
+    }
+
+    #[test]
+    fn a_spring_end_needs_a_stiffness_and_zero_acts_as_pinned() {
+        let mut m = segment_model();
+        m.cycle_fixity(0);
+        assert_eq!(m.line.segment.ends[0].fixity, FixityIn::Spring);
+        let pinned = m.selected_case().unwrap().margins.clone();
+        assert_eq!(pinned, segment_model().selected_case().unwrap().margins, "stiffness 0 is the pinned end");
+        assert!(m.apply_edit(Edit::Line(LineField::EndSpring(0)), "-5").is_err());
+        m.apply_edit(Edit::Line(LineField::EndSpring(0)), "1e9").unwrap();
+        assert_ne!(m.selected_case().unwrap().margins, pinned, "a stiff clip moves the margins");
+    }
+
+    #[test]
+    fn a_free_end_holds_no_axial_anchor() {
+        let mut m = segment_model();
+        assert!(m.line.segment.ends[0].axial_anchor, "the left end anchors by default, as the whole run's first support does");
+        m.toggle_end_anchor(0);
+        assert!(!m.line.segment.ends[0].axial_anchor);
+        m.toggle_end_anchor(0);
+        for _ in 0..2 {
+            m.cycle_fixity(0); // Pinned -> Spring -> Clamped
+        }
+        assert_eq!(m.line.segment.ends[0].fixity, FixityIn::Clamped);
+        m.cycle_fixity(0);
+        assert_eq!((m.line.segment.ends[0].fixity, m.line.segment.ends[0].axial_anchor), (FixityIn::Free, false));
+        m.toggle_end_anchor(0);
+        assert!(!m.line.segment.ends[0].axial_anchor, "nothing to anchor");
     }
 }

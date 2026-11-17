@@ -1468,6 +1468,35 @@ fn a_hole_cylinder_off_its_edge_circles_is_healed_onto_the_cylinder_with_the_clo
     assert!((got - exact).abs() < 2e-3 * exact, "{got} against {exact}");
 }
 
+/// The vertex of the hole's top rim circle (`#266`, at (24, 15, 10)) is raised 0.02 mm out of the circle's plane: off its
+/// declared circle by more than the foreign-CAD geometry tolerance (5 microns) and inside the heal limit (50), as the
+/// NIST ctc_05 rd file writes one arc end (1.8e-2 mm). The edge is healed with its vertex onto the top plane and the hole.
+#[test]
+fn a_vertex_off_its_edge_circle_within_the_heal_limit_is_healed_onto_the_faces() {
+    let plain = include_str!("data/edit-plate-centre-hole.step");
+    let text = plain.replace("#267 = CARTESIAN_POINT('',(24.,15.,10.));", "#267 = CARTESIAN_POINT('',(24.,15.,10.02));");
+    assert_ne!(plain, text);
+    let data = inventory(&text, Limits::default()).unwrap();
+    let strict = AnalyticModel::read(&data, Options::default()).unwrap_err();
+    assert!(strict.detail.contains("not on its declared circle"), "{}", strict.detail);
+    // beyond the heal limit the foreign read refuses too
+    let far = plain.replace("#267 = CARTESIAN_POINT('',(24.,15.,10.));", "#267 = CARTESIAN_POINT('',(24.,15.,10.06));");
+    assert!(AnalyticModel::read(&inventory(&far, Limits::default()).unwrap(), Options::foreign_cad(0.05)).is_err());
+    let model = AnalyticModel::read(&data, Options::foreign_cad(0.05)).unwrap();
+    let points = model.edge_points(265).unwrap();
+    assert!(points.len() > 10, "{}", points.len());
+    for p in points {
+        assert!((p[2] - 10.).abs() < 1e-7, "rim sample {p:?} is off the top plane");
+        assert!(((p[0] - 20.).hypot(p[1] - 15.) - 4.).abs() < 1e-7, "rim sample {p:?} is off the hole");
+    }
+    let volume = |model: &AnalyticModel| {
+        model.sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true).unwrap().signed_volume_mm3
+    };
+    let conforming = AnalyticModel::read(&inventory(plain, Limits::default()).unwrap(), Options::foreign_cad(0.05)).unwrap();
+    let (got, exact) = (volume(&model), volume(&conforming));
+    assert!((got - exact).abs() < 1e-9 * exact, "{got} against {exact}");
+}
+
 /// Healing is for foreign CAD only: a conforming file reads the same as it did, and a strict read still refuses the gap.
 #[test]
 fn a_strict_read_never_heals_and_a_conforming_file_reads_the_same_either_way() {

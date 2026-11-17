@@ -73,9 +73,9 @@ fn end_support(x: f64, end: &SegmentEnd) -> Result<Option<Support>, LineRunError
     Ok(held.then_some(Support { x, axial_anchor: end.axial_anchor, rotation_fixed: fixed, rotation_stiffness: k }))
 }
 
-/// Runs `run` (its `x_start` / `x_end` are the segment ends; `supports` may hold interior supports
-/// only) with the given end conditions added as supports.
-pub fn analyze_segment(run: &LineRun, ends: [SegmentEnd; 2], class: &MaterialClass, cases: &[LoadCase]) -> Result<LineResult, LineRunError> {
+/// `run` (its `x_start` / `x_end` are the segment ends; `supports` may hold interior supports only) with the given end
+/// conditions added as supports: the run `analyze_segment` solves, for callers that solve it themselves (a wall search).
+pub fn segment_run(run: &LineRun, ends: [SegmentEnd; 2]) -> Result<LineRun, LineRunError> {
     let tol = 1e-9 * (run.x_end - run.x_start).abs();
     for s in &run.supports {
         if (s.x - run.x_start).abs() <= tol || (s.x - run.x_end).abs() <= tol {
@@ -85,7 +85,12 @@ pub fn analyze_segment(run: &LineRun, ends: [SegmentEnd; 2], class: &MaterialCla
     let mut seg = run.clone();
     seg.supports.extend(end_support(run.x_start, &ends[0])?);
     seg.supports.extend(end_support(run.x_end, &ends[1])?);
-    analyze(&seg, class, cases)
+    Ok(seg)
+}
+
+/// Runs [`segment_run`].
+pub fn analyze_segment(run: &LineRun, ends: [SegmentEnd; 2], class: &MaterialClass, cases: &[LoadCase]) -> Result<LineResult, LineRunError> {
+    analyze(&segment_run(run, ends)?, class, cases)
 }
 
 /// Brackets the restraint a segment end cut from a continuous run can supply: both ends are run once

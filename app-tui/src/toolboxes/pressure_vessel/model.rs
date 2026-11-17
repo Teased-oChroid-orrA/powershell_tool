@@ -398,6 +398,9 @@ pub struct PressureVesselModel {
     pub walls: Option<Result<super::walls::Walls, String>>,
     /// The line run at the wall entered, every case; `None` when the line run is off.
     pub line_result: Option<Result<pressure_vessel_solver::line_run::LineResult, String>>,
+    /// Segment mode with the bound on: both bounds' results and the worse margin per criterion. `line_result` is then the
+    /// bound that governs (the picture, reactions and margin curve follow it).
+    pub bounds: Option<pressure_vessel_solver::line_run::SegmentBounds>,
     /// Counts the edits that change the line run's walls, so the answer of an older solve is dropped.
     pub walls_revision: u64,
 }
@@ -434,6 +437,7 @@ impl Default for PressureVesselModel {
             line: super::line::LineRunInputs::new(5000.0, 0.0, true, 0.0),
             walls: None,
             line_result: None,
+            bounds: None,
             walls_revision: 0,
         };
         model.requirements = super::requirements::seeds(model.kind());

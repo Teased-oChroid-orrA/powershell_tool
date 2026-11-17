@@ -781,6 +781,7 @@ fn samples(
     forward: bool,
     opt: Options,
     remaining: usize,
+    off_curve: &mut bool,
 ) -> Result<Vec<V3>, Error> {
     let points = match c {
         Curve::Line { origin, direction } => {
@@ -842,7 +843,10 @@ fn samples(
                 let y = dot(d, frame.y);
                 let rho = x.hypot(y);
                 let off = (rho - radius).abs().hypot(dot(d, frame.z));
-                if rho == 0. || off > opt.geometry_tolerance_mm {
+                // An end within the heal limit of the circle is sampled at its nearest circle angle and the edge is healed
+                // onto its faces (the vertex with it); `heal_limit_mm` is 0 on a strict read, so nothing changes there.
+                *off_curve |= off > opt.geometry_tolerance_mm;
+                if rho == 0. || !(off <= opt.geometry_tolerance_mm.max(opt.heal_limit_mm)) {
                     return Err(error(
                         e,
                         format!("edge endpoint is not on its declared circle (off by {off:e} mm, radius {radius:e})"),
@@ -1534,6 +1538,7 @@ impl AnalyticModel {
         let mut curves = BTreeMap::new();
         let mut edges = BTreeMap::new();
         let mut total = 0usize;
+        let mut to_heal: BTreeSet<u64> = BTreeSet::new();
         let mut spline_segments = BTreeMap::new();
         for edge in body.edges.values() {
             let e = &data.entities()[&edge.id];
@@ -1641,6 +1646,7 @@ impl AnalyticModel {
                 curve(data, geometry, scale)?
             };
 
+            let mut off_curve = false;
             let p = match precomputed {
                 Some(p) => p,
                 None => samples(
@@ -1652,14 +1658,17 @@ impl AnalyticModel {
                     edge.same_sense,
                     opt,
                     opt.max_total_points.saturating_sub(total),
+                    &mut off_curve,
                 )?,
             };
+            if off_curve {
+                to_heal.insert(edge.id);
+            }
             total += p.len();
             edges.insert(edge.id, p);
             curves.insert(edge.id, c);
         }
         let mut surfaces = BTreeMap::new();
-        let mut to_heal: BTreeSet<u64> = BTreeSet::new();
         for face in body.faces.values() {
             let source_surface = &data.entities()[&face.surface];
             let (s, patch) = if source_surface
@@ -2678,7 +2687,7 @@ mod conversion_tests {
         let a = [0., 0., 0.75e-7];
         let b = [1., 0., 0.75e-7];
         let opt = Options::default();
-        assert!(samples(&e, &line, a, b, false, true, opt, 10).is_ok());
+        assert!(samples(&e, &line, a, b, false, true, opt, 10, &mut false).is_ok());
         assert!(on_surface(&e, &surface, &line, a, b, opt.geometry_tolerance_mm, 0.).is_err());
         let near = Curve::Line {
             origin: [0., 0., 0.5e-7],
@@ -2686,7 +2695,7 @@ mod conversion_tests {
         };
         let a = [0., 0., 1.25e-7];
         let b = [1., 0., 1.25e-7];
-        assert!(samples(&e, &near, a, b, false, true, opt, 10).is_ok());
+        assert!(samples(&e, &near, a, b, false, true, opt, 10, &mut false).is_ok());
         assert!(on_surface(&e, &surface, &near, a, b, opt.geometry_tolerance_mm, 0.).is_err());
 
         let cylinder = Surface::Cylinder {
@@ -2704,7 +2713,7 @@ mod conversion_tests {
         };
         let a = [1. + 0.75e-7, 0., 0.];
         let b = [1. + 0.75e-7, 0., 1.];
-        assert!(samples(&e, &generator, a, b, false, true, opt, 10).is_ok());
+        assert!(samples(&e, &generator, a, b, false, true, opt, 10, &mut false).is_ok());
         assert!(on_surface(&e, &cylinder, &generator, a, b, opt.geometry_tolerance_mm, 0.).is_err());
     }
 }
