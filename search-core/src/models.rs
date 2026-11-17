@@ -142,8 +142,8 @@ pub struct SearchSettings {
     /// `Caf\u{e9}` and `cafe` match each other; `\u{fb01}` matches `fi`;
     /// no-break spaces match spaces; curly quotes and en/em dashes match
     /// `'`, `"` and `-`). Literal and whole-word modes only; ignored in regex
-    /// mode. Off by default. Turns off the index candidate narrowing (the
-    /// index stores unfolded text), so a warm re-search scans every file.
+    /// mode. Off by default. Index narrowing still applies, through the index's
+    /// folded trigram field.
     #[serde(default)]
     pub fold_accents: bool,
     /// Literal and whole-word modes: a multi-word filter also matches when a line break falls
@@ -155,7 +155,7 @@ pub struct SearchSettings {
     /// Typo tolerance for literal and whole-word modes: 0 = off (default),
     /// 1 = one edit on words of 4+ letters, 2 = up to two edits on words of
     /// 8+ letters. Words with digits or under 4 letters stay exact. Applies
-    /// to search filters, not exclusions. Also turns off index narrowing.
+    /// to search filters, not exclusions. Turns off index narrowing.
     #[serde(default)]
     pub typo_tolerance: u8,
 

@@ -8,9 +8,9 @@
 //! how matching compares it): precomposed vs combining accents, `fi`
 //! ligature code points, no-break spaces and typographic quotes/dashes.
 //!
-//! A fold changes the index-time trigram vocabulary's meaning (the index
-//! stores unfolded text), so `native_index::narrow_candidates` must not
-//! narrow while folding or typo tolerance is on.
+//! The index's `trigram` field holds unfolded text, so `native_index` also indexes the folded
+//! text of a document whose fold differs (`trigram_folded`) and narrows a folding search through
+//! it; typo tolerance cannot be bounded by trigrams, so it still scans.
 
 use std::borrow::Cow;
 
