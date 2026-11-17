@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 // Older readers must not silently ignore wall-loss inputs and show optimistic checks.
 // Format 3 adds the code check's inputs; an older build would drop them and show a different check.
 // Format 4 adds the requirement rows, the material class, the allowable overrides and the line run.
-const FORMAT_VERSION: u32 = 4;
+// Format 5 adds the line run's segment (end conditions, the bound); an older build would solve the whole run instead.
+const FORMAT_VERSION: u32 = 5;
 
 /// Every number input with its key in the file.
 pub const NUMBERS: [(NumberTarget, &str); 15] = [

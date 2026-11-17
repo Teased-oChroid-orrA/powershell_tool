@@ -1,8 +1,11 @@
 //! The inputs of a supported line run (the tube between supports, its point loads and load cases) and their conversion to
 //! `pressure_vessel_solver::line_run`. Numbers only: the stations, margins and reactions are the solver's. The tube itself
 //! is the window's vessel (outer diameter, remaining wall, material); this adds what a cylinder analysis has no use for.
-use pressure_vessel_solver::line_run::{LineRun, LoadCase, PointLoad, Support, Tube, DEFAULT_SUBDIVISIONS};
+use pressure_vessel_solver::line_run::{EndFixity, LineRun, LoadCase, PointLoad, SegmentEnd, Support, Tube, DEFAULT_SUBDIVISIONS};
 use serde::{Deserialize, Serialize};
+
+/// Said where a bound is asked of a segment with a free end.
+pub const BOUND_NEEDS_HELD_ENDS: &str = "The bound needs both ends held: a free end has no restraint to bracket. Pin, clamp or spring the end, or switch the bound off.";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SupportIn {
@@ -13,6 +16,84 @@ pub struct SupportIn {
     /// Also holds the slope (a built-in end).
     #[serde(default)]
     pub rotation_fixed: bool,
+}
+
+/// What holds one end of a segment (`pressure_vessel_solver::line_run::EndFixity` without its number).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FixityIn {
+    /// Nothing: a valve at the tip, an overhang.
+    Free,
+    /// A pin or a clip with no moment capacity.
+    #[default]
+    Pinned,
+    /// A clip with a rotational stiffness the person enters.
+    Spring,
+    /// A rigid fixture (clamp and valve body).
+    Clamped,
+}
+
+impl FixityIn {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Free => "Free",
+            Self::Pinned => "Pinned",
+            Self::Spring => "Spring clip",
+            Self::Clamped => "Clamped",
+        }
+    }
+    /// The next one in the order a click cycles them.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Free => Self::Pinned,
+            Self::Pinned => Self::Spring,
+            Self::Spring => Self::Clamped,
+            Self::Clamped => Self::Free,
+        }
+    }
+}
+
+/// One end of the segment: how it is held, with the clip stiffness (lbf-in per radian, an owner input; 0 acts as pinned).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EndIn {
+    #[serde(default)]
+    pub fixity: FixityIn,
+    #[serde(default)]
+    pub spring: f64,
+    /// Also holds the end axially (a held end only).
+    #[serde(default)]
+    pub axial_anchor: bool,
+}
+
+impl EndIn {
+    pub fn solver_end(&self) -> SegmentEnd {
+        let fixity = match self.fixity {
+            FixityIn::Free => EndFixity::Free,
+            FixityIn::Pinned => EndFixity::Pinned,
+            FixityIn::Spring => EndFixity::Spring(self.spring),
+            FixityIn::Clamped => EndFixity::Clamped,
+        };
+        SegmentEnd { fixity, axial_anchor: self.axial_anchor && self.fixity != FixityIn::Free }
+    }
+}
+
+/// Segment mode: only the stretch between two supports, `x = 0` and `x = length`, with each end's own condition instead
+/// of the supports at those stations. `bound`: run it pinned and clamped and take the worse margin.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SegmentIn {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub ends: [EndIn; 2],
+    #[serde(default)]
+    pub bound: bool,
+}
+
+/// Both ends pinned, the left one the axial anchor (as the whole run's first support is), the bound off.
+impl Default for SegmentIn {
+    fn default() -> Self {
+        Self { enabled: false, ends: [EndIn { axial_anchor: true, ..EndIn::default() }, EndIn::default()], bound: false }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,6 +132,9 @@ pub struct LineRunInputs {
     pub cases: Vec<CaseIn>,
     /// The case the drawing and the reactions show.
     pub selected_case: usize,
+    /// Cases older than format 5 carry none: the whole run.
+    #[serde(default)]
+    pub segment: SegmentIn,
 }
 
 impl LineRunInputs {
@@ -66,6 +150,7 @@ impl LineRunInputs {
             loads: Vec::new(),
             cases: vec![CaseIn { name: "Case 1".into(), internal_pressure, external_pressure, closed_ends, delta_t, load_factors: [0.0, 0.0, -1.0] }],
             selected_case: 0,
+            segment: SegmentIn::default(),
         }
     }
 
@@ -80,12 +165,41 @@ impl LineRunInputs {
             tube,
             x_start: 0.0,
             x_end: self.length,
-            supports: self.supports.iter().map(|s| Support { x: s.x, axial_anchor: s.axial_anchor, rotation_fixed: s.rotation_fixed, rotation_stiffness: None }).collect(),
+            supports: self.supports.iter().filter(|s| !self.on_segment_end(s.x)).map(|s| Support { x: s.x, axial_anchor: s.axial_anchor, rotation_fixed: s.rotation_fixed, rotation_stiffness: None }).collect(),
             contents_weight_per_length: self.contents_weight,
             insulation_weight_per_length: 0.0,
             point_loads: self.loads.iter().map(|l| PointLoad { x: l.x, force: l.force, weight: l.weight, ..PointLoad::default() }).collect(),
             subdivisions: DEFAULT_SUBDIVISIONS,
         }
+    }
+
+    /// A support at a station the segment's ends own is superseded by the end's condition (kept in the list, not solved).
+    pub fn on_segment_end(&self, x: f64) -> bool {
+        let tol = 1e-9 * self.length.abs();
+        self.segment.enabled && (x.abs() <= tol || (x - self.length).abs() <= tol)
+    }
+
+    /// The segment's two end conditions as the solver wants them.
+    pub fn segment_ends(&self) -> [SegmentEnd; 2] {
+        self.segment.ends.map(|e| e.solver_end())
+    }
+
+    /// The runs a wall search must hold: the whole run, the segment, or (bound) the segment pinned and clamped. An error is
+    /// what the solver says about the ends (a free end has no restraint to bound).
+    pub fn wall_runs(&self, tube: Tube) -> Result<Vec<LineRun>, String> {
+        use pressure_vessel_solver::line_run::segment_run;
+        let run = self.solver_run(tube);
+        if !self.segment.enabled {
+            return Ok(vec![run]);
+        }
+        if !self.segment.bound {
+            return segment_run(&run, self.segment_ends()).map(|r| vec![r]).map_err(|e| e.to_string());
+        }
+        if self.segment.ends.iter().any(|e| e.fixity == FixityIn::Free) {
+            return Err(BOUND_NEEDS_HELD_ENDS.into());
+        }
+        let with = |f: EndFixity| self.segment_ends().map(|e| SegmentEnd { fixity: f, ..e });
+        [EndFixity::Pinned, EndFixity::Clamped].into_iter().map(|f| segment_run(&run, with(f)).map_err(|e| e.to_string())).collect()
     }
 
     pub fn solver_cases(&self) -> Vec<LoadCase> {
@@ -113,6 +227,13 @@ impl LineRunInputs {
             t[k] = w * self.length * n[k] + self.loads.iter().map(|l| l.force[k] + l.weight * n[k]).sum::<f64>();
         }
         t
+    }
+
+    /// The load at the cut: a point load at the end station `end` (0 left, 1 right) for a valve or fitting to be sized.
+    pub fn add_end_load(&mut self, end: usize) {
+        let n = self.loads.len() + 1;
+        let x = if end == 0 { 0.0 } else { self.length };
+        self.loads.push(LoadIn { label: format!("Valve {n}"), x, force: [0.0; 3], weight: 0.0 });
     }
 
     pub fn add_support(&mut self) {

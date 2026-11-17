@@ -33,6 +33,8 @@ pub enum LineField {
     CaseDeltaT(usize),
     /// Load factor of a case along x (0), y (1) or z (2).
     CaseFactor(usize, usize),
+    /// Rotational stiffness of a segment end's clip (lbf-in per radian), end 0 left and 1 right.
+    EndSpring(usize),
 }
 
 /// What a typed edit changes.
@@ -73,6 +75,7 @@ impl Edit {
             Edit::Line(LineField::CaseExternal(_)) => "External pressure".into(),
             Edit::Line(LineField::CaseDeltaT(_)) => "Temperature differential".into(),
             Edit::Line(LineField::CaseFactor(_, k)) => format!("Load factor {}", ["x", "y", "z"][k.min(2)]),
+            Edit::Line(LineField::EndSpring(_)) => "Clip stiffness".into(),
             Edit::CaseName(_) => "Case name".into(),
             Edit::LoadLabel(_) => "Load label".into(),
         }
@@ -125,6 +128,7 @@ impl PressureVesselModel {
             LineField::CaseExternal(i) => l.cases.get(i)?.external_pressure,
             LineField::CaseDeltaT(i) => l.cases.get(i)?.delta_t,
             LineField::CaseFactor(i, k) => *l.cases.get(i)?.load_factors.get(k)?,
+            LineField::EndSpring(i) => l.segment.ends.get(i)?.spring,
         })
     }
 
@@ -206,7 +210,7 @@ impl PressureVesselModel {
             Edit::Req(_, ReqField::Factor) => positive("Factor"),
             Edit::Allowable(_) => positive(&e.label()),
             Edit::Line(LineField::Length) => positive("Run length"),
-            Edit::Line(LineField::Contents | LineField::Density) => nonneg(&e.label()),
+            Edit::Line(LineField::Contents | LineField::Density | LineField::EndSpring(_)) => nonneg(&e.label()),
             Edit::Line(LineField::CaseInternal(_) | LineField::CaseExternal(_)) => nonneg(&e.label()),
             Edit::Line(LineField::SupportX(_) | LineField::LoadX(_)) => {
                 if (0.0..=self.line.length).contains(&v) { Ok(()) } else { Err(format!("{} must lie within the run, 0 to {} in.", e.label(), trimmed(self.line.length))) }
@@ -229,6 +233,7 @@ impl PressureVesselModel {
             LineField::CaseExternal(i) => l.cases[i].external_pressure = v,
             LineField::CaseDeltaT(i) => l.cases[i].delta_t = v,
             LineField::CaseFactor(i, k) => l.cases[i].load_factors[k] = v,
+            LineField::EndSpring(i) => l.segment.ends[i].spring = v,
         }
     }
 
@@ -247,6 +252,36 @@ impl PressureVesselModel {
             }
             self.recompute();
         }
+    }
+    /// Segment mode on or off (the run's supports at its two stations are superseded while it is on).
+    pub fn toggle_segment(&mut self) {
+        self.line.segment.enabled = !self.line.segment.enabled;
+        self.recompute();
+    }
+    /// The bound: run the segment pinned and clamped and take the worse margin.
+    pub fn toggle_bound(&mut self) {
+        self.line.segment.bound = !self.line.segment.bound;
+        self.recompute();
+    }
+    /// The next condition of an end; a free end holds nothing, so its axial anchor goes.
+    pub fn cycle_fixity(&mut self, end: usize) {
+        if let Some(e) = self.line.segment.ends.get_mut(end) {
+            e.fixity = e.fixity.next();
+            if e.fixity == super::line::FixityIn::Free {
+                e.axial_anchor = false;
+            }
+            self.recompute();
+        }
+    }
+    pub fn toggle_end_anchor(&mut self, end: usize) {
+        if let Some(e) = self.line.segment.ends.get_mut(end).filter(|e| e.fixity != super::line::FixityIn::Free) {
+            e.axial_anchor = !e.axial_anchor;
+            self.recompute();
+        }
+    }
+    pub fn add_end_load(&mut self, end: usize) {
+        self.line.add_end_load(end);
+        self.recompute();
     }
     pub fn toggle_case_ends(&mut self, i: usize) {
         if let Some(c) = self.line.cases.get_mut(i) {

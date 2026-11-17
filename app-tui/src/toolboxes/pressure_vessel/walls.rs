@@ -63,7 +63,8 @@ pub fn invalid(r: &Requirement) -> Option<&'static str> {
 
 /// Everything `solve_line_run_walls` needs, owned so the solve can run on the worker while the window stays responsive.
 pub struct LineWallJob {
-    pub run: LineRun,
+    /// The runs the wall must hold: one, or both bounds of a segment (the thicker wall governs). An error is the reason there is none.
+    pub runs: Result<Vec<LineRun>, String>,
     pub class: MaterialClass,
     pub cases: Vec<LoadCase>,
     pub rows: Vec<Requirement>,
@@ -84,19 +85,36 @@ impl LineWallJob {
                 _ => slot.push(None),
             }
         }
-        let solved = if reqs.is_empty() { Vec::new() } else { solve_line_run_walls(&self.run, &self.class, &self.cases, &reqs, 200, 1e-9).map_err(|e| e.to_string())?.rows };
-        Ok(self
-            .rows
-            .iter()
-            .zip(slot)
-            .map(|(r, s)| match s.map(|i| &solved[i].outcome) {
-                None => WallOutcome::NotEvaluable(invalid(r).map_or_else(|| format!("{} is not evaluated for a line run", r.criterion.label()), str::to_string)),
-                Some(LineWallOutcome::Converged { wall, .. }) => WallOutcome::Wall { wall: *wall, note: "" },
-                Some(LineWallOutcome::BelowSearchFloor { floor_wall, .. }) => WallOutcome::Wall { wall: *floor_wall, note: "below search floor" },
-                Some(LineWallOutcome::Infeasible { best_margin_found, .. }) => WallOutcome::Infeasible { best_margin: *best_margin_found },
-                Some(LineWallOutcome::NotEvaluable(why)) => WallOutcome::NotEvaluable((*why).to_string()),
-            })
-            .collect())
+        let runs = self.runs.as_ref().map_err(String::clone)?;
+        let mut worst: Vec<Option<WallOutcome>> = vec![None; self.rows.len()];
+        for run in runs {
+            let solved = if reqs.is_empty() { Vec::new() } else { solve_line_run_walls(run, &self.class, &self.cases, &reqs, 200, 1e-9).map_err(|e| e.to_string())?.rows };
+            for ((r, s), w) in self.rows.iter().zip(&slot).zip(&mut worst) {
+                let o = match s.map(|i| &solved[i].outcome) {
+                    None => WallOutcome::NotEvaluable(invalid(r).map_or_else(|| format!("{} is not evaluated for a line run", r.criterion.label()), str::to_string)),
+                    Some(LineWallOutcome::Converged { wall, .. }) => WallOutcome::Wall { wall: *wall, note: "" },
+                    Some(LineWallOutcome::BelowSearchFloor { floor_wall, .. }) => WallOutcome::Wall { wall: *floor_wall, note: "below search floor" },
+                    Some(LineWallOutcome::Infeasible { best_margin_found, .. }) => WallOutcome::Infeasible { best_margin: *best_margin_found },
+                    Some(LineWallOutcome::NotEvaluable(why)) => WallOutcome::NotEvaluable((*why).to_string()),
+                };
+                *w = Some(match w.take() {
+                    Some(prev) => thicker(prev, o),
+                    None => o,
+                });
+            }
+        }
+        Ok(worst.into_iter().map(|o| o.expect("a job has a run")).collect())
+    }
+}
+
+/// The outcome that asks more of the wall: an infeasible one, else the thicker wall; a row that cannot be evaluated stays so.
+pub fn thicker(a: WallOutcome, b: WallOutcome) -> WallOutcome {
+    use WallOutcome::*;
+    match (a, b) {
+        (NotEvaluable(w), _) | (_, NotEvaluable(w)) => NotEvaluable(w),
+        (Infeasible { best_margin: x }, Infeasible { best_margin: y }) => Infeasible { best_margin: x.min(y) },
+        (i @ Infeasible { .. }, _) | (_, i @ Infeasible { .. }) => i,
+        (Wall { wall: x, note: nx }, Wall { wall: y, note: ny }) => if y > x { Wall { wall: y, note: ny } } else { Wall { wall: x, note: nx } },
     }
 }
 

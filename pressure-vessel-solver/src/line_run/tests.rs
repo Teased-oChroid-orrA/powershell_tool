@@ -566,6 +566,22 @@ fn segment_refuses_misplaced_supports_and_a_free_anchor() {
     assert!(analyze_segment(&run(vec![], l, 1.0), [free_anchor, end(EndFixity::Pinned)], &ductile(), &cs).is_err());
 }
 
+#[test]
+fn segment_run_is_the_run_analyze_segment_solves() {
+    let l = 100.0;
+    let ends = [end(EndFixity::Clamped), end(EndFixity::Spring(3.0e6))];
+    let cs = [case([0.0, 0.0, 1.0])];
+    let base = run(vec![sup(40.0)], l, 1.5);
+    let seg = segment_run(&base, ends).unwrap();
+    let xs: Vec<f64> = seg.supports.iter().map(|s| s.x).collect();
+    assert_eq!(xs, [40.0, 0.0, l], "interior supports first, then the ends");
+    assert!(seg.supports[1].rotation_fixed && seg.supports[2].rotation_stiffness == Some(3.0e6));
+    assert_eq!(analyze(&seg, &ductile(), &cs).unwrap(), analyze_segment(&base, ends, &ductile(), &cs).unwrap());
+    assert!(segment_run(&run(vec![sup(0.0)], l, 1.0), ends).is_err(), "a support on an end is refused");
+    let free = SegmentEnd { fixity: EndFixity::Free, axial_anchor: false };
+    assert_eq!(segment_run(&base, [free, free]).unwrap().supports.len(), 1, "free ends add no support");
+}
+
 /// Middle span of three equal spans (`[l, 2l]`), cut from the full run.
 fn middle_span_cut(l: f64, w: f64) -> (CaseResult, LineRun) {
     let full = one(&run(vec![sup(0.0), sup(l), sup(2.0 * l), sup(3.0 * l)], 3.0 * l, w), case([0.0, 0.0, 1.0]));

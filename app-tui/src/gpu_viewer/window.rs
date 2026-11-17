@@ -2634,6 +2634,66 @@ mod tests {
         assert!(page(&v).contains(&format!("{name}x")), "{}", page(&v));
         let _ = std::fs::remove_dir_all(dir);
     }
+    /// Segment mode by click: the switch, an end's condition, the bound and a valve at the end, then the page shows both
+    /// bounds and says the cut is an idealisation.
+    #[test]
+    fn the_pressure_vessel_segment_card_takes_clicks_and_the_page_shows_both_bounds() {
+        let dir = std::env::temp_dir().join(format!("window-vessel-segment-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let session =
+            crate::gpu_viewer::editor::vessel::VesselSession::open(&dir.join("case.json")).unwrap();
+        let mut v = viewer(Some(Box::new(session)));
+        frame(&mut v);
+        let settle = |v: &mut Viewer| {
+            let t = Instant::now();
+            while v.editor.as_ref().unwrap().solving() {
+                v.editor.as_mut().unwrap().poll();
+                frame(v);
+                assert!(t.elapsed().as_secs() < 60, "timed out");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            v.editor.as_mut().unwrap().poll();
+            frame(v);
+        };
+        let page = |v: &Viewer| {
+            v.editor
+                .as_ref()
+                .unwrap()
+                .page()
+                .iter()
+                .filter_map(|i| i.plain_text())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        // A row below the fold of the inspector is scrolled into view like a person would, then clicked.
+        let press = |v: &mut Viewer, label: &str| {
+            if target(v, label).1 > 800.0 {
+                let tab = target(v, "Supported line run");
+                move_to(v, (tab.0, tab.1 - 100.0));
+                v.test_events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -400.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: Default::default(),
+                });
+                for _ in 0..12 {
+                    frame(v);
+                }
+            }
+            let at = target(v, label);
+            click(v, at);
+            settle(v);
+        };
+        press(&mut v, "Supported line run");
+        press(&mut v, "Segment between two supports");
+        assert!(page(&v).contains("A cut segment is an idealisation"), "{}", page(&v));
+        // The bound switch runs both.
+        press(&mut v, "Bound (pinned and clamped)");
+        assert!(page(&v).contains("(pinned)"), "the bound table names the worse bound: {}", page(&v));
+        press(&mut v, "  + Valve or fitting at this end");
+        assert!(v.gui.target_labels().iter().any(|l| l == "Load 1 label"), "a valve was added: {:?}", v.gui.target_labels());
+        let _ = std::fs::remove_dir_all(dir);
+    }
     fn target_label_with(v: &Viewer, prefix: &str) -> String {
         v.gui
             .target_labels()

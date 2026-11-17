@@ -15,8 +15,10 @@ use crate::gpu_viewer::{
 use crate::theme::fmt_margin;
 use crate::toolboxes::pressure_vessel::{
     edit::{Allowable, Edit, LineField, ReqField},
+    line::{FixityIn, BOUND_NEEDS_HELD_ENDS},
     walls::{WallOutcome, Walls},
 };
+use pressure_vessel_solver::line_run::Bound;
 
 fn act(a: VesselAct) -> UiAction {
     UiAction::Editor(EditorAction::Vessel(a))
@@ -30,6 +32,13 @@ fn norm(v: [f64; 3]) -> f64 {
 
 /// The seeded rows say nothing about a program: the table tells the person so.
 const NEUTRAL_HINT: &str = "Factors and required margins are yours: enter your program's factors and margins (rows are seeded 1.0 and 0.0, which asks only for the stress to stay inside the allowable).";
+
+/// Said wherever a segment result is shown: the cut is a model, not the structure.
+const SEGMENT_NOTE: &str = "A cut segment is an idealisation: the real end restraint depends on the neighbouring spans and clips. Pinned (no end moment) and clamped (rigid) bracket the stress margin of the continuous run for uniform loading; they do not bound reactions or every load pattern.";
+
+fn bound_name(b: Bound) -> &'static str {
+    if b == Bound::Clamped { "clamped" } else { "pinned" }
+}
 
 impl VesselSession {
     fn editing(&self, e: Edit) -> bool {
@@ -177,7 +186,7 @@ impl VesselSession {
         cases.push(Pill::new("+ Case", Tone::Normal, Some(act(VesselAct::AddCase)), false));
         let drawing = LineDrawing {
             length: m.line.length,
-            supports: m.line.supports.iter().map(|s| (s.x, format!("{}", trim(s.x)))).collect(),
+            supports: self.drawn_supports(),
             loads: m
                 .line
                 .loads
@@ -196,13 +205,69 @@ impl VesselSession {
                 _ => String::new(),
             },
         };
-        vec![
+        let mut items = vec![
             DockItem::Pills(header),
             DockItem::Pills(cases),
             DockItem::Run(Box::new(drawing)),
-            DockItem::Heading("Minimum wall by requirement".into()),
-            self.requirements_table(false),
-        ]
+        ];
+        if m.line.segment.enabled {
+            items.push(DockItem::text(SEGMENT_NOTE, Tone::Dim));
+            if let Some(t) = self.bound_table() {
+                items.push(DockItem::Heading("Segment bound: pinned and clamped".into()));
+                items.push(t);
+            }
+        }
+        items.push(DockItem::Heading("Minimum wall by requirement".into()));
+        items.push(self.requirements_table(false));
+        items
+    }
+
+    /// The supports the drawing marks: in segment mode the interior ones and the held ends, each end named by its condition.
+    fn drawn_supports(&self) -> Vec<(f64, String)> {
+        let l = &self.model.line;
+        let mut out: Vec<(f64, String)> = l.supports.iter().filter(|s| !l.on_segment_end(s.x)).map(|s| (s.x, trim(s.x))).collect();
+        if l.segment.enabled {
+            for (e, x) in l.segment.ends.iter().zip([0.0, l.length]) {
+                if e.fixity != FixityIn::Free {
+                    out.push((x, e.fixity.label().to_lowercase()));
+                }
+            }
+        }
+        out
+    }
+
+    /// Both bounds of the segment per requirement, with the worse one marked. `None` unless the bound is on and solved.
+    fn bound_table(&self) -> Option<DockItem> {
+        let m = &self.model;
+        let rows = m.bound_rows();
+        if m.bounds.is_none() {
+            return None;
+        }
+        let chip = |ms: f64, req: f64| Cell::Chip { text: fmt_margin(ms), tone: if ms >= req { Tone::On } else { Tone::Warn } };
+        let table_rows: Vec<TableRow> = rows
+            .iter()
+            .map(|r| {
+                let worse = r.worse();
+                TableRow {
+                    cells: vec![
+                        Cell::Text { text: r.label.clone(), tone: Tone::Normal, action: None, editing: false },
+                        chip(r.pinned, r.required_ms),
+                        chip(r.clamped, r.required_ms),
+                        Cell::Chip { text: format!("{} ({})", fmt_margin(worse), bound_name(r.bound)), tone: if worse >= r.required_ms { Tone::On } else { Tone::Warn } },
+                    ],
+                    governing: false,
+                }
+            })
+            .collect();
+        let short = rows.iter().any(|r| r.worse() < r.required_ms);
+        Some(DockItem::Table(Box::new(DockTable {
+            columns: vec![Column::new("Requirement", 2.4), Column::new("Pinned", 1.6).right(), Column::new("Clamped", 1.6).right(), Column::new("Worse", 2.6).right()],
+            rows: table_rows,
+            add: None,
+            footer: if short { "The worse bound does not meet a requirement.".into() } else { "Both bounds meet every requirement.".into() },
+            footer_tone: Some(if short { Tone::Warn } else { Tone::On }),
+            hint: "Margins carry each row's factor. The curve above is the worse of the two at every station.".into(),
+        })))
     }
 
     // ------------------------------------------------------------------ inspector cards
@@ -224,6 +289,9 @@ impl VesselSession {
             rows.push(DockItem::text(format!("{}", r.label), Tone::Title));
             rows.push(self.edit_row("Label", Edit::Req(i, ReqField::Label), r.label.clone()));
             rows.push(self.switch_row("Criterion", r.criterion.label(), VesselAct::CycleRequirement(i)));
+            if let Some(a) = r.criterion.allowable_text(m.effective_material().sy_ksi, m.effective_material().ftu_ksi, m.compression_ultimate_ksi()) {
+                rows.push(DockItem::field("  Allowable (the material's)", a, Tone::Dim, None, false));
+            }
             rows.push(self.edit_row("Factor", Edit::Req(i, ReqField::Factor), trim(r.factor)));
             rows.push(self.edit_row("Required MS", Edit::Req(i, ReqField::RequiredMs), trim(r.required_ms)));
             rows.push(DockItem::row("Remove requirement", Tone::Dim, Some(act(VesselAct::RemoveRequirement(i))), false));
@@ -241,6 +309,38 @@ impl VesselSession {
             Card::new("vessel-requirements", "Requirements", Relevance::Primary, rows).for_steps(&["Inputs"]),
             Card::new("vessel-allowables", "Allowables", Relevance::Context, allow).for_steps(&["Inputs"]).folded(),
         ]
+    }
+
+    /// Segment mode: the stretch between two supports, each end's condition and the bound.
+    fn segment_card(&self) -> Card {
+        let l = &self.model.line;
+        let sg = &l.segment;
+        let mut rows = vec![self.switch_row("Segment between two supports", if sg.enabled { "On" } else { "Off" }, VesselAct::ToggleSegment)];
+        if !sg.enabled {
+            rows.push(DockItem::text("Check only the stretch between two supports (clamp and valve, two clips, a pin) instead of the whole run.", Tone::Dim));
+        } else {
+            for (i, (e, name)) in sg.ends.iter().zip(["Left end (x = 0)", "Right end (x = run length)"]).enumerate() {
+                rows.push(DockItem::text(name, Tone::Title));
+                rows.push(self.switch_row("  Condition", e.fixity.label(), VesselAct::CycleFixity(i)));
+                if e.fixity == FixityIn::Spring {
+                    rows.push(self.edit_row("  Clip stiffness (lbf-in/rad)", Edit::Line(LineField::EndSpring(i)), trim(e.spring)));
+                    rows.push(DockItem::text("  Your clip's rotational stiffness; 0 acts as pinned. Nothing here estimates it.", Tone::Dim));
+                }
+                if e.fixity != FixityIn::Free {
+                    rows.push(self.switch_row("  Axial anchor", if e.axial_anchor { "Yes" } else { "No" }, VesselAct::ToggleEndAnchor(i)));
+                }
+                rows.push(DockItem::row("  + Valve or fitting at this end", Tone::Normal, Some(act(VesselAct::AddEndLoad(i))), false));
+            }
+            rows.push(self.switch_row("Bound (pinned and clamped)", if sg.bound { "On" } else { "Off" }, VesselAct::ToggleBound));
+            if sg.bound {
+                rows.push(DockItem::text("Runs both ends pinned and both clamped and reports the worse margin per requirement; the stated end conditions are not used.", Tone::Dim));
+                if sg.ends.iter().any(|e| e.fixity == FixityIn::Free) {
+                    rows.push(DockItem::text(BOUND_NEEDS_HELD_ENDS, Tone::Warn));
+                }
+            }
+            rows.push(DockItem::text(SEGMENT_NOTE, Tone::Dim));
+        }
+        Card::new("vessel-segment", "Segment", Relevance::Primary, rows).for_steps(&["Inputs"])
     }
 
     /// The line run's switch and lists (Inputs), and its Tube, Governing and Reactions cards (Results).
@@ -262,9 +362,13 @@ impl VesselSession {
         if !l.enabled {
             return cards;
         }
+        cards.push(self.segment_card());
         let mut supports = Vec::new();
         for (i, s) in l.supports.iter().enumerate() {
             supports.push(self.edit_row(&format!("Support {} at x (in)", i + 1), Edit::Line(LineField::SupportX(i)), trim(s.x)));
+            if l.on_segment_end(s.x) {
+                supports.push(DockItem::text("  Not solved: a segment end holds this station.", Tone::Dim));
+            }
             supports.push(self.switch_row("  Axial anchor", if s.axial_anchor { "Yes" } else { "No" }, VesselAct::ToggleSupport(i, false)));
             supports.push(self.switch_row("  Rotation fixed", if s.rotation_fixed { "Yes" } else { "No" }, VesselAct::ToggleSupport(i, true)));
             supports.push(DockItem::row("  Remove support", Tone::Dim, Some(act(VesselAct::RemoveSupport(i))), false));
@@ -329,6 +433,16 @@ impl VesselSession {
                 cards.push(Card::new("vessel-governing", "Governing", Relevance::Primary, items).for_steps(&["Results", "Report"]));
             }
         }
+        if m.bounds.is_some() {
+            let mut items: Vec<DockItem> = m
+                .bound_rows()
+                .iter()
+                .map(|r| DockItem::field(r.label.clone(), format!("{} ({})", fmt_margin(r.worse()), bound_name(r.bound)), if r.worse() >= r.required_ms { Tone::On } else { Tone::Warn }, None, false))
+                .collect();
+            items.push(DockItem::text("Worse of the pinned and clamped segment, with each row's factor.", Tone::Dim));
+            items.push(DockItem::text(SEGMENT_NOTE, Tone::Dim));
+            cards.push(Card::new("vessel-bound", "Segment bound", Relevance::Primary, items).for_steps(&["Results", "Report"]));
+        }
         let mut react: Vec<DockItem> = m
             .reactions()
             .iter()
@@ -339,6 +453,9 @@ impl VesselSession {
             react.push(DockItem::field("Sum of reactions", format!("{:.1} lbf", norm(e.reacted)), Tone::Normal, None, false));
             react.push(DockItem::field("Applied load", format!("{:.1} lbf", norm(e.applied)), if e.balanced() { Tone::On } else { Tone::Warn }, None, false));
             react.push(DockItem::text("Reactions are the force x / y / z the supports put on the run.", Tone::Dim));
+            if let Some(b) = m.governing_bound() {
+                react.push(DockItem::text(format!("Of the {} bound, which has the lower margin; do not read segment reactions from a bound.", bound_name(b)), Tone::Dim));
+            }
         }
         if !react.is_empty() {
             cards.push(Card::new("vessel-reactions", "Reactions", Relevance::Primary, react).for_steps(&["Results", "Report"]));

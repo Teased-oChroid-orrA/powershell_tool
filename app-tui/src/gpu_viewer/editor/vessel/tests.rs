@@ -412,7 +412,7 @@ fn the_case_file_keeps_rows_and_the_line_run_and_an_older_file_loads_seeded() {
     act(&mut s, VesselAct::AddLoad);
     settle(&mut s);
     let file = s.snapshot();
-    assert_eq!(file.version, 4);
+    assert_eq!(file.version, 5);
     let reopened = VesselFile::from_json(&file.to_json()).unwrap();
     let mut m = PressureVesselModel::default();
     assert!(reopened.apply(&mut m).is_empty());
@@ -454,4 +454,103 @@ fn the_line_run_page_shows_the_drawing_the_table_and_a_balanced_chip_once_the_wa
     act(&mut s, VesselAct::AddLoad);
     settle(&mut s);
     assert!(s.model.equilibrium().unwrap().balanced());
+}
+
+fn page_text(s: &VesselSession) -> String {
+    s.page().iter().filter_map(|i| i.plain_text()).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn segment_mode_takes_end_conditions_a_valve_and_the_bound_and_shows_both_results() {
+    let mut s = session("segment");
+    act(&mut s, VesselAct::ToggleLineRun);
+    act(&mut s, VesselAct::ToggleSegment);
+    act(&mut s, VesselAct::AddLoad);
+    act(&mut s, VesselAct::Edit(Edit::Line(LineField::LoadWeight(0))));
+    type_text(&mut s, "150");
+    s.key(Key::Enter, Mods::default());
+    settle(&mut s);
+    let cards = texts(&s.inspector());
+    assert!(cards.contains("Segment between two supports") && cards.contains("Left end (x = 0)") && cards.contains("Condition"), "{cards}");
+    assert!(page_text(&s).contains("A cut segment is an idealisation"), "the page says the cut is an idealisation");
+    assert!(!page_text(&s).contains("Segment bound"), "no bound until asked");
+    // Bound on: both results are on the page, with the worse one named.
+    act(&mut s, VesselAct::ToggleBound);
+    settle(&mut s);
+    let page = page_text(&s);
+    assert!(page.contains("Segment bound: pinned and clamped"), "{page}");
+    let bound = s.page().into_iter().find_map(|i| match i {
+        DockItem::Table(t) if t.columns.iter().any(|c| c.title == "Clamped") => Some(t),
+        _ => None,
+    });
+    let bound = bound.expect("the bound table");
+    assert_eq!(bound.rows.len(), 3);
+    assert!(bound.rows.iter().all(|r| cell_text(&r.cells[3]).contains("pinned") || cell_text(&r.cells[3]).contains("clamped")));
+    assert!(texts(&s.inspector()).contains("Segment bound"), "the Results card");
+    // A free end has no bound to bracket: the page says why instead of showing a stale result.
+    act(&mut s, VesselAct::CycleFixity(1)); // Pinned -> Spring
+    act(&mut s, VesselAct::CycleFixity(1)); // -> Clamped
+    act(&mut s, VesselAct::CycleFixity(1)); // -> Free
+    settle(&mut s);
+    assert!(page_text(&s).contains("The bound needs both ends held"), "{}", page_text(&s));
+    assert!(s.model.bounds.is_none());
+    // The valve at the free end, then the bound off: a clamp-and-valve segment that solves.
+    act(&mut s, VesselAct::ToggleBound);
+    act(&mut s, VesselAct::CycleFixity(0)); // Pinned -> Spring
+    act(&mut s, VesselAct::CycleFixity(0)); // -> Clamped
+    act(&mut s, VesselAct::AddEndLoad(1));
+    assert_eq!(s.model.line.loads.last().map(|l| l.x), Some(s.model.line.length));
+    settle(&mut s);
+    assert!(matches!(s.model.line_result, Some(Ok(_))), "{:?}", s.model.line_result);
+    // The valve and each end condition are one undo step each.
+    let (loads, end) = (s.model.line.loads.len(), s.model.line.segment.ends[0].fixity);
+    act(&mut s, VesselAct::Undo);
+    assert_eq!(s.model.line.loads.len(), loads - 1);
+    act(&mut s, VesselAct::Undo);
+    assert_ne!(s.model.line.segment.ends[0].fixity, end);
+}
+
+#[test]
+fn the_case_file_keeps_the_segment_and_a_format_4_case_loads_without_one() {
+    let mut s = session("segment-file");
+    act(&mut s, VesselAct::ToggleLineRun);
+    act(&mut s, VesselAct::ToggleSegment);
+    act(&mut s, VesselAct::CycleFixity(0));
+    act(&mut s, VesselAct::CycleFixity(0)); // Pinned -> Spring -> Clamped
+    act(&mut s, VesselAct::CycleFixity(1)); // Pinned -> Spring
+    act(&mut s, VesselAct::Edit(Edit::Line(LineField::EndSpring(1))));
+    type_text(&mut s, "250000");
+    s.key(Key::Enter, Mods::default());
+    act(&mut s, VesselAct::ToggleBound);
+    settle(&mut s);
+    let file = s.snapshot();
+    let json = file.to_json();
+    let mut m = PressureVesselModel::default();
+    assert!(VesselFile::from_json(&json).unwrap().apply(&mut m).is_empty());
+    assert_eq!(m.line.segment, s.model.line.segment);
+    assert_eq!((m.line.segment.ends[0].fixity, m.line.segment.ends[1].spring, m.line.segment.bound), (crate::toolboxes::pressure_vessel::line::FixityIn::Clamped, 250000.0, true));
+    // A format 4 case (a line run, no segment key) opens as the whole run.
+    let mut v4 = serde_json::from_str::<serde_json::Value>(&json).unwrap();
+    v4["version"] = 4.into();
+    v4["line_run"].as_object_mut().unwrap().remove("segment");
+    let old = VesselFile::from_json(&v4.to_string()).unwrap();
+    old.apply(&mut m);
+    assert!(m.line.enabled && !m.line.segment.enabled && !m.line.segment.bound);
+    assert_eq!(m.line.segment, crate::toolboxes::pressure_vessel::line::SegmentIn::default());
+    // A case from a newer build is refused, not misread.
+    let mut v6 = serde_json::from_str::<serde_json::Value>(&json).unwrap();
+    v6["version"] = 6.into();
+    assert!(VesselFile::from_json(&v6.to_string()).is_err());
+}
+
+#[test]
+fn the_report_states_the_segment_and_both_bounds() {
+    let mut s = session("segment-report");
+    act(&mut s, VesselAct::ToggleLineRun);
+    act(&mut s, VesselAct::ToggleSegment);
+    act(&mut s, VesselAct::ToggleBound);
+    settle(&mut s);
+    let text = crate::toolboxes::pressure_vessel::report::build_report_text(&s.model);
+    assert!(text.contains("Segment between two supports") && text.contains("idealisation") && text.contains("worse margin per requirement"), "{text}");
+    assert!(text.contains("pinned") && text.contains("clamped") && text.contains("worse"), "{text}");
 }

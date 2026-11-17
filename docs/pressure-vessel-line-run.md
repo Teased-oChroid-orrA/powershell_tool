@@ -93,3 +93,32 @@ A "Line Run" page in the native Pressure Vessel family: left, tube inputs (OD, w
 support / load table (x, kind, anchor, force, weight, offset); right, a station plot of moment resultant and axial force over `x` with
 supports marked, a margin card per criterion (governing case, `x`, surface, angle), and the reactions table. Case selector for load
 cases (1g, crash factors, thermal). No window is built here.
+
+## Segment mode in the window (2026-11-16)
+The Pressure Vessel window's line-run page takes the solver's segment mode (`line_run::segment`), per the owner's pressure-line workflow
+(check only the stretch between two supports: clamp and valve, two clamps, one clamp, a pin).
+- **Segment card** (Inputs): "Segment between two supports" switch; per end (left `x = 0`, right `x = run length`) a Condition cycle
+  Free, Pinned, Spring clip, Clamped (`FixityIn` -> `EndFixity`), the clip stiffness in lbf-in per radian for Spring (an owner input,
+  0 acts as pinned, never estimated), an axial-anchor switch on held ends, and "+ Valve or fitting at this end" (a point load at the
+  end station; its weight and forces are typed in the Point loads card). Defaults: both ends pinned, the left one the axial anchor (as the
+  whole run's first support).
+- **Supports at the end stations are superseded** while the segment is on (kept in the list, shown "Not solved", never passed to the solver);
+  interior supports stay. Switching the segment off restores the whole run exactly.
+- **Bound toggle** runs `analyze_segment_bounds` (both ends pinned, both clamped; the stated conditions are not used). The page shows a
+  "Segment bound" table per requirement row: pinned margin, clamped margin and the worse one with its bound, each with the row's factor;
+  the Segment bound card repeats the worse margins. The margin curve is the worse of the two at every station; the picture, reactions
+  and equilibrium follow the bound with the lower margin (the reactions card says not to read segment reactions from a bound).
+  A free end with the bound on is refused with the solver's reason, never a stale result.
+- **Minimum wall** of a bounded segment is the thicker of the wall each bound needs (`LineWallJob::runs`, one run per bound via
+  `segment_run`, new in `pressure-vessel-solver`: the run `analyze_segment` solves, so a wall search can hold it). An infeasible bound
+  makes the row infeasible.
+- **Idealisation statement** appears on the page, in the card and in the report: a cut segment's real end restraint depends on the
+  neighbouring spans and clips; pinned and clamped bracket the stress margin of the continuous run for uniform loading, not reactions or every
+  load pattern (see Limits of the bound above).
+- **Case file format 5** stores `line_run.segment` (`enabled`, `ends` with fixity, spring and anchor, `bound`); format 4 and older cases load
+  with the segment off; a file from a newer build is refused. The report lists the ends and, with the bound, each row's pinned, clamped and
+  worse margins.
+- **Requirement rows (verified, no change needed)**: rows are seeded by the material's class (`MaterialKind::default_for`, ductile
+  or brittle by catalog elongation, composite refused), the allowables are the catalog's yield and ultimate (`effective_material`, shown in the
+  Allowables card and, per row, in the Requirements card), factor 1.0 and required MS 0.0 stay neutral with the visible hint, an edited row
+  sticks through a material change and only unedited rows re-seed (tests in `toolboxes/pressure_vessel/run.rs`).
