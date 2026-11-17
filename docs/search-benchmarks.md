@@ -749,6 +749,25 @@ Not done, and why. Building the hits is now the largest remaining part of the 3-
 
 Tests: `prefilter_policies_return_identical_hits` (prefilter always on, always off and adaptive against the reference definition `lowercase(line) contains lowercase(filter)`, hit lines and matched filters, on runs of matching and non-matching lines longer than the window with U+0130 and U+212A lines in both, with and without exclusions; it fails if the U+212A guard is removed), `adaptive_prefilter_turns_off_on_dense_lines_and_back_on_when_they_thin_out`. `cargo test --release -p search-core`: 270 passed, 4 ignored.
 
+## 2026-11-17: index freshness reads the document store in order; watcher shortcut not taken
+
+Follow-up to the 2026-11-16 review (warm re-search is walk plus freshness; the trigram query is 1 to 9 ms).
+
+**Not done: skipping the walk through the folder watcher.** `watch.rs` is best effort by its own contract (network shares and some synced folders report nothing, dropped events set `overflow`), and narrowing must never hide a real match. A warm search that trusted "no events" instead of walking could miss an edited file on exactly those folders. The walk itself is at the cost of `read_dir` plus `metadata` (`walk_bench`, `knowledge-engine-audit.md`). Dropped, not built.
+
+**Done: `NativeSearchEngine::all_document_metadata` and `all_document_ids` read each segment's store in document order.** They collected every document address into a set and fetched each by address; the store is block-compressed, so in set order almost every fetch decompressed a block again once the index outgrew the reader's block cache. `for_each_stored_document` iterates `StoreReader::iter` per segment with the segment's alive bitset (deleted documents are skipped as before).
+
+`exact_bench`, release, this Mac, other builds running at the time (so compare within a pair, runs alternated):
+
+| files | freshness before | freshness after |
+|---|---|---|
+| 10,000 (three alternated pairs) | 117, 74, 71 ms | 18, 37, 40 ms |
+| 100,000 (one run each) | 490 ms | 184 ms |
+
+Candidates are identical (104 and 1,031). `cargo test --release -p native-search` (32) and `-p search-core` pass. The 100,000-file walk in the same runs was 898 and 383 ms: directory-cache state, not this change. Not measured on Windows; `.github/workflows/search-bench-windows.yml` now runs `exact_bench` at 3,000 and 10,000 files on hosted Windows for every search PR and prints the rows in the job summary (evidence for that host, not a gate).
+
+Still open from the review list: narrowing with Ignore accents or Typo tolerance on (needs a folded trigram field and an index rebuild), and same-size same-mtime edits that the freshness check cannot see.
+
 ## 2026-11-16: incremental snapshot and embedding throughput (semantic index speed)
 
 ### Snapshot follows writes instead of being rebuilt

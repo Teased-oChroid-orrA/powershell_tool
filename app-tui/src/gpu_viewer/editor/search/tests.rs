@@ -161,6 +161,86 @@ fn cached_search_rows_follow_filter_sort_selection_and_new_runs() {
     ];
     assert_eq!(view::document(&s).table.rows[0].cells[0], "other.pdf");
 }
+/// The rows as a cold cache builds them (the reference for the patched cache).
+fn rebuilt_rows(s: &SearchSession) -> std::sync::Arc<Vec<crate::gpu_viewer::ui::DocRow>> {
+    s.rows_cache.borrow_mut().take();
+    view::document(s).table.rows
+}
+fn rows_built(during: impl FnOnce()) -> usize {
+    view::ROWS_BUILT.with(|n| n.set(0));
+    during();
+    view::ROWS_BUILT.with(|n| n.get())
+}
+#[test]
+fn a_selection_move_reflags_two_rows_and_rebuilds_none() {
+    const FILES: usize = 5000;
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = "/w".into();
+    s.st.run.results = (0..FILES)
+        .map(|i| {
+            let kind = if i % 2 == 0 { "pdf" } else { "txt" };
+            result(&format!("/w/d{}/f{i}.{kind}", i % 7), 1 + i % 9, (i * 37 % 1000) as i64)
+        })
+        .collect();
+    s.st.run.started = Some(Instant::now());
+    let selected_rows = |s: &SearchSession| -> Vec<usize> {
+        let rows = view::document(s).table.rows;
+        (0..rows.len()).filter(|&i| rows[i].selected).collect()
+    };
+    for (filter, sort, shown) in [
+        ("", (SortKey::Found, false), FILES),
+        ("", (SortKey::Hits, false), FILES),
+        (".pdf", (SortKey::Size, true), FILES / 2),
+        (".txt", (SortKey::Found, false), FILES / 2),
+    ] {
+        s.filter = filter.into();
+        s.sort = sort;
+        s.selected = None;
+        assert_eq!(rows_built(|| drop(view::document(&s))), shown, "{filter:?} {sort:?}: a new view builds its rows once");
+        let view = s.view();
+        assert_eq!(selected_rows(&s), [0], "the first row is current without a click");
+        // Arrow keys, a click far away, a result the filter hides, and back to nothing selected.
+        let hidden = (0..FILES).find(|i| !view.contains(i));
+        let moves = [Some(view[1]), Some(view[2]), Some(view[shown - 1]), hidden, Some(view[shown / 2]), None];
+        for selected in moves {
+            let built = rows_built(|| {
+                s.selected = selected;
+                drop(view::document(&s));
+                drop(view::document(&s));
+            });
+            assert_eq!(built, 0, "{filter:?} {sort:?}: selecting {selected:?} rebuilt rows");
+            let expected = selected.and_then(|i| view.iter().position(|&v| v == i)).unwrap_or(0);
+            assert_eq!(selected_rows(&s), [expected], "{filter:?} {sort:?}: selecting {selected:?}");
+            assert_eq!(s.current(), Some(view[expected]));
+        }
+        s.selected = Some(view[shown / 3]);
+        let patched = view::document(&s).table.rows;
+        assert_eq!(patched, rebuilt_rows(&s), "{filter:?} {sort:?}: the patched rows are the rows a rebuild gives");
+    }
+}
+#[test]
+fn results_arriving_in_found_order_build_only_the_new_rows() {
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = "/w".into();
+    s.st.run.started = Some(Instant::now());
+    assert_eq!(view::document(&s).table.rows.len(), 0);
+    let mut built = 0;
+    for batch in 0..20 {
+        for i in 0..100 {
+            s.st.run.results.push(result(&format!("/w/b{batch}/f{i}.pdf"), 1, 1));
+        }
+        if batch == 10 {
+            s.selected = Some(450);
+        }
+        built += rows_built(|| drop(view::document(&s)));
+        let rows = view::document(&s).table.rows;
+        let selected: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].selected).collect();
+        assert_eq!(selected, [if batch >= 10 { 450 } else { 0 }]);
+    }
+    assert_eq!(built, 2000, "each result row is built once while results stream in");
+    let streamed = view::document(&s).table.rows;
+    assert_eq!(streamed, rebuilt_rows(&s));
+}
 #[test]
 fn detail_highlights_accent_folded_and_typo_hits() {
     let mut s = with_results();

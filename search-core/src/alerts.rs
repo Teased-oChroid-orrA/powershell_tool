@@ -35,6 +35,10 @@ pub struct BaselineFile {
     pub size: i64,
     /// Digest of bounded exact-hit and whole-document samples; source text is not stored.
     fingerprint: String,
+    /// Digest of every hit and every stored line (see `content_digest`). Empty in a baseline
+    /// written before this field existed; filled in on the next check.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    content: String,
     /// Base64 encoded signed 8-bit MiniLM vector. Stores no source text.
     embedding: String,
 }
@@ -51,14 +55,18 @@ struct AlertFile {
     modified_ns: i64,
     size: i64,
     evidence: String,
+    content: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AlertChange {
     New { path: String },
     Updated { path: String, cosine_distance: f32 },
-    /// Size or modification time changed but the sampled text did not: the edit is outside the few lines
-    /// the alert reads, so nothing can be said about how large it is.
+    /// The extracted text changed (its digest differs) but not in the few sampled lines, so there is
+    /// no distance to report. Seen whether or not the size or modification time changed.
+    Edited { path: String },
+    /// Size or modification time changed and the text the search read did not: saved again without
+    /// an edit, or edited past the stored lines (`max_embed_lines`) and away from every hit.
     Touched { path: String },
     /// A file in the baseline is no longer an exact hit (edited so it stops matching, moved or deleted).
     Removed { path: String },
@@ -77,6 +85,7 @@ impl AlertRun {
                     modified_ns: modified_ns(result),
                     size: result.file_length,
                     evidence: sample_evidence(result),
+                    content: content_digest(result),
                 })
                 .collect(),
         })
@@ -134,18 +143,19 @@ impl SavedSearchAlert {
         for result in &run.files {
             let fingerprint = evidence_fingerprint(&result.evidence);
             match previous.get(result.path.as_str()) {
-                Some(old)
-                    if old.size == result.size
-                        && old.modified_ns == result.modified_ns
-                        && old.fingerprint == fingerprint =>
-                {
-                    next_baseline.push((*old).clone());
-                }
+                // Same sampled text: the stored embedding still stands.
                 Some(old) if old.fingerprint == fingerprint => {
-                    touched.push(result.path.clone());
+                    // A baseline from before the digest cannot say whether the rest changed.
+                    let edited = !old.content.is_empty() && old.content != result.content;
+                    if edited {
+                        touched.push(AlertChange::Edited { path: result.path.clone() });
+                    } else if old.size != result.size || old.modified_ns != result.modified_ns {
+                        touched.push(AlertChange::Touched { path: result.path.clone() });
+                    }
                     next_baseline.push(BaselineFile {
                         modified_ns: result.modified_ns,
                         size: result.size,
+                        content: result.content.clone(),
                         ..(*old).clone()
                     });
                 }
@@ -158,7 +168,7 @@ impl SavedSearchAlert {
             .filter(|file| !current.contains(file.path.as_str()))
             .map(|file| AlertChange::Removed { path: file.path.clone() })
             .collect();
-        changes.extend(touched.into_iter().map(|path| AlertChange::Touched { path }));
+        changes.extend(touched);
         for chunk in pending.chunks(16) {
             let evidence = chunk
                 .iter()
@@ -185,6 +195,7 @@ impl SavedSearchAlert {
                     modified_ns: result.modified_ns,
                     size: result.size,
                     fingerprint: fingerprint.clone(),
+                    content: result.content.clone(),
                     embedding: encode_embedding(&quantized),
                 });
             }
@@ -227,6 +238,9 @@ impl SavedSearchAlert {
             for file in files {
                 let _ = decode_embedding(&file.embedding)?;
                 let _ = decode_fingerprint(&file.fingerprint)?;
+                if !file.content.is_empty() {
+                    let _ = decode_fingerprint(&file.content)?;
+                }
             }
         }
         Ok(alert)
@@ -300,6 +314,7 @@ fn embed_results(results: &[AlertFile]) -> Result<Vec<BaselineFile>, String> {
                 modified_ns: result.modified_ns,
                 size: result.size,
                 fingerprint,
+                content: result.content.clone(),
                 embedding: encode_embedding(&quantized),
             });
         }
@@ -398,6 +413,28 @@ fn append_bounded_line(text: &mut String, line: &str, max_chars: usize) {
         text.push('\n');
     }
     text.push_str(&line[..end]);
+}
+
+/// Digest of everything the exact search kept of a file: the line count, every hit (line number and
+/// matching line) and every stored line (the first `max_embed_lines`). The sampled evidence is a
+/// subset of this text, so an edit the sample misses still changes the digest. An edit past the
+/// stored lines that touches no hit and keeps the line count is the one change it cannot see.
+fn content_digest(result: &FileSearchResult) -> String {
+    let mut hasher = Sha256::new();
+    let mut field = |bytes: &[u8]| {
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    };
+    field(&result.total_line_count.to_le_bytes());
+    field(&(result.hits.len() as u64).to_le_bytes());
+    for hit in &result.hits {
+        field(&hit.line_number.to_le_bytes());
+        field(hit.match_line.as_bytes());
+    }
+    for line in &result.lines_cache {
+        field(line.as_bytes());
+    }
+    base64::engine::general_purpose::STANDARD.encode(hasher.finalize())
 }
 
 fn evidence_fingerprint(text: &str) -> String {
@@ -685,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_outside_the_sampled_lines_is_touched_not_zero_percent_different() {
+    fn an_edit_outside_the_sampled_lines_is_edited_not_zero_percent_different() {
         let settings = SearchSettings {
             search_path: "/records".into(),
             filters: vec!["engineering".into()],
@@ -702,7 +739,78 @@ mod tests {
         let mut after = lines("allowable 150 MPa");
         after.modified = after.modified + chrono::Duration::seconds(5);
         let changes = alert.check_and_update(&settings, &alert_run(vec![after])).unwrap();
-        assert_eq!(changes, vec![AlertChange::Touched { path: "/records/a.txt".into() }]);
+        assert_eq!(changes, vec![AlertChange::Edited { path: "/records/a.txt".into() }]);
+    }
+
+    #[test]
+    fn an_edit_outside_the_sampled_lines_is_seen_without_a_size_or_time_change() {
+        let settings = SearchSettings {
+            search_path: "/records".into(),
+            filters: vec!["engineering".into()],
+            ..Default::default()
+        };
+        let mut alert = SavedSearchAlert::create("Engineering changes".into(), settings.clone()).unwrap();
+        // Same length, same modified time (a copy tool that keeps times, a coarse file-system clock).
+        let lines = |edited: &str| {
+            let mut r = result("/records/a.txt", "engineering report", 1_700_000_000_000_000_000);
+            r.lines_cache = (0..200).map(|i| format!("engineering line {i}")).collect();
+            r.lines_cache[77] = edited.into(); // 77 is not one of the six sampled indexes
+            r
+        };
+        alert.capture_baseline(&alert_run(vec![lines("allowable 100 MPa")])).unwrap();
+        let after = alert_run(vec![lines("allowable 150 MPa")]);
+        let changes = alert.check_and_update(&settings, &after).unwrap();
+        assert_eq!(changes, vec![AlertChange::Edited { path: "/records/a.txt".into() }]);
+        assert!(alert.check_and_update(&settings, &after).unwrap().is_empty(), "reported once");
+    }
+
+    #[test]
+    fn a_changed_hit_beyond_the_sampled_hits_is_seen() {
+        let settings = SearchSettings {
+            search_path: "/records".into(),
+            filters: vec!["engineering".into()],
+            ..Default::default()
+        };
+        let mut alert = SavedSearchAlert::create("Engineering changes".into(), settings.clone()).unwrap();
+        // Ten hits past the stored lines (a file longer than `max_embed_lines`); hits 0, 4 and 9 are sampled.
+        let hits = |edited: &str| {
+            let mut r = result("/records/a.txt", "engineering report", 1_700_000_000_000_000_000);
+            r.hits = (0..10)
+                .map(|i| LineHit {
+                    line_number: 5000 + i,
+                    before: None,
+                    match_line: if i == 2 { edited.into() } else { format!("engineering hit {i}") },
+                    after: None,
+                    matched_filters: vec!["engineering".into()],
+                })
+                .collect();
+            r
+        };
+        alert.capture_baseline(&alert_run(vec![hits("engineering limit 100 MPa")])).unwrap();
+        let changes = alert
+            .check_and_update(&settings, &alert_run(vec![hits("engineering limit 150 MPa")]))
+            .unwrap();
+        assert_eq!(changes, vec![AlertChange::Edited { path: "/records/a.txt".into() }]);
+    }
+
+    #[test]
+    fn a_baseline_saved_before_the_text_digest_is_upgraded_without_a_false_report() {
+        let settings = SearchSettings {
+            search_path: "/records".into(),
+            filters: vec!["engineering".into()],
+            ..Default::default()
+        };
+        let mut alert = SavedSearchAlert::create("Engineering changes".into(), settings.clone()).unwrap();
+        let same = || alert_run(vec![result("/records/a.txt", "engineering one", 1_700_000_000_000_000_000)]);
+        alert.capture_baseline(&same()).unwrap();
+        // An alert file written by the earlier schema has no `content` field.
+        let mut json: serde_json::Value = serde_json::to_value(&alert).unwrap();
+        for file in json["baseline"].as_array_mut().unwrap() {
+            assert!(file.as_object_mut().unwrap().remove("content").is_some());
+        }
+        let mut old: SavedSearchAlert = serde_json::from_value(json).unwrap();
+        assert!(old.check_and_update(&settings, &same()).unwrap().is_empty());
+        assert_eq!(old.baseline, alert.baseline, "the digest is filled in on the first check");
     }
 
     #[test]

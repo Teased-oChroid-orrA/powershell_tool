@@ -1,0 +1,45 @@
+name: Windows search timings
+# The exact-search timing harness (search-core/examples/exact_bench.rs) on hosted Windows x64, the shipped target: every number
+# in docs/search-benchmarks.md was taken on a Mac, and fsync, directory walk and metadata costs differ on Windows. Evidence for
+# the host that ran it (hosted runners vary); not a gate: the job fails only if the harness itself fails.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'search-core/**'
+      - 'native-search/**'
+      - 'Cargo.lock'
+      - '.github/workflows/search-bench-windows.yml'
+      - '!**/*.md'
+concurrency:
+  group: search-bench-windows-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+jobs:
+  exact-bench:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      # The pull request's own head commit, not GitHub's merge commit, so the run names the exact source it timed.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the harness (release)
+        shell: bash
+        run: cargo build -p search-core --locked --release -j 2 --example exact_bench
+      - name: Exact-search timings, 3,000 and 10,000 files
+        shell: pwsh
+        run: |
+          $cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
+          $out = @("host: $cpu", "commit: $(git rev-parse HEAD)")
+          foreach ($files in 3000, 10000) {
+            $out += "--- exact_bench $files"
+            $rows = & target/release/examples/exact_bench.exe $files 2>&1
+            if ($LASTEXITCODE -ne 0) { $rows; Write-Error "exact_bench $files failed"; exit 1 }
+            $out += $rows
+          }
+          $out
+          Add-Content $env:GITHUB_STEP_SUMMARY ('```' + "`n" + ($out -join "`n") + "`n" + '```')
+          if (-not ($out | Select-String -Pattern 'index narrow' -Quiet)) { Write-Error 'the harness printed no index rows'; exit 1 }
