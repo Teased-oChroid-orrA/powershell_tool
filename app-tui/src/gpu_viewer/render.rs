@@ -2761,6 +2761,24 @@ mod snapshot_tests {
         shoot(&mut session, "Results", "vessel-line-narrow", true, (860, 760));
         session.act(EditorAction::Vessel(VesselAct::Step("Inputs")));
         shoot(&mut session, "Inputs", "vessel-line-inputs", true, (1440, 900));
+        // Segment mode with the bound: the page with both results, then the Segment card.
+        session.act(EditorAction::Vessel(VesselAct::ToggleSegment));
+        session.act(EditorAction::Vessel(VesselAct::ToggleBound));
+        let t = std::time::Instant::now();
+        loop {
+            session.poll();
+            if session.model().walls.is_some() {
+                break;
+            }
+            assert!(t.elapsed().as_secs() < 60, "the segment wall solve did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        session.act(EditorAction::Vessel(VesselAct::Step("Results")));
+        shoot(&mut session, "Results", "vessel-segment-dark", true, (1440, 900));
+        shoot(&mut session, "Results", "vessel-segment-light", false, (1440, 900));
+        shoot(&mut session, "Results", "vessel-segment-narrow", true, (860, 760));
+        session.act(EditorAction::Vessel(VesselAct::Step("Inputs")));
+        shoot(&mut session, "Inputs", "vessel-segment-inputs", true, (1440, 900));
     }
 
     /// The Preload Analysis workbench (inputs dark, light and in a narrow window; the parts picture before the member FE

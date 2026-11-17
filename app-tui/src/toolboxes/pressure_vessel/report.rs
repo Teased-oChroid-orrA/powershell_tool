@@ -182,6 +182,25 @@ fn walls_report(model: &PressureVesselModel, out: &mut String) {
     }
     if model.line.enabled {
         out.push_str(&format!("  Run length {} in; {} support(s), {} point load(s), {} case(s).\n", model.line.length, model.line.supports.len(), model.line.loads.len(), model.line.cases.len()));
+        let sg = &model.line.segment;
+        if sg.enabled {
+            let end = |e: &super::line::EndIn, x: f64| match e.fixity {
+                super::line::FixityIn::Spring => format!("x {x}: spring clip {} lbf-in/rad{}", e.spring, if e.axial_anchor { ", axial anchor" } else { "" }),
+                f => format!("x {x}: {}{}", f.label().to_lowercase(), if e.axial_anchor { ", axial anchor" } else { "" }),
+            };
+            out.push_str(&format!("  Segment between two supports: {}; {}.\n", end(&sg.ends[0], 0.0), end(&sg.ends[1], model.line.length)));
+            out.push_str("  A cut segment is an idealisation: the real end restraint depends on the neighbouring spans and clips.\n");
+            if sg.bound {
+                out.push_str("  Bound (both ends pinned, then both clamped; the stated end conditions are not used), worse margin per requirement:\n");
+                for r in model.bound_rows() {
+                    let b = if r.bound == pressure_vessel_solver::line_run::Bound::Clamped { "clamped" } else { "pinned" };
+                    out.push_str(&format!("    {}: pinned {:+.3}, clamped {:+.3}, worse {:+.3} ({b}); required {:+.3}.\n", r.label, r.pinned, r.clamped, r.worse(), r.required_ms));
+                }
+                if let Some(Err(e)) = &model.line_result {
+                    out.push_str(&format!("    Not solved: {e}\n"));
+                }
+            }
+        }
         if let Some(Ok(res)) = &model.line_result {
             for case in &res.cases {
                 let sum: Vec<String> = (0..3).map(|k| format!("{:.1}", case.reactions.iter().map(|r| r.force[k]).sum::<f64>())).collect();

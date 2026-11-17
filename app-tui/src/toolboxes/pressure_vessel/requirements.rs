@@ -86,6 +86,16 @@ impl Req {
         let c = Self::choices(kind);
         c.iter().position(|r| *r == self).map_or(c[0], |i| c[(i + 1) % c.len()])
     }
+    /// The allowable the criterion is measured against, from the material in use (`sy`, `ftu`, `fcu` in ksi, overrides applied):
+    /// its name and value, so a row shows where its number comes from. Buckling reads the modulus, not a strength.
+    pub fn allowable_text(self, sy: f64, ftu: f64, fcu: f64) -> Option<String> {
+        Some(match self {
+            Self::VonMisesYield | Self::TrescaYield | Self::YieldMaxPrincipal => format!("Yield {sy} ksi"),
+            Self::UltimateMaxPrincipal | Self::UltimateVonMises | Self::Rankine => format!("Ultimate {ftu} ksi"),
+            Self::CoulombMohr => format!("Ultimate {ftu} ksi tension, {fcu} ksi compression"),
+            Self::Buckling => return None,
+        })
+    }
     /// The cylinder solver's criterion; `None` when the cylinder does not evaluate it (Coulomb-Mohr needs a compression
     /// ultimate and a shear state a plain Lame cylinder has no use for). Rankine is the maximum principal against `Ftu`.
     pub fn cylinder(self) -> Option<ThicknessCriterion> {
@@ -208,6 +218,14 @@ mod tests {
         reseed(&mut rows, MaterialKind::Ductile);
         assert_eq!(rows.iter().filter(|r| r.criterion == Req::TrescaYield).count(), 1);
         assert_eq!(rows.iter().filter(|r| r.criterion == Req::VonMisesYield).count(), 1, "the edited Proof row covers von Mises");
+    }
+
+    #[test]
+    fn a_row_names_its_allowable() {
+        assert_eq!(Req::VonMisesYield.allowable_text(70.0, 77.0, 80.0).as_deref(), Some("Yield 70 ksi"));
+        assert_eq!(Req::Rankine.allowable_text(70.0, 77.0, 80.0).as_deref(), Some("Ultimate 77 ksi"));
+        assert_eq!(Req::CoulombMohr.allowable_text(70.0, 77.0, 80.0).as_deref(), Some("Ultimate 77 ksi tension, 80 ksi compression"));
+        assert_eq!(Req::Buckling.allowable_text(70.0, 77.0, 80.0), None);
     }
 
     #[test]
