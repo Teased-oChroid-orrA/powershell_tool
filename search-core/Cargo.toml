@@ -195,6 +195,14 @@ name = "semantic_startup"
 required-features = ["semantic-search"]
 
 [[example]]
+name = "semantic_snapshot_update"
+required-features = ["semantic-search"]
+
+[[example]]
+name = "embed_throughput"
+required-features = ["semantic-search"]
+
+[[example]]
 name = "pdf_folder_eval"
 required-features = ["semantic-search", "pdf-yolow", "ocr"]
 

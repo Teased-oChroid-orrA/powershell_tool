@@ -768,6 +768,61 @@ Candidates are identical (104 and 1,031). `cargo test --release -p native-search
 
 Still open from the review list: narrowing with Ignore accents or Typo tolerance on (needs a folded trigram field and an index rebuild), and same-size same-mtime edits that the freshness check cannot see.
 
+## 2026-11-16: incremental snapshot and embedding throughput (semantic index speed)
+
+### Snapshot follows writes instead of being rebuilt
+
+Before, the first query after any write rebuilt the whole in-memory snapshot (decode every vector, tokenize every chunk). Now every `semantic_documents` row carries the write generation it was written at, and `Snapshot::updated` (`search-core/src/semantic_cache.rs`) re-reads only the documents newer than the snapshot, drops the ones no longer stored, renumbers the rest in one pass over memory, and returns exactly what a full build returns (same chunk order, vectors, lengths and postings, so scores are the same by construction).
+
+Probe: `search-core/examples/semantic_snapshot_update.rs` (`cargo run -p search-core --release --features semantic-search --example semantic_snapshot_update -- <semantic.sqlite>...`). It copies the index, then times the first hybrid query after adding, editing and removing one single-chunk document (median of 3 each) and the steady query. Query times include the query embedding. Indexes: SciFact's evaluation index (12,601 chunks); SciFact + NFCorpus + MS MARCO + Cranfield merged (28,765); that merged index four times under different paths (115,060; real text and vectors, repeated). The indexed files do not exist on this machine, so the per-query freshness check fails fast for every document; it costs the same before and after. macOS, release build, load average 3 to 7 from other work.
+
+| chunks | full build | first query after add / edit / remove, before | after | steady query |
+|---|---|---|---|---|
+| 12,601 | 0.82 s | 831 / 835 / 834 ms | 13 / 16 / 15 ms | 8 ms |
+| 28,765 | 1.78 s | 1,821 / 1,817 / 1,826 ms | 30 / 35 / 34 ms | 21 to 28 ms |
+| 115,060 | 6.77 s | 6,783 / 6,674 / 6,746 ms | 117 / 123 / 115 ms | 53 to 63 ms |
+
+The update itself (first query minus steady) is about 6 ms at 12.6k chunks, 10 ms at 29k and 60 ms at 115k: the copy of the vector block and the renumbering of the postings, both linear in the index but at memory speed. A run on the same machine under heavy load (load average 17 to 25) gave 3.5 s / 5.1 s / 11.6 s before and 22 / 58 / 268 ms after.
+
+Tests: `incremental_snapshot_equals_a_rebuilt_one_through_adds_edits_and_deletes` (after each of 13 writes the served snapshot equals a fresh `Snapshot::build` field for field, no full build happened, and hits and scores equal the streaming path), `snapshot_scores_equal_streaming_scores_and_follow_writes` (unchanged), `a_recreated_database_never_updates_the_old_snapshot`.
+
+Two defects found and fixed on the way, each with a test that fails without the fix:
+- A file whose time changed but whose text did not was re-stamped without bumping the write counter. The cached snapshot kept the old time, so the per-query freshness check dropped that file's hits until some other write. The re-stamp now counts as a write (`a_touched_file_with_unchanged_text_stays_in_cached_results`).
+- Snapshots were matched to an index file by path and write counter only. A database deleted and recreated at the same path could be served the old snapshot when the counters met. Each database now has a random `semantic_meta.instance`, and a snapshot is only reused or updated for the same instance.
+
+Not done: the update still copies the vector block (about 1.5 KB per chunk), so its cost grows with the index (extrapolated, not measured: about 150 ms at 250,000 chunks). Not measured: above 115,060 chunks, a write of many documents between two queries (cost is the changed documents at full price plus the pass above), Windows.
+
+### Embedding throughput
+
+Profile (`sample <pid> 8` on `search-core/examples/embed_throughput.rs`, which runs `index_document` on fixed text): 97.5% of the main thread's time is inside the model call (`rten::Model::run`), tokenization about 1% (counting tokens for the chunk budget plus encoding), SQLite 0.5%, hashing and the rest below that. The model's pool has 4 threads (the performance cores); one of them runs the graph and most of the matrix products, the other three spend about 45% of their samples yielding and 15% in the product kernel.
+
+Model alone on the 235 chunks of 120 documents (SciFact, MS MARCO, Cranfield, NFCorpus, round robin), 3 interleaved rounds, median chunks/s; every vector compared bit for bit with the stored one:
+
+| texts per call | threads calling | full chunks (up to 800 chars) | cut to 400 chars | 200 chars | 80 chars |
+|---|---|---|---|---|---|
+| 1 | 1 | 28.2 | 44.2 | 70.1 | 106.0 |
+| 2 | 1 | 24.0 | 41.9 | 73.5 | 141.1 |
+| 4 | 1 | 22.2 | 41.1 | 77.0 | 156.4 |
+| 16 | 1 | 19.4 | 37.6 | 72.6 | 157.5 |
+| 1 | 2 | 29.5 | 45.2 | 77.1 | 127.1 |
+| 1 | 4 | 29.8 | 47.8 | 79.7 | 142.0 |
+| 4 | 4 | 22.5 | 41.3 | 78.6 | 165.5 |
+
+- Vectors are bit-identical for every batch size and thread count (0 of 235 differ, also 0 of 387 and 0 of 643 in two earlier runs). Batch composition is free to change.
+- The index embedded 16 chunks per call. The model pads a call to its longest text, and for full chunks one per call is 45% faster than 16 per call (28.2 against 19.4). Short texts are the other way round (80 characters: 157.5 against 106.0).
+- Adopted: `semantic_index::embed_calls` groups the chunks of a document into calls of about one full chunk of padded text (`texts x longest <= 800` characters, at most 16): full chunks go alone, tails and page fragments together.
+- Not adopted, measured: calling the model from 2 or 4 threads at once gains 5% on full chunks (28.2 to 29.8). The calls share the same 4-thread pool, which is already the limit. No change made.
+
+Product path (`index_document`, chunk + embed + store) before and after on the same text, 2 runs each, same vector checksum before and after:
+
+| text | chunks | before | after | checksum |
+|---|---|---|---|---|
+| 240 documents, one per file | 474 | 24.0, 24.1 chunks/s | 28.1, 27.8 | `8bd840a085d96ef6` both |
+| the same 240, 24 per file (long documents) | 356 | 18.8, 18.8 chunks/s | 21.6, 21.5 | `15e9f9dd01ddb42b` both |
+
+That is 15% to 17% faster with identical vectors, so no `retrieval_eval` run and no `EMBEDDING_MODEL_VERSION` bump. Tests: `model_calls_hold_one_full_chunk_or_several_short_ones`, `batching_does_not_change_a_vector`.
+
+What remains: inference itself is the cost, and nothing else in the loop is worth changing (database writes are 0.5%). Not tried: a different inference runtime or a newer `rten` (would need the bit comparison above, and the five-set run if any vector changes), the other callers of `search_ml::embed_batch` (`alerts.rs`, `neural_search.rs`, `relevance.rs` send lines; the 80 and 200 character columns say their batching is already the right way round), Windows.
 
 ## 2026-11-17: OCR confidence from a vendored `ocrs`
 
