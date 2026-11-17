@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["native-search", "search-core", "search-ml", "app-tui", "cli", "bushing-solver", "engineering-math", "mechanics-core", "pressure-vessel-solver", "fastened-joint-solver", "edge-check", "lug-solver", "fea-core", "fea-problem", "eccentric-bushing", "solid-kernel"]
+# Vendored crate with a local change (third_party/ocrs/NOTICE.md); a path dependency, not a member, so workspace test runs skip its upstream tests.
+exclude = ["third_party/ocrs"]
 
 # Moved here from native-search/Cargo.toml: Cargo ignores [profile.*]
 # sections in non-root workspace members. panic="unwind" (not "abort") is

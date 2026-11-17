@@ -3762,8 +3762,6 @@ dependencies = [
 [[package]]
 name = "ocrs"
 version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5379fdd3f11522b5a2ff53017a189463dabf5d0a9c915cb3eb97fabec4ea11c"
 dependencies = [
  "anyhow",
  "rayon",

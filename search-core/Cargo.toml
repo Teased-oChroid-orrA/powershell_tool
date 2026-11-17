@@ -118,7 +118,7 @@ tracing = "0.1"
 # types (like `Model`) aren't compatible across versions, so this crate's
 # own `rten` dependency must resolve to the same version ocrs's
 # `OcrEngineParams` expects, not just "any 0.x that satisfies semver."
-ocrs = { version = "0.12", optional = true }
+ocrs = { path = "../third_party/ocrs", optional = true }
 rten = { version = "=0.24.0", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["jpeg"] }
 
@@ -137,6 +137,10 @@ neural-search = ["dep:search-ml"]
 semantic-search = ["neural-search"]
 # Natural-language Find: rules (`nl_rules`) split a sentence into conditions and judge passages; no model.
 nl-find = ["semantic-search"]
+
+[[example]]
+name = "ocr_confidence_eval"
+required-features = ["ocr"]
 
 [[example]]
 name = "pdf_citation_bench"

@@ -48,6 +48,7 @@ fn result(name: &str, hits: usize, size: i64) -> FileSearchResult {
         total_line_count: 0,
         proximity_min_range: None,
         low_confidence_pdf: false,
+        ocr_confidence: None,
         error_message: None,
     }
 }

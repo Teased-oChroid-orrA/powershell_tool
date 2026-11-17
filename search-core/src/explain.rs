@@ -254,6 +254,7 @@ mod tests {
             total_line_count: 20,
             proximity_min_range: Some(5),
             low_confidence_pdf: false,
+            ocr_confidence: None,
             error_message: None,
         };
         let why = explain_file(&[r], &s(&["torque", "bolt"])).remove(0).unwrap();

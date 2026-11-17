@@ -292,7 +292,54 @@ pub struct FileSearchResult {
     pub total_line_count: i32,
     pub proximity_min_range: Option<i32>,
     pub low_confidence_pdf: bool,
+    /// Mean probability (0 to 1) the OCR model gave the characters it read from this PDF; `None` when no OCR text was
+    /// used or it is unknown (fast-index results, results cached before the score existed).
+    pub ocr_confidence: Option<f32>,
     pub error_message: Option<String>,
+}
+
+/// A document's mean OCR character probability is "poor" below this. Measured with `examples/ocr_confidence_eval.rs` on
+/// 80 generated scan pages (16 kinds of degradation, `scripts/make_ocr_confidence_set.py`): every page under 0.97 had more
+/// than 5% wrong characters, every page of ordinary quality scored 0.979 or more (`docs/search-benchmarks.md`, "OCR
+/// confidence"). Synthetic text: real scanners are not covered.
+pub const POOR_OCR_CONFIDENCE: f32 = 0.97;
+
+impl FileSearchResult {
+    /// The OCR confidence as a whole percent, when the result has one.
+    pub fn ocr_percent(&self) -> Option<u32> {
+        self.ocr_confidence.map(|p| (p * 100.0).floor().clamp(0.0, 100.0) as u32)
+    }
+
+    /// True when OCR text was read with a confidence under [`POOR_OCR_CONFIDENCE`].
+    pub fn ocr_is_poor(&self) -> bool {
+        self.ocr_confidence.is_some_and(|p| p < POOR_OCR_CONFIDENCE)
+    }
+
+    /// The short label for a PDF whose text may be wrong; `None` when `low_confidence_pdf` is off.
+    pub fn pdf_warning(&self) -> Option<String> {
+        if !self.low_confidence_pdf {
+            return None;
+        }
+        Some(match self.ocr_percent() {
+            Some(pct) if self.ocr_is_poor() => format!("OCR {pct}%: poorly read"),
+            Some(pct) => format!("OCR {pct}%: may be misread"),
+            None => "PDF text may be misread".to_string(),
+        })
+    }
+
+    /// What the warning means, for a detail view; `None` when `low_confidence_pdf` is off.
+    pub fn pdf_warning_detail(&self) -> Option<String> {
+        if !self.low_confidence_pdf {
+            return None;
+        }
+        Some(match self.ocr_percent() {
+            Some(pct) => format!(
+                "Read by OCR; the model's mean confidence over this text is {pct}%. On generated scans, pages below {}% had more than 5% wrong characters every time and ordinary pages scored higher. The score is the model's own certainty, not a measured accuracy: it does not see text the detector missed. Verify numbers and part numbers against the original.",
+                (POOR_OCR_CONFIDENCE * 100.0).round()
+            ),
+            None => "Shown for a PDF read by OCR with no score stored for this result, and for a PDF whose text layer looks garbled. Verify against the original.".to_string(),
+        })
+    }
 }
 
 /// One accumulated warning (which file, what happened) surfaced in the

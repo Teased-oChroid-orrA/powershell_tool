@@ -17,8 +17,8 @@ use crate::models::{
 
 /// Cached `lines_cache` text depends on how lines are extracted, which no
 /// setting captures. Bump when extraction output changes (1 = PDF/OCR line
-/// quality filter, `line_quality`; 3 = hyphen-broken words repaired; 4 = encrypted PDFs decrypted, content streams after a /ProcSet page object no longer skipped) so stale caches are dropped, not reused.
-const EXTRACTION_VERSION: u32 = 4;
+/// quality filter, `line_quality`; 3 = hyphen-broken words repaired; 4 = encrypted PDFs decrypted, content streams after a /ProcSet page object no longer skipped; 5 = OCR confidence stored with the result) so stale caches are dropped, not reused.
+const EXTRACTION_VERSION: u32 = 5;
 
 /// One cached file's prior result, keyed by full path in [`CacheFile`].
 ///
@@ -39,6 +39,8 @@ pub struct CachedFileEntry {
     pub total_line_count: i32,
     pub proximity_min_range: Option<i32>,
     pub low_confidence_pdf: bool,
+    #[serde(default)]
+    pub ocr_confidence: Option<f32>,
     pub error_message: Option<String>,
 }
 
@@ -55,6 +57,7 @@ impl CachedFileEntry {
             total_line_count: self.total_line_count,
             proximity_min_range: self.proximity_min_range,
             low_confidence_pdf: self.low_confidence_pdf,
+            ocr_confidence: self.ocr_confidence,
             error_message: self.error_message.clone(),
         }
     }
@@ -226,6 +229,7 @@ pub fn save(
                     total_line_count: r.total_line_count,
                     proximity_min_range: r.proximity_min_range,
                     low_confidence_pdf: r.low_confidence_pdf,
+                    ocr_confidence: r.ocr_confidence,
                     error_message: r.error_message.clone(),
                 },
             );
@@ -282,6 +286,7 @@ mod tests {
             total_line_count: 1,
             proximity_min_range: None,
             low_confidence_pdf: false,
+            ocr_confidence: None,
             error_message: None,
         }
     }

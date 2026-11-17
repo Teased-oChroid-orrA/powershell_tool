@@ -325,9 +325,14 @@ fn append_file_block(out: &mut String, r: &crate::models::FileSearchResult, sett
     ));
 
     if r.low_confidence_pdf {
-        out.push_str(
-            "<p class=\"confidence-note\">This PDF's extracted text may be incomplete or misrecognized - check the original if the matches are important.</p>\n",
-        );
+        let scored = match (r.ocr_percent(), r.ocr_is_poor()) {
+            (Some(pct), true) => format!(" It was read by OCR with a low model confidence of {pct}%."),
+            (Some(pct), false) => format!(" It was read by OCR with a model confidence of {pct}%."),
+            (None, _) => String::new(),
+        };
+        out.push_str(&format!(
+            "<p class=\"confidence-note\">This PDF's extracted text may be incomplete or misrecognized - check the original if the matches are important.{scored}</p>\n",
+        ));
     }
 
     if settings.match_mode == MatchMode::AllInFile {
@@ -752,6 +757,7 @@ mod tests {
             total_line_count: 2,
             proximity_min_range: None,
             low_confidence_pdf: false,
+            ocr_confidence: None,
             error_message: None,
         }
     }

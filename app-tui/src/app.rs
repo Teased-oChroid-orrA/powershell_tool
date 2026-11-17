@@ -1247,6 +1247,7 @@ mod tests {
                 total_line_count: 0,
                 proximity_min_range: None,
                 low_confidence_pdf: false,
+                ocr_confidence: None,
                 error_message: None,
             },
             search_core::models::FileSearchResult {
@@ -1260,6 +1261,7 @@ mod tests {
                 total_line_count: 0,
                 proximity_min_range: None,
                 low_confidence_pdf: false,
+                ocr_confidence: None,
                 error_message: None,
             },
         ];
@@ -1287,6 +1289,7 @@ mod tests {
             total_line_count: 0,
             proximity_min_range: None,
             low_confidence_pdf: false,
+            ocr_confidence: None,
             error_message: None,
         }];
         let mut regions = MouseRegions::default();
@@ -1312,6 +1315,7 @@ mod tests {
             total_line_count: 0,
             proximity_min_range: None,
             low_confidence_pdf: false,
+            ocr_confidence: None,
             error_message: None,
         }];
         let mut regions = MouseRegions::default();
@@ -1415,6 +1419,7 @@ mod tests {
                 total_line_count: 0,
                 proximity_min_range: None,
                 low_confidence_pdf: false,
+                ocr_confidence: None,
                 error_message: None,
             },
             search_core::models::FileSearchResult {
@@ -1428,6 +1433,7 @@ mod tests {
                 total_line_count: 0,
                 proximity_min_range: None,
                 low_confidence_pdf: false,
+                ocr_confidence: None,
                 error_message: None,
             },
         ];
@@ -1453,6 +1459,7 @@ mod tests {
             total_line_count: 0,
             proximity_min_range: None,
             low_confidence_pdf: false,
+            ocr_confidence: None,
             error_message: None,
         }];
         let regions = MouseRegions::default();

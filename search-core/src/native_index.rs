@@ -1457,6 +1457,7 @@ mod tests {
             total_line_count: body_lines.len() as i32,
             proximity_min_range: None,
             low_confidence_pdf: false,
+            ocr_confidence: None,
             error_message: None,
         }
     }

@@ -501,6 +501,7 @@ async fn process_one_file(
         total_line_count: 0,
         proximity_min_range: None,
         low_confidence_pdf: false,
+        ocr_confidence: None,
         error_message: None,
     };
 
@@ -581,6 +582,7 @@ async fn process_one_file(
     let lines = match extracted {
         Ok(e) => {
             result.low_confidence_pdf = e.low_confidence_pdf || e.ocr_used;
+            result.ocr_confidence = e.ocr_confidence;
             // The file extracted successfully now - clear any prior
             // recorded failure for it (fixed, or the earlier failure was
             // a fluke of that specific past content).
@@ -1162,6 +1164,7 @@ mod tests {
             total_line_count: 0,
             proximity_min_range: None,
             low_confidence_pdf: false,
+            ocr_confidence: None,
             error_message: Some("file locked".into()),
         };
         let candidate = CandidateMetadata {
