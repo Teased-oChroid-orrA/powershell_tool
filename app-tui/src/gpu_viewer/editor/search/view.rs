@@ -1275,7 +1275,10 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
         }
     }
     if r.low_confidence_pdf {
-        notes.push(DocNote::new("PDF: check source", "Text was read from a PDF and may be misread. Verify against the original."));
+        notes.push(DocNote::new(
+            "PDF: check source",
+            "Shown for every PDF read by OCR and for a PDF whose text layer looks garbled. It is a rule, not a measured accuracy: no recognition score exists for this text. Verify against the original.",
+        ));
     }
     let preview = s.preview.as_ref().filter(|p| p.path == r.full_name);
     let text = preview.and_then(|p| p.text.clone());
