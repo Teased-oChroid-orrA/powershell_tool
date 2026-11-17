@@ -768,3 +768,30 @@ Candidates are identical (104 and 1,031). `cargo test --release -p native-search
 
 Still open from the review list: narrowing with Ignore accents or Typo tolerance on (needs a folded trigram field and an index rebuild), and same-size same-mtime edits that the freshness check cannot see.
 
+
+## 2026-11-17: OCR confidence from a vendored `ocrs`
+
+`ocrs` 0.12.2 discards the recognition model's character probabilities, so the PDF warning could only say "may be misread". `third_party/ocrs` is the 0.12.2 source with one change: `TextChar::confidence`, the model's probability for each recognised character (`step_confidences` in `recognition.rs`: the exponential of the best log-probability of the emitted label over the frames from that step to the next; unit test inside the crate). `search-core::ocr` carries it per line and per page, the OCR cache is version 3, `FileSearchResult.ocr_confidence` is the document mean, and the Search window and HTML report show it. The text that OCR returns is unchanged.
+
+**Method.** `scripts/make_ocr_confidence_set.py` renders 80 pages (5 documents of prose, 16 degradations: clean, 100 and 300 dpi, blur, low contrast, rotation, JPEG quality 20, shading, noise, speckle and combinations) with known text. `search-core/examples/ocr_confidence_eval.rs` runs OCR, aligns recognised lines with the truth lines, and compares mean probability with character error rate (CER). Release build, Apple silicon, 616 s: 3,353 truth lines, 5,838 recognised lines (the extra ones are specks the detector read as text).
+
+**Lines** (3,290 matched). Spearman of (1 - mean p) with CER 0.816. AUC of mean p for lines with CER above 2%, 10% and 25%: 0.857, 0.964, 0.987. The minimum probability in a line is worse (0.909 for CER above 10%); geometric mean and the share of characters under 0.9 are about equal to the mean. A line threshold of 0.90 flags 18.5% of lines at 99.3% precision and 56.6% recall for CER above 10%; 0.95 flags 31% at 89% and 85%.
+
+**Pages** (error = (edits + missed + spurious characters) / truth characters; bad = error above 5%). Spearman 0.949, AUC 0.988. Threshold on page mean probability:
+
+| Threshold | Pages flagged | Precision | Recall |
+|---|---|---|---|
+| 0.90 | 22 of 80 | 100% | 67% |
+| 0.97 (chosen, `POOR_OCR_CONFIDENCE`) | 29 of 80 | 100% | 88% |
+| 0.98 | 39 of 80 | 82% | 97% |
+| 0.99 | 67 of 80 | 49% | 100% |
+
+Ordinary-quality conditions (clean, 100 and 300 dpi, blur 1, low contrast, rotation 1 and 2, JPEG 20, shading): page mean 0.972 to 0.994, page error 0.011 to 0.052. Noise-heavy 0.761 to 0.926; speckle 0.76 to 0.85 (error 0.38 to 1.1); combined-heavy 0.38 to 0.40 (error about 0.95).
+
+**Decision.** The warning stays on every OCR PDF: the clean baseline reads about 3% of characters wrong (code-like prose, underscores), so no score makes OCR text exact. The score only changes the label ("OCR 98%: may be misread" or "OCR 62%: poorly read" below 0.97) and the detail text.
+
+**Not adopted: dropping low-confidence lines.** The 2,087 spurious lines have mean line probability 0.408 (98% under 0.9), and 191 of the 3,290 matched lines under 0.6 have mean CER 0.93, so removing lines under about 0.6 would remove junk from the index. It changes indexed text, so by the owner rule it needs `retrieval_eval` on BEIR, MS MARCO, Cranfield and TREC first. Recorded as a finding only.
+
+**Caveats.** The set is synthetic (document prose, macOS fonts). Real scanners, CCITT scans and Windows were not run. The score is the model's certainty, not accuracy, and cannot see text the detector missed (which is why pages with missed lines can still score high). Reproduce: `python3 scripts/make_ocr_confidence_set.py OUT_DIR`, then `cargo run -p search-core --release --features ocr --example ocr_confidence_eval -- OUT_DIR [--lines lines.tsv]`.
+
+Tests: `models::tests::{ocr_percent_floors_and_clamps, ocr_is_poor_switches_at_the_threshold, pdf_warning_*}`, `report::tests::html_report_note_states_the_ocr_confidence_when_known`, `cache::tests::{ocr_confidence_survives_save_and_load, entry_without_the_ocr_confidence_field_still_loads}`, `pdf_yolow::tests::recognition_confidence_is_high_on_a_clean_scan_and_falls_with_noise`, and the app-tui `pdf_warning_shows_the_ocr_percent_in_the_ribbon_and_the_detail_note`.

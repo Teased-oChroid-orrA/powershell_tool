@@ -551,4 +551,61 @@ mod tests {
         // here should be a deliberate catalog edit, not a silent drift.
         assert_eq!(extension_catalog::all_extensions().len(), 49);
     }
+
+    fn pdf_result(low_confidence_pdf: bool, ocr_confidence: Option<f32>) -> FileSearchResult {
+        FileSearchResult {
+            full_name: "/x/a.pdf".to_string(),
+            status: FileSearchStatus::Hit,
+            hits: vec![],
+            created: Local::now(),
+            modified: Local::now(),
+            file_length: 1,
+            lines_cache: vec![],
+            total_line_count: 0,
+            proximity_min_range: None,
+            low_confidence_pdf,
+            ocr_confidence,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn ocr_percent_floors_and_clamps() {
+        assert_eq!(pdf_result(true, None).ocr_percent(), None);
+        assert_eq!(pdf_result(true, Some(0.989)).ocr_percent(), Some(98));
+        assert_eq!(pdf_result(true, Some(1.0)).ocr_percent(), Some(100));
+        assert_eq!(pdf_result(true, Some(0.0)).ocr_percent(), Some(0));
+        assert_eq!(pdf_result(true, Some(1.5)).ocr_percent(), Some(100));
+        assert_eq!(pdf_result(true, Some(-0.2)).ocr_percent(), Some(0));
+    }
+
+    #[test]
+    fn ocr_is_poor_switches_at_the_threshold() {
+        assert!(!pdf_result(true, None).ocr_is_poor());
+        assert!(pdf_result(true, Some(POOR_OCR_CONFIDENCE - 0.001)).ocr_is_poor());
+        assert!(!pdf_result(true, Some(POOR_OCR_CONFIDENCE)).ocr_is_poor());
+        assert!(!pdf_result(true, Some(0.99)).ocr_is_poor());
+    }
+
+    #[test]
+    fn pdf_warning_is_absent_unless_the_pdf_is_flagged() {
+        assert_eq!(pdf_result(false, Some(0.5)).pdf_warning(), None);
+        assert_eq!(pdf_result(false, Some(0.5)).pdf_warning_detail(), None);
+    }
+
+    #[test]
+    fn pdf_warning_names_the_score_and_how_bad_it_is() {
+        assert_eq!(pdf_result(true, None).pdf_warning().as_deref(), Some("PDF text may be misread"));
+        assert_eq!(pdf_result(true, Some(0.985)).pdf_warning().as_deref(), Some("OCR 98%: may be misread"));
+        assert_eq!(pdf_result(true, Some(0.62)).pdf_warning().as_deref(), Some("OCR 62%: poorly read"));
+    }
+
+    #[test]
+    fn pdf_warning_detail_quotes_the_score_and_the_threshold() {
+        let scored = pdf_result(true, Some(0.62)).pdf_warning_detail().unwrap();
+        assert!(scored.contains("62%"), "{scored}");
+        assert!(scored.contains("below 97%"), "{scored}");
+        let unscored = pdf_result(true, None).pdf_warning_detail().unwrap();
+        assert!(unscored.contains("no score stored"), "{unscored}");
+    }
 }

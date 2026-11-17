@@ -420,6 +420,46 @@ mod tests {
     }
 
     #[test]
+    fn ocr_confidence_survives_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        let settings = SearchSettings { filters: vec!["apple".to_string()], ..Default::default() };
+        let candidates = vec![CandidateMetadata { full_name: "/x/a.pdf".to_string(), length: 10, last_write_time_ticks: 1 }];
+        let mut result = sample_result("/x/a.pdf");
+        result.low_confidence_pdf = true;
+        result.ocr_confidence = Some(0.91);
+        save(path.to_str().unwrap(), &settings, &candidates, &[result]);
+
+        let loaded = try_load(path.to_str().unwrap(), &settings).unwrap();
+        let restored = loaded["/x/a.pdf"].to_file_search_result("/x/a.pdf".to_string());
+        assert_eq!(restored.ocr_confidence, Some(0.91));
+        assert!(restored.low_confidence_pdf);
+    }
+
+    #[test]
+    fn entry_without_the_ocr_confidence_field_still_loads() {
+        let entry = CachedFileEntry {
+            length: 1,
+            last_write_time_ticks: 2,
+            status: FileSearchStatus::Hit,
+            hits: vec![],
+            created: Local::now(),
+            modified: Local::now(),
+            lines_cache: vec![],
+            total_line_count: 0,
+            proximity_min_range: None,
+            low_confidence_pdf: true,
+            ocr_confidence: Some(0.5),
+            error_message: None,
+        };
+        let mut json: serde_json::Value = serde_json::to_value(&entry).unwrap();
+        json.as_object_mut().unwrap().remove("ocr_confidence").expect("field is serialized");
+        let old: CachedFileEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(old.ocr_confidence, None);
+        assert!(old.low_confidence_pdf);
+    }
+
+    #[test]
     fn atomic_write_replaces_content_and_leaves_no_tmp_file_behind() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.json");

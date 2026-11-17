@@ -773,6 +773,29 @@ mod tests {
     }
 
     #[test]
+    fn html_report_note_states_the_ocr_confidence_when_known() {
+        let settings = SearchSettings { filters: vec!["apple".to_string()], ..Default::default() };
+        let render = |low: bool, conf: Option<f32>| {
+            let mut r = sample_result("/x/a.pdf", vec![hit(1, "line one has apple", &["apple"])]);
+            r.low_confidence_pdf = low;
+            r.ocr_confidence = conf;
+            let mut run = SearchRunResult::default();
+            run.file_results.push(r);
+            build_html_report(&settings, &run)
+        };
+        let poor = render(true, Some(0.62));
+        assert!(poor.contains("confidence-note"));
+        assert!(poor.contains("low model confidence of 62%"), "{poor}");
+        let fine = render(true, Some(0.985));
+        assert!(fine.contains("model confidence of 98%"));
+        assert!(!fine.contains("low model confidence"));
+        let unscored = render(true, None);
+        assert!(unscored.contains("may be incomplete or misrecognized"));
+        assert!(!unscored.contains("model confidence"));
+        assert!(!render(false, Some(0.5)).contains("<p class=\"confidence-note\">"));
+    }
+
+    #[test]
     fn html_report_highlights_literal_matches() {
         let settings = SearchSettings {
             filters: vec!["apple".to_string(), "banana".to_string()],
