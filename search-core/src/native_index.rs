@@ -392,6 +392,13 @@ fn record_failure(outcome: &mut CorpusIndexOutcome, full_name: &str, ext: &str, 
 /// whether this threshold was reached.
 const COMMIT_BATCH_SIZE: i32 = 200;
 
+/// A count-triggered commit also waits until this long after the previous one. A commit is a
+/// handful of fsyncs whatever it holds, so on small files a commit per 200 documents was most of
+/// the build (10,000 small files: 18.3 s, 4.8 s with this; `docs/search-benchmarks.md`). Slow
+/// documents (PDF, OCR) still commit every 200, and [`COMMIT_BATCH_BYTES`] still bounds the
+/// uncommitted text, so an interrupted build loses at most about this much work or that much text.
+const COMMIT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Proactively indexes every extension-matching file under
 /// `settings.search_path` (issue #6 Phase 1 - see the plan doc) -
 /// independent of any filter text, unlike [`index_hits_for_fast_search`]
@@ -977,6 +984,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
     let work_total = work.len() as i32;
     let mut pending: Vec<PendingDoc> = Vec::new();
     let mut pending_bytes = 0usize;
+    let mut last_commit = std::time::Instant::now();
     let mut done = 0i32;
     let mut work_iter = work.into_iter();
 
@@ -1092,7 +1100,9 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         pending_bytes += doc.body.len();
         pending.push(doc);
 
-        if pending.len() as i32 >= COMMIT_BATCH_SIZE || pending_bytes >= COMMIT_BATCH_BYTES {
+        if (pending.len() as i32 >= COMMIT_BATCH_SIZE && last_commit.elapsed() >= COMMIT_MIN_INTERVAL)
+            || pending_bytes >= COMMIT_BATCH_BYTES
+        {
             report(
                 &outcome,
                 IndexStage::Committing,
@@ -1101,6 +1111,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
                 &full_name,
             );
             commit_pending(engine, &mut pending, &mut outcome, "commit").await;
+            last_commit = std::time::Instant::now();
             pending_bytes = 0;
         }
     }

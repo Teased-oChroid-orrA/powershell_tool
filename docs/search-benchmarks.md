@@ -695,6 +695,16 @@ Also fixed in the harness: the warm cache row printed `cache_reused: 0`, because
 
 Measured, not changed:
 - A warm narrowed re-search is now walk plus freshness (about 85 ms of 85 ms at 10,000 files); the trigram query is under 1 ms. The remaining cost scales with the files in scope, not with the hits.
-- Index build: 5.1 to 6.2 s for 3,000 files (450,000 lines) against 0.13 to 0.24 s for a cold parallel scan of the same files. Not profiled here.
 - Literal search with three filters hitting 63 % of lines: 129 ms against 10 ms for one rare filter (30,000 lines x 5), the regression already recorded on 2026-11-10.
+
+### Index build: intermediate commits are time-gated (same day)
+
+`sample` on the build of 10,000 small files showed one thread almost always in `fcntl` (fsync) and little CPU in the trigram postings: the build committed every 200 documents (50 commits), and a commit costs a handful of fsyncs whatever it holds. A count-triggered commit now also waits 2 s since the previous one (`COMMIT_MIN_INTERVAL`); the 32 MB staged-text trigger is unchanged, so replay memory and the text lost by an interrupted build stay bounded, and slow documents (PDF, OCR) still commit every 200.
+
+| files x 150 lines | before | after |
+|---|---|---|
+| 3,000 | 5.1, 6.2 s | 1.6 s |
+| 10,000 | 18.0, 18.7 s | 4.9, 6.6 s (4.8 s with a fixed batch of 2,000) |
+
+Cost: an interrupted (killed, not cancelled) build of small files can lose up to 2 s of indexing instead of 200 files; a cancel still commits what was staged. `cargo test --release -p search-core` (268) and `-p native-search` (32) pass. Not measured: Windows (fsync cost differs), PDF-heavy folders (extraction dominates there, so little change is expected).
 
