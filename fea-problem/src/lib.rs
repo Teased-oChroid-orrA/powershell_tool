@@ -18,6 +18,7 @@ pub mod path;
 pub mod problem;
 pub mod raster;
 pub mod report;
+pub mod sections;
 pub mod sketch;
 pub mod solid;
 pub mod solve;
