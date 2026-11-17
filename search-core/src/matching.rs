@@ -53,6 +53,7 @@
 //! its failure direction.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use fancy_regex::{Regex as FancyRegex, RegexBuilder as FancyRegexBuilder};
 
@@ -160,6 +161,10 @@ pub struct CompiledMatchState {
     /// `lowercase_to_ascii_sources_are_only_kelvin_and_dotted_i`.
     ascii_prefilter: Option<FancyRegex>,
     ascii_exclude_prefilter: Option<FancyRegex>,
+    /// Literal mode: whether the last file scanned ended with the prefilter
+    /// in use (see [`PrefilterUse::Adaptive`]); the next file starts there.
+    /// Speed only: either value gives the same hits.
+    prefilter_pays: AtomicBool,
 
     /// `SearchSettings::fold_accents` in effect (never in regex mode).
     fold: bool,
@@ -244,6 +249,7 @@ impl CompiledMatchState {
             exclude_filters_lower: Vec::new(),
             ascii_prefilter: None,
             ascii_exclude_prefilter: None,
+            prefilter_pays: AtomicBool::new(true),
             fold: settings.fold_accents && !settings.use_regex,
             fuzzy: Vec::new(),
             near: Vec::new(),
@@ -492,12 +498,43 @@ pub fn apply_line_matching(
     outcome
 }
 
+/// How literal mode uses `CompiledMatchState::ascii_prefilter`. Every value
+/// returns the same hits (`prefilter_policies_return_identical_hits`); only
+/// the cost differs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PrefilterUse {
+    /// Decided per window of [`PREFILTER_WINDOW`] lines from the share of
+    /// lines that had a hit in the window just scanned: the prefilter runs
+    /// while it rejects most lines and is skipped while most lines match.
+    /// Measured (docs/search-benchmarks.md, 2026-11-16): one prefilter call
+    /// costs at least half of the exact check it saves (ASCII-lowercase copy
+    /// plus one substring search per filter), so it cannot pay once more than
+    /// half the lines pass it.
+    Adaptive,
+    #[cfg(test)]
+    Always,
+    #[cfg(test)]
+    Never,
+}
+
+/// Lines per decision of [`PrefilterUse::Adaptive`].
+const PREFILTER_WINDOW: usize = 32;
+
 /// Line matching + mode gating for ONE filter group (`settings.filters` with
 /// `settings.match_mode`); [`apply_line_matching`] combines groups.
 fn apply_filter_group(
     lines: &[String],
     settings: &SearchSettings,
     state: &CompiledMatchState,
+) -> LineMatchOutcome {
+    apply_filter_group_with(lines, settings, state, PrefilterUse::Adaptive)
+}
+
+fn apply_filter_group_with(
+    lines: &[String],
+    settings: &SearchSettings,
+    state: &CompiledMatchState,
+    prefilter_use: PrefilterUse,
 ) -> LineMatchOutcome {
     let mut outcome = LineMatchOutcome {
         passes_mode: true,
@@ -522,7 +559,32 @@ fn apply_filter_group(
     let fold = state.fold;
     let typo_active = state.fuzzy.iter().any(Option::is_some);
 
+    // Literal mode with ASCII filters and nothing that needs the fully
+    // lowercased line: a line holding neither U+0130 nor U+212A is compared
+    // through an ASCII-lowercased copy in `ascii_lower` (reused, so no
+    // allocation per line). Exact: no other non-ASCII char lowercases to
+    // ASCII (`lowercase_to_ascii_sources_are_only_kelvin_and_dotted_i`), so
+    // an ASCII needle can only match bytes that ASCII lowercasing produces.
+    // Unicode `to_lowercase` was the largest cost when most lines match.
+    let ascii_literal = is_literal && !typo_active && !state.has_near && state.ascii_prefilter.is_some();
+    let mut ascii_lower = String::new();
+    let adaptive = ascii_literal && prefilter_use == PrefilterUse::Adaptive;
+    let mut use_prefilter = match prefilter_use {
+        PrefilterUse::Adaptive => !ascii_literal || state.prefilter_pays.load(Ordering::Relaxed),
+        #[cfg(test)]
+        PrefilterUse::Always => true,
+        #[cfg(test)]
+        PrefilterUse::Never => false,
+    };
+    let mut hits_at_window_start = 0;
+
     for (i, line) in lines.iter().enumerate() {
+        // Decided from the hit list at window boundaries, not counted per
+        // line: per-line counters cost the rare-filter rows about 6 %.
+        if adaptive && i % PREFILTER_WINDOW == 0 && i > 0 {
+            use_prefilter = (outcome.hits.len() - hits_at_window_start) * 2 <= PREFILTER_WINDOW;
+            hits_at_window_start = outcome.hits.len();
+        }
         let line_number = (i + 1) as i32;
         // Lowercased (and folded) copy of the line, made only when a check
         // that needs it actually runs - most lines are rejected first by the
@@ -583,6 +645,8 @@ fn apply_filter_group(
             true // a near-miss word is not a substring: only the per-filter pass can tell
         } else if is_literal {
             match (&state.ascii_prefilter, ascii_line) {
+                // Skipped: the per-filter pass below decides, on the cheap ASCII copy.
+                (Some(_), true) if ascii_literal && !use_prefilter => true,
                 (Some(pf), true) => pf.is_match(line).unwrap_or(true),
                 _ => {
                     let ll = lowered(&mut lower, line, fold);
@@ -606,10 +670,15 @@ fn apply_filter_group(
         };
 
         if candidate_line {
-            if is_literal || typo_active || ww_fast || state.has_near {
+            if ascii_literal && lower.is_none() && ascii_line && (line.is_ascii() || !line.contains('\u{212A}')) {
+                ascii_lower.clear();
+                ascii_lower.push_str(line);
+                ascii_lower.make_ascii_lowercase();
+            } else if is_literal || typo_active || ww_fast || state.has_near {
                 lowered(&mut lower, line, fold);
+                ascii_lower.clear();
             }
-            let low = lower.as_deref();
+            let low = if ascii_literal && lower.is_none() { Some(ascii_lower.as_str()) } else { lower.as_deref() };
             let line_words: Option<Vec<&str>> = if typo_active { low.map(textfold::words) } else { None };
             for (fi, f) in settings.filters.iter().enumerate() {
                 let mut hit = if let Some(Some(near)) = state.near.get(fi) {
@@ -648,6 +717,10 @@ fn apply_filter_group(
                 matched_filters,
             });
         }
+    }
+
+    if adaptive {
+        state.prefilter_pays.store(use_prefilter, Ordering::Relaxed);
     }
 
     if outcome.excluded_by_file {
@@ -1187,6 +1260,65 @@ mod tests {
         let mut ex = settings_with_filters(&["bolt"]);
         ex.exclude_filters = vec!["Kelvin".to_string()];
         assert_eq!(hit_lines(&ex, &["bolt K\u{212a}elvin", "bolt", "kelvin only"]), vec![2], "excludes use the same prefilter safely");
+    }
+
+    /// (line number, matched filters) of every hit under one prefilter policy.
+    fn hits_under(s: &SearchSettings, lines: &[String], policy: PrefilterUse) -> Vec<(i32, Vec<String>)> {
+        let st = CompiledMatchState::build(s).unwrap();
+        apply_filter_group_with(lines, s, &st, policy).hits.into_iter().map(|h| (h.line_number, h.matched_filters)).collect()
+    }
+
+    #[test]
+    fn prefilter_policies_return_identical_hits() {
+        // Mixed input in runs longer than the adaptive window, so the adaptive
+        // path switches the prefilter off (dense run) and on again (sparse run),
+        // with U+0130 and U+212A lines inside both kinds of run.
+        let dense = ["Torque the BOLT", "bolt K\u{212a}elvin", "\u{130}stanbul bolt", "caf\u{e9} TORQUE", "K\u{212a}", "torque bolt kelvin", "\u{130}"];
+        let sparse = ["nothing here", "", "r\u{e9}sum\u{e9}", "x\u{17f}y", "na\u{ef}ve", "tor que", "bol t"];
+        let mut lines: Vec<String> = Vec::new();
+        for block in 0..8 {
+            let src = if block % 2 == 0 { &dense } else { &sparse };
+            for k in 0..(PREFILTER_WINDOW * 3 + 5) {
+                lines.push(src[(k * 5 + block) % src.len()].to_string());
+            }
+            // One line of the other kind inside each run.
+            lines.push(if block % 2 == 0 { "nothing" } else { "K\u{212a}elvin BOLT \u{130}" }.to_string());
+        }
+        for filters in [vec!["torque", "bolt", "kelvin"], vec!["k"], vec!["i"], vec!["Bolt", "bolt"], vec!["i\u{307}"], vec!["caf\u{e9}", "bolt"], vec![""]] {
+            for exclude in [vec![], vec!["Kelvin"], vec!["i"]] {
+                let mut s = settings_with_filters(&filters);
+                s.exclude_filters = exclude.iter().map(|x| x.to_string()).collect();
+                // Reference: the original definition of literal mode.
+                let low = |x: &str| x.to_lowercase();
+                let expected: Vec<(i32, Vec<String>)> = lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, l)| !exclude.iter().any(|x| low(l).contains(&low(x))))
+                    .map(|(i, l)| {
+                        let m: Vec<String> = filters.iter().filter(|f| low(l).contains(&low(f))).map(|f| f.to_string()).collect();
+                        ((i + 1) as i32, m)
+                    })
+                    .filter(|(_, m)| !m.is_empty())
+                    .collect();
+                let always = hits_under(&s, &lines, PrefilterUse::Always);
+                assert_eq!(always, expected, "always, filters {filters:?} exclude {exclude:?}");
+                assert_eq!(hits_under(&s, &lines, PrefilterUse::Never), always, "never, filters {filters:?} exclude {exclude:?}");
+                assert_eq!(hits_under(&s, &lines, PrefilterUse::Adaptive), always, "adaptive, filters {filters:?} exclude {exclude:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn adaptive_prefilter_turns_off_on_dense_lines_and_back_on_when_they_thin_out() {
+        let s = settings_with_filters(&["bolt"]);
+        let st = CompiledMatchState::build(&s).unwrap();
+        let dense: Vec<String> = (0..PREFILTER_WINDOW * 2 + 1).map(|_| "a Bolt".to_string()).collect();
+        let sparse: Vec<String> = (0..PREFILTER_WINDOW * 2 + 1).map(|_| "a nut".to_string()).collect();
+        assert!(st.prefilter_pays.load(Ordering::Relaxed), "starts with the prefilter on");
+        assert_eq!(apply_line_matching(&dense, &s, &st).hits.len(), dense.len());
+        assert!(!st.prefilter_pays.load(Ordering::Relaxed), "most lines matched: prefilter off for the next file");
+        assert!(apply_line_matching(&sparse, &s, &st).hits.is_empty());
+        assert!(st.prefilter_pays.load(Ordering::Relaxed), "few lines matched: prefilter back on");
     }
 
     #[test]

@@ -679,3 +679,44 @@ Decision (owner, 2026-11-14): build the snapshot when the user first types in Fi
 Measured on the 35,318-chunk scale index (128 MB), macOS release build, one machine: the warm takes about 2.4 s on the worker, and the first query afterwards takes 22 to 25 ms instead of about 2.3 s. Tests: `warm_builds_the_snapshot_once_and_a_write_makes_it_stale`, `typing_in_find_warms_each_built_semantic_index_once`.
 
 Not checked: the trigger in a real window, Windows, indexes above 35k chunks.
+
+## 2026-11-16: literal search with filters that match most lines (the regression recorded on 2026-11-10)
+
+Question: the 2026-11-10 section recorded, as a hypothesis, that the ASCII prefilter is pure overhead when most lines match (`exact_bench`, row "match literal + 3 filters", 63 % of lines hit). Checked by timing each part separately before changing anything.
+
+Method and its limit. macOS, release build, `exact_bench` in-memory rows (200 files x 150 lines, 5 passes; these rows do not depend on the file-count argument). The machine was busy with other builds for the whole session (load average 10 to 30), so single runs vary by a factor of two or more. Numbers below are therefore the lowest and the median of 30 runs, with the old and the new binary run alternately; treat ratios as the result, not the absolute values. Note that only 2,096 of the 30,000 benchmark lines are pure ASCII (the vocabulary has accented words), so this corpus is close to the worst case for anything that depends on a line being ASCII.
+
+Where the time went (per 150,000 lines, parts timed alone, lowest of 5):
+
+| Part | 1 rare filter | 3 filters, 63 % of lines hit |
+|---|---|---|
+| Prefilter regex on every line | 15 ms | 53 to 64 ms |
+| Prefilter, then Unicode `to_lowercase` and substring checks on passing lines (the old path) | 17 to 24 ms | 241 to 268 ms |
+| Unicode `to_lowercase` of every line, alone | 200 to 225 ms | same |
+| Copy plus ASCII lowercase into a reused buffer, every line | 5.5 to 7 ms | same |
+| ASCII-lowercase buffer plus substring checks, no prefilter | 28 to 31 ms | 60 ms |
+| Prefilter, then ASCII-lowercase buffer plus substring checks | about 18 to 22 ms | about 110 ms |
+| Building the hits (three line copies and the filter names per hit) | 0.3 ms | 139 to 143 ms |
+
+Finding: the hypothesis was wrong as stated. The prefilter was about a fifth of the matching cost; removing it alone would have made the old path slower (every line would then be lowercased). The largest cost was Unicode `to_lowercase`, which allocates and converts character by character on every line that passes, roughly 35 times the cost of an ASCII lowercase into a reused buffer. The prefilter does become a net loss once lowercasing is cheap and most lines pass (110 against 60 ms above), and it stays a win for a rare filter (18 to 22 against 28 to 31 ms).
+
+Change (`search-core/src/matching.rs`), literal mode with all-ASCII filters, no accent folding, no typo tolerance, no NEAR:
+1. A line holding neither U+0130 nor U+212A is compared through an ASCII-lowercased copy in one reused buffer. Exact by the existing code-point proof (`lowercase_to_ascii_sources_are_only_kelvin_and_dotted_i`): no other non-ASCII character lowercases to ASCII, so an ASCII filter can only match bytes that ASCII lowercasing produces. Lines with either character take the old full-lowercase path.
+2. The prefilter is adaptive within a run: every 32 lines, it is switched off if more than half of the last 32 lines had a hit and on again otherwise; the state at the end of a file is the starting state of the next. The half-way threshold is not from a sweep: one prefilter call costs at least half of the exact check it can save (table above: 15 against 28 to 31 ms for one filter, 53 to 64 against 60 ms for three), so it cannot pay once more than half the lines pass.
+
+Result (`exact_bench`, ms for 30,000 lines x 5; lowest / median of 30 alternated runs; two separate sets because the load changed between them):
+
+| Row | Before, set 1 | After, set 1 | Before, set 2 | After, set 2 |
+|---|---|---|---|---|
+| match literal | 13.1 / 16.9 | 13.4 / 18.6 | 19.5 / 22.6 | 21.9 / 23.2 |
+| match whole-word | 16.1 / 19.8 | 16.2 / 21.8 | 23.6 / 26.8 | 24.3 / 27.9 |
+| match regex | 13.3 / 16.1 | 13.5 / 19.3 | 20.6 / 23.9 | 21.9 / 23.9 |
+| match literal + 3 filters | 169.2 / 206.9 | 103.9 / 136.3 | 297.6 / 409.6 | 161.2 / 227.7 |
+
+Three plain runs of `exact_bench 3000` each, same load, for the record (before: 365.6, 507.3, 585.2 ms; after: 265.9, 300.3, 218.5 ms on the 3-filter row; the rare rows ranged from 24 to 201 ms in both binaries, which is noise). The 3-filter row is about 1.6 to 1.8 times faster; hit counts are unchanged (15, 15, 15 and 94,770). The rare-filter rows are within the run-to-run spread: lowest values differ by 0.1 to 0.3 ms in set 1 and by 0.7 to 2.4 ms in set 2, medians by 0 to 3 ms, and the whole-word and regex rows execute no new code per line. Contribution of each part on the 3-filter row, measured with a build that kept the prefilter always on: old 420, buffer only 237 to 267, buffer plus adaptive 184 (lowest of 12 to 40 runs under heavier load).
+
+Negative result kept: the first version counted lines and hits per line for the window. That made all three rare-filter rows about 6 % slower (for example 21.1 to 22.6 ms, repeatable in both run orders, also on the regex row), and a build without the counters matched the old binary. The decision now reads the length of the hit list at each window boundary, which removed the difference. Forcing or forbidding inlining of the line loop did not change it.
+
+Not done, and why. Building the hits is now the largest remaining part of the 3-filter row (about 140 of the remaining time): each hit copies the line, its two neighbours and the filter names, which is the shape of `LineHit` and is read by the report, the exports and `app-tui`. Changing it is an API change across crates, not a matcher fix. `memchr`'s substring search in place of `str::contains` measured 60 to 41 ms on the no-prefilter part; not adopted, because it adds a direct dependency for under 10 % of the row. Exclusion filters and whole-word mode still lowercase the old way (whole-word only lowercases pure-ASCII lines, which is already cheap). Not measured: Windows, a quiet machine, real documents (where most lines are ASCII and the buffer path's extra check for U+212A is skipped).
+
+Tests: `prefilter_policies_return_identical_hits` (prefilter always on, always off and adaptive against the reference definition `lowercase(line) contains lowercase(filter)`, hit lines and matched filters, on runs of matching and non-matching lines longer than the window with U+0130 and U+212A lines in both, with and without exclusions; it fails if the U+212A guard is removed), `adaptive_prefilter_turns_off_on_dense_lines_and_back_on_when_they_thin_out`. `cargo test --release -p search-core`: 270 passed, 4 ignored.
