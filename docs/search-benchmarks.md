@@ -768,3 +768,20 @@ Candidates are identical (104 and 1,031). `cargo test --release -p native-search
 
 Still open from the review list: narrowing with Ignore accents or Typo tolerance on (needs a folded trigram field and an index rebuild), and same-size same-mtime edits that the freshness check cannot see.
 
+### First hosted Windows rows (2026-11-17, `search-bench-windows.yml`, PR #305)
+
+Host: AMD EPYC 9V74 (hosted runner, `windows-latest`), release, one run. Evidence for that host only.
+
+| row | 3,000 files | 10,000 files |
+|---|---|---|
+| match literal (30,000 lines x5) | 14.0 ms | 11.1 ms |
+| match literal + 3 filters | 47.0 ms | 42.1 ms |
+| cold full scan, sequential | 659 ms | 1,671 ms |
+| cold full scan, parallel (+cache write) | 196 ms | 609 ms |
+| warm re-run, cache hit | 89 ms | 258 ms |
+| index build | 2.0 s | 6.5 s |
+| index narrow (walk / freshness / query) | 67 ms (60 / 5 / 0) | 219 ms (194 / 20 / 0) |
+| run_candidates (verify) | 4.3 ms | 10.7 ms |
+
+Reading: on Windows the warm re-search is the directory walk (194 of 219 ms at 10,000 files, about 19 microseconds a file, roughly four times this Mac); the freshness check after the in-order store read is 20 ms. The walk, not the index, is what is left to gain on the shipped target.
+
