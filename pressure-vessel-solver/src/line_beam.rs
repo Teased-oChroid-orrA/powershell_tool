@@ -107,6 +107,8 @@ fn reduce(fixed: &[bool]) -> (Vec<Option<usize>>, usize) {
 pub(crate) struct NodeBc {
     pub fix_w: bool,
     pub fix_theta: bool,
+    /// Rotational spring to ground (moment per radian) on a free slope; ignored where `fix_theta` holds it.
+    pub k_theta: f64,
 }
 
 /// Actions at the left end of one beam element and its load.
@@ -162,6 +164,13 @@ pub(crate) fn solve_beam(x: &[f64], ei: f64, bc: &[NodeBc], q: &[f64], p: &[f64]
             [6.0 * l * c, 2.0 * l * l * c, -6.0 * l * c, 4.0 * l * l * c],
         ]
     };
+    for (i, b) in bc.iter().enumerate() {
+        if let (false, Some(r)) = (b.fix_theta, map[2 * i + 1]) {
+            if b.k_theta > 0.0 {
+                k.add(r, r, b.k_theta);
+            }
+        }
+    }
     let feq = |l: f64, q: f64| [q * l / 2.0, q * l * l / 12.0, q * l / 2.0, -q * l * l / 12.0];
     for e in 0..ne {
         let l = x[e + 1] - x[e];
@@ -216,7 +225,7 @@ pub(crate) fn solve_beam(x: &[f64], ei: f64, bc: &[NodeBc], q: &[f64], p: &[f64]
         if bc[i].fix_w {
             reaction_w[i] = internal[2 * i] - p[i];
         }
-        if bc[i].fix_theta {
+        if bc[i].fix_theta || bc[i].k_theta > 0.0 {
             reaction_m[i] = internal[2 * i + 1] - m[i];
         }
     }

@@ -1231,6 +1231,23 @@ impl AnalyticModel {
                 .ok_or_else(|| fail(ErrorKind::Geometry, "a cone face reduced to its apex"))?;
             raws[i][0] = raws[neighbour][0];
         }
+        // A boundary that turns at the apex (a wedge, not a full cone's seam out and back along one line) has no angle there
+        // to continue from: the branch of everything after the apex is the one that closes the loop in the angle. Nearest-angle
+        // continuation picks the other one whenever the turn is about half a period or more.
+        if let (Some(period), Some(&last_apex)) = (periods[0], apex.last()) {
+            let before = (0..last_apex).rev().find(|j| raws[*j][1] != 0.);
+            let after = (last_apex + 1..raws.len()).find(|j| raws[*j][1] != 0.);
+            if let (Some(before), Some(after)) = (before, after) {
+                let tolerance = 64. * f64::EPSILON * period;
+                let turns = (raws[after][0] - raws[before][0]).abs() > tolerance;
+                let winding = unwrap_period_tie(raws[0][0], raws.last().unwrap()[0], period, tie)? - raws[0][0];
+                if turns && winding.abs() > tolerance {
+                    for r in &mut raws[last_apex..] {
+                        r[0] -= winding;
+                    }
+                }
+            }
+        }
         for k in 0..2 {
             let Some(period) = periods[k] else { continue };
             let first = raws[0][k];

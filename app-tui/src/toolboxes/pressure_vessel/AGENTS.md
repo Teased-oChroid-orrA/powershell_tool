@@ -12,6 +12,7 @@ Does not own: stress/failure/buckling/thickness math (`pressure-vessel-solver`);
 | pure UI-facing state bridging `pressure-vessel-solver` (geometry/pressure/material/buckling/thermal inputs, failure-mode/thickness-solve outputs), custom-material catalog | `model.rs` |
 | row display text (`display_value`), pass rule (`passes`: an unbounded margin counts), plain-text report (`build_report_text`) | `report.rs` |
 | material filter (`visible_indices(model, query)`) + "add custom material" form (`AddMaterialForm`, `ADD_MATERIAL_FIELDS`) | `material_picker.rs` |
+| "Minimum wall by requirement": rows and class (`requirements.rs`), the line run's inputs (`line.rs`), walls and the line wall job (`walls.rs`), recompute, margin curve, reactions, equilibrium (`run.rs`), typed edits with one address `Edit` (`edit.rs`) | `requirements.rs`, `line.rs`, `walls.rs`, `run.rs`, `edit.rs` |
 | custom-material persistence (`config_path`, `load`, `save_at`, `PersistedMaterial`) | `persistence.rs` |
 
 ## Entry Points
@@ -27,6 +28,8 @@ Does not own: stress/failure/buckling/thickness math (`pressure-vessel-solver`);
 - `report.rs` and `model.rs` are ratatui-free except for `theme::fmt_margin` (plain formatting), so the window reads every row and report string here.
 
 ## Pitfalls
+- **Never invent a factor, a required margin, an allowable or a density.** Rows are seeded 1.0 / 0.0 (neutral), the tube density is 0 until entered. A material change re-seeds only rows with `edited == false` and clears the allowable overrides (`material_changed`).
+- The line run's walls are a job (`LineWallJob`, `line_wall_job` / `set_line_walls`): `walls` is `None` while it runs, and an answer for an older `walls_revision` is dropped. Every `recompute` bumps the revision.
 - The code check (`heads: HeadsCheck`, inputs `head: HeadInputs`) is independent of the Lame analysis: `recompute_heads` runs even when `geometry` is invalid (provided thickness is then `None`). S and E are placeholders by design; never default them from the material table. Dimensions are corroded-condition inputs; the provided thickness is the remaining wall.
 - Custom materials persist in `settings-tui-pressure-vessel.json`; keep forward-compat discipline (`#[serde(default)]`/`Option<T>`) on any new persisted field.
 

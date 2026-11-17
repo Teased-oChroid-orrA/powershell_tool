@@ -176,8 +176,14 @@ impl BushingSession {
 
     /// The results pane, top to bottom: the verdict, then what the fit does, then the cross-checks.
     pub(super) fn result_cards(&self) -> Vec<Card> {
-        let mut cards = vec![self.verdict_card(), self.install_card(), self.fit_card(), self.stress_card(), self.edge_card(), self.margins_card(), self.through_wall_card()];
-        if let Some(c) = self.fixes_card() {
+        let mut cards = vec![self.verdict_card()];
+        // Whatever fails is answered right under the verdict, not at the bottom of the pane.
+        let fixes = self.fixes_card();
+        if let Some(c) = fixes.clone().filter(|c| !c.folded) {
+            cards.push(c);
+        }
+        cards.extend([self.install_card(), self.fit_card(), self.stress_card(), self.edge_card(), self.margins_card(), self.through_wall_card()]);
+        if let Some(c) = fixes.filter(|c| c.folded) {
             cards.push(c);
         }
         cards.push(self.cross_check_card());
@@ -377,35 +383,69 @@ impl BushingSession {
         Card::new("bushing-through-wall", "Through-wall stress", Relevance::Context, vec![DockItem::Plot(plot)])
     }
 
-    /// The verified fixes: pick one to see what it does to everything else, then apply it. Folded until a fixes link opens it.
+    /// Every way to clear what fails, each verified by solving a copy. Open whenever something fails; the "keep" chips say
+    /// which values are critical, and the options that would change one are set aside (listed, with what each gives up,
+    /// only when nothing else works). Pick one to see what it does to everything else, then apply it.
     fn fixes_card(&self) -> Option<Card> {
         let m = &self.st.model;
         let recs: Vec<(usize, &advice::Recommendation)> = m.recommendations.iter().enumerate().filter(|(_, r)| self.fix_kind.is_none_or(|k| r.fixes == k)).collect();
         if recs.is_empty() {
             return None;
         }
-        let selected = self.st.rec_selected.min(m.recommendations.len() - 1);
-        let mut items = Vec::new();
-        for (i, r) in recs {
-            let on = i == selected;
-            items.push(DockItem::row(plain(&format!("{} {}", if on { ">" } else { " " }, r.summary)), if on { Tone::Title } else { Tone::Normal }, Some(act(BushingAct::SelectFix(i))), on));
-            if on {
-                items.push(line(plain(&format!("fixes {}: {}", r.fixes.label(), r.outcome)), Tone::Dim));
-                for i in &r.impact {
-                    items.push(line(plain(&format!("  {i}")), Tone::Dim));
+        let keeps = m.keep;
+        let chips = advice::Keep::ALL.iter().map(|k| Entry::new(k.label(), "", act(BushingAct::ToggleKeep(*k))).checked(keeps.has(*k))).collect();
+        let mut items = vec![DockItem::Chips { label: "Keep".into(), chips }];
+        let kept: Vec<&str> = advice::Keep::ALL.iter().filter(|k| keeps.has(**k)).map(|k| k.label()).collect();
+        let allowed = |r: &advice::Recommendation| keeps.broken_by(r).is_empty();
+        // The first option offered is the one a click on the card selects.
+        let mut kinds: Vec<CheckKind> = Vec::new();
+        for (_, r) in &recs {
+            if !kinds.contains(&r.fixes) {
+                kinds.push(r.fixes);
+            }
+        }
+        let shown_first = recs.iter().find(|(_, r)| allowed(r)).or(recs.first()).map(|(i, _)| *i);
+        let selected = if recs.iter().any(|(i, _)| *i == self.st.rec_selected) { Some(self.st.rec_selected) } else { shown_first };
+        for kind in &kinds {
+            let group: Vec<&(usize, &advice::Recommendation)> = recs.iter().filter(|(_, r)| r.fixes == *kind).collect();
+            let fits = group.iter().filter(|(_, r)| allowed(r)).count();
+            items.push(DockItem::Heading(kind.label().to_string()));
+            if fits == 0 && !kept.is_empty() {
+                items.push(line(plain(&format!("Nothing here keeps {}. What each option gives up:", kept.join(" and "))), Tone::Warn));
+            }
+            for (i, r) in group {
+                if fits > 0 && !allowed(r) {
+                    continue;
                 }
-                if let Some(n) = &r.note {
-                    items.push(line(plain(&format!("  {n}")), Tone::Warn));
+                let on = selected == Some(*i);
+                items.push(DockItem::row(plain(&format!("{} {}", if on { ">" } else { " " }, r.summary)), if on { Tone::Title } else { Tone::Normal }, Some(act(BushingAct::SelectFix(*i))), on));
+                let changes = r.changes();
+                let changes = if changes.is_empty() { "other inputs".to_string() } else { changes.iter().map(|k| k.label()).collect::<Vec<_>>().join(", ") };
+                let moved: Vec<&str> = r.impact.iter().skip(1).filter(|_| !on).filter(|l| !l.starts_with("Warning")).take(2).map(String::as_str).collect();
+                let gives_up = keeps.broken_by(r);
+                let (head, tone) = if gives_up.is_empty() { (format!("changes {changes}"), Tone::Dim) } else { (format!("changes {changes} (you keep {})", gives_up.iter().map(|k| k.label()).collect::<Vec<_>>().join(", ")), Tone::Warn) };
+                items.push(line(plain(&if moved.is_empty() { head } else { format!("{head} | {}", moved.join(" | ")) }), tone));
+                for w in r.impact.iter().filter(|l| l.starts_with("Warning")) {
+                    items.push(line(plain(&format!("! {}", w.trim_start_matches("Warning: "))), Tone::Warn));
                 }
-                items.push(if r.is_applicable() { DockItem::row("Apply this fix", Tone::Title, Some(act(BushingAct::ApplyFix(i))), false) } else { line("Needs a manual change.", Tone::Warn) });
+                if on {
+                    items.push(line(plain(&format!("clears: {}", r.outcome)), Tone::Dim));
+                    for l in r.impact.iter().filter(|l| !l.starts_with("Warning")) {
+                        items.push(line(plain(&format!("  {l}")), Tone::Dim));
+                    }
+                    if let Some(n) = &r.note {
+                        items.push(line(plain(&format!("  {n}")), Tone::Warn));
+                    }
+                    items.push(if r.is_applicable() { DockItem::row("Apply this option", Tone::Title, Some(act(BushingAct::ApplyFix(*i))), false) } else { line("Needs a manual change.", Tone::Warn) });
+                }
             }
         }
         if self.fix_kind.is_some() {
-            items.push(DockItem::row("Show every fix", Tone::Dim, Some(act(BushingAct::AllFixes)), false));
+            items.push(DockItem::row("Show every failing check", Tone::Dim, Some(act(BushingAct::AllFixes)), false));
         }
-        let title = self.fix_kind.map_or_else(|| "Fixes".to_string(), |k| format!("Fixes for {}", k.label()));
-        let card = Card::new("bushing-fixes", title, Relevance::Primary, items).tag(format!("{}", m.recommendations.len()));
-        Some(if self.show_fixes { card } else { card.folded() })
+        let title = self.fix_kind.map_or_else(|| "Ways to fix".to_string(), |k| format!("Ways to fix {}", k.label()));
+        let card = Card::new("bushing-fixes", title, Relevance::Primary, items).tag(format!("{}", recs.len()));
+        Some(if self.failing() > 0 { card } else { card.folded() })
     }
 
     /// The independent edge-distance cross-check: the minimum e/D each model asks for, against what the housing has.

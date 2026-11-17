@@ -105,12 +105,17 @@ impl Tube {
 }
 
 /// A support at station `x`: transversely pinned in `y` and `z`. `axial_anchor` also holds `x`;
-/// `rotation_fixed` clamps the slope (a rigid fixture, not a clip or saddle).
+/// `rotation_fixed` clamps the slope (a rigid fixture, not a clip or saddle). `rotation_stiffness` is
+/// a rotational spring to ground (moment per radian, the same in both bending planes): a clip or a
+/// segment end cut from a continuous run lies between pinned (`None` or `Some(0.0)`) and clamped
+/// (`rotation_fixed`, the infinite stiffness). It conflicts with `rotation_fixed` (refused). Supports
+/// at one station add their stiffnesses.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Support {
     pub x: f64,
     pub axial_anchor: bool,
     pub rotation_fixed: bool,
+    pub rotation_stiffness: Option<f64>,
 }
 
 /// A point load at `x`. `weight` is a lumped weight scaled by the case's load factors; `force` is
@@ -284,6 +289,9 @@ pub struct CaseResult {
     pub stations: Vec<Station>,
     pub reactions: Vec<Reaction>,
     pub margins: Vec<LineMargin>,
+    /// Margin of each criterion at each of `stations` (same order; worst surface and circumferential angle there), for the
+    /// curve along the line. The case's `margins` are the minima of these.
+    pub station_margins: Vec<Vec<(Criterion, f64)>>,
     /// Largest relative equilibrium / backward-error residual of the case's solves.
     pub residual: f64,
 }
@@ -550,12 +558,13 @@ fn evaluate_case(run: &LineRun, class: &MaterialClass, mesh: &Mesh, case: &LoadC
     }
     let (qx, qy, qz) = (w * n[0], w * n[1], w * n[2]);
     // Boundary conditions.
-    let mut bc = vec![NodeBc { fix_w: false, fix_theta: false }; nn];
+    let mut bc = vec![NodeBc { fix_w: false, fix_theta: false, k_theta: 0.0 }; nn];
     let mut fix_u = vec![false; nn];
     for s in &run.supports {
         let i = node_of(mesh, s.x, tol);
         bc[i].fix_w = true;
         bc[i].fix_theta |= s.rotation_fixed;
+        bc[i].k_theta += s.rotation_stiffness.unwrap_or(0.0);
         fix_u[i] |= s.axial_anchor;
     }
     let ei = run.tube.e * inertia;
@@ -644,10 +653,12 @@ fn evaluate_case(run: &LineRun, class: &MaterialClass, mesh: &Mesh, case: &LoadC
     let criteria = criteria_of(class);
     let r_m = g.mean_radius();
     let mut margins: Vec<LineMargin> = Vec::new();
+    let mut station_margins: Vec<Vec<(Criterion, f64)>> = vec![Vec::new(); stations.len()];
     for &crit in criteria {
         let (allowable, fs) = allowable_and_fs(class, crit);
         let mut best: Option<(f64, f64, Location, PointStress)> = None; // utilization, applied, loc, stress
-        for st in &stations {
+        for (si, st) in stations.iter().enumerate() {
+            let mut station_u = 0.0_f64;
             for (surface, lame, r) in [(Surface::Inner, &inner, g.inner_radius), (Surface::Outer, &outer, g.outer_radius)] {
                 let point = |theta: f64| PointStress {
                     sigma_x: lame.axial + st.axial_force / a - (st.bend_y * r * theta.cos() + st.bend_z * r * theta.sin()) / inertia,
@@ -656,18 +667,20 @@ fn evaluate_case(run: &LineRun, class: &MaterialClass, mesh: &Mesh, case: &LoadC
                     tau: wall_shear_stress(st.shear_y, st.shear_z, theta, r_m, g.wall_thickness()),
                 };
                 let (theta, u) = worst_theta(|t| utilization_of(class, crit, &point(t), r).0);
+                station_u = station_u.max(u);
                 if best.as_ref().map_or(true, |b| u > b.0) {
                     let ps = point(theta);
                     let applied = utilization_of(class, crit, &ps, r).1;
                     best = Some((u, applied, Location { case: case.name.clone(), x: st.x, surface, theta }, ps));
                 }
             }
+            station_margins[si].push((crit, if station_u > 0.0 { 1.0 / station_u - 1.0 } else { f64::INFINITY }));
         }
         let (u, applied, location, stress) = best.expect("at least one station");
         let margin = if u > 0.0 { 1.0 / u - 1.0 } else { f64::INFINITY };
         margins.push(LineMargin { criterion: crit, margin, applied, allowable, factor_of_safety: fs, location, stress });
     }
-    Ok(CaseResult { name: case.name.clone(), stations, reactions, margins, residual })
+    Ok(CaseResult { name: case.name.clone(), stations, reactions, margins, station_margins, residual })
 }
 
 /// Runs every load case and returns the member actions, reactions and margins per case.
@@ -686,6 +699,17 @@ pub fn analyze(run: &LineRun, class: &MaterialClass, cases: &[LoadCase]) -> Resu
     if run.supports.is_empty() {
         return Err(LineRunError::Unstable("no supports".into()));
     }
+    for s in &run.supports {
+        match s.rotation_stiffness {
+            Some(k) if !(k.is_finite() && k >= 0.0) => {
+                return Err(LineRunError::InvalidInput(format!("support at x = {}: rotation_stiffness must be finite and non-negative", s.x)));
+            }
+            Some(_) if s.rotation_fixed => {
+                return Err(LineRunError::InvalidInput(format!("support at x = {}: rotation_fixed (infinite stiffness) conflicts with rotation_stiffness; set one", s.x)));
+            }
+            _ => {}
+        }
+    }
     let mesh = build_mesh(run, cases)?;
     let mut out = Vec::new();
     for c in cases {
@@ -693,6 +717,9 @@ pub fn analyze(run: &LineRun, class: &MaterialClass, cases: &[LoadCase]) -> Resu
     }
     Ok(LineResult { cases: out })
 }
+
+mod segment;
+pub use segment::*;
 
 #[cfg(test)]
 mod tests;

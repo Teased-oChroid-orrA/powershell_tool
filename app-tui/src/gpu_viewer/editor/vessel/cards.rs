@@ -14,6 +14,7 @@ use crate::gpu_viewer::{
 };
 use crate::theme::{fmt_margin, tone_for_margin, StatusTone};
 use crate::toolboxes::pressure_vessel::{
+    edit::Edit,
     model::{self, FieldRow},
     report::{display_value, head_error_text, passes},
 };
@@ -86,6 +87,9 @@ impl VesselSession {
 
     pub(super) fn inspector_cards(&self) -> Vec<Card> {
         let mut cards = self.input_cards();
+        cards.extend(self.line_cards());
+        cards.extend(self.requirement_cards());
+        cards.extend(self.walls_card());
         cards.push(self.result_card());
         cards.extend(self.check_cards());
         cards.push(self.heads_card());
@@ -102,7 +106,7 @@ impl VesselSession {
                 sections.push((h.to_string(), Vec::new()));
                 continue;
             }
-            let editing = self.prompt.as_ref().filter(|p| p.row == row);
+            let editing = self.prompt.as_ref().filter(|p| matches!(row, FieldRow::Number(t) if p.edit == Edit::Number(t)));
             let text = editing.map_or_else(|| display_value(m, row), |p| format!("{}_", p.text));
             // The window draws a Warn value as an edit box: only the row being typed is one.
             let tone = if editing.is_some() { Tone::Warn } else { Tone::Normal };

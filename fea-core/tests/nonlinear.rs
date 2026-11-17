@@ -462,3 +462,21 @@ fn axisymmetric_thick_sphere_collapses_at_the_exact_limit_pressure() {
     }
     assert!(peaks[1] < 1.01 && peaks[1] > 0.99 && peaks[1] <= peaks[0] + 1e-9, "limit pressures {peaks:?}");
 }
+
+#[test]
+fn the_cumulative_cut_budget_ends_a_run_that_keeps_cutting_between_accepted_steps() {
+    // `max_cuts` resets after every accepted step, so a run that alternates a cut with short accepted steps (near a limit
+    // state it can do so for hours) was unbounded. One huge step with 5 iterations is cut, accepted, regrown, cut again.
+    let (model, bc, loads) = cylinder(0.3, 12, Physics::PlaneStrain { thickness: 1.0 }, false, 0.95 * limit_pressure());
+    let opt = NlOptions { steps: 1, max_iter: 5, ..NlOptions::default() };
+    let free = model.solve_nonlinear(&loads, &bc, &opt).unwrap();
+    assert_eq!(free.stop, Stop::Completed);
+    let cuts: usize = free.steps.iter().map(|s| s.cuts).sum();
+    assert!(cuts >= 3, "the scenario must cut repeatedly: {cuts}");
+    let capped = model.solve_nonlinear(&loads, &bc, &NlOptions { max_cuts_total: 2, ..opt }).unwrap();
+    match &capped.stop {
+        Stop::NoConvergence(m) => assert!(m.contains("step cuts over the analysis"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(capped.steps.last().is_some_and(|s| s.lambda < 1.0));
+}

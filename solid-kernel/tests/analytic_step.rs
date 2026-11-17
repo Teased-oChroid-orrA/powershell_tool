@@ -1405,6 +1405,308 @@ fn hole_loops_declared_as_outer_bounds_read_like_face_bounds() {
     assert!(a.signed_volume_mm3 > 0.);
 }
 
+/// Some writers (the NIST `stc_06` file) label the hole loop of a planar face `FACE_OUTER_BOUND` and the true outer loop
+/// `FACE_BOUND`, a single declared outer that is geometrically nested. The loop geometry decides, as with several declared
+/// outers, so declaring the hole of each holed face (bounds #262 and #369) the only `FACE_OUTER_BOUND` must not change the
+/// sampled shell or its volume.
+#[test]
+fn a_single_declared_outer_that_is_the_hole_reads_like_the_correct_labels() {
+    let plain = include_str!("data/edit-plate-centre-hole.step");
+    let swapped = plain
+        .replace("#262 = FACE_BOUND(", "#262 = FACE_OUTER_BOUND(")
+        .replace("#369 = FACE_BOUND(", "#369 = FACE_OUTER_BOUND(");
+    assert_ne!(plain, swapped);
+    let sample = |text: &str| {
+        let data = inventory(text, Limits::default()).unwrap();
+        AnalyticModel::read(&data, Options::default())
+            .unwrap()
+            .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+            .unwrap()
+    };
+    let (a, b) = (sample(plain), sample(&swapped));
+    assert_eq!(a.mesh.triangles.len(), b.mesh.triangles.len());
+    assert_eq!(a.signed_volume_mm3, b.signed_volume_mm3);
+    assert!(a.signed_volume_mm3 > 0.);
+}
+
+/// The hole cylinder of the centre-hole plate (`#282`, radius 4) is moved to radius 4.008 while its edge circles stay at 4:
+/// a gap of 8 microns, beyond the foreign-CAD geometry tolerance (chord / 10 = 5 microns) and inside its heal limit.
+fn plate_with_hole_radius(radius: f64) -> String {
+    let plain = include_str!("data/edit-plate-centre-hole.step");
+    let edited = plain.replace("#282 = CYLINDRICAL_SURFACE('',#283,4.);", &format!("#282 = CYLINDRICAL_SURFACE('',#283,{radius:.3});"));
+    assert_ne!(plain, edited);
+    edited
+}
+
+#[test]
+fn a_hole_cylinder_off_its_edge_circles_is_healed_onto_the_cylinder_with_the_closed_form_volume() {
+    let text = plate_with_hole_radius(4.008);
+    let data = inventory(&text, Limits::default()).unwrap();
+    // strictly read, the 8 micron disagreement is refused
+    assert!(AnalyticModel::read(&data, Options::default()).is_err());
+    let model = AnalyticModel::read(&data, Options::foreign_cad(0.05)).unwrap();
+    let hole = model.surface(402).unwrap();
+    let mut samples = 0;
+    for bound in &model.body().faces[&402].bounds {
+        for e in &bound.edges {
+            for &p in model.edge_points(e.edge).unwrap() {
+                samples += 1;
+                let residual = hole.project(p).unwrap().residual_mm;
+                assert!(residual < 1e-7, "edge #{} sample {residual:e} mm off the cylinder", e.edge);
+            }
+        }
+    }
+    assert!(samples > 20, "{samples}");
+    let volume = |model: &AnalyticModel| {
+        model.sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true).unwrap().signed_volume_mm3
+    };
+    // the plate without the hole is the strict read of the unmodified file plus its hole (radius 4, height 10)
+    let strict = AnalyticModel::read(&inventory(include_str!("data/edit-plate-centre-hole.step"), Limits::default()).unwrap(), Options::default()).unwrap();
+    let solid = volume(&strict) + std::f64::consts::PI * 16. * 10.;
+    let exact = solid - std::f64::consts::PI * 4.008 * 4.008 * 10.;
+    let got = volume(&model);
+    assert!((got - exact).abs() < 2e-3 * exact, "{got} against {exact}");
+}
+
+/// Healing is for foreign CAD only: a conforming file reads the same as it did, and a strict read still refuses the gap.
+#[test]
+fn a_strict_read_never_heals_and_a_conforming_file_reads_the_same_either_way() {
+    let plain = include_str!("data/edit-plate-centre-hole.step");
+    let data = inventory(plain, Limits::default()).unwrap();
+    let strict = AnalyticModel::read(&data, Options::default()).unwrap();
+    let foreign = AnalyticModel::read(&data, Options::foreign_cad(0.05)).unwrap();
+    for &edge in strict.body().edges.keys() {
+        let (a, b) = (strict.edge_points(edge).unwrap(), foreign.edge_points(edge).unwrap());
+        // the foreign read samples to a coarser chord, but never moves a vertex of a conforming edge
+        assert_eq!(a[0], b[0], "edge #{edge}");
+        assert_eq!(a.last(), b.last(), "edge #{edge}");
+    }
+    let gap = inventory(&plate_with_hole_radius(4.008), Limits::default()).unwrap();
+    assert!(AnalyticModel::read(&gap, Options::default()).is_err());
+}
+
+/// A half cone (apex at (0, 0, 8), base circle radius 5 in z = 0, the y >= 0 half) with the cone's apex as a vertex: three
+/// faces, the cone face bounded by two generators and a half-circle arc (a wedge, as the NIST AP242 files write drill
+/// points). The head and the units come from the OpenCASCADE cone fixture.
+fn half_cone_document() -> String {
+    let cone = include_str!("data/cone.step");
+    let head = &cone[..cone.find("#15 = MANIFOLD_SOLID_BREP").unwrap()];
+    let tail = &cone[cone.find("#82 = ").unwrap()..];
+    let body = "\
+#15 = MANIFOLD_SOLID_BREP('',#16);
+#16 = CLOSED_SHELL('',(#100,#101,#102));
+#20 = CARTESIAN_POINT('',(0.,0.,8.));
+#21 = VERTEX_POINT('',#20);
+#22 = CARTESIAN_POINT('',(5.,0.,0.));
+#23 = VERTEX_POINT('',#22);
+#24 = CARTESIAN_POINT('',(-5.,0.,0.));
+#25 = VERTEX_POINT('',#24);
+#26 = EDGE_CURVE('',#21,#23,#27,.T.);
+#27 = LINE('',#20,#28);
+#28 = VECTOR('',#29,1.);
+#29 = DIRECTION('',(0.529998940003,0.,-0.847998304005));
+#30 = EDGE_CURVE('',#21,#25,#31,.T.);
+#31 = LINE('',#20,#32);
+#32 = VECTOR('',#33,1.);
+#33 = DIRECTION('',(-0.529998940003,0.,-0.847998304005));
+#34 = EDGE_CURVE('',#23,#25,#35,.T.);
+#35 = CIRCLE('',#36,5.);
+#36 = AXIS2_PLACEMENT_3D('',#37,#38,#39);
+#37 = CARTESIAN_POINT('',(0.,0.,0.));
+#38 = DIRECTION('',(0.,0.,1.));
+#39 = DIRECTION('',(1.,0.,0.));
+#40 = EDGE_CURVE('',#25,#23,#41,.T.);
+#41 = LINE('',#24,#42);
+#42 = VECTOR('',#43,1.);
+#43 = DIRECTION('',(1.,0.,0.));
+#44 = AXIS2_PLACEMENT_3D('',#37,#45,#39);
+#45 = DIRECTION('',(0.,0.,-1.));
+#46 = PLANE('',#44);
+#47 = AXIS2_PLACEMENT_3D('',#37,#48,#39);
+#48 = DIRECTION('',(0.,-1.,0.));
+#49 = PLANE('',#47);
+#50 = AXIS2_PLACEMENT_3D('',#20,#45,#39);
+#51 = CONICAL_SURFACE('',#50,0.,0.558599315344);
+#52 = ORIENTED_EDGE('',*,*,#40,.F.);
+#53 = ORIENTED_EDGE('',*,*,#34,.F.);
+#54 = EDGE_LOOP('',(#52,#53));
+#55 = FACE_BOUND('',#54,.T.);
+#56 = ORIENTED_EDGE('',*,*,#40,.T.);
+#57 = ORIENTED_EDGE('',*,*,#26,.F.);
+#58 = ORIENTED_EDGE('',*,*,#30,.T.);
+#59 = EDGE_LOOP('',(#56,#57,#58));
+#60 = FACE_BOUND('',#59,.T.);
+#61 = ORIENTED_EDGE('',*,*,#34,.T.);
+#62 = ORIENTED_EDGE('',*,*,#30,.F.);
+#63 = ORIENTED_EDGE('',*,*,#26,.T.);
+#64 = EDGE_LOOP('',(#61,#62,#63));
+#65 = FACE_BOUND('',#64,.T.);
+#100 = ADVANCED_FACE('',(#55),#46,.T.);
+#101 = ADVANCED_FACE('',(#60),#49,.T.);
+#102 = ADVANCED_FACE('',(#65),#51,.T.);
+";
+    format!("{head}{body}{tail}")
+}
+
+/// The apex is a vertex of the wedge's loop, which then has no angle there: the cone-tip seam (for a circle that winds once
+/// around the axis) must leave it alone, and the half-turn arc (exactly half a period in the developed chart, to rounding)
+/// must chart. Volume: half of pi r^2 h / 3.
+#[test]
+fn a_cone_wedge_through_its_apex_samples_its_closed_form_volume() {
+    let text = half_cone_document();
+    let data = inventory(&text, Limits::default()).unwrap();
+    let sampled = AnalyticModel::read(&data, Options::default())
+        .unwrap()
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap();
+    let exact = std::f64::consts::PI * 25. * 8. / 6.;
+    assert!(
+        (sampled.signed_volume_mm3 - exact).abs() < 2e-2 * exact,
+        "{} against {exact}",
+        sampled.signed_volume_mm3
+    );
+}
+
+/// A wedge of a cone (apex at (0, 0, 8), base circle radius 5 in z = 0, the sector from angle 0 to `wedge` radians about the
+/// axis, `wedge` over half a turn) with the apex and the axis foot as vertices: four faces. The cone face is the wedge bounded by
+/// two generators and a rim arc, which turns at the apex by `wedge`; `loop_start` picks which of its three edges the loop
+/// starts with. The head and the units come from the OpenCASCADE cone fixture.
+fn cone_wedge_document(turn: f64, wedge: f64, loop_start: usize, semi_angle: f64) -> String {
+    let cone = include_str!("data/cone.step");
+    let head = &cone[..cone.find("#15 = MANIFOLD_SOLID_BREP").unwrap()];
+    let tail = &cone[cone.find("#82 = ").unwrap()..];
+    let (s0, c0) = turn.sin_cos();
+    let (sw, cw) = (turn + wedge).sin_cos();
+    let height = 5. / semi_angle.tan();
+    let (rim, drop) = (semi_angle.sin(), semi_angle.cos());
+    let order = [["#301", "#302", "#303"], ["#302", "#303", "#301"], ["#303", "#301", "#302"]][loop_start];
+    let body = format!(
+        "\
+#15 = MANIFOLD_SOLID_BREP('',#16);
+#16 = CLOSED_SHELL('',(#100,#101,#102,#103));
+#200 = CARTESIAN_POINT('',(0.,0.,{height:e}));
+#201 = VERTEX_POINT('',#200);
+#202 = CARTESIAN_POINT('',({p0x:e},{p0y:e},0.));
+#203 = VERTEX_POINT('',#202);
+#204 = CARTESIAN_POINT('',({px:e},{py:e},0.));
+#205 = VERTEX_POINT('',#204);
+#206 = CARTESIAN_POINT('',(0.,0.,0.));
+#207 = VERTEX_POINT('',#206);
+#210 = EDGE_CURVE('',#201,#203,#211,.T.);
+#211 = LINE('',#200,#212);
+#212 = VECTOR('',#213,1.);
+#213 = DIRECTION('',({r0x:e},{r0y:e},{nd:e}));
+#214 = EDGE_CURVE('',#201,#205,#215,.T.);
+#215 = LINE('',#200,#216);
+#216 = VECTOR('',#217,1.);
+#217 = DIRECTION('',({qx:e},{qy:e},{nd:e}));
+#218 = EDGE_CURVE('',#203,#205,#219,.T.);
+#219 = CIRCLE('',#220,5.);
+#220 = AXIS2_PLACEMENT_3D('',#206,#221,#222);
+#221 = DIRECTION('',(0.,0.,1.));
+#222 = DIRECTION('',({c0:e},{s0:e},0.));
+#223 = EDGE_CURVE('',#207,#203,#224,.T.);
+#224 = LINE('',#206,#225);
+#225 = VECTOR('',#222,1.);
+#226 = EDGE_CURVE('',#207,#205,#227,.T.);
+#227 = LINE('',#206,#228);
+#228 = VECTOR('',#229,1.);
+#229 = DIRECTION('',({cw:e},{sw:e},0.));
+#230 = EDGE_CURVE('',#201,#207,#231,.T.);
+#231 = LINE('',#200,#232);
+#232 = VECTOR('',#233,1.);
+#233 = DIRECTION('',(0.,0.,-1.));
+#240 = AXIS2_PLACEMENT_3D('',#206,#241,#222);
+#241 = DIRECTION('',(0.,0.,-1.));
+#242 = PLANE('',#240);
+#243 = AXIS2_PLACEMENT_3D('',#206,#244,#222);
+#244 = DIRECTION('',({s0:e},{nc0:e},0.));
+#245 = PLANE('',#243);
+#246 = AXIS2_PLACEMENT_3D('',#206,#247,#248);
+#247 = DIRECTION('',({nx:e},{ny:e},0.));
+#248 = DIRECTION('',(0.,0.,1.));
+#249 = PLANE('',#246);
+#250 = AXIS2_PLACEMENT_3D('',#200,#241,#222);
+#251 = CONICAL_SURFACE('',#250,0.,{semi_angle:e});
+#260 = ORIENTED_EDGE('',*,*,#226,.T.);
+#261 = ORIENTED_EDGE('',*,*,#218,.F.);
+#262 = ORIENTED_EDGE('',*,*,#223,.F.);
+#263 = EDGE_LOOP('',(#260,#261,#262));
+#264 = FACE_BOUND('',#263,.T.);
+#270 = ORIENTED_EDGE('',*,*,#223,.T.);
+#271 = ORIENTED_EDGE('',*,*,#210,.F.);
+#272 = ORIENTED_EDGE('',*,*,#230,.T.);
+#273 = EDGE_LOOP('',(#270,#271,#272));
+#274 = FACE_BOUND('',#273,.T.);
+#280 = ORIENTED_EDGE('',*,*,#230,.F.);
+#281 = ORIENTED_EDGE('',*,*,#214,.T.);
+#282 = ORIENTED_EDGE('',*,*,#226,.F.);
+#283 = EDGE_LOOP('',(#280,#281,#282));
+#284 = FACE_BOUND('',#283,.T.);
+#301 = ORIENTED_EDGE('',*,*,#218,.T.);
+#302 = ORIENTED_EDGE('',*,*,#214,.F.);
+#303 = ORIENTED_EDGE('',*,*,#210,.T.);
+#304 = EDGE_LOOP('',({o0},{o1},{o2}));
+#305 = FACE_BOUND('',#304,.T.);
+#100 = ADVANCED_FACE('',(#264),#242,.T.);
+#101 = ADVANCED_FACE('',(#274),#245,.T.);
+#102 = ADVANCED_FACE('',(#284),#249,.T.);
+#103 = ADVANCED_FACE('',(#305),#251,.T.);
+",
+        p0x = 5. * c0,
+        p0y = 5. * s0,
+        r0x = rim * c0,
+        r0y = rim * s0,
+        s0 = s0,
+        c0 = c0,
+        nc0 = -c0,
+        px = 5. * cw,
+        py = 5. * sw,
+        qx = rim * cw,
+        qy = rim * sw,
+        nd = -drop,
+        height = height,
+        semi_angle = semi_angle,
+        nx = -sw,
+        ny = cw,
+        cw = cw,
+        sw = sw,
+        o0 = order[0],
+        o1 = order[1],
+        o2 = order[2],
+    );
+    format!("{head}{body}{tail}")
+}
+
+/// The apex is on the cone face's boundary, and the loop turns there by `wedge`: nearest-angle continuation across the apex
+/// goes the short way round for a wedge over half a turn (the face's chart is then folded and the refinement of its chord rule
+/// never ends), so the branch after the apex is the one that closes the loop in the angle. Volume: `wedge / 2 pi` of the cone.
+#[test]
+fn a_cone_wedge_wider_than_half_a_turn_samples_its_closed_form_volume() {
+    let mut failures = Vec::new();
+    for degrees in [180., 180.00001, 180.001, 180.5, 200., 240., 300., 350.] {
+        for (loop_start, turn, semi_angle) in (0..3).flat_map(|l| {
+            (0..24).flat_map(move |k| [0.5586, 1.0297].map(move |sa| (l, 0.1 + 0.2617993877991494 * k as f64, sa)))
+        }) {
+            let wedge = f64::to_radians(degrees);
+            let text = cone_wedge_document(turn, wedge, loop_start, semi_angle);
+            let exact = wedge * 25. * (5. / semi_angle.tan()) / 6.;
+            let outcome = inventory(&text, Limits::default())
+                .and_then(|data| AnalyticModel::read(&data, Options::default()))
+                .and_then(|model| model.sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true))
+                .map_err(|e| e.to_string())
+                .and_then(|sampled| {
+                    let v = sampled.signed_volume_mm3;
+                    if (v - exact).abs() < 2e-2 * exact { Ok(()) } else { Err(format!("volume {v} against {exact}")) }
+                });
+            if let Err(e) = outcome {
+                failures.push(format!("wedge {degrees}, loop start {loop_start}, turn {turn:.3}, semi-angle {semi_angle}: {e}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// A committed fixture merged with a copy of itself (ids of the copy shifted): a multi-body part with two equal solids.
 fn two_body_document() -> String {
     let a = include_str!("data/edit-plate.step").to_string();

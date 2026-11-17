@@ -51,7 +51,7 @@ fn it_opens_on_the_models_inputs_with_the_checks_and_a_contour() {
     let cards = s.inspector();
     assert_eq!(
         ids(&cards),
-        ["vessel-geometry", "vessel-pressure-end-condition", "vessel-material", "vessel-analysis-options", "vessel-head-shell-code-check-ug-27", "vessel-result", "vessel-checks", "vessel-thickness", "vessel-wall", "vessel-heads", "vessel-drawing"]
+        ["vessel-geometry", "vessel-pressure-end-condition", "vessel-material", "vessel-analysis-options", "vessel-head-shell-code-check-ug-27", "vessel-line-run", "vessel-requirements", "vessel-allowables", "vessel-walls", "vessel-result", "vessel-checks", "vessel-thickness", "vessel-wall", "vessel-heads", "vessel-drawing"]
     );
     let t = texts(&cards);
     // The rows are the model's labels and values; the checks are the solver's.
@@ -227,7 +227,7 @@ fn allowances_drive_the_checks_contour_minimum_wall_and_undo() {
 fn invalid_allowances_clear_results_and_old_cases_reset_losses_to_zero() {
     let mut s = session("invalid-allowances");
     let mut old = s.snapshot();
-    assert_eq!(old.version, 3, "older readers must reject cases whose wall losses they cannot apply");
+    assert_eq!(old.version, 4, "older readers must reject cases whose wall losses they cannot apply");
     old.version = 1;
     old.numbers.remove("corrosion allowance");
     old.numbers.remove("mill undertolerance percent");
@@ -319,4 +319,139 @@ fn an_older_case_gets_the_default_code_check_and_a_newer_component_is_reported()
     let mut f = s.snapshot();
     f.head_component = Some("Conical head".into());
     assert!(f.apply(&mut s.model).iter().any(|m| m.contains("Conical head")));
+}
+
+// ---------------------------------------------------------------------- minimum wall by requirement and the line run
+
+use crate::gpu_viewer::page::Cell;
+use crate::toolboxes::pressure_vessel::edit::{Edit, LineField, ReqField};
+
+/// Run the worker to its answer (the window's `poll` does this each frame).
+fn settle(s: &mut VesselSession) {
+    let t = std::time::Instant::now();
+    while s.model.walls.is_none() && s.model.line.enabled && s.model.geometry.is_ok() {
+        s.poll();
+        assert!(t.elapsed().as_secs() < 60, "the wall solve did not finish");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+fn table(s: &VesselSession) -> crate::gpu_viewer::page::DockTable {
+    match s.requirements_table(false) {
+        DockItem::Table(t) => *t,
+        _ => unreachable!(),
+    }
+}
+fn cell_text(c: &Cell) -> String {
+    match c {
+        Cell::Text { text, .. } | Cell::Wall { text, .. } | Cell::Chip { text, .. } => text.clone(),
+        Cell::Button { .. } => String::new(),
+    }
+}
+
+#[test]
+fn the_cylinder_table_is_seeded_neutral_and_a_typed_factor_moves_the_wall_and_undoes() {
+    let mut s = session("walls");
+    let t = table(&s);
+    assert_eq!(t.rows.len(), s.model.requirements.len());
+    assert!(t.hint.contains("enter your program's factors"), "{}", t.hint);
+    assert!(t.rows.iter().filter(|r| r.governing).count() == 1);
+    let before = t.rows[0].cells[4].clone();
+    act(&mut s, VesselAct::Edit(Edit::Req(0, ReqField::Factor)));
+    assert!(s.prompting());
+    type_text(&mut s, "2");
+    s.key(Key::Enter, Mods::default());
+    assert_eq!(s.model.requirements[0].factor, 2.0);
+    assert!(s.model.requirements[0].edited && s.dirty());
+    let after = table(&s).rows[0].cells[4].clone();
+    assert_ne!(before, after, "the minimum wall follows the factor at once");
+    assert!(table(&s).footer.contains("Governing wall"), "{}", table(&s).footer);
+    s.undo();
+    assert_eq!(table(&s).rows[0].cells[4], before);
+}
+
+#[test]
+fn a_label_is_typed_as_text_and_rows_are_added_cycled_and_removed_with_undo() {
+    let mut s = session("rows");
+    let n = s.model.requirements.len();
+    act(&mut s, VesselAct::AddRequirement);
+    assert_eq!(s.model.requirements.len(), n + 1);
+    act(&mut s, VesselAct::Edit(Edit::Req(n, ReqField::Label)));
+    type_text(&mut s, " proof");
+    s.key(Key::Enter, Mods::default());
+    assert!(s.model.requirements[n].label.ends_with(" proof"), "{}", s.model.requirements[n].label);
+    let first = s.model.requirements[n].criterion;
+    act(&mut s, VesselAct::CycleRequirement(n));
+    assert_ne!(s.model.requirements[n].criterion, first);
+    act(&mut s, VesselAct::RemoveRequirement(n));
+    assert_eq!(s.model.requirements.len(), n);
+    for _ in 0..4 {
+        s.undo();
+    }
+    assert_eq!(s.model.requirements.len(), n);
+    assert!(s.undo.is_empty());
+}
+
+#[test]
+fn a_changed_material_reseeds_only_the_rows_the_person_left_alone() {
+    let mut s = session("reseed");
+    act(&mut s, VesselAct::Edit(Edit::Req(0, ReqField::RequiredMs)));
+    type_text(&mut s, "0.25");
+    s.key(Key::Enter, Mods::default());
+    let name = s.model.requirements[0].label.clone();
+    let other = (0..s.model.material_catalog().len()).find(|&i| i != s.model.material_index).unwrap();
+    act(&mut s, VesselAct::PickMaterial(other));
+    let row = s.model.requirements.iter().find(|r| r.label == name).expect("an edited row survives");
+    assert_eq!(row.required_ms, 0.25);
+}
+
+#[test]
+fn the_case_file_keeps_rows_and_the_line_run_and_an_older_file_loads_seeded() {
+    let mut s = session("persist");
+    act(&mut s, VesselAct::AddRequirement);
+    act(&mut s, VesselAct::ToggleLineRun);
+    act(&mut s, VesselAct::AddLoad);
+    settle(&mut s);
+    let file = s.snapshot();
+    assert_eq!(file.version, 4);
+    let reopened = VesselFile::from_json(&file.to_json()).unwrap();
+    let mut m = PressureVesselModel::default();
+    assert!(reopened.apply(&mut m).is_empty());
+    assert_eq!(m.requirements, s.model.requirements);
+    assert_eq!(m.line, s.model.line);
+    assert!(m.line.enabled && m.line.loads.len() == 1);
+    // A format 3 case has none of it: seeds and the default run, also over an edited model.
+    let old = VesselFile::from_json(r#"{"version":3,"name":"old","numbers":{"wall thickness":0.5},"material":""}"#).unwrap();
+    old.apply(&mut m);
+    assert_eq!(m.wall_thickness, 0.5);
+    assert!(!m.line.enabled && m.line.loads.is_empty());
+    assert_eq!(m.requirements, crate::toolboxes::pressure_vessel::requirements::seeds(m.kind()));
+}
+
+#[test]
+fn the_line_run_page_shows_the_drawing_the_table_and_a_balanced_chip_once_the_walls_arrive() {
+    let mut s = session("line");
+    assert!(s.page().is_empty(), "the cylinder keeps the 3D picture");
+    act(&mut s, VesselAct::ToggleLineRun);
+    assert!(s.solving() || s.model.walls.is_some());
+    settle(&mut s);
+    let page = s.page();
+    let text = page.iter().filter_map(|i| i.plain_text()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("Sum of reactions") && text.contains("Case 1") && text.contains("Export report"), "{text}");
+    assert!(page.iter().any(|i| matches!(i, DockItem::Run(d) if d.curve.len() > 2 && d.worst.is_some())));
+    let t = table(&s);
+    assert!(t.rows.iter().any(|r| matches!(&r.cells[4], Cell::Wall { .. })), "{:?}", t.rows.iter().map(|r| cell_text(&r.cells[4])).collect::<Vec<_>>());
+    assert!(t.footer.contains("Governing wall"));
+    let cards = texts(&s.inspector());
+    assert!(cards.contains("Reactions") && cards.contains("Governing") && cards.contains("Tube"), "{cards}");
+    // Moving a support re-solves: the stale answer is dropped and the new one arrives.
+    act(&mut s, VesselAct::Edit(Edit::Line(LineField::SupportX(1))));
+    type_text(&mut s, "40");
+    s.key(Key::Enter, Mods::default());
+    assert!(s.model.walls.is_none(), "the wall solve for the new run is pending");
+    settle(&mut s);
+    assert!(s.model.walls.is_some());
+    // A point load shows on the drawing and the reactions still balance it.
+    act(&mut s, VesselAct::AddLoad);
+    settle(&mut s);
+    assert!(s.model.equilibrium().unwrap().balanced());
 }

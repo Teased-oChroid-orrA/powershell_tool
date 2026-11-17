@@ -1648,6 +1648,24 @@ impl Gui {
             }
             DockItem::Bars { rows, lo, hi } => self.bars(ui, rows, *lo, *hi, p, out),
             DockItem::Plot(plot) => plot_ui(ui, plot, p),
+            DockItem::Pills(pills) => self.pills(ui, pills, p, out),
+            DockItem::Run(d) => self.line_drawing(ui, d, p),
+            DockItem::Table(t) => self.dock_table(ui, t, p, out),
+            DockItem::Chips { label, chips } => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(label).size(12.0).color(p.dim));
+                    for e in chips {
+                        let on = e.checked == Some(true);
+                        let col = if on { p.accent } else { p.text };
+                        let fill = if on { with_alpha(p.accent, 40) } else { p.panel };
+                        let r = ui.add(egui::Button::new(RichText::new(&e.label).size(12.5).color(col)).fill(fill).stroke(Stroke::new(1.0, if on { p.accent } else { p.line })).corner_radius(CornerRadius::same(10)));
+                        self.targets.push((e.label.clone(), r.rect));
+                        if r.on_hover_text(e.hover_text()).clicked() {
+                            out.push(Outcome::Action(e.action));
+                        }
+                    }
+                });
+            }
         }
     }
 

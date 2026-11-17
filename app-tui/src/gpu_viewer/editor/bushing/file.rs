@@ -82,6 +82,10 @@ impl BushingFile {
         let flags = [
             ("install thermal assist", m.assembly_thermal_enabled),
             ("advanced open", m.advanced_open),
+            ("keep bore", m.keep.bore),
+            ("keep interference", m.keep.interference),
+            ("keep edge distance", m.keep.edge_dist),
+            ("keep load", m.keep.load),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -119,6 +123,10 @@ impl BushingFile {
         if let Some(v) = flag("advanced open") {
             m.advanced_open = v;
         }
+        m.keep.bore = flag("keep bore").unwrap_or(false);
+        m.keep.interference = flag("keep interference").unwrap_or(false);
+        m.keep.edge_dist = flag("keep edge distance").unwrap_or(false);
+        m.keep.load = flag("keep load").unwrap_or(false);
         let catalog = m.material_catalog();
         let find = |id: &Option<String>| id.as_deref().map(|id| catalog.iter().position(|c| c.id == id).ok_or_else(|| format!("material {id}")));
         let (housing, bushing) = (find(&self.housing_material), find(&self.bushing_material));

@@ -48,6 +48,28 @@ von Mises and Tresca to the uniaxial stress; free growth stress-free; bending ma
 multiaxial von Mises / Tresca / Coulomb-Mohr values; bend, tee and straight-pipe thrust; refusals (composite, other, torque,
 mechanism, missing anchor, bad allowables).
 
+## Segment mode (a stretch between two supports)
+`line_run/segment.rs` checks only the stretch between two supports instead of the whole run.
+- **End conditions**: `EndFixity::{Free, Pinned, Spring(k), Clamped}` plus an axial-anchor flag per end; `analyze_segment` adds them as
+  supports at `x_start` / `x_end` (interior supports stay in `LineRun::supports`; one on a segment end is refused). Free + tip load is
+  the valve case, Clamped + Free the cantilever, Clamped + Pinned the propped beam.
+- **Clip stiffness**: `Support::rotation_stiffness: Option<f64>` is a rotational spring to ground (moment per radian, both planes;
+  `None` / `Some(0.0)` = pinned, `rotation_fixed` = the infinite case; negative, non-finite, or both set is refused). Proved against the
+  closed form `M = k w L^3/(24 EI) / (1 + k L / 2EI)` for a uniformly loaded span with equal springs, the pinned and clamped limits, and
+  monotone movement of moment from midspan to the ends. The stiffness itself is an owner input: nothing here estimates it.
+- **Cut-end actions from a full-run solve**: no new API. `PointLoad::moment` (`[0, M, 0]` at the left end, `[0, -M, 0]` at the right
+  end for a plane-z bending moment `M`; the slope-conjugate load is `-m_y`) and `PointLoad::force` (shear, axial) at the end station.
+  Tested: the middle span of a three-span run with its two cut moments on pinned ends reproduces the full-run moments and shears to 1e-10.
+- **Bounds** (`analyze_segment_bounds`, two held ends): runs pinned-pinned and clamped-clamped and returns both results plus, per
+  criterion, the lowest margin over cases and bounds with the governing bound. Rationale: the true end restraint of a cut segment lies
+  between none and rigid, pinned-pinned gives the largest midspan moment (`wL^2/8`) and clamped-clamped the largest restrained-end
+  moment, so the lower margin is the conservative one. Tested to bracket the continuous two- and three-span margins.
+- **Limits of the bound**: it brackets the stress margin of uniformly loaded spans, not every action. The clamped end moment
+  (`wL^2/12`) is *below* the continuous three-span support moment (`wL^2/10`), because loaded neighbours rotate the joint the other way
+  (tested); reactions and support moments of the segment must not be read from the bound, and non-uniform or pattern loading is not proven
+  to be bracketed. A free end has no restraint to bracket (pinned-free is a mechanism): bounds refuse it; use a `Spring` end when the clip
+  stiffness is known.
+
 ## Sources (what is and is not verified)
 - Euler-Bernoulli beam theory and the three-moment equation (Clapeyron); Roark's *Formulas for Stress and Strain* 7th ed. beam tables
   contain the same closed forms. **The specific table and case numbers were not checked against the supplied PDF** (not downloaded);
@@ -62,7 +84,7 @@ mechanism, missing anchor, bad allowables).
 ## Limits (stated, not guessed)
 Torque about the line axis is refused (needs a torsional-restraint model); no fatigue, vibration, buckling, bend / tee / clamp
 stress intensification, partial (spring) axial anchors, or through-wall thermal gradient; thin-wall shear on thick tubes is an
-approximation; supports are pinned in both transverse directions (optionally clamped in rotation) with no gaps or friction;
+approximation; supports are pinned in both transverse directions (optionally clamped or given a rotational spring) with no gaps or friction;
 thermal restraint is uniaxial (no Poisson coupling). Ductile ultimate is checked both ways (maximum |principal| per the crate's
 convention, and von Mises, owner request 2026-11-14).
 

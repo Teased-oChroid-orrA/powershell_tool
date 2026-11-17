@@ -9,7 +9,12 @@
 //! material" form, and `persistence.rs` keeps materials added that way
 //! between runs.
 
+pub mod edit;
+pub mod line;
 pub mod material_picker;
 pub mod model;
 pub mod persistence;
 pub mod report;
+pub mod requirements;
+pub mod run;
+pub mod walls;
