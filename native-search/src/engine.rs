@@ -169,6 +169,11 @@ struct Fields {
     /// query the way `body`/`filename`/`title` are. See
     /// `trigram_candidate_paths`.
     trigram: tantivy::schema::Field,
+    /// Trigrams of the accent- and typography-folded, lowercased text, filled only for a document
+    /// whose folded text differs from its lowercased text (a plain document's folded trigrams are
+    /// its `trigram` ones). Lets a search that ignores accents narrow candidates; see
+    /// [`NativeSearchEngine::trigram_candidate_paths_folded`].
+    trigram_folded: tantivy::schema::Field,
 }
 
 fn build_schema() -> (Schema, Fields) {
@@ -188,7 +193,8 @@ fn build_schema() -> (Schema, Fields) {
     let body = builder.add_text_field("body", TEXT);
     let trigram_options = TextOptions::default()
         .set_indexing_options(TextFieldIndexing::default().set_tokenizer(TRIGRAM_TOKENIZER_NAME));
-    let trigram = builder.add_text_field("trigram", trigram_options);
+    let trigram = builder.add_text_field("trigram", trigram_options.clone());
+    let trigram_folded = builder.add_text_field("trigram_folded", trigram_options);
     let schema = builder.build();
     (
         schema,
@@ -203,6 +209,7 @@ fn build_schema() -> (Schema, Fields) {
             size,
             body,
             trigram,
+            trigram_folded,
         },
     )
 }
@@ -308,12 +315,19 @@ impl NativeSearchEngine {
     /// `id` first, so calling this twice for the same file is a safe update,
     /// not a duplicate.
     pub fn index_document(&self, doc: DocumentInput<'_>) -> NsResult<()> {
+        self.index_document_folded(doc, None)
+    }
+
+    /// [`index_document`](Self::index_document) plus the folded text for a document whose folded
+    /// form differs from its lowercased form (`None` when they are equal): the caller owns the
+    /// folding rule (`search_core::textfold::fold_lower`), this crate only indexes its trigrams.
+    pub fn index_document_folded(&self, doc: DocumentInput<'_>, folded: Option<&str>) -> NsResult<()> {
         if doc.id.is_empty() {
             return Err(NsError::invalid_argument("document id must not be empty"));
         }
         self.with_writer_retry(|writer| {
             writer.delete_term(Term::from_field_text(self.fields.id, doc.id));
-            writer.add_document(doc!(
+            let mut document = doc!(
                 self.fields.id => doc.id,
                 self.fields.path => doc.path,
                 self.fields.filename => doc.filename,
@@ -324,7 +338,11 @@ impl NativeSearchEngine {
                 self.fields.size => doc.size,
                 self.fields.body => doc.body,
                 self.fields.trigram => doc.body,
-            ))
+            );
+            if let Some(folded) = folded {
+                document.add_text(self.fields.trigram_folded, folded);
+            }
+            writer.add_document(document)
         })?;
         Ok(())
     }
@@ -591,6 +609,19 @@ impl NativeSearchEngine {
     /// correctness risk either way: `None` is always the conservative,
     /// slower-but-correct answer.
     pub fn trigram_candidate_paths(&self, filters: &[String]) -> NsResult<Option<Vec<String>>> {
+        self.candidate_paths(filters, false)
+    }
+
+    /// [`trigram_candidate_paths`](Self::trigram_candidate_paths) for a search that ignores accents:
+    /// `filters` must already be folded and lowercased (`textfold::fold_lower`). A document is a
+    /// candidate when its own trigrams hold the filter's (a document whose folded text equals its
+    /// lowercased text, which is every document without a `trigram_folded` value) or its folded
+    /// trigrams do. Still a superset of the real matches.
+    pub fn trigram_candidate_paths_folded(&self, filters: &[String]) -> NsResult<Option<Vec<String>>> {
+        self.candidate_paths(filters, true)
+    }
+
+    fn candidate_paths(&self, filters: &[String], folded: bool) -> NsResult<Option<Vec<String>>> {
         if filters.is_empty() {
             return Ok(None);
         }
@@ -602,13 +633,22 @@ impl NativeSearchEngine {
             if trigrams.is_empty() {
                 return Ok(None);
             }
-            per_filter_queries.push((
-                Occur::Should,
-                must_all_trigrams(self.fields.trigram, trigrams),
-            ));
+            per_filter_queries.push((Occur::Should, self.all_trigrams_query(trigrams, folded)));
         }
 
         self.run_candidate_query(BooleanQuery::new(per_filter_queries))
+    }
+
+    /// Every trigram in the document's own field, or (`folded`) in its folded field as well as an alternative.
+    fn all_trigrams_query(&self, trigrams: Vec<String>, folded: bool) -> Box<dyn Query> {
+        let raw = must_all_trigrams(self.fields.trigram, trigrams.clone());
+        if !folded {
+            return raw;
+        }
+        Box::new(BooleanQuery::new(vec![
+            (Occur::Should, raw),
+            (Occur::Should, must_all_trigrams(self.fields.trigram_folded, trigrams)),
+        ]))
     }
 
     /// Same safe-superset trigram narrowing as [`trigram_candidate_paths`](Self::trigram_candidate_paths),
@@ -631,6 +671,20 @@ impl NativeSearchEngine {
         &self,
         chunk_sets: &[Vec<String>],
     ) -> NsResult<Option<Vec<String>>> {
+        self.chunk_set_paths(chunk_sets, false)
+    }
+
+    /// [`trigram_candidate_paths_for_chunk_sets`](Self::trigram_candidate_paths_for_chunk_sets) for a
+    /// search that ignores accents (chunks already folded and lowercased; see
+    /// [`trigram_candidate_paths_folded`](Self::trigram_candidate_paths_folded)).
+    pub fn trigram_candidate_paths_for_chunk_sets_folded(
+        &self,
+        chunk_sets: &[Vec<String>],
+    ) -> NsResult<Option<Vec<String>>> {
+        self.chunk_set_paths(chunk_sets, true)
+    }
+
+    fn chunk_set_paths(&self, chunk_sets: &[Vec<String>], folded: bool) -> NsResult<Option<Vec<String>>> {
         if chunk_sets.is_empty() {
             return Ok(None);
         }
@@ -649,10 +703,7 @@ impl NativeSearchEngine {
                 }
                 all_trigrams.extend(trigrams);
             }
-            per_filter_queries.push((
-                Occur::Should,
-                must_all_trigrams(self.fields.trigram, all_trigrams),
-            ));
+            per_filter_queries.push((Occur::Should, self.all_trigrams_query(all_trigrams, folded)));
         }
 
         self.run_candidate_query(BooleanQuery::new(per_filter_queries))
