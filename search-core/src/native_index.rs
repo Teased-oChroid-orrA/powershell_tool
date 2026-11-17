@@ -1276,15 +1276,23 @@ pub async fn narrow_candidates(
     // Freshness: which in-scope files the index lacks or has out of date.
     // Unreadable metadata fails the narrowing (the caller falls back to a
     // full scan and reports it) instead of looking like an empty index.
-    let known = read_known(engine)?;
+    // One pass over the index's stored documents serves both the freshness map and the removed count.
+    let known_ids = engine.all_document_metadata()?;
     // OCR switched on since the build: the indexed PDFs lack their scanned pages' text.
     let ocr_pending = settings.ocr_scanned_pdfs && !stored_ocr_flag(engine.index_directory());
     let mut stale: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut scope_keys: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(in_scope.len());
     for file in &in_scope {
+        scope_keys.insert(path_key(&file.path.to_string_lossy()).into_owned());
+    }
+    out.removed = known_ids
+        .keys()
+        .filter(|id| !scope_keys.contains(path_key(id).as_ref()) && !Path::new(id.as_str()).exists())
+        .count();
+    let known = known_by_key(known_ids, cfg!(windows));
+    for file in &in_scope {
         let full_name = file.path.to_string_lossy().into_owned();
-        scope_keys.insert(path_key(&full_name).into_owned());
         let up_to_date = matches!(
             known.get(path_key(&full_name).as_ref()),
             Some(&(m, sz)) if m == ticks_from_modified(file.modified) && sz == file.length
@@ -1297,15 +1305,6 @@ pub async fn narrow_candidates(
             stale.insert(path_key(&full_name).into_owned());
         }
     }
-    if let Ok(ids) = engine.all_document_ids() {
-        out.removed = ids
-            .iter()
-            .filter(|id| {
-                !scope_keys.contains(path_key(id).as_ref()) && !Path::new(id.as_str()).exists()
-            })
-            .count();
-    }
-
     out.freshness_ms = phase.elapsed().as_millis() as u64;
     let phase = std::time::Instant::now();
     // The index stores unfolded text and exact words: neither folding nor typo

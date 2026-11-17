@@ -679,3 +679,22 @@ Decision (owner, 2026-11-14): build the snapshot when the user first types in Fi
 Measured on the 35,318-chunk scale index (128 MB), macOS release build, one machine: the warm takes about 2.4 s on the worker, and the first query afterwards takes 22 to 25 ms instead of about 2.3 s. Tests: `warm_builds_the_snapshot_once_and_a_write_makes_it_stale`, `typing_in_find_warms_each_built_semantic_index_once`.
 
 Not checked: the trigger in a real window, Windows, indexes above 35k chunks.
+
+## 2026-11-16: warm re-search freshness check reads the index once
+
+Review of the exact path with `examples/exact_bench.rs` (10,000 files x 150 lines, this Mac, release, three runs each). `native_index::narrow_candidates` read every stored document twice per warm re-search: `all_document_metadata` for the (modified, size) map and `all_document_ids` for the removed-file count. The ids are that map's keys, so the second pass is gone.
+
+| | walk | freshness | query |
+|---|---|---|---|
+| before | 49 to 71 ms | 61, 61, 61 ms | 0 ms |
+| after | 37 to 51 ms | 32, 33, 33 ms | 0 ms |
+
+Results are unchanged (same candidates, 104; `native_index` tests pass). One behaviour difference: a failed read of the ids used to leave the removed count at 0 silently; the single read now fails the narrowing, which already falls back to a full scan and reports it.
+
+Also fixed in the harness: the warm cache row printed `cache_reused: 0`, because the cache does not trust files modified within 2 s of its save and the corpus had just been generated; the harness now waits 2.1 s first (10,000 of 10,000 reused, 87 to 180 ms).
+
+Measured, not changed:
+- A warm narrowed re-search is now walk plus freshness (about 85 ms of 85 ms at 10,000 files); the trigram query is under 1 ms. The remaining cost scales with the files in scope, not with the hits.
+- Index build: 5.1 to 6.2 s for 3,000 files (450,000 lines) against 0.13 to 0.24 s for a cold parallel scan of the same files. Not profiled here.
+- Literal search with three filters hitting 63 % of lines: 129 ms against 10 ms for one rare filter (30,000 lines x 5), the regression already recorded on 2026-11-10.
+
