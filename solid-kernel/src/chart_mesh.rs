@@ -361,6 +361,7 @@ fn shape_chart(
                     .checked_add(cdt.num_undirected_edges().saturating_mul(2))
                     .ok_or_else(|| fail(ErrorKind::Limit, "curved chart work overflow"))?;
                 let mut candidates = Vec::new();
+                let before_batch = vertices.len();
                 for edge in cdt.undirected_edges() {
                     work = work
                         .checked_add(1)
@@ -432,6 +433,22 @@ fn shape_chart(
                 // boundaries stay fixed, so all admitted interior points remain in
                 // the same polygonal domain after local Delaunay edge flips.
                 for mut vertex in candidates {
+                    // A chord whose midpoint already holds a vertex (to rounding) is split there: nearly collinear
+                    // points inserted along one chord leave the old chord in the triangulation spanning them, so the
+                    // chord rule meets it again with the same midpoint.
+                    let held = match cdt.locate(Point2::new(vertex.chart[0], vertex.chart[1])) {
+                        spade::PositionInTriangulation::OnVertex(v) => vec![v],
+                        spade::PositionInTriangulation::OnEdge(e) => cdt.directed_edge(e).vertices().map(|v| v.fix()).to_vec(),
+                        spade::PositionInTriangulation::OnFace(f) => cdt.face(f).vertices().map(|v| v.fix()).to_vec(),
+                        _ => Vec::new(),
+                    };
+                    let scale = vertex.chart[0].abs().max(vertex.chart[1].abs()).max(1.);
+                    if held.iter().any(|v| {
+                        let at = cdt.vertex(*v).data().chart;
+                        (at[0] - vertex.chart[0]).abs().max((at[1] - vertex.chart[1]).abs()) <= 1e-12 * scale
+                    }) {
+                        continue;
+                    }
                     vertex.source = SampleKey::FacePoint {
                         face: face_id,
                         index: vertices.len() - boundary_count,
@@ -451,6 +468,9 @@ fn shape_chart(
                     }
                     vertices.push(vertex);
                     handles.push(handle);
+                }
+                if vertices.len() == before_batch {
+                    break;
                 }
             }
         }
@@ -1017,6 +1037,49 @@ mod tests {
                 "mapped triangle is locally inverted: {triangle:?}"
             );
         }
+    }
+
+    /// ctc_02 e2 of the NIST PMI files (Phase 180): the corners of a chart rectangle whose diagonal has a sagitta over the chord rule. The midpoints of the diagonal and of its halves lie
+    /// on the diagonal to rounding only, so a point inserted there leaves the old diagonal (now spanning it) in the
+    /// triangulation; the rule met that chord again with the same midpoint and refused the face as "unresolved".
+    #[test]
+    fn a_chord_spanning_its_own_midpoint_vertex_is_split_once() {
+        let surface = Surface::Torus {
+            frame: Frame { origin: [0., 0., 0.], x: [1., 0., 0.], y: [0., 1., 0.], z: [0., 0., 1.] },
+            major: 8.,
+            minor: 3.
+        };
+        let (w, h) = (2.3317, 5.2859);
+        let points = vec![[0., 0.], [w, 0.], [w, h], [0., h]];
+        let loops = vec![TrimLoop { bound_id: 1, points: points.clone(), is_outer: true }];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(i, &chart)| ChartVertex { chart, world: surface.point(chart).unwrap(), source: SampleKey::Vertex(i as u64) })
+            .collect();
+        let shaped = shape_chart(
+            1,
+            &loops,
+            vertices,
+            100_000,
+            Some(&surface),
+            0.5,
+            Shaping { quality: None, split_boundary: false },
+            &|_, _, _| false,
+        )
+        .unwrap();
+        assert!(shaped.vertices.len() > 4, "the diagonal was not split");
+        let parity = regions(&shaped.cdt, 100_000).unwrap();
+        let area: f64 = shaped
+            .cdt
+            .inner_faces()
+            .filter(|f| parity[f.index()] == Some(true))
+            .map(|f| {
+                let [a, b, c] = f.vertices().map(|v| shaped.vertices[v.index()].chart);
+                ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.
+            })
+            .sum();
+        assert!((area - w * h).abs() < 1e-9, "the chart area {area} is not the rectangle's {}", w * h);
     }
 
     /// The largest corner angle (degrees) of the chart's domain triangles, in 3D.
