@@ -21,30 +21,57 @@ use crate::gpu_viewer::{
 use crate::toolboxes::search::{indexing::format_eta, model, preview, run_view, settings_view};
 use search_core::models::{ExcludeScope, MatchMode};
 
+/// The table rows of the last frame. The selection is not part of the key: a
+/// selection move flips the flag of the old and the new row only.
 pub(super) struct RowsCache {
     started: Option<std::time::Instant>,
     result_count: usize,
     sort: (SortKey, bool),
     filter: String,
-    selected: Option<usize>,
     root: String,
     #[cfg(feature = "neural-search")]
     relevance_key: String,
+    /// The result index of each row, in row order.
+    order: Vec<usize>,
+    /// The result index of the row whose `selected` flag is set.
+    flagged: Option<usize>,
     rows: std::sync::Arc<Vec<DocRow>>,
 }
 
 impl RowsCache {
-    fn current(&self, s: &SearchSession) -> bool {
+    /// Same run, sort, filter and root: the rows differ at most by new results and the selection.
+    fn same_view(&self, s: &SearchSession) -> bool {
         self.started == s.st.run.started
-            && self.result_count == s.st.run.results.len()
             && self.sort == s.sort
             && self.filter == s.filter
-            && self.selected == s.selected
             && self.root == s.st.config.search_path
+    }
+
+    fn current(&self, s: &SearchSession) -> bool {
+        self.same_view(s) && self.result_count == s.st.run.results.len() && {
+            #[cfg(feature = "neural-search")]
+            {
+                self.relevance_key == s.relevance_key()
+            }
+            #[cfg(not(feature = "neural-search"))]
+            {
+                true
+            }
+        }
+    }
+
+    /// New results of the same run in found order can be appended. With relevance scores on
+    /// the cached rows (or ready for the new count) the cells change, so the rows are rebuilt.
+    fn can_extend(&self, s: &SearchSession) -> bool {
+        self.same_view(s)
+            && self.result_count < s.st.run.results.len()
+            && s.sort == (SortKey::Found, false)
             && {
                 #[cfg(feature = "neural-search")]
                 {
-                    self.relevance_key == s.relevance_key()
+                    s.relevance_scores.as_ref().is_none_or(|(key, _)| {
+                        *key != self.relevance_key && *key != s.relevance_key()
+                    })
                 }
                 #[cfg(not(feature = "neural-search"))]
                 {
@@ -53,15 +80,25 @@ impl RowsCache {
             }
     }
 
-    fn can_extend(&self, s: &SearchSession) -> bool {
-        self.started == s.st.run.started
-            && self.result_count < s.st.run.results.len()
-            && self.sort == (SortKey::Found, false)
-            && s.sort == (SortKey::Found, false)
-            && self.filter == s.filter
-            && self.selected == s.selected
-            && self.root == s.st.config.search_path
+    /// Moves the `selected` flag to `current`, touching only the two rows involved.
+    fn flag(&mut self, current: Option<usize>) {
+        if self.flagged == current {
+            return;
+        }
+        let rows = std::sync::Arc::make_mut(&mut self.rows);
+        for (index, selected) in [(self.flagged, false), (current, true)] {
+            if let Some(row) = index.and_then(|i| self.order.iter().position(|&o| o == i)) {
+                rows[row].selected = selected;
+            }
+        }
+        self.flagged = current;
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many rows `result_row` built on this thread (tests of the rows cache).
+    pub(super) static ROWS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn e(label: &str, shortcut: &str, a: SearchAct) -> Entry {
@@ -963,49 +1000,46 @@ fn table(s: &SearchSession) -> DocTable {
         sort: Some(act(SearchAct::SortBy(key))),
         sorted: (s.sort.0 == key).then_some(s.sort.1),
     };
+    let root =
+        s.st.config
+            .search_path
+            .trim()
+            .trim_end_matches(['/', '\\'])
+            .to_string();
     let cached = {
         let mut cache = s.rows_cache.borrow_mut();
-        if let Some(c) = cache.as_mut() {
+        cache.as_mut().and_then(|c| {
             if c.can_extend(s) {
-                let first_implicit = c.rows.is_empty() && s.selected.is_none();
                 let needle = s.filter.trim().to_lowercase();
-                let root =
-                    s.st.config
-                        .search_path
-                        .trim()
-                        .trim_end_matches(['/', '\\'])
-                        .to_string();
                 for i in c.result_count..run.results.len() {
                     if needle.is_empty()
                         || run.results[i].full_name.to_lowercase().contains(&needle)
                     {
-                        let selected =
-                            s.selected == Some(i) || (first_implicit && c.rows.is_empty());
-                        std::sync::Arc::make_mut(&mut c.rows)
-                            .push(result_row(s, i, selected, &root));
+                        std::sync::Arc::make_mut(&mut c.rows).push(result_row(s, i, false, &root));
+                        c.order.push(i);
                     }
                 }
                 c.result_count = run.results.len();
+                #[cfg(feature = "neural-search")]
+                {
+                    c.relevance_key = s.relevance_key();
+                }
             }
-            if c.current(s) {
-                Some(c.rows.clone())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+            c.current(s).then(|| {
+                // `SearchSession::current` over the cached order: no filter or sort pass per frame.
+                let current = s
+                    .selected
+                    .filter(|i| c.order.contains(i))
+                    .or_else(|| c.order.first().copied());
+                c.flag(current);
+                c.rows.clone()
+            })
+        })
     };
     let rows: std::sync::Arc<Vec<DocRow>> = cached.unwrap_or_else(|| {
-        let view = s.view();
+        let order = s.view();
         let current = s.current();
-        let root =
-            s.st.config
-                .search_path
-                .trim()
-                .trim_end_matches(['/', '\\'])
-                .to_string();
-        let rows: Vec<DocRow> = view
+        let rows: Vec<DocRow> = order
             .iter()
             .map(|&i| result_row(s, i, current == Some(i), &root))
             .collect();
@@ -1015,10 +1049,11 @@ fn table(s: &SearchSession) -> DocTable {
             result_count: run.results.len(),
             sort: s.sort,
             filter: s.filter.clone(),
-            selected: s.selected,
             root: s.st.config.search_path.clone(),
             #[cfg(feature = "neural-search")]
             relevance_key: s.relevance_key(),
+            order,
+            flagged: current,
             rows: rows.clone(),
         });
         rows
@@ -1081,6 +1116,8 @@ fn table(s: &SearchSession) -> DocTable {
 }
 
 fn result_row(s: &SearchSession, i: usize, selected: bool, root: &str) -> DocRow {
+    #[cfg(test)]
+    ROWS_BUILT.with(|n| n.set(n.get() + 1));
     let r = &s.st.run.results[i];
     let folder = std::path::Path::new(&r.full_name)
         .parent()
@@ -1238,7 +1275,10 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
         }
     }
     if r.low_confidence_pdf {
-        notes.push(DocNote::new("PDF: check source", "Text was read from a PDF and may be misread. Verify against the original."));
+        notes.push(DocNote::new(
+            "PDF: check source",
+            "Shown for every PDF read by OCR and for a PDF whose text layer looks garbled. It is a rule, not a measured accuracy: no recognition score exists for this text. Verify against the original.",
+        ));
     }
     let preview = s.preview.as_ref().filter(|p| p.path == r.full_name);
     let text = preview.and_then(|p| p.text.clone());
@@ -1825,8 +1865,11 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
                         plain(path),
                         f64::from(*cosine_distance) * 100.0
                     ),
-                    search_core::alerts::AlertChange::Touched { path } => {
+                    search_core::alerts::AlertChange::Edited { path } => {
                         format!("Edited outside the sampled text · {}", plain(path))
+                    }
+                    search_core::alerts::AlertChange::Touched { path } => {
+                        format!("Saved again, read text unchanged · {}", plain(path))
                     }
                     search_core::alerts::AlertChange::Removed { path } => {
                         format!("No longer a hit · {}", plain(path))
