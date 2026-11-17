@@ -1865,8 +1865,11 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
                         plain(path),
                         f64::from(*cosine_distance) * 100.0
                     ),
-                    search_core::alerts::AlertChange::Touched { path } => {
+                    search_core::alerts::AlertChange::Edited { path } => {
                         format!("Edited outside the sampled text · {}", plain(path))
+                    }
+                    search_core::alerts::AlertChange::Touched { path } => {
+                        format!("Saved again, read text unchanged · {}", plain(path))
                     }
                     search_core::alerts::AlertChange::Removed { path } => {
                         format!("No longer a hit · {}", plain(path))
