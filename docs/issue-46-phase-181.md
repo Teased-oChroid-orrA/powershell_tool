@@ -21,5 +21,22 @@ An arc end off its circle by more than `geometry_tolerance_mm` and at most `heal
 
 | File | Reason |
 |---|---|
-| ctc_02 ap203, ctc_02 rc, ctc_05 e1 | tangent spline faces about 1.0e-2 mm apart: the heal's compromise point is 5.13e-3, 5.21e-3 and 5.46e-3 mm from each face, over the 5.0e-3 geometry tolerance. Needs chord / 9 (5.56e-3 mm) or more: owner decision, not taken. Not tested whether they then import end to end. |
+| ctc_02 ap203, ctc_02 rc, ctc_05 e1 | tangent spline faces about 1.0e-2 mm apart: the heal's compromise point is over the 5.0e-3 geometry tolerance. Chord / 9 was tried and does not admit them (below). |
 | ftc_08 e1-tg | tessellated only, no B-rep solid; not importable by design. |
+
+## Tried and dropped: geometry tolerance at chord / 9
+
+The owner allowed a trial of `geometry_tolerance_mm = chord / 9` (5.56e-3 mm) in `Options::foreign_cad` on 2026-11-16. Full corpus, same harness: **still 29 of 33, no file gained.**
+
+| File | At chord / 9 |
+|---|---|
+| ctc_02 rc | the first stalled sample (76, 5.21e-3 mm) passes; sample 91 of the same edge `#13622` stalls at 5.64e-3 mm |
+| ctc_05 e1 | sample 7 of edge `#2769` stalls at 6.28e-3 mm (sample 6 was 5.46e-3) |
+| ctc_02 ap203 | the heal completes; the read then refuses with "sampled trim polygon self-intersects or touches" |
+
+The earlier figures were each file's first failing sample, not its worst. Admitting rc and e1 would need at least 6.3e-3 mm (chord / 7.9), with no evidence that this is the worst sample either, and ap203 fails at a later stage whatever the tolerance.
+
+It also changes files that already import: 14 of the 29 read with different triangle counts and volumes (edges between 5.0e-3 and 5.56e-3 mm off a face are no longer healed onto it), by up to 3.4e-5 of the volume (ftc_10 e2: 188,938.17 to 188,944.54 mm3).
+
+No gain and a changed baseline: not adopted, the tolerance stays at chord / 10. What these three files need is not a slightly wider tolerance but a treatment of tangent faces with a gap (ctc_02 rc, ctc_05 e1) and of the trim polygon that results once the heal passes (ctc_02 ap203).
+
