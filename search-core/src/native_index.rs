@@ -392,6 +392,13 @@ fn record_failure(outcome: &mut CorpusIndexOutcome, full_name: &str, ext: &str, 
 /// whether this threshold was reached.
 const COMMIT_BATCH_SIZE: i32 = 200;
 
+/// A count-triggered commit also waits until this long after the previous one. A commit is a
+/// handful of fsyncs whatever it holds, so on small files a commit per 200 documents was most of
+/// the build (10,000 small files: 18.3 s, 4.8 s with this; `docs/search-benchmarks.md`). Slow
+/// documents (PDF, OCR) still commit every 200, and [`COMMIT_BATCH_BYTES`] still bounds the
+/// uncommitted text, so an interrupted build loses at most about this much work or that much text.
+const COMMIT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Proactively indexes every extension-matching file under
 /// `settings.search_path` (issue #6 Phase 1 - see the plan doc) -
 /// independent of any filter text, unlike [`index_hits_for_fast_search`]
@@ -977,6 +984,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
     let work_total = work.len() as i32;
     let mut pending: Vec<PendingDoc> = Vec::new();
     let mut pending_bytes = 0usize;
+    let mut last_commit = std::time::Instant::now();
     let mut done = 0i32;
     let mut work_iter = work.into_iter();
 
@@ -1092,7 +1100,9 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         pending_bytes += doc.body.len();
         pending.push(doc);
 
-        if pending.len() as i32 >= COMMIT_BATCH_SIZE || pending_bytes >= COMMIT_BATCH_BYTES {
+        if (pending.len() as i32 >= COMMIT_BATCH_SIZE && last_commit.elapsed() >= COMMIT_MIN_INTERVAL)
+            || pending_bytes >= COMMIT_BATCH_BYTES
+        {
             report(
                 &outcome,
                 IndexStage::Committing,
@@ -1101,6 +1111,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
                 &full_name,
             );
             commit_pending(engine, &mut pending, &mut outcome, "commit").await;
+            last_commit = std::time::Instant::now();
             pending_bytes = 0;
         }
     }
@@ -1276,15 +1287,23 @@ pub async fn narrow_candidates(
     // Freshness: which in-scope files the index lacks or has out of date.
     // Unreadable metadata fails the narrowing (the caller falls back to a
     // full scan and reports it) instead of looking like an empty index.
-    let known = read_known(engine)?;
+    // One pass over the index's stored documents serves both the freshness map and the removed count.
+    let known_ids = engine.all_document_metadata()?;
     // OCR switched on since the build: the indexed PDFs lack their scanned pages' text.
     let ocr_pending = settings.ocr_scanned_pdfs && !stored_ocr_flag(engine.index_directory());
     let mut stale: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut scope_keys: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(in_scope.len());
     for file in &in_scope {
+        scope_keys.insert(path_key(&file.path.to_string_lossy()).into_owned());
+    }
+    out.removed = known_ids
+        .keys()
+        .filter(|id| !scope_keys.contains(path_key(id).as_ref()) && !Path::new(id.as_str()).exists())
+        .count();
+    let known = known_by_key(known_ids, cfg!(windows));
+    for file in &in_scope {
         let full_name = file.path.to_string_lossy().into_owned();
-        scope_keys.insert(path_key(&full_name).into_owned());
         let up_to_date = matches!(
             known.get(path_key(&full_name).as_ref()),
             Some(&(m, sz)) if m == ticks_from_modified(file.modified) && sz == file.length
@@ -1297,15 +1316,6 @@ pub async fn narrow_candidates(
             stale.insert(path_key(&full_name).into_owned());
         }
     }
-    if let Ok(ids) = engine.all_document_ids() {
-        out.removed = ids
-            .iter()
-            .filter(|id| {
-                !scope_keys.contains(path_key(id).as_ref()) && !Path::new(id.as_str()).exists()
-            })
-            .count();
-    }
-
     out.freshness_ms = phase.elapsed().as_millis() as u64;
     let phase = std::time::Instant::now();
     // The index stores unfolded text and exact words: neither folding nor typo
