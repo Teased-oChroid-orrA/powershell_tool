@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tantivy::collector::{Collector, DocSetCollector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
-use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermQuery};
 use tantivy::schema::{
     IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, FAST, INDEXED, STORED,
     STRING, TEXT,
@@ -693,18 +693,27 @@ impl NativeSearchEngine {
     /// --remove-orphaned`), so an `AllQuery` full-index scan here is fine;
     /// nothing performance-sensitive calls this.
     pub fn all_document_ids(&self) -> NsResult<Vec<String>> {
-        let searcher = self.reader.searcher();
-        let doc_addrs = searcher
-            .search(&AllQuery, &DocSetCollector)
-            .map_err(|e| NsError::index_error(e.to_string()))?;
-        let mut ids = Vec::with_capacity(doc_addrs.len());
-        for addr in doc_addrs {
-            let retrieved: TantivyDocument = searcher
-                .doc(addr)
-                .map_err(|e| NsError::index_error(e.to_string()))?;
-            ids.push(text_value(&retrieved, self.fields.id));
-        }
+        let mut ids = Vec::with_capacity(self.num_docs() as usize);
+        self.for_each_stored_document(|d| ids.push(text_value(d, self.fields.id)))?;
         Ok(ids)
+    }
+
+    /// Every live document's stored fields, segment by segment in document order. The store is
+    /// compressed in blocks: reading it in order decompresses each block once, where fetching
+    /// documents by address in the arbitrary order of a collected set decompressed a block for
+    /// almost every document once the index outgrew the reader's block cache (measured in
+    /// `docs/search-benchmarks.md`, 2026-11-16).
+    fn for_each_stored_document(&self, mut each: impl FnMut(&TantivyDocument)) -> NsResult<()> {
+        let searcher = self.reader.searcher();
+        for segment in searcher.segment_readers() {
+            let store = segment
+                .get_store_reader(1)
+                .map_err(|e| NsError::index_error(e.to_string()))?;
+            for document in store.iter::<TantivyDocument>(segment.alive_bitset()) {
+                each(&document.map_err(|e| NsError::index_error(e.to_string()))?);
+            }
+        }
+        Ok(())
     }
 
     /// Every indexed document's `(modified_unix, size)` keyed by id, in ONE
@@ -715,23 +724,13 @@ impl NativeSearchEngine {
     /// ~300 segments, i.e. ~18s to freshness-check a 100k-file folder, vs
     /// ~0.2s for this single pass). Use this whenever checking many files.
     pub fn all_document_metadata(&self) -> NsResult<std::collections::HashMap<String, (i64, i64)>> {
-        let searcher = self.reader.searcher();
-        let doc_addrs = searcher
-            .search(&AllQuery, &DocSetCollector)
-            .map_err(|e| NsError::index_error(e.to_string()))?;
-        let mut map = std::collections::HashMap::with_capacity(doc_addrs.len());
-        for addr in doc_addrs {
-            let d: TantivyDocument = searcher
-                .doc(addr)
-                .map_err(|e| NsError::index_error(e.to_string()))?;
+        let mut map = std::collections::HashMap::with_capacity(self.num_docs() as usize);
+        self.for_each_stored_document(|d| {
             map.insert(
-                text_value(&d, self.fields.id),
-                (
-                    int_value(&d, self.fields.modified),
-                    int_value(&d, self.fields.size),
-                ),
+                text_value(d, self.fields.id),
+                (int_value(d, self.fields.modified), int_value(d, self.fields.size)),
             );
-        }
+        })?;
         Ok(map)
     }
 
