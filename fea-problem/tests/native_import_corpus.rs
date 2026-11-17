@@ -1,7 +1,13 @@
 //! Evidence, not a gate: the production native import (`import_step_native`) over every STEP file of a local folder
 //! (`STEP_DIR`, not committed: a licensed real-CAD corpus such as the NIST PMI files). Prints one line per file and a tally.
 //! `cargo test -p fea-problem --release --test native_import_corpus -- --ignored --nocapture`
+//! With `MESH=1` every imported file is also meshed through `solid_mesh` at the import's own size (the application's path),
+//! printing tets, the volume against the tessellation's and the share of cells under the default quality gate.
+use fea_core::meshing::adjacency::Adjacency;
+use fea_core::meshing::quality::QualityThresholds;
 use fea_problem::native_solid::import_step_native;
+use fea_problem::solid::solid_mesh;
+use fea_problem::Problem;
 
 #[test]
 #[ignore = "needs STEP_DIR, a local corpus"]
@@ -20,7 +26,8 @@ fn the_native_import_over_a_local_corpus() {
         }
     }
     paths.sort();
-    let (mut ok, mut n) = (0, 0);
+    let mesh = std::env::var_os("MESH").is_some();
+    let (mut ok, mut n, mut meshed) = (0, 0, 0);
     for p in &paths {
         let text = String::from_utf8_lossy(&std::fs::read(p).unwrap()).into_owned();
         let t = std::time::Instant::now();
@@ -45,6 +52,23 @@ fn the_native_import_over_a_local_corpus() {
             Err(e) => format!("REFUSED: {}", e.chars().take(600).collect::<String>()),
         };
         eprintln!("{:<42} {:>6.1}s  {what}", p.file_name().unwrap().to_string_lossy(), t.elapsed().as_secs_f64());
+        if mesh && r.is_ok() {
+            let t = std::time::Instant::now();
+            let line = match Problem::from_step("corpus", &text).and_then(|pr| solid_mesh(&pr)) {
+                Ok((m, rep)) => {
+                    meshed += 1;
+                    let gate = QualityThresholds::default();
+                    let q = m.quality().with_progression(&Adjacency::new(&m));
+                    let below = q.elements.iter().filter(|e| e.scaled_jacobian < gate.min_scaled_jacobian).count();
+                    format!("meshed: {} tets, volume {:.3}, min scaled Jacobian {:.3}, {below} under the gate, gate {}", rep.tets, rep.volume, q.min_scaled_jacobian, if q.acceptable(&gate) { "ok" } else { "NO" })
+                }
+                Err(e) => format!("MESH REFUSED: {}", e.chars().take(300).collect::<String>()),
+            };
+            eprintln!("{:<42} {:>6.1}s  {line}", "  mesh", t.elapsed().as_secs_f64());
+        }
     }
     eprintln!("summary: {ok} of {n} files import natively");
+    if mesh {
+        eprintln!("summary: {meshed} of {ok} imported files mesh through solid_mesh");
+    }
 }
