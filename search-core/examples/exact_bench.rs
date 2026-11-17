@@ -130,6 +130,8 @@ async fn main() {
     }
     let r = timed!("cold full scan, sequential", search_core::orchestrator::run(seq.clone(), None, CancellationToken::new()));
     println!("    results: {}", r.unwrap().file_results.len());
+    // The cache does not trust a file modified within 2 s of its save (racily clean): age the corpus first.
+    std::thread::sleep(std::time::Duration::from_millis(2100));
     let _ = timed!("cold full scan, parallel (+cache write)", search_core::orchestrator::run(cached.clone(), None, CancellationToken::new()));
     let warm = timed!("warm re-run, cache hit", search_core::orchestrator::run(cached.clone(), None, CancellationToken::new())).unwrap();
     println!("    cache_reused: {}", warm.summary.cache_reused);
