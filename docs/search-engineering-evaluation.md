@@ -111,6 +111,19 @@ Reading. The byte scanner has no page numbers, so only yolowpdf can answer a pag
 
 Limits. 10 judged documents and 160 queries, one machine, scanner against yolowpdf only (no poppler reference here). Page numbers come from each backend's own page split, so a page-numbering disagreement with the judges' (PDF page index) counts as a miss and is not separated from a retrieval miss. Binary relevance ignores the score-2 grading. The numbers are not comparable with the Markdown-chunk baseline above (different corpus: whole folder of 27 PDFs, different granularity). No ranker or extraction default was changed on this basis.
 
+### 2026-11-17: scanner with page numbers (page citations for xref-stream PDFs, #309) against yolowpdf
+
+After the lopdf page-tree fallback (#309) the byte scanner also reports page numbers, so both backends can be scored at page level. Same harness and 160 queries; the scanner row is `pdf_folder_eval ... scanner` built with `--features semantic-search,pdf-yolow,ocr` (yolowpdf row: the table above).
+
+| Backend | PDFs read | Lines | Chunks | Doc hit@1 | Doc hit@5 | Page hit@1 | Page hit@10 | Page nDCG@10 | Page recall@100 | Wall time |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| scanner + page map | 27 of 28 | 512,110 | 16,913 | 0.700 | 0.900 | 0.356 | 0.738 | 0.355 | 0.700 | 722 s |
+| yolowpdf | 27 of 28 | 80,945 | 15,697 | 0.675 | 0.912 | 0.375 | 0.775 | 0.383 | 0.711 | 1,031 s |
+
+Reading. Document level: the scanner is ahead on hit@1 (0.700 against 0.675, 4 of 160 queries) and behind on hit@5 (0.900 against 0.912, 2 queries). Page level: yolowpdf leads by 0.019 on hit@1, 0.037 on hit@10 and 0.028 on nDCG@10 (3 to 6 queries). Every gap is a handful of queries on 10 judged documents, one machine, not tested for significance. Page numbering from the byte scanner is therefore usable (nDCG@10 0.355 against 0.383), where the previous scanner run scored 0.000 only because of a stale binary.
+
+Decision: the default stays the byte scanner; "Better PDF text (trial)" stays opt-in. The numbers show no document-level win for yolowpdf and a small page-level one, which does not justify changing the default on retrieval grounds alone. (The separate extraction-quality case for yolowpdf, CID-font files the scanner reads badly, stays in `docs/search-benchmarks.md`; it is a reason to keep the option, not measured here.) Not measured: the effect of switching on unfiltered retrieval over mixed (non-PDF) folders, and wall time of the two backends on a cold machine (722 s against 1,031 s here came from separate runs, not a controlled comparison).
+
 Harness history. The first run returned all zeros: the index serves a file only while its stored mtime and size match the file on disk, and the harness stored a made-up mtime. It now stores the real one. The same rule applies to any caller of `index_document_with_pages`.
 
 ### Mixed text and scanned pages under yolowpdf (item 8)
