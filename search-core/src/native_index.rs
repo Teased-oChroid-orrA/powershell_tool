@@ -250,6 +250,8 @@ pub enum IndexStage {
     /// Comparing each file's modified time/size against the index to find
     /// the ones that actually need (re)indexing.
     Checking,
+    /// Reading every indexed file once to compare its content hash ([`verify_content`]).
+    Verifying,
     /// Reading + extracting + indexing the files that changed.
     Indexing,
     Committing,
@@ -260,6 +262,7 @@ impl IndexStage {
         match self {
             IndexStage::Enumerating => "Scanning folder",
             IndexStage::Checking => "Checking for changes",
+            IndexStage::Verifying => "Verifying content",
             IndexStage::Indexing => "Indexing",
             IndexStage::Committing => "Committing",
         }
@@ -319,6 +322,9 @@ pub struct CorpusIndexOutcome {
     /// Files that still lack current vectors after this run because the pass limit (`EmbedPolicy::limit`) was
     /// reached. They are in the exact index and found by exact search; a later pass embeds them.
     pub semantic_pending_count: i32,
+    /// Set by a run that verified content first: indexed files whose bytes differed from the stored hash (re-indexed by
+    /// that run) and, of those, the ones whose modified time and size had not changed. `None` when no check ran.
+    pub content_check: Option<ContentCheck>,
 }
 
 /// Replaces anything path-like in `text` with `<path>`: a whitespace/quote-

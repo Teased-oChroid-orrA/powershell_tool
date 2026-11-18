@@ -2240,6 +2240,53 @@ fn keep_index_current_updates_the_index_for_changed_files_only() {
     assert_eq!(hits.len(), 1);
 }
 
+/// "Verify content" reads every indexed file once, so an edit that kept the size and the modified time (invisible to
+/// Build / update) is found, says so in the status, and is searchable afterwards.
+#[test]
+fn verify_content_finds_an_edit_that_build_update_cannot_see() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::write(root.join("a.txt"), "alpha apple").unwrap();
+    std::fs::write(root.join("b.txt"), "bravo stays").unwrap();
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = root.to_string_lossy().into_owned();
+    s.st.config.index.enabled = true;
+    let spin = |s: &mut SearchSession| {
+        let started = Instant::now();
+        while s.st.index_run.is_building {
+            assert!(started.elapsed() < Duration::from_secs(60), "timed out: {}", s.status);
+            s.poll();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        s.poll();
+    };
+    act_on(&mut s, SearchAct::BuildIndex);
+    spin(&mut s);
+    assert_eq!(s.st.index_run.docs, Some(2));
+
+    let before = std::fs::metadata(root.join("a.txt")).unwrap().modified().unwrap();
+    std::fs::write(root.join("a.txt"), "alpha pears").unwrap();
+    std::fs::File::options().write(true).open(root.join("a.txt")).unwrap().set_modified(before).unwrap();
+
+    act_on(&mut s, SearchAct::BuildIndex);
+    spin(&mut s);
+    assert!(s.st.index_run.status_text.contains("0 new/updated"), "{}", s.st.index_run.status_text);
+
+    act_on(&mut s, SearchAct::VerifyIndexContent);
+    assert!(s.st.index_run.is_building, "{}", s.status);
+    spin(&mut s);
+    let text = &s.st.index_run.status_text;
+    assert!(text.contains("1 new/updated") && text.contains("1 changed, 1 without a new time or size"), "{text}");
+
+    let index_dir = crate::toolboxes::search::indexing::index_directory(s.st.config.index.location, &s.st.config.search_path, "");
+    let engine = native_search::engine::NativeSearchEngine::open_or_create(&index_dir).unwrap();
+    assert_eq!(search_core::native_index::search(&engine, "pears", 5).unwrap().len(), 1, "the new text is indexed");
+
+    act_on(&mut s, SearchAct::VerifyIndexContent);
+    spin(&mut s);
+    assert!(s.st.index_run.status_text.contains("all 2 files match"), "{}", s.st.index_run.status_text);
+}
+
 #[test]
 fn related_files_note_lists_reasons_and_marks_the_inferred_ones() {
     use search_core::catalog_edges::Reason;

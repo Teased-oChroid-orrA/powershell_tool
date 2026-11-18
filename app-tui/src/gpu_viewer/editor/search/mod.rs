@@ -78,6 +78,8 @@ pub enum SearchAct {
     /// Choose the folder reports and exports are written to, with the same picker.
     BrowseOutput,
     BuildIndex,
+    /// Like `BuildIndex`, but first reads every indexed file once to find edits that kept the size and modified time.
+    VerifyIndexContent,
     /// Add every other folder with a recorded fast index to this search (the machine-level catalog).
     AlsoIndexedFolders,
     #[cfg(feature = "neural-search")]
@@ -1380,11 +1382,21 @@ impl SearchSession {
     }
 
     fn build_index(&mut self) {
+        self.start_index_job(search::start_index_build, "Building the fast index...");
+    }
+
+    /// Reads every indexed file once and compares it with the content hash stored when it was indexed, then updates the
+    /// index: finds the edits the time-and-size check cannot see.
+    fn verify_index_content(&mut self) {
+        self.start_index_job(search::start_index_verify, "Checking the content of every indexed file...");
+    }
+
+    fn start_index_job(&mut self, start: fn(&mut SearchToolState) -> Vec<Effect>, started: &str) {
         if self.st.run.is_running {
             self.status = "Wait for the search to finish before building the index.".into();
             return;
         }
-        let effects = search::start_index_build(&mut self.st);
+        let effects = start(&mut self.st);
         if effects.is_empty() {
             self.status = if self.st.index_run.is_building {
                 "The index is already building.".into()
@@ -1394,7 +1406,7 @@ impl SearchSession {
             return;
         }
         self.index_started = Some(Instant::now());
-        self.status = "Building the fast index...".into();
+        self.status = started.into();
         self.execute(effects);
     }
 
@@ -2492,6 +2504,7 @@ impl SearchSession {
             SearchAct::AlsoIndexedFolders => self.also_indexed_folders(),
             SearchAct::BrowseOutput => self.browse_output(),
             SearchAct::BuildIndex => self.build_index(),
+            SearchAct::VerifyIndexContent => self.verify_index_content(),
             #[cfg(feature = "neural-search")]
             SearchAct::SaveAlert => self.save_alert(),
             #[cfg(feature = "neural-search")]
