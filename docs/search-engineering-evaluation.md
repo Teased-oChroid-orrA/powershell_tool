@@ -111,6 +111,19 @@ Reading. The byte scanner has no page numbers, so only yolowpdf can answer a pag
 
 Limits. 10 judged documents and 160 queries, one machine, scanner against yolowpdf only (no poppler reference here). Page numbers come from each backend's own page split, so a page-numbering disagreement with the judges' (PDF page index) counts as a miss and is not separated from a retrieval miss. Binary relevance ignores the score-2 grading. The numbers are not comparable with the Markdown-chunk baseline above (different corpus: whole folder of 27 PDFs, different granularity). No ranker or extraction default was changed on this basis.
 
+### 2026-11-17: scanner with page numbers (page citations for xref-stream PDFs, #309) against yolowpdf
+
+After the lopdf page-tree fallback (#309) the byte scanner also reports page numbers, so both backends can be scored at page level. Same harness and 160 queries; the scanner row is `pdf_folder_eval ... scanner` built with `--features semantic-search,pdf-yolow,ocr` (yolowpdf row: the table above).
+
+| Backend | PDFs read | Lines | Chunks | Doc hit@1 | Doc hit@5 | Page hit@1 | Page hit@10 | Page nDCG@10 | Page recall@100 | Wall time |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| scanner + page map | 27 of 28 | 512,110 | 16,913 | 0.700 | 0.900 | 0.356 | 0.738 | 0.355 | 0.700 | 722 s |
+| yolowpdf | 27 of 28 | 80,945 | 15,697 | 0.675 | 0.912 | 0.375 | 0.775 | 0.383 | 0.711 | 1,031 s |
+
+Reading. Document level: the scanner is ahead on hit@1 (0.700 against 0.675, 4 of 160 queries) and behind on hit@5 (0.900 against 0.912, 2 queries). Page level: yolowpdf leads by 0.019 on hit@1, 0.037 on hit@10 and 0.028 on nDCG@10 (3 to 6 queries). Every gap is a handful of queries on 10 judged documents, one machine, not tested for significance. Page numbering from the byte scanner is therefore usable (nDCG@10 0.355 against 0.383), where the previous scanner run scored 0.000 only because of a stale binary.
+
+Decision: the default stays the byte scanner; "Better PDF text (trial)" stays opt-in. The numbers show no document-level win for yolowpdf and a small page-level one, which does not justify changing the default on retrieval grounds alone. (The separate extraction-quality case for yolowpdf, CID-font files the scanner reads badly, stays in `docs/search-benchmarks.md`; it is a reason to keep the option, not measured here.) Not measured: the effect of switching on unfiltered retrieval over mixed (non-PDF) folders, and wall time of the two backends on a cold machine (722 s against 1,031 s here came from separate runs, not a controlled comparison).
+
 Harness history. The first run returned all zeros: the index serves a file only while its stored mtime and size match the file on disk, and the harness stored a made-up mtime. It now stores the real one. The same rule applies to any caller of `index_document_with_pages`.
 
 ### Mixed text and scanned pages under yolowpdf (item 8)
@@ -152,3 +165,17 @@ Same 160 judged queries, restricted to the 10 documents that hold judged pages (
 - **Cost:** about 150x the indexing time on this 8 GB M1 (measured; the first part of the run competed with a Rust eval and swapped, so an uncontended rate would be better but not 150x better), about 17x the index size, a 4.6 GB model, and a VLM forward pass per query (43 s for 160 queries, plus 18 s to score) that must run on a GPU or large CPU model.
 - **Verdict:** no. The gain is real but is mostly in deep recall and page-level ordering; the top-10 hit rate, which is what a reader sees, barely moves. It does not justify GBs of model, a GPU requirement, and a multi-hour first index on the target machine, so it is not delivered. Revisit only if a much smaller late-interaction model or an accelerator becomes available, or if recall@100 for a reranker candidate set becomes the binding limit.
 - **Limits:** one machine, 10 documents, 160 queries, binary relevance, one image size (896); no tuning of either side; MaxSim over all pages (no ANN), which is exact and would only get less accurate at scale. Scratch venv and model cache (about 9 GB) lived in `/private/tmp`.
+
+## 2026-11-17: folder acceptance harness on 400 FAA airworthiness directives (first run)
+
+Harness: `search-core/examples/folder_acceptance.rs`, questions `search-core/examples/data/faa_ad_questions.tsv` (25 rows). It builds the product index of a folder (exact plus semantic), asks each question of `SemanticIndex::search_with_settings` as the Search window does, and scores file-level hits for answerable questions and the best passage's similarity for separating answerable from unanswerable ones. Folder: 400 public FAA directives as text (`../benchmarks/faa-ad`, 401 files, 400 embedded). Command: `cargo run -p search-core --release --features semantic-search --example folder_acceptance -- <work-dir> ../benchmarks/faa-ad search-core/examples/data/faa_ad_questions.tsv .txt`.
+
+The question set is **machine-authored** from the directive summaries (17 answerable, 8 out of domain such as oat flour or a pressure-vessel hoop stress); the gold set for an answerable question is every file whose text contains all its key phrases. It is not human judged.
+
+| Questions | hit@1 | hit@3 | hit@10 | MRR@10 | mean top similarity | AUC answerable vs unanswerable |
+|---|---:|---:|---:|---:|---:|---:|
+| 17 answerable, 8 unanswerable | 0.941 | 1.000 | 1.000 | 0.961 | 0.623 answerable, 0.337 unanswerable | 0.978 |
+
+Reading. One answerable question ranked its file third (AS332 gearbox suspension bar screws; top similarity 0.714), the other 16 ranked first. The AUC of 0.978 means the two groups overlap slightly (the unanswerable interference-fit question reached 0.415, the nearest bushing directive; one answerable question reached 0.714 at rank 3), and 25 questions cannot place an abstention threshold for real folders. Indexing 400 files took 1,406 s on this 8 GB M1 while another embedding run shared the CPU (not an uncontended rate).
+
+Limits. 25 machine-written questions with phrase-based gold, one folder of short text files (no PDFs, tables or scans), one machine. It shows the harness works and that a plain directive folder is easy; the acceptance set that matters is still a human-judged one built from the user's own folders. No default was changed on this basis.

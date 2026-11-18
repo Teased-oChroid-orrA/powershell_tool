@@ -897,3 +897,19 @@ The scanner's page mapper (`pdf_page_map.rs`) read only classic cross-reference 
 | after (lopdf fallback) | 512,110 | 111,229 | 62,227 | 57,965 (93.2%) | 25 of 27 |
 
 Uncited lines are mostly fragments from streams no page draws from (fonts, metadata); of lines poppler can check, 93.2% now carry the right page. Mapping Form XObject streams as well added one line (111,230), so it is not in the code. Two files stay uncited (`TO_35-1-18`, `TO_36-1-191`, the second also yields nothing under yolowpdf). Cost: the fallback loads the file with `lopdf` (21 s for all 27 files together, including the extraction). Tests: `pdf_page_map::tests::{xref_stream_pdfs_are_mapped_through_lopdf, both_readers_agree_on_a_classic_file, a_stream_shared_by_two_pages_is_not_attributed_by_the_fallback}`. #127: not reproduced (see 2026-11-10); the mapper limit it was filed for is now removed.
+
+## 2026-11-17: semantic index above the snapshot limit (streaming path, #240 P2-1)
+
+Probe: `search-core/examples/semantic_stream_probe.rs` (`cargo run -p search-core --release --features semantic-search --example semantic_stream_probe -- <source semantic.sqlite> <out-dir> <copies>`). It copies the rows of a real index (the 15,075-chunk scanner index of the 27 ViDoRe PDFs, 26 documents) `copies` times under new paths, each with a real one-byte file whose size and mtime match its row (otherwise `semantic_path_fresh` drops the row), then opens it in a fresh process and queries. Vectors are copied, so scan cost is real and ranking quality is not measured. Release build, one machine (Apple silicon Mac, SSD), query "fatigue crack growth in aluminium alloy", hybrid, limit 100.
+
+| Chunks | Database | Path | `open` | `warm` | First query | Steady query | Resident memory after queries |
+|---:|---:|---|---:|---:|---:|---:|---:|
+| 241,200 | 1,048 MB | snapshot (under the limit) | 6.6 s | 18.1 s | 226 ms | 41 to 46 ms | 600 MB |
+| 286,425 | 1,248 MB | streaming (over the limit) | 10.3 s | 2.0 s (returns `false`, builds nothing) | 17.7 s | 18.4 to 19.8 s | 30 MB |
+
+Reading. The cliff at `MAX_CACHED_CHUNKS` is about 450 times in steady query time, not the 35 ms exact-scan cost the ANN probe measured: the streaming path decodes every vector and tokenises every chunk on each query. With Search settings (`search_with_settings`, one `stat` per document; 468 documents here) the time is the same, so the per-file `stat` is not the cost at this scale. Memory is the opposite: the streaming path holds 30 MB where the snapshot holds 600 MB. `open` is 6.6 to 10.3 s on an index this size (it runs `PRAGMA quick_check` over the whole file), which a person waits for at the first Search of a session; this was not isolated further. The snapshot build (`warm`) takes 18 s at 241k chunks, close to the linear extrapolation (15 to 20 s) in earlier entries.
+
+Limits. Replicated rows (each chunk repeated 16 to 19 times, so the keyword postings are repetitive and the cost split between vectors and text may differ on real text); one machine; one query; Windows and spinning disks not run; `open` time split between `quick_check` and everything else not measured.
+
+Not changed, and why: an index over 250,000 chunks is hours of embedding at 20 chunks per second (earlier entry), so this is a limit for large corpora, not a common case. Making the streaming path fast (a vector-only pass with the keyword side from a postings table, or a larger or quantised snapshot) changes the exact-equality contract between the two paths and the memory budget on an 8 GB machine (see the int8 entries above), which is a product decision about index size, not a defect fix. The measurement is the input to that decision.
+

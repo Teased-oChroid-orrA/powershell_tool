@@ -183,6 +183,10 @@ name = "semantic_scale"
 required-features = ["semantic-search"]
 
 [[example]]
+name = "semantic_stream_probe"
+required-features = ["semantic-search"]
+
+[[example]]
 name = "edges_cost"
 required-features = ["neural-search"]
 
