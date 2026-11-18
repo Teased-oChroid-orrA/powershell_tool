@@ -1191,6 +1191,9 @@ mod tests {
             let (path, stop) = (path.clone(), stop.clone());
             std::thread::spawn(move || {
                 let conn = Connection::open(&path).unwrap();
+                // This writer competes with the openers for the write lock; without a wait its own insert failed
+                // with `database is locked` (seen on a hosted Windows runner), which says nothing about `open`.
+                conn.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
                 let mut n = 0i64;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     n += 1;
