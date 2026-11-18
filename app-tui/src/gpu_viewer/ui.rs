@@ -491,6 +491,42 @@ pub struct DocSidebar {
     pub index_name: String,
     pub index_detail: String,
     pub index_action: Option<Entry>,
+    /// Choices that narrow the results already found; `None` while there are none.
+    pub narrow: Option<DocNarrow>,
+}
+
+/// The sidebar's "narrow results" block: sections of options, a count of what is shown and a way back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocNarrow {
+    pub sections: Vec<DocNarrowSection>,
+    pub shown: usize,
+    pub total: usize,
+    /// Drops every choice; `None` when none is active.
+    pub clear: Option<UiAction>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocNarrowSection {
+    pub title: String,
+    /// Short options laid out as pills (the date window) rather than checkboxes with counts.
+    pub pills: bool,
+    pub options: Vec<DocNarrowOption>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocNarrowOption {
+    pub label: String,
+    /// Results this option would show with the other choices kept.
+    pub count: usize,
+    pub on: bool,
+    pub action: UiAction,
+}
+
+/// An active choice shown over the table; a click takes it back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocChip {
+    pub label: String,
+    pub remove: UiAction,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -600,6 +636,8 @@ pub struct DocProgress {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct DocTable {
     pub title: String,
+    /// Choices that narrow the rows, drawn after the title with a click to take one back.
+    pub chips: Vec<DocChip>,
     /// A filter over the rows, drawn in the table's header.
     pub filter: Option<DocInput>,
     pub columns: Vec<DocColumn>,
