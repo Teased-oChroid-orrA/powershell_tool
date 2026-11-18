@@ -4127,6 +4127,49 @@ mod tests {
     }
 
     #[test]
+    fn the_materials_rail_and_basket_answer_clicks() {
+        use crate::gpu_viewer::editor::materials::MaterialsSession;
+        let mut v = viewer(Some(Box::new(MaterialsSession::with_report(None))));
+        let doc = |v: &Viewer| v.editor.as_ref().unwrap().document().unwrap();
+        let all = doc(&v).table.rows.len();
+        // A form checkbox in the rail narrows the table and puts a chip over it; the chip takes it back.
+        let plate = target(&v, "FORM: Plate");
+        click(&mut v, plate);
+        let narrowed = doc(&v).table.rows.len();
+        assert!(narrowed > 0 && narrowed < all);
+        assert_eq!(doc(&v).table.chips.len(), 1);
+        // Counts changed, so the rail may have been laid out again: look the control up afresh.
+        let plate = target(&v, "FORM: Plate");
+        click(&mut v, plate);
+        assert_eq!(doc(&v).table.rows.len(), all);
+        // A basis pill and Clear all.
+        let basis = labels(&v).into_iter().find(|l| l.starts_with("BASIS: A-basis")).expect("the A-basis pill");
+        let pill = target(&v, &basis);
+        click(&mut v, pill);
+        assert!(doc(&v).table.rows.len() < all);
+        let clear = target(&v, "Clear narrowing");
+        click(&mut v, clear);
+        assert_eq!(doc(&v).table.rows.len(), all);
+        // A row's box fills a basket slot; the slot's cross empties it. Neither moves the highlight.
+        // The restored list scrolls the highlighted row into view on the next frame: let it settle before aiming.
+        frame(&mut v);
+        // (Skip the first: the list's edge may cut it, and a click there lands on the header.)
+        let first = labels(&v).into_iter().filter_map(|l| l.strip_prefix("Basket ").map(str::to_string)).nth(1).expect("a row box in view");
+        let at = |v: &Viewer| doc(v).table.rows.iter().position(|r| r.cells[0] == first).unwrap();
+        let highlighted = doc(&v).table.rows.iter().position(|r| r.selected);
+        let boxed = target(&v, &format!("Basket {first}"));
+        click(&mut v, boxed);
+        let d = doc(&v);
+        assert_eq!(d.basket.as_ref().unwrap().slots.iter().flatten().map(|s| s.name.as_str()).collect::<Vec<_>>(), [first.as_str()]);
+        assert!(d.table.rows[at(&v)].mark.unwrap().on);
+        // ToggleMark moves the cursor onto the row it marks: the row's box and its highlight agree.
+        assert!(d.table.rows[at(&v)].selected && highlighted.is_some());
+        let remove = target(&v, &format!("Remove {first} from the basket"));
+        click(&mut v, remove);
+        assert!(doc(&v).basket.unwrap().slots.iter().all(Option::is_none));
+    }
+
+    #[test]
     fn the_search_page_has_no_docks_and_its_guide_and_options_open_as_popovers() {
         use crate::gpu_viewer::editor::search::SearchSession;
         let mut v = viewer(Some(Box::new(SearchSession::in_memory())));

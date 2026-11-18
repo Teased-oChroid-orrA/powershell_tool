@@ -732,6 +732,8 @@ pub(super) fn document(s: &SearchSession) -> Document {
         modal,
         ribbon: Some(status_strip(s)),
         insight: insight(s),
+        rail: None,
+        basket: None,
     }
 }
 
@@ -1135,6 +1137,7 @@ fn result_row(s: &SearchSession, i: usize, selected: bool, root: &str) -> DocRow
         badge: std::path::Path::new(&r.full_name)
             .extension()
             .map(|x| x.to_string_lossy().to_uppercase()),
+        mark: None,
     }
 }
 
@@ -2497,7 +2500,10 @@ fn narrow_block(s: &SearchSession) -> Option<DocNarrow> {
         );
     }
     Some(DocNarrow {
+        title: "NARROW RESULTS".into(),
+        noun: "files".into(),
         sections,
+        sliders: Vec::new(),
         shown: f.shown,
         total: f.total,
         clear: (!s.narrow.is_empty()).then(|| act(SearchAct::ClearNarrow)),

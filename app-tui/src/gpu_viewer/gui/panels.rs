@@ -611,7 +611,7 @@ impl Gui {
                         });
                     if let Some(narrow) = &sidebar.narrow {
                         ui.add_space(14.0);
-                        self.narrow_block(ui, narrow, p, out);
+                        self.narrow_block(ui, narrow, p, out, 110.0);
                     }
                     ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                         ui.label(
@@ -704,10 +704,12 @@ impl Gui {
     }
 
     /// The sidebar's choices that narrow the results already found: checkbox rows with live counts, the date window as
-    /// pills, and a count of what is shown with a way back. Only the action of the row clicked leaves (`Outcome`).
-    fn narrow_block(&mut self, ui: &mut egui::Ui, narrow: &DocNarrow, p: &Palette, out: &mut Vec<Outcome>) {
+    /// pills, sliders for numeric limits, and a count of what is shown with a way back. Only the action of the row
+    /// clicked (or the slider's value, as a `DocField`) leaves (`Outcome`). `reserve` is the room under the block
+    /// that the scrolling part leaves to what follows it (the index card in Search's sidebar).
+    pub(super) fn narrow_block(&mut self, ui: &mut egui::Ui, narrow: &DocNarrow, p: &Palette, out: &mut Vec<Outcome>, reserve: f32) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("NARROW RESULTS").strong().size(9.0).color(p.muted));
+            ui.label(RichText::new(&narrow.title).strong().size(9.0).color(p.muted));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if let Some(action) = narrow.clear {
                     let clear = ui.add(egui::Button::new(RichText::new("Clear all").size(9.0).color(p.muted)).frame(false));
@@ -716,13 +718,13 @@ impl Gui {
                         out.push(Outcome::Action(action));
                     }
                 } else {
-                    ui.label(RichText::new(format!("{} files", narrow.total)).size(9.0).color(p.muted));
+                    ui.label(RichText::new(format!("{} {}", narrow.total, narrow.noun)).size(9.0).color(p.muted));
                 }
             });
         });
         if narrow.clear.is_some() {
             ui.label(
-                RichText::new(format!("{} of {} files shown", narrow.shown, narrow.total))
+                RichText::new(format!("{} of {} {} shown", narrow.shown, narrow.total, narrow.noun))
                     .size(10.0)
                     .color(p.dim),
             );
@@ -731,8 +733,42 @@ impl Gui {
         egui::ScrollArea::vertical()
             .id_salt("search-sidebar-narrow")
             .auto_shrink([false, true])
-            .max_height((ui.available_height() - 110.0).max(0.0))
+            .max_height((ui.available_height() - reserve).max(0.0))
             .show(ui, |ui| {
+                if !narrow.sliders.is_empty() {
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("PROPERTIES").strong().size(9.0).color(p.muted));
+                }
+                for slider in &narrow.sliders {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&slider.label).size(11.0).color(p.dim));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let text = if slider.active {
+                                format!("{:.*} {}", slider.decimals, slider.value, slider.unit)
+                            } else {
+                                "any".to_string()
+                            };
+                            ui.label(RichText::new(text).size(11.0).color(if slider.active { p.accent } else { p.muted }));
+                        });
+                    });
+                    let mut v = slider.value;
+                    ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(60.0);
+                    let r = ui.add(egui::Slider::new(&mut v, slider.min..=slider.max).step_by(slider.step).show_value(false).trailing_fill(true));
+                    self.targets.push((slider.label.clone(), r.rect));
+                    if r.changed() {
+                        // The end that means "no limit" reports an empty text.
+                        let free = if slider.free_at_max { slider.max } else { slider.min };
+                        let text = if (v - free).abs() < slider.step * 0.5 { String::new() } else { format!("{:.*}", slider.decimals, v) };
+                        out.push(Outcome::DocField { id: slider.id, text });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{:.*}", slider.decimals, slider.min)).size(9.0).color(p.muted));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(RichText::new(format!("{:.*}", slider.decimals, slider.max)).size(9.0).color(p.muted));
+                        });
+                    });
+                }
                 for section in &narrow.sections {
                     ui.add_space(8.0);
                     ui.label(RichText::new(&section.title).strong().size(9.0).color(p.muted));
@@ -751,8 +787,8 @@ impl Gui {
                                         .stroke(Stroke::new(1.0, if option.on { with_alpha(p.accent, 110) } else { p.line }))
                                         .corner_radius(CornerRadius::same(10)),
                                     )
-                                    .on_hover_text(format!("{} files", option.count));
-                                self.targets.push((format!("Modified {}", option.label), pill.rect));
+                                    .on_hover_text(format!("{} {}", option.count, narrow.noun));
+                                self.targets.push((format!("{}: {}", section.title, option.label), pill.rect));
                                 if pill.clicked() {
                                     out.push(Outcome::Action(option.action));
                                 }
