@@ -156,6 +156,22 @@ async fn main() {
         narrow.query_ms,
         narrow.candidates.as_ref().map(Vec::len)
     );
+    // The same search ignoring accents: narrows through the folded trigram field (every few documents here hold
+    // a character that folds, so this is a heavy case for that field).
+    let mut folded = par.clone();
+    folded.fold_accents = true;
+    let t = Instant::now();
+    let narrow_folded = native_index::narrow_candidates(&folded, &engine, &CancellationToken::new()).await.unwrap();
+    println!(
+        "{:<48} {:>9.1} ms  (query {}; candidates {:?})",
+        "index narrow, ignoring accents",
+        t.elapsed().as_secs_f64() * 1000.0,
+        narrow_folded.query_ms,
+        narrow_folded.candidates.as_ref().map(Vec::len)
+    );
+    let t = Instant::now();
+    let scan = search_core::orchestrator::run(folded.clone(), None, CancellationToken::new()).await.unwrap();
+    println!("{:<48} {:>9.1} ms  ({} files)", "full scan, ignoring accents (for comparison)", t.elapsed().as_secs_f64() * 1000.0, scan.file_results.len());
     if let Some(c) = narrow.candidates {
         let t = Instant::now();
         let r = search_core::orchestrator::run_candidates(&c, par.clone(), None, CancellationToken::new())

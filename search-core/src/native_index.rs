@@ -107,8 +107,8 @@ pub fn open_or_create_with_rebuild(index_directory: &Path) -> NsResult<NativeSea
 /// lines are repaired and noise lines dropped (`line_quality`), `TJ` arrays are
 /// joined into words, and non-content streams are no longer scanned for text. 4 = PDF words broken over two lines by a
 /// soft hyphen are joined. 5 = words broken over two lines by an ordinary hyphen are repaired when the document
-/// confirms the joined word.
-pub const INDEX_SEMANTIC_VERSION: u32 = 5;
+/// confirms the joined word. 6 = a folded trigram field (`trigram_folded`) lets a search that ignores accents narrow candidates.
+pub const INDEX_SEMANTIC_VERSION: u32 = 6;
 const SEMANTIC_VERSION_FILE: &str = "semantic-version";
 /// Records whether the PDFs in the index were extracted with OCR on (`1`) or off (`0`). The per-file
 /// (modified, size) check cannot see a settings change, so turning OCR on re-extracts every PDF once.
@@ -208,17 +208,20 @@ pub fn index_hits_for_fast_search(
             .unwrap_or_default();
         let body = r.lines_cache.join("\n");
 
-        engine.index_document(DocumentInput {
-            id: &r.full_name,
-            path: &r.full_name,
-            filename: &file_name,
-            extension: &extension,
-            title: "",
-            modified_unix,
-            created_unix: r.created.timestamp(),
-            size: r.file_length,
-            body: &body,
-        })?;
+        engine.index_document_folded(
+            DocumentInput {
+                id: &r.full_name,
+                path: &r.full_name,
+                filename: &file_name,
+                extension: &extension,
+                title: "",
+                modified_unix,
+                created_unix: r.created.timestamp(),
+                size: r.file_length,
+                body: &body,
+            },
+            folded_trigram_text(&body).as_deref(),
+        )?;
         outcome.indexed_count += 1;
     }
 
@@ -683,9 +686,19 @@ struct PendingDoc {
     body: String,
 }
 
+/// The folded text a document's `trigram_folded` field is built from: `None` when it equals the
+/// lowercased text the `trigram` field already holds (always for ASCII). Every writer of the file index
+/// must pass this, or a search that ignores accents would not find that document through the index.
+fn folded_trigram_text(body: &str) -> Option<String> {
+    if body.is_ascii() {
+        return None;
+    }
+    Some(crate::textfold::fold_lower(body)).filter(|f| *f != body.to_lowercase())
+}
+
 impl PendingDoc {
     fn stage(&self, engine: &NativeSearchEngine) -> NsResult<()> {
-        engine.index_document(DocumentInput {
+        engine.index_document_folded(DocumentInput {
             id: &self.id,
             path: &self.id,
             filename: &self.filename,
@@ -695,7 +708,7 @@ impl PendingDoc {
             created_unix: self.created,
             size: self.size,
             body: &self.body,
-        })
+        }, folded_trigram_text(&self.body).as_deref())
     }
 }
 
@@ -1318,11 +1331,13 @@ pub async fn narrow_candidates(
     }
     out.freshness_ms = phase.elapsed().as_millis() as u64;
     let phase = std::time::Instant::now();
-    // The index stores unfolded text and exact words: neither folding nor typo
-    // tolerance can be answered from its trigrams, so those searches scan.
-    if !settings.use_regex && (settings.fold_accents || settings.typo_tolerance > 0) {
+    // Typo tolerance matches words that differ from the filter, which no trigram set of the filter can
+    // bound: those searches scan. Ignoring accents narrows through the folded trigram field.
+    if !settings.use_regex && settings.typo_tolerance > 0 {
         return Ok(out);
     }
+    let fold = !settings.use_regex && settings.fold_accents;
+    let fold_text = |t: String| if fold { crate::textfold::fold_lower(&t) } else { t };
     let indexed_paths = if settings.use_regex {
         let mut chunk_sets = Vec::with_capacity(settings.filters.len());
         for f in &settings.filters {
@@ -1341,19 +1356,28 @@ pub async fn narrow_candidates(
             let narrowing = crate::near::narrowing_text(f);
             let words: Vec<String> = narrowing
                 .split_whitespace()
+                .map(|w| fold_text(w.to_string()))
                 .filter(|w| w.chars().count() >= 3)
-                .map(str::to_string)
                 .collect();
             if words.is_empty() {
                 return Ok(out);
             }
             chunk_sets.push(words);
         }
-        engine.trigram_candidate_paths_for_chunk_sets(&chunk_sets)?
+        if fold {
+            engine.trigram_candidate_paths_for_chunk_sets_folded(&chunk_sets)?
+        } else {
+            engine.trigram_candidate_paths_for_chunk_sets(&chunk_sets)?
+        }
     } else {
         // A NEAR query needs both its words in the file: narrow on one of them.
-        let narrowing: Vec<String> = settings.filters.iter().map(|f| crate::near::narrowing_text(f)).collect();
-        engine.trigram_candidate_paths(&narrowing)?
+        let narrowing: Vec<String> =
+            settings.filters.iter().map(|f| fold_text(crate::near::narrowing_text(f))).collect();
+        if fold {
+            engine.trigram_candidate_paths_folded(&narrowing)?
+        } else {
+            engine.trigram_candidate_paths(&narrowing)?
+        }
     };
     let Some(indexed_paths) = indexed_paths else {
         return Ok(out);
@@ -2562,18 +2586,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn folding_and_typo_tolerance_turn_narrowing_off() {
+    async fn typo_tolerance_turns_narrowing_off() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "un caf\u{e9} noir\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), "nothing\n").unwrap();
         let mut settings = narrow_settings(dir.path(), "cafe");
         let engine = built_engine(dir.path(), &settings).await;
         assert!(narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap().candidates.is_some());
-        settings.fold_accents = true; // "cafe" is not a substring of the indexed "caf\u{e9}"
-        assert!(narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap().candidates.is_none());
-        settings.fold_accents = false;
         settings.typo_tolerance = 1;
         assert!(narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap().candidates.is_none());
+    }
+
+    /// Ignoring accents narrows through the folded trigram field, and the candidates hold every file the
+    /// real matcher finds: precomposed and combining accents, ligature and typographic characters, `ss`, no-break
+    /// spaces, plain text and a file the fold leaves unchanged, with plain and accented filters, whole word or not.
+    #[tokio::test]
+    async fn folded_narrowing_keeps_every_file_the_folding_matcher_finds() {
+        use crate::matching::{apply_line_matching, CompiledMatchState};
+        let dir = tempfile::tempdir().unwrap();
+        let files: [(&str, &str); 9] = [
+            ("pre.txt", "un caf\u{e9} noir\n"),
+            ("comb.txt", "un cafe\u{301} noir\n"),
+            ("plain.txt", "un cafe noir\n"),
+            ("lig.txt", "the o\u{fb03}ce \u{fb01}le\n"),
+            ("quote.txt", "don\u{2019}t torque\u{a0}value \u{201C}spec\u{201D}\n"),
+            ("ss.txt", "Stra\u{df}e and Gr\u{fc}\u{df}e\n"),
+            ("upper.txt", "CAF\u{c9} \u{c0} LA CARTE\n"),
+            ("none.txt", "nothing relevant here\n"),
+            ("other.txt", "brake pad wear\n"),
+        ];
+        for (name, text) in files {
+            std::fs::write(dir.path().join(name), text).unwrap();
+        }
+        let mut settings = narrow_settings(dir.path(), "cafe");
+        settings.fold_accents = true;
+        let engine = built_engine(dir.path(), &settings).await;
+        let mut narrowed_somewhere = false;
+        for filter in ["cafe", "caf\u{e9}", "CAF\u{c9}", "office", "ffi", "o\u{fb03}ce", "file", "don't", "torque value", "strasse", "gruesse", "stra\u{df}e", "a la carte", "brake", "spec", "zzz nothing"] {
+            for whole_word in [false, true] {
+                settings.filters = vec![filter.to_string()];
+                settings.whole_word = whole_word;
+                let state = CompiledMatchState::build(&settings).unwrap();
+                let mut expected: Vec<String> = files
+                    .iter()
+                    .filter(|(_, text)| {
+                        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+                        !apply_line_matching(&lines, &settings, &state).hits.is_empty()
+                    })
+                    .map(|(name, _)| name.to_string())
+                    .collect();
+                expected.sort();
+                let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+                let Some(candidates) = out.candidates else {
+                    continue; // a filter under three characters after folding is not narrowed
+                };
+                let mut got: Vec<String> = candidates
+                    .iter()
+                    .map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned())
+                    .collect();
+                got.sort();
+                for name in &expected {
+                    assert!(got.contains(name), "filter {filter:?} whole_word {whole_word}: {name} found by the matcher but not a candidate ({got:?})");
+                }
+                narrowed_somewhere |= got.len() < files.len();
+            }
+        }
+        assert!(narrowed_somewhere, "folded narrowing never excluded a file");
+        // the shortlist for an accent-insensitive filter is the files that have it in any spelling
+        settings.filters = vec!["cafe".to_string()];
+        settings.whole_word = false;
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        let mut got: Vec<String> = out.candidates.unwrap().iter().map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
+        got.sort();
+        assert_eq!(got, ["comb.txt", "plain.txt", "pre.txt", "upper.txt"]);
     }
 
     #[tokio::test]

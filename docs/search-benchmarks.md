@@ -824,6 +824,39 @@ That is 15% to 17% faster with identical vectors, so no `retrieval_eval` run and
 
 What remains: inference itself is the cost, and nothing else in the loop is worth changing (database writes are 0.5%). Not tried: a different inference runtime or a newer `rten` (would need the bit comparison above, and the five-set run if any vector changes), the other callers of `search_ml::embed_batch` (`alerts.rs`, `neural_search.rs`, `relevance.rs` send lines; the 80 and 200 character columns say their batching is already the right way round), Windows.
 
+## 2026-11-17: first hosted Windows rows (, `search-bench-windows.yml`, PR #305)
+
+Host: AMD EPYC 9V74 (hosted runner, `windows-latest`), release, one run. Evidence for that host only.
+
+| row | 3,000 files | 10,000 files |
+|---|---|---|
+| match literal (30,000 lines x5) | 14.0 ms | 11.1 ms |
+| match literal + 3 filters | 47.0 ms | 42.1 ms |
+| cold full scan, sequential | 659 ms | 1,671 ms |
+| cold full scan, parallel (+cache write) | 196 ms | 609 ms |
+| warm re-run, cache hit | 89 ms | 258 ms |
+| index build | 2.0 s | 6.5 s |
+| index narrow (walk / freshness / query) | 67 ms (60 / 5 / 0) | 219 ms (194 / 20 / 0) |
+| run_candidates (verify) | 4.3 ms | 10.7 ms |
+
+Reading: on Windows the warm re-search is the directory walk (194 of 219 ms at 10,000 files, about 19 microseconds a file, roughly four times this Mac); the freshness check after the in-order store read is 20 ms. The walk, not the index, is what is left to gain on the shipped target.
+
+## 2026-11-17: index narrowing with Ignore accents (item 4); same-size edits (item 9) not adopted
+
+### Item 4: a folded trigram field
+
+Before: turning on Ignore accents or Typo tolerance made `narrow_candidates` return no candidates (the index stores unfolded text), so a warm re-search scanned every file. No set of raw trigrams of the folded filter is safe (`e` may come from `e`, `é`, `è`, a combining mark or a ligature), so the only sound narrowing is a second trigram field built from the folded text.
+
+Change: `trigram_folded` (schema change, `INDEX_SEMANTIC_VERSION` 5 to 6, so existing indexes rebuild once). It is written only for a document whose folded text differs from its lowercased text (never for ASCII), through one helper (`native_index::folded_trigram_text`) used by both file-index writers. With Ignore accents on, the candidates are the files whose own trigrams hold the folded filter's trigrams OR whose folded trigrams do. Typo tolerance still scans (a word one edit from the filter bounds no trigram set).
+
+Proof: `folded_narrowing_keeps_every_file_the_folding_matcher_finds` runs 16 filters (plain, accented, upper case, ligature, curly quote, no-break space, `ss`), whole word and not, over nine files (precomposed and combining accents, ligatures, typographic characters, `ß`, none) and requires every file the real matcher finds to be a candidate, and the exact shortlist for `cafe`. With the folded text switched off the test fails (`pre.txt` not a candidate), so it detects the failure it guards.
+
+Measured (`exact_bench` 10,000 files, this Mac, other builds running): a search ignoring accents narrows to 104 candidates in 55 ms against a full scan of 1.0 to 1.2 s (about 20 times; the 10,000 files were on disk, hot). Cost: this bench corpus is a worst case (every document holds a character that folds), and the index build took 1.75 to 1.85 times as long (5.4 and 9.6 s before, 9.3 and 17.8 s after, alternated, loaded machine). Share of real documents with a foldable character (approximate fold; English, first 20,000): Cranfield 0 %, SciFact 9.8 %, NFCorpus 14.3 %, MS MARCO 15.0 %, TREC-COVID 19.9 %, AeroEngQA 37.8 %, a Spanish set 99.3 %, an industrial PDF set 0.4 %. For typical English engineering text the extra index work is the folded share of the trigram field (10 to 20 %); a Spanish or German corpus approaches the bench's worst case. Index size was not measured. Not measured on Windows.
+
+### Item 9: same-size, same-mtime edits: analysis, not built
+
+Freshness is `(modified, size)` per document. Two ways an edit can hide: (1) the file system's timestamp tick is coarse (FAT/exFAT 2 s, some network shares 1 to 2 s) and the edit happens inside the tick of the last index, (2) a tool preserves the old mtime (copy with preserved times, archive extraction, `touch -r`) and the size is the same. The first is closed in the result cache by a racily-clean rule (an entry whose mtime is within 2 s of its save is not trusted). The same rule in the index needs the time each document was indexed: a new stored field, a schema change that forces every user's index to rebuild. It would protect only coarse-timestamp file systems for a 2 s window after indexing; NTFS and APFS ticks are 100 ns and 1 ns. The second case is not protected by any timestamp rule: only reading the content (a hash) detects it, which is the cost the index exists to avoid. Not built; revisit if a coarse-timestamp share or a content-hash policy is wanted. Item 4's schema change would carry the field at no extra rebuild cost if so.
+
 ## 2026-11-17: OCR confidence from a vendored `ocrs`
 
 `ocrs` 0.12.2 discards the recognition model's character probabilities, so the PDF warning could only say "may be misread". `third_party/ocrs` is the 0.12.2 source with one change: `TextChar::confidence`, the model's probability for each recognised character (`step_confidences` in `recognition.rs`: the exponential of the best log-probability of the emitted label over the frames from that step to the next; unit test inside the crate). `search-core::ocr` carries it per line and per page, the OCR cache is version 3, `FileSearchResult.ocr_confidence` is the document mean, and the Search window and HTML report show it. The text that OCR returns is unchanged.
