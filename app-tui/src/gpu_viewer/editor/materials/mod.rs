@@ -19,7 +19,7 @@ use crate::gpu_viewer::{
     Scene,
 };
 use crate::toolboxes::material_lookup::{
-    model::{Basis, Query, SortKey},
+    model::{Basis, FacetCounts, Floor, Query, SortKey},
     MaterialLookupState,
 };
 use std::cell::RefCell;
@@ -27,6 +27,8 @@ use std::path::{Path, PathBuf};
 
 /// The search input of the page.
 pub(crate) const INPUT_SEARCH: u8 = 0;
+/// The rail's sliders: `INPUT_FLOOR0 + position in `Floor::ALL``. An empty text drops the limit.
+pub(crate) const INPUT_FLOOR0: u8 = 1;
 
 /// What a click in the Material Lookup workbench asks for (carried by `EditorAction::Materials`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +45,12 @@ pub enum MaterialsAct {
     /// Show only group `.0` of `model::groups()` (0 = All).
     Group(usize),
     Basis(Basis),
+    /// Keep / stop keeping form class `.0` of `model::FORMS`.
+    Form(usize),
+    /// Drop one property limit.
+    ClearFloor(Floor),
+    /// Drop the group, basis, form and property choices (the search text and the sort stay).
+    ClearFacets,
     /// Sort by a column; the sorted column again reverses it.
     SortBy(SortKey),
     ClearSearch,
@@ -57,6 +65,8 @@ pub(crate) fn act(a: MaterialsAct) -> crate::gpu_viewer::controller::UiAction {
 pub struct MaterialsSession {
     st: MaterialLookupState,
     rows_cache: RefCell<Option<view::RowsCache>>,
+    /// The rail's counts for the query they were made for (`facet_counts` walks the whole catalog).
+    facets_cache: RefCell<Option<(Query, FacetCounts)>>,
     /// Where Export writes (`<app data>/reports/material-lookup.txt`).
     report: Option<PathBuf>,
     status: String,
@@ -69,7 +79,7 @@ impl MaterialsSession {
     }
 
     pub(crate) fn with_report(report: Option<PathBuf>) -> Self {
-        Self { st: MaterialLookupState::default(), rows_cache: RefCell::new(None), report, status: String::new() }
+        Self { st: MaterialLookupState::default(), rows_cache: RefCell::new(None), facets_cache: RefCell::new(None), report, status: String::new() }
     }
 
     pub fn state(&self) -> &MaterialLookupState {
@@ -114,6 +124,24 @@ impl MaterialsSession {
             MaterialsAct::Group(_) => {}
             MaterialsAct::Basis(b) => {
                 st.query.basis = b;
+                st.refilter();
+            }
+            MaterialsAct::Form(f) if f < crate::toolboxes::material_lookup::model::FORMS.len() => {
+                match st.query.forms.iter().position(|&x| x == f) {
+                    Some(p) => {
+                        st.query.forms.remove(p);
+                    }
+                    None => st.query.forms.push(f),
+                }
+                st.refilter();
+            }
+            MaterialsAct::Form(_) => {}
+            MaterialsAct::ClearFloor(f) => {
+                st.query.set_limit(f, None);
+                st.refilter();
+            }
+            MaterialsAct::ClearFacets => {
+                st.query.clear_facets();
                 st.refilter();
             }
             MaterialsAct::SortBy(k) => {
@@ -256,6 +284,14 @@ impl Authoring for MaterialsSession {
             self.st.query.text = text;
             // A changed search starts at the best match.
             self.st.refilter_from_top();
+        } else if let Some(&f) = id.checked_sub(INPUT_FLOOR0).and_then(|k| Floor::ALL.get(k as usize)) {
+            // A slider's value; an unparsable or empty text is "no limit".
+            let v = text.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+            if v != self.st.query.limit(f) {
+                self.status.clear();
+                self.st.query.set_limit(f, v);
+                self.st.refilter();
+            }
         }
     }
 }
