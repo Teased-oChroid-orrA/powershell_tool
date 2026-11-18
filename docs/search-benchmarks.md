@@ -883,3 +883,17 @@ Ordinary-quality conditions (clean, 100 and 300 dpi, blur 1, low contrast, rotat
 **Caveats.** The set is synthetic (document prose, macOS fonts). Real scanners, CCITT scans and Windows were not run. The score is the model's certainty, not accuracy, and cannot see text the detector missed (which is why pages with missed lines can still score high). Reproduce: `python3 scripts/make_ocr_confidence_set.py OUT_DIR`, then `cargo run -p search-core --release --features ocr --example ocr_confidence_eval -- OUT_DIR [--lines lines.tsv]`.
 
 Tests: `models::tests::{ocr_percent_floors_and_clamps, ocr_is_poor_switches_at_the_threshold, pdf_warning_*}`, `report::tests::html_report_note_states_the_ocr_confidence_when_known`, `cache::tests::{ocr_confidence_survives_save_and_load, entry_without_the_ocr_confidence_field_still_loads}`, `pdf_yolow::tests::recognition_confidence_is_high_on_a_clean_scan_and_falls_with_noise`, and the app-tui `pdf_warning_shows_the_ocr_percent_in_the_ribbon_and_the_detail_note`.
+
+
+## 2026-11-17: page citations for xref-stream PDFs on the scanner path (#127, #240)
+
+The scanner's page mapper (`pdf_page_map.rs`) read only classic cross-reference tables, so a PDF written as 1.5 or later (cross-reference streams, compressed object streams) got no page at all (page 5 above: 32 of 80 KG-RAG files). `page_by_stream_offset` now falls back to `lopdf`'s page tree when the strict reader refuses. `lopdf` does not keep where a stream body sat in the file, so the body offset is rebuilt from the xref entry and accepted only when the bytes there equal the loaded stream content.
+
+`pdf_citation_bench scanner` over the 27 readable ViDoRe Industrial source PDFs (poppler per-page text as oracle; a line is checkable when its first five words occur on some page), one machine, release build:
+
+| | lines | lines citing a page | checkable | cited correctly | files with any page |
+|---|---:|---:|---:|---:|---:|
+| before (classic reader only) | 512,110 | 0 | 62,227 | 0 | 0 of 27 |
+| after (lopdf fallback) | 512,110 | 111,229 | 62,227 | 57,965 (93.2%) | 25 of 27 |
+
+Uncited lines are mostly fragments from streams no page draws from (fonts, metadata); of lines poppler can check, 93.2% now carry the right page. Mapping Form XObject streams as well added one line (111,230), so it is not in the code. Two files stay uncited (`TO_35-1-18`, `TO_36-1-191`, the second also yields nothing under yolowpdf). Cost: the fallback loads the file with `lopdf` (21 s for all 27 files together, including the extraction). Tests: `pdf_page_map::tests::{xref_stream_pdfs_are_mapped_through_lopdf, both_readers_agree_on_a_classic_file, a_stream_shared_by_two_pages_is_not_attributed_by_the_fallback}`. #127: not reproduced (see 2026-11-10); the mapper limit it was filed for is now removed.
