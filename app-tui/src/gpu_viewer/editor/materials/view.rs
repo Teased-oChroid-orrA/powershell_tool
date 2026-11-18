@@ -244,6 +244,7 @@ fn table(s: &MaterialsSession) -> DocTable {
     let total = model::catalog().len();
     let shown = s.st.hits.len();
     DocTable {
+        chips: Vec::new(),
         title: if shown == total {
             format!("Materials  ·  {}", group_digits(total))
         } else {

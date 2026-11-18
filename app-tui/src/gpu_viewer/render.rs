@@ -3155,6 +3155,27 @@ mod snapshot_tests {
         }
         shoot(&session, "search-results-dark", true, (1440, 900));
         shoot(&session, "search-results-light", false, (1440, 900));
+        {
+            // The sidebar's narrowing: one type chosen, with its chip over the table.
+            let mut narrowed = SearchSession::in_memory();
+            narrowed.document_field(0, root.to_string_lossy().into_owned());
+            narrowed.document_field(1, "torque, bolt".into());
+            narrowed.act(EditorAction::Search(SearchAct::Run));
+            let t = std::time::Instant::now();
+            while narrowed.solving() || narrowed.state().run.results.len() < 3 {
+                narrowed.poll();
+                assert!(t.elapsed().as_secs() < 60, "the search did not finish");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            narrowed.poll();
+            let txt = narrowed.facets().types.iter().position(|v| v.key == ".txt").expect("a .txt result");
+            narrowed.act(EditorAction::Search(SearchAct::NarrowType(txt)));
+            narrowed.act(EditorAction::Search(SearchAct::NarrowModified(
+                crate::gpu_viewer::editor::search::narrow::Modified::Month,
+            )));
+            shoot(&narrowed, "search-narrowed-dark", true, (1440, 900));
+            shoot(&narrowed, "search-narrowed-light", false, (1440, 900));
+        }
         shoot(&session, "search-narrow", true, (860, 760));
         shoot(&session, "search-short", true, (1100, 560));
         // The Exclude row, and the cards moved: matches on the left, then stacked under the list.

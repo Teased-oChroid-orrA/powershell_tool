@@ -2413,3 +2413,130 @@ fn gap_hints_wait_for_a_click_and_never_change_anything() {
     }
     assert_eq!(s.status, "Gap hints unavailable: catalog locked");
 }
+
+// ------------------------------------------------------------------ narrowing (sidebar choices)
+
+fn aged(name: &str, days: i64) -> FileSearchResult {
+    let mut r = result(name, 1, 10);
+    r.modified = chrono::Local::now() - chrono::Duration::days(days);
+    r
+}
+
+fn narrowed_session() -> SearchSession {
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = "/w".into();
+    let mut scan = aged("/w/b/scan.pdf", 400);
+    scan.low_confidence_pdf = true;
+    scan.ocr_confidence = Some(0.5);
+    s.st.run.results = vec![aged("/w/a/spec.pdf", 2), aged("/w/notes.txt", 20), aged("/w/b/plan.pdf", 100), scan];
+    s.st.run.started = Some(Instant::now());
+    s
+}
+
+fn names(s: &SearchSession) -> Vec<String> {
+    s.view().into_iter().map(|i| s.st.run.results[i].full_name.clone()).collect()
+}
+
+#[test]
+fn narrowing_by_type_and_folder_hides_rows_and_counts_what_each_choice_would_show() {
+    let mut s = narrowed_session();
+    let f = s.facets();
+    assert_eq!(f.types.iter().map(|v| (v.label.as_str(), v.count)).collect::<Vec<_>>(), [("PDF", 3), ("TXT", 1)]);
+    let pdf = f.types.iter().position(|v| v.key == ".pdf").unwrap();
+    act_on(&mut s, SearchAct::NarrowType(pdf));
+    assert_eq!(names(&s), ["/w/a/spec.pdf", "/w/b/plan.pdf", "/w/b/scan.pdf"]);
+    // Folder counts follow the type choice, the type counts do not follow their own.
+    let f = s.facets();
+    let folder = |label: &str| f.folders.iter().find(|v| v.label == label).map(|v| v.count);
+    assert_eq!((folder("a"), folder("b"), folder("(top folder)")), (Some(1), Some(2), Some(0)));
+    assert_eq!(f.types.iter().find(|v| v.key == ".txt").unwrap().count, 1, "TXT would add its one file");
+    let b = f.folders.iter().position(|v| v.label == "b").unwrap();
+    act_on(&mut s, SearchAct::NarrowFolder(b));
+    assert_eq!(names(&s), ["/w/b/plan.pdf", "/w/b/scan.pdf"]);
+    assert_eq!((s.facets().shown, s.facets().total), (2, 4));
+    // Choosing the same value again takes it back.
+    act_on(&mut s, SearchAct::NarrowType(pdf));
+    assert_eq!(names(&s), ["/w/b/plan.pdf", "/w/b/scan.pdf"].map(String::from));
+    act_on(&mut s, SearchAct::ClearNarrow);
+    assert_eq!(s.view().len(), 4);
+    assert!(s.narrow.is_empty());
+}
+
+#[test]
+fn narrowing_by_modified_window_and_text_quality() {
+    let mut s = narrowed_session();
+    act_on(&mut s, SearchAct::NarrowModified(narrow::Modified::Month));
+    assert_eq!(names(&s), ["/w/a/spec.pdf", "/w/notes.txt"]);
+    let counts: Vec<_> = s.facets().modified.iter().map(|&(m, n)| (m.label(), n)).collect();
+    assert_eq!(counts, [("Any time", 4), ("7 days", 1), ("30 days", 2), ("Year", 3)]);
+    act_on(&mut s, SearchAct::NarrowModified(narrow::Modified::Any));
+    act_on(&mut s, SearchAct::NarrowQuality(narrow::Quality::Poor));
+    assert_eq!(names(&s), ["/w/b/scan.pdf"]);
+    // The quality section appears only when some result carries a warning (or a choice is active).
+    let doc = view::document(&s);
+    let titles: Vec<_> = doc.sidebar.unwrap().narrow.unwrap().sections.into_iter().map(|x| x.title).collect();
+    assert_eq!(titles, ["FILE TYPE", "FOLDER", "MODIFIED", "TEXT QUALITY"]);
+    let mut clean = with_results();
+    let titles: Vec<_> = view::document(&clean).sidebar.unwrap().narrow.unwrap().sections.into_iter().map(|x| x.title).collect();
+    assert_eq!(titles, ["FILE TYPE", "FOLDER", "MODIFIED"]);
+    clean.st.run.results.clear();
+    assert!(view::document(&clean).sidebar.unwrap().narrow.is_none(), "nothing to narrow before there are results");
+}
+
+#[test]
+fn the_table_follows_the_narrowing_and_shows_a_chip_for_each_choice() {
+    let mut s = narrowed_session();
+    assert_eq!(view::document(&s).table.rows.len(), 4);
+    assert!(view::document(&s).table.chips.is_empty());
+    let txt = s.facets().types.iter().position(|v| v.key == ".txt").unwrap();
+    act_on(&mut s, SearchAct::NarrowType(txt));
+    act_on(&mut s, SearchAct::NarrowModified(narrow::Modified::Year));
+    let table = view::document(&s).table;
+    assert_eq!(table.rows.len(), 1);
+    assert_eq!(table.rows[0].cells[0], "notes.txt");
+    assert_eq!(table.chips.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["TXT", "Last year"]);
+    assert!(table.title.contains("1 of 4"), "{}", table.title);
+    // A chip's own action takes its choice back.
+    let first = table.chips[0].remove;
+    let crate::gpu_viewer::controller::UiAction::Editor(action) = first else { panic!("a chip carries an editor action") };
+    s.act(action);
+    assert_eq!(view::document(&s).table.chips.len(), 1);
+    assert_eq!(view::document(&s).table.rows.len(), 3);
+}
+
+#[test]
+fn results_arriving_after_a_narrowing_are_shown_only_when_they_match() {
+    let mut s = narrowed_session();
+    let txt = s.facets().types.iter().position(|v| v.key == ".txt").unwrap();
+    act_on(&mut s, SearchAct::NarrowType(txt));
+    assert_eq!(view::document(&s).table.rows.len(), 1);
+    s.st.run.results.push(aged("/w/more.txt", 1));
+    s.st.run.results.push(aged("/w/more.pdf", 1));
+    let rows = view::document(&s).table.rows;
+    assert_eq!(rows.iter().map(|r| r.cells[0].as_str()).collect::<Vec<_>>(), ["notes.txt", "more.txt"]);
+    assert_eq!(s.facets().total, 6, "the facet lists are rebuilt for the new results");
+}
+
+#[test]
+fn a_choice_that_no_longer_has_results_stays_listed_so_it_can_be_taken_back() {
+    let mut s = narrowed_session();
+    let txt = s.facets().types.iter().position(|v| v.key == ".txt").unwrap();
+    act_on(&mut s, SearchAct::NarrowType(txt));
+    s.st.run.results = vec![aged("/w/a/spec.pdf", 2)];
+    s.st.run.started = Some(Instant::now());
+    let f = s.facets();
+    let kept = f.types.iter().find(|v| v.key == ".txt").expect("the chosen type is still listed");
+    assert!(kept.on);
+    assert_eq!(kept.count, 0);
+    assert_eq!(s.view().len(), 0);
+    assert_eq!(view::document(&s).table.empty_title, "Nothing matches the filter");
+}
+
+#[test]
+fn the_selected_file_moves_to_the_first_shown_when_narrowing_hides_it() {
+    let mut s = narrowed_session();
+    s.selected = Some(0);
+    let txt = s.facets().types.iter().position(|v| v.key == ".txt").unwrap();
+    act_on(&mut s, SearchAct::NarrowType(txt));
+    assert_eq!(s.current(), Some(1));
+}

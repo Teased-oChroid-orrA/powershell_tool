@@ -1884,10 +1884,41 @@ impl Gui {
                         } else {
                             ui.label(RichText::new(&t.title).strong().size(14.0));
                         }
+                        // Fixed before the chips take room, so the filter keeps its width with or without them.
+                        let filter_w = (ui.available_width() * 0.55).clamp(120.0, 260.0);
+                        if !t.chips.is_empty() {
+                            let mut room = ui.available_width() - if t.filter.is_some() { filter_w + 16.0 } else { 0.0 };
+                            ui.add_space(8.0);
+                            room -= 8.0;
+                            for chip in &t.chips {
+                                let galley = ui.painter().layout_no_wrap(chip.label.clone(), FontId::proportional(11.0), p.accent);
+                                let w = galley.size().x + 30.0;
+                                if w > room {
+                                    break;
+                                }
+                                room -= w + ui.spacing().item_spacing.x;
+                                let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 22.0), Sense::click());
+                                ui.painter().rect(
+                                    rect,
+                                    CornerRadius::same(11),
+                                    with_alpha(p.accent, if resp.hovered() { 40 } else { 26 }),
+                                    Stroke::new(1.0, with_alpha(p.accent, 110)),
+                                    egui::StrokeKind::Inside,
+                                );
+                                ui.painter().galley(Pos2::new(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, p.accent);
+                                let x = Pos2::new(rect.right() - 11.0, rect.center().y);
+                                let cross = Stroke::new(1.3, p.accent);
+                                ui.painter().line_segment([x + Vec2::new(-2.5, -2.5), x + Vec2::new(2.5, 2.5)], cross);
+                                ui.painter().line_segment([x + Vec2::new(-2.5, 2.5), x + Vec2::new(2.5, -2.5)], cross);
+                                self.targets.push((format!("Remove filter {}", chip.label), rect));
+                                if resp.on_hover_text("Remove this choice").clicked() {
+                                    out.push(Outcome::Action(chip.remove));
+                                }
+                            }
+                        }
                         if let Some(f) = &t.filter {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                let w = (ui.available_width() * 0.55).clamp(120.0, 260.0);
-                                self.text_box(ui, f, w, 28.0, p, out, hint);
+                                self.text_box(ui, f, filter_w, 28.0, p, out, hint);
                             });
                         }
                     });
