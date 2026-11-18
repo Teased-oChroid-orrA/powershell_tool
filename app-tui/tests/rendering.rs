@@ -65,6 +65,7 @@ fn hit_result(name: &str) -> search_core::models::FileSearchResult {
         total_line_count: 1,
         proximity_min_range: None,
         low_confidence_pdf: false,
+        ocr_confidence: None,
         error_message: None,
     }
 }

@@ -193,7 +193,10 @@ impl SemanticIndex {
 
     fn open_checked(path: &Path) -> rusqlite::Result<Self> {
         let mut conn = Connection::open(path)?;
-        let tx = conn.transaction()?;
+        // Every open writes (`INSERT OR IGNORE` of the instance id), so concurrent opens (warm-up and search threads)
+        // must take the write lock up front: a deferred transaction that starts as a read and then upgrades fails
+        // at once with `database is locked` instead of waiting for the busy timeout.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch(
             "PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS semantic_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
@@ -1151,6 +1154,46 @@ mod tests {
             crate::cache::ticks_from_modified(modified),
             metadata.len() as i64,
         )
+    }
+
+    /// Opening writes (instance id), so an open must take the write lock up front: a deferred transaction that read
+    /// first and then upgraded failed at once with `database is locked` (not after the busy timeout) whenever another
+    /// connection committed in between, which made the app-tui semantic tests flaky on macOS and Windows.
+    #[test]
+    fn opening_while_another_connection_writes_waits_instead_of_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("semantic.sqlite");
+        SemanticIndex::open(&path).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (path, stop) = (path.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let conn = Connection::open(&path).unwrap();
+                let mut n = 0i64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    n += 1;
+                    conn.execute("INSERT OR REPLACE INTO semantic_meta(key,value) VALUES('scratch',?1)", [n]).unwrap();
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                }
+            })
+        };
+        let openers: Vec<_> = (0..4)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..150 {
+                        SemanticIndex::open(&path).map(|_| ()).map_err(|e| e.to_string())?;
+                    }
+                    Ok::<(), String>(())
+                })
+            })
+            .collect();
+        let results: Vec<_> = openers.into_iter().map(|h| h.join().unwrap()).collect();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        for result in results {
+            result.expect("open waits for the write lock");
+        }
     }
 
     #[test]

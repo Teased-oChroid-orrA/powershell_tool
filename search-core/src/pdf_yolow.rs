@@ -23,12 +23,12 @@ fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-pub(crate) fn extract_lines(bytes: &[u8], ocr: bool) -> Option<Vec<String>> {
-    if enabled() {
-        run(bytes, ocr).map(|paged| paged.into_iter().map(|(_, line)| line).collect())
-    } else {
-        None
+/// The cleaned lines and, when pages of the document were recognised by the bundled OCR, its mean character probability.
+pub(crate) fn extract_lines_scored(bytes: &[u8], ocr: bool) -> Option<(Vec<String>, Option<f32>)> {
+    if !enabled() {
+        return None;
     }
+    run_scored(bytes, ocr).map(|(sections, confidence)| (sections.into_iter().map(|(_, _, line)| line).collect(), confidence))
 }
 
 /// Like [`extract_lines`] but with the 1-based page of each line (the backend's own page split).
@@ -45,8 +45,18 @@ pub fn extract_paged(bytes: &[u8], ocr: bool) -> Option<Vec<(usize, String)>> {
 /// The bundled OCR (`ocr.rs`) as yolowpdf's page OCR engine: a page with no text layer inside a text document is
 /// recognised there, so its lines carry that page's number. Without the `ocr` feature there is no engine.
 #[cfg(feature = "ocr")]
-#[derive(Debug)]
-struct BundledOcr;
+#[derive(Debug, Default)]
+struct BundledOcr {
+    /// Probabilities of every character recognised through this engine during one document's extraction.
+    score: std::sync::Mutex<crate::ocr::OcrScore>,
+}
+
+#[cfg(feature = "ocr")]
+impl BundledOcr {
+    fn mean(&self) -> Option<f32> {
+        self.score.lock().ok().and_then(|s| s.mean())
+    }
+}
 
 #[cfg(feature = "ocr")]
 impl yolowpdf::PageOcr for BundledOcr {
@@ -57,7 +67,12 @@ impl yolowpdf::PageOcr for BundledOcr {
         gray: &[u8],
         _deadline: Option<std::time::Instant>,
     ) -> Result<yolowpdf::OcrOutput, String> {
-        let boxes = crate::ocr::ocr_gray_boxes(width, height, gray).ok_or("the bundled OCR failed on this image")?;
+        let boxes = crate::ocr::ocr_gray_lines(width, height, gray).ok_or("the bundled OCR failed on this image")?;
+        if let Ok(mut total) = self.score.lock() {
+            for line in &boxes {
+                total.add(crate::ocr::OcrScore { p_sum: line.char_confidence.iter().sum(), chars: line.char_confidence.len() as u32 });
+            }
+        }
         Ok(yolowpdf::OcrOutput {
             lines: boxes
                 .into_iter()
@@ -66,9 +81,9 @@ impl yolowpdf::PageOcr for BundledOcr {
                     y0: b.y0,
                     x1: b.x1,
                     y1: b.y1,
+                    // The model's mean character probability (vendored ocrs); yolowpdf 0.1.2 only carries it.
+                    score: b.mean_confidence(),
                     text: b.text,
-                    // ocrs 0.12 exposes no recognition score (docs/search-benchmarks.md, #0116).
-                    score: 1.0,
                     formula: false,
                 })
                 .collect(),
@@ -88,14 +103,23 @@ pub fn extract_paged_sections(bytes: &[u8], ocr: bool) -> Option<Vec<(usize, Opt
 }
 
 fn run_sections(bytes: &[u8], ocr: bool) -> Option<Vec<(usize, Option<String>, String)>> {
+    run_scored(bytes, ocr).map(|(sections, _)| sections)
+}
+
+type Sections = Vec<(usize, Option<String>, String)>;
+
+/// [`run_sections`] plus the mean OCR character probability of the pages the bundled OCR recognised (`None` when none).
+fn run_scored(bytes: &[u8], ocr: bool) -> Option<(Sections, Option<f32>)> {
     #[cfg_attr(not(feature = "ocr"), allow(unused_mut))]
     let mut opts = yolowpdf::Options {
         timeout: Some(OVERALL_TIMEOUT),
         ..Default::default()
     };
     #[cfg(feature = "ocr")]
+    let bundled = std::sync::Arc::new(BundledOcr::default());
+    #[cfg(feature = "ocr")]
     if ocr {
-        opts.ocr = Some(std::sync::Arc::new(BundledOcr));
+        opts.ocr = Some(bundled.clone());
     }
     #[cfg(not(feature = "ocr"))]
     let _ = ocr;
@@ -117,7 +141,11 @@ fn run_sections(bytes: &[u8], ocr: bool) -> Option<Vec<(usize, Option<String>, S
             lines.push((page.number, heading.clone(), line));
         }
     }
-    (!lines.is_empty()).then_some(lines)
+    #[cfg(feature = "ocr")]
+    let confidence = bundled.mean();
+    #[cfg(not(feature = "ocr"))]
+    let confidence = None;
+    (!lines.is_empty()).then_some((lines, confidence))
 }
 
 fn clean_line(line: &str) -> Option<String> {
@@ -195,9 +223,46 @@ mod tests {
         let image = doc.images.iter().find(|i| i.data.is_some()).expect("the scanned page image");
         let decoded = image::load_from_memory(image.data.as_ref().unwrap()).unwrap().into_luma8();
         let (w, h) = decoded.dimensions();
-        let boxes = crate::ocr::ocr_gray_boxes(w, h, decoded.as_raw()).expect("ocr");
+        let boxes = crate::ocr::ocr_gray_lines(w, h, decoded.as_raw()).expect("ocr");
         assert!(boxes.len() >= 3, "{boxes:?}");
         assert!(boxes.iter().all(|b| b.x0 >= 0.0 && b.y0 >= 0.0 && b.x1 <= w as f32 && b.y1 <= h as f32 && b.x0 < b.x1 && b.y0 < b.y1), "{boxes:?}");
         assert!(boxes.windows(2).all(|p| p[0].y0 <= p[1].y0), "top to bottom: {boxes:?}");
+    }
+
+    /// Fixture: the rendered page inside `mixed-text-scan.pdf`. Every recognised character has a probability, a clean page
+    /// reads with a high one, and the same page buried in noise reads with a clearly lower one (the vendored `ocrs`
+    /// `TextChar::confidence`; `ocr_confidence_eval` measures how well that tracks errors).
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn recognition_confidence_is_high_on_a_clean_scan_and_falls_with_noise() {
+        let jpeg = std::fs::read(MIXED).unwrap();
+        let doc = yolowpdf::extract_with(&jpeg, &yolowpdf::Options { images: yolowpdf::ImageOptions { export: true, ..Default::default() }, ..Default::default() }).unwrap();
+        let image = doc.images.iter().find(|i| i.data.is_some()).expect("the scanned page image");
+        let decoded = image::load_from_memory(image.data.as_ref().unwrap()).unwrap().into_luma8();
+        let (w, h) = decoded.dimensions();
+        let weighted_mean = |lines: &[crate::ocr::OcrLine]| {
+            let chars: usize = lines.iter().map(|l| l.char_confidence.len()).sum();
+            assert!(chars > 0);
+            lines.iter().map(|l| l.char_confidence.iter().sum::<f32>()).sum::<f32>() / chars as f32
+        };
+        let clean = crate::ocr::ocr_gray_lines(w, h, decoded.as_raw()).expect("ocr");
+        for line in &clean {
+            assert_eq!(line.char_confidence.len(), line.text.chars().count(), "{line:?}");
+            assert!(line.char_confidence.iter().all(|p| *p > 0.0 && *p <= 1.0), "{line:?}");
+        }
+        // Deterministic noise: a linear congruential generator, +-60 grey levels on every pixel.
+        let mut state = 12345u32;
+        let noisy: Vec<u8> = decoded
+            .as_raw()
+            .iter()
+            .map(|p| {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                (*p as i32 + ((state >> 24) as i32 - 128) * 60 / 128).clamp(0, 255) as u8
+            })
+            .collect();
+        let noisy_lines = crate::ocr::ocr_gray_lines(w, h, &noisy).expect("ocr");
+        let (clean_mean, noisy_mean) = (weighted_mean(&clean), if noisy_lines.is_empty() { 0.0 } else { weighted_mean(&noisy_lines) });
+        assert!(clean_mean > 0.9, "clean {clean_mean}");
+        assert!(noisy_mean < clean_mean - 0.02, "clean {clean_mean}, noisy {noisy_mean}");
     }
 }

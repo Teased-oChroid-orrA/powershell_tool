@@ -763,8 +763,7 @@ fn status_strip(s: &SearchSession) -> DocRibbon {
             .then(|| ("Indexing".to_string(), (ix.percent / 100.0).clamp(0.0, 1.0) as f32)),
         warning: s
             .current_result()
-            .filter(|r| r.low_confidence_pdf)
-            .map(|_| "PDF text may be misread".to_string()),
+            .and_then(|r| r.pdf_warning()),
     }
 }
 
@@ -1274,11 +1273,8 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
             ));
         }
     }
-    if r.low_confidence_pdf {
-        notes.push(DocNote::new(
-            "PDF: check source",
-            "Shown for every PDF read by OCR and for a PDF whose text layer looks garbled. It is a rule, not a measured accuracy: no recognition score exists for this text. Verify against the original.",
-        ));
+    if let Some(detail) = r.pdf_warning_detail() {
+        notes.push(DocNote::new("PDF: check source", detail));
     }
     let preview = s.preview.as_ref().filter(|p| p.path == r.full_name);
     let text = preview.and_then(|p| p.text.clone());

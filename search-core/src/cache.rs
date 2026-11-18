@@ -17,8 +17,8 @@ use crate::models::{
 
 /// Cached `lines_cache` text depends on how lines are extracted, which no
 /// setting captures. Bump when extraction output changes (1 = PDF/OCR line
-/// quality filter, `line_quality`; 3 = hyphen-broken words repaired; 4 = encrypted PDFs decrypted, content streams after a /ProcSet page object no longer skipped) so stale caches are dropped, not reused.
-const EXTRACTION_VERSION: u32 = 4;
+/// quality filter, `line_quality`; 3 = hyphen-broken words repaired; 4 = encrypted PDFs decrypted, content streams after a /ProcSet page object no longer skipped; 5 = OCR confidence stored with the result) so stale caches are dropped, not reused.
+const EXTRACTION_VERSION: u32 = 5;
 
 /// One cached file's prior result, keyed by full path in [`CacheFile`].
 ///
@@ -39,6 +39,8 @@ pub struct CachedFileEntry {
     pub total_line_count: i32,
     pub proximity_min_range: Option<i32>,
     pub low_confidence_pdf: bool,
+    #[serde(default)]
+    pub ocr_confidence: Option<f32>,
     pub error_message: Option<String>,
 }
 
@@ -55,6 +57,7 @@ impl CachedFileEntry {
             total_line_count: self.total_line_count,
             proximity_min_range: self.proximity_min_range,
             low_confidence_pdf: self.low_confidence_pdf,
+            ocr_confidence: self.ocr_confidence,
             error_message: self.error_message.clone(),
         }
     }
@@ -226,6 +229,7 @@ pub fn save(
                     total_line_count: r.total_line_count,
                     proximity_min_range: r.proximity_min_range,
                     low_confidence_pdf: r.low_confidence_pdf,
+                    ocr_confidence: r.ocr_confidence,
                     error_message: r.error_message.clone(),
                 },
             );
@@ -282,6 +286,7 @@ mod tests {
             total_line_count: 1,
             proximity_min_range: None,
             low_confidence_pdf: false,
+            ocr_confidence: None,
             error_message: None,
         }
     }
@@ -412,6 +417,46 @@ mod tests {
         assert_eq!(restored.full_name, "/x/a.txt");
         assert_eq!(restored.file_length, 10);
         assert_eq!(restored.status, FileSearchStatus::Hit);
+    }
+
+    #[test]
+    fn ocr_confidence_survives_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        let settings = SearchSettings { filters: vec!["apple".to_string()], ..Default::default() };
+        let candidates = vec![CandidateMetadata { full_name: "/x/a.pdf".to_string(), length: 10, last_write_time_ticks: 1 }];
+        let mut result = sample_result("/x/a.pdf");
+        result.low_confidence_pdf = true;
+        result.ocr_confidence = Some(0.91);
+        save(path.to_str().unwrap(), &settings, &candidates, &[result]);
+
+        let loaded = try_load(path.to_str().unwrap(), &settings).unwrap();
+        let restored = loaded["/x/a.pdf"].to_file_search_result("/x/a.pdf".to_string());
+        assert_eq!(restored.ocr_confidence, Some(0.91));
+        assert!(restored.low_confidence_pdf);
+    }
+
+    #[test]
+    fn entry_without_the_ocr_confidence_field_still_loads() {
+        let entry = CachedFileEntry {
+            length: 1,
+            last_write_time_ticks: 2,
+            status: FileSearchStatus::Hit,
+            hits: vec![],
+            created: Local::now(),
+            modified: Local::now(),
+            lines_cache: vec![],
+            total_line_count: 0,
+            proximity_min_range: None,
+            low_confidence_pdf: true,
+            ocr_confidence: Some(0.5),
+            error_message: None,
+        };
+        let mut json: serde_json::Value = serde_json::to_value(&entry).unwrap();
+        json.as_object_mut().unwrap().remove("ocr_confidence").expect("field is serialized");
+        let old: CachedFileEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(old.ocr_confidence, None);
+        assert!(old.low_confidence_pdf);
     }
 
     #[test]

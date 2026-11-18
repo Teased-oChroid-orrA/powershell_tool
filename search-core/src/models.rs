@@ -292,7 +292,54 @@ pub struct FileSearchResult {
     pub total_line_count: i32,
     pub proximity_min_range: Option<i32>,
     pub low_confidence_pdf: bool,
+    /// Mean probability (0 to 1) the OCR model gave the characters it read from this PDF; `None` when no OCR text was
+    /// used or it is unknown (fast-index results, results cached before the score existed).
+    pub ocr_confidence: Option<f32>,
     pub error_message: Option<String>,
+}
+
+/// A document's mean OCR character probability is "poor" below this. Measured with `examples/ocr_confidence_eval.rs` on
+/// 80 generated scan pages (16 kinds of degradation, `scripts/make_ocr_confidence_set.py`): every page under 0.97 had more
+/// than 5% wrong characters, every page of ordinary quality scored 0.979 or more (`docs/search-benchmarks.md`, "OCR
+/// confidence"). Synthetic text: real scanners are not covered.
+pub const POOR_OCR_CONFIDENCE: f32 = 0.97;
+
+impl FileSearchResult {
+    /// The OCR confidence as a whole percent, when the result has one.
+    pub fn ocr_percent(&self) -> Option<u32> {
+        self.ocr_confidence.map(|p| (p * 100.0).floor().clamp(0.0, 100.0) as u32)
+    }
+
+    /// True when OCR text was read with a confidence under [`POOR_OCR_CONFIDENCE`].
+    pub fn ocr_is_poor(&self) -> bool {
+        self.ocr_confidence.is_some_and(|p| p < POOR_OCR_CONFIDENCE)
+    }
+
+    /// The short label for a PDF whose text may be wrong; `None` when `low_confidence_pdf` is off.
+    pub fn pdf_warning(&self) -> Option<String> {
+        if !self.low_confidence_pdf {
+            return None;
+        }
+        Some(match self.ocr_percent() {
+            Some(pct) if self.ocr_is_poor() => format!("OCR {pct}%: poorly read"),
+            Some(pct) => format!("OCR {pct}%: may be misread"),
+            None => "PDF text may be misread".to_string(),
+        })
+    }
+
+    /// What the warning means, for a detail view; `None` when `low_confidence_pdf` is off.
+    pub fn pdf_warning_detail(&self) -> Option<String> {
+        if !self.low_confidence_pdf {
+            return None;
+        }
+        Some(match self.ocr_percent() {
+            Some(pct) => format!(
+                "Read by OCR; the model's mean confidence over this text is {pct}%. On generated scans, pages below {}% had more than 5% wrong characters every time and ordinary pages scored higher. The score is the model's own certainty, not a measured accuracy: it does not see text the detector missed. Verify numbers and part numbers against the original.",
+                (POOR_OCR_CONFIDENCE * 100.0).round()
+            ),
+            None => "Shown for a PDF read by OCR with no score stored for this result, and for a PDF whose text layer looks garbled. Verify against the original.".to_string(),
+        })
+    }
 }
 
 /// One accumulated warning (which file, what happened) surfaced in the
@@ -503,5 +550,62 @@ mod tests {
         // repeated across categories in the current C# source) - a change
         // here should be a deliberate catalog edit, not a silent drift.
         assert_eq!(extension_catalog::all_extensions().len(), 49);
+    }
+
+    fn pdf_result(low_confidence_pdf: bool, ocr_confidence: Option<f32>) -> FileSearchResult {
+        FileSearchResult {
+            full_name: "/x/a.pdf".to_string(),
+            status: FileSearchStatus::Hit,
+            hits: vec![],
+            created: Local::now(),
+            modified: Local::now(),
+            file_length: 1,
+            lines_cache: vec![],
+            total_line_count: 0,
+            proximity_min_range: None,
+            low_confidence_pdf,
+            ocr_confidence,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn ocr_percent_floors_and_clamps() {
+        assert_eq!(pdf_result(true, None).ocr_percent(), None);
+        assert_eq!(pdf_result(true, Some(0.989)).ocr_percent(), Some(98));
+        assert_eq!(pdf_result(true, Some(1.0)).ocr_percent(), Some(100));
+        assert_eq!(pdf_result(true, Some(0.0)).ocr_percent(), Some(0));
+        assert_eq!(pdf_result(true, Some(1.5)).ocr_percent(), Some(100));
+        assert_eq!(pdf_result(true, Some(-0.2)).ocr_percent(), Some(0));
+    }
+
+    #[test]
+    fn ocr_is_poor_switches_at_the_threshold() {
+        assert!(!pdf_result(true, None).ocr_is_poor());
+        assert!(pdf_result(true, Some(POOR_OCR_CONFIDENCE - 0.001)).ocr_is_poor());
+        assert!(!pdf_result(true, Some(POOR_OCR_CONFIDENCE)).ocr_is_poor());
+        assert!(!pdf_result(true, Some(0.99)).ocr_is_poor());
+    }
+
+    #[test]
+    fn pdf_warning_is_absent_unless_the_pdf_is_flagged() {
+        assert_eq!(pdf_result(false, Some(0.5)).pdf_warning(), None);
+        assert_eq!(pdf_result(false, Some(0.5)).pdf_warning_detail(), None);
+    }
+
+    #[test]
+    fn pdf_warning_names_the_score_and_how_bad_it_is() {
+        assert_eq!(pdf_result(true, None).pdf_warning().as_deref(), Some("PDF text may be misread"));
+        assert_eq!(pdf_result(true, Some(0.985)).pdf_warning().as_deref(), Some("OCR 98%: may be misread"));
+        assert_eq!(pdf_result(true, Some(0.62)).pdf_warning().as_deref(), Some("OCR 62%: poorly read"));
+    }
+
+    #[test]
+    fn pdf_warning_detail_quotes_the_score_and_the_threshold() {
+        let scored = pdf_result(true, Some(0.62)).pdf_warning_detail().unwrap();
+        assert!(scored.contains("62%"), "{scored}");
+        assert!(scored.contains("below 97%"), "{scored}");
+        let unscored = pdf_result(true, None).pdf_warning_detail().unwrap();
+        assert!(unscored.contains("no score stored"), "{unscored}");
     }
 }

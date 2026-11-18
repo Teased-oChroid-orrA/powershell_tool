@@ -41,6 +41,8 @@ pub struct ExtractedLines {
     pub low_confidence_pdf: bool,
     /// Text came from the local OCR models rather than a PDF text layer.
     pub ocr_used: bool,
+    /// Mean probability (0 to 1) the OCR model gave the characters it recognised; `None` when no OCR text is in `lines`.
+    pub ocr_confidence: Option<f32>,
 }
 
 /// Extra metadata used only by the optional semantic corpus index.
@@ -203,6 +205,7 @@ pub trait Extractor: Send + Sync {
             lines,
             low_confidence_pdf: false,
             ocr_used: false,
+            ocr_confidence: None,
         })
     }
 
@@ -304,7 +307,7 @@ impl Extractor for PdfExtractor {
         on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
         ocr_scanned_pdfs: bool,
     ) -> Option<ExtractedLines> {
-        let (lines, _, ocr_used) = extract_pdf_lines_with_metadata(
+        let (lines, _, ocr_used, ocr_confidence) = extract_pdf_lines_with_metadata(
             bytes,
             pdf_timeout_seconds,
             on_pdf_progress,
@@ -314,6 +317,7 @@ impl Extractor for PdfExtractor {
             low_confidence_pdf: false,
             lines,
             ocr_used,
+            ocr_confidence,
         })
     }
     fn low_confidence(&self, lines: &[String]) -> bool {
@@ -1796,7 +1800,7 @@ pub fn extract_pdf_lines(
     on_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
     ocr_scanned_pdfs: bool,
 ) -> (Option<Vec<String>>, bool) {
-    let (lines, truncated, _) = extract_pdf_lines_with_metadata(
+    let (lines, truncated, _, _) = extract_pdf_lines_with_metadata(
         bytes,
         overall_timeout_seconds,
         on_progress,
@@ -1810,7 +1814,7 @@ fn extract_pdf_lines_with_metadata(
     overall_timeout_seconds: u64,
     mut on_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
     ocr_scanned_pdfs: bool,
-) -> (Option<Vec<String>>, bool, bool) {
+) -> (Option<Vec<String>>, bool, bool, Option<f32>) {
     let extracted = extract_pdf_lines_capture(
         bytes,
         overall_timeout_seconds,
@@ -1818,7 +1822,7 @@ fn extract_pdf_lines_with_metadata(
         ocr_scanned_pdfs,
         false,
     );
-    (extracted.lines, extracted.truncated, extracted.ocr_used)
+    (extracted.lines, extracted.truncated, extracted.ocr_used, extracted.ocr_confidence)
 }
 
 #[cfg(feature = "semantic-search")]
@@ -1841,6 +1845,7 @@ struct PdfExtraction {
     lines: Option<Vec<String>>,
     truncated: bool,
     ocr_used: bool,
+    ocr_confidence: Option<f32>,
     #[cfg_attr(not(feature = "semantic-search"), allow(dead_code))]
     origins: Option<Vec<Option<usize>>>,
 }
@@ -1881,11 +1886,13 @@ fn extract_pdf_lines_capture(
     // results fall through to the scanner below (which also runs OCR).
     #[cfg(feature = "pdf-yolow")]
     if !collect_origins {
-        if let Some(lines) = crate::pdf_yolow::extract_lines(bytes, ocr_scanned_pdfs) {
+        if let Some((lines, ocr_confidence)) = crate::pdf_yolow::extract_lines_scored(bytes, ocr_scanned_pdfs) {
+            // A page recognised inside a text document is OCR text too (it was flagged as a plain text layer before).
             return PdfExtraction {
                 lines: Some(lines),
                 truncated: false,
-                ocr_used: false,
+                ocr_used: ocr_confidence.is_some(),
+                ocr_confidence,
                 origins: None,
             };
         }
@@ -1907,6 +1914,8 @@ fn extract_pdf_lines_capture(
     let mut ocr_used = false;
     #[cfg(not(feature = "ocr"))]
     let ocr_used = false;
+    #[cfg(feature = "ocr")]
+    let mut ocr_score = crate::ocr::OcrScore::default();
 
     // A ToUnicode CMap can appear anywhere in the file relative to the
     // content stream(s) that need it - in practice, usually *after*
@@ -2059,22 +2068,24 @@ fn extract_pdf_lines_capture(
                 }
                 images_done += 1;
                 let key = crate::ocr::cache_key(header, stream_text);
-                let recognised = match crate::ocr::cached_lines(&key) {
-                    Some(lines) => Some(lines),
+                let recognised = match crate::ocr::cached_page(&key) {
+                    Some(page) => Some(page),
                     None => {
                         let image = jpeg_image_from_stream(header, stream_text)
                             .or_else(|| raw_flate_image_from_stream(header, stream_text));
-                        let lines = image.as_ref().and_then(crate::ocr::ocr_image);
-                        if let Some(lines) = &lines {
-                            crate::ocr::store_lines(&key, lines);
+                        let page = image.as_ref().and_then(crate::ocr::ocr_image);
+                        if let Some(page) = &page {
+                            crate::ocr::store_page(&key, page);
                         }
-                        lines
+                        page
                     }
                 };
-                if let Some(mut ocr_lines) = recognised {
+                if let Some(page) = recognised {
+                    let mut ocr_lines = page.lines;
                     crate::line_quality::clean_lines(&mut ocr_lines, crate::line_quality::Source::Ocr, None);
                     if !ocr_lines.is_empty() {
                         ocr_used = true;
+                        ocr_score.add(page.score);
                         for _ in &ocr_lines {
                             record_pdf_origin(&mut origins, None);
                         }
@@ -2107,10 +2118,15 @@ fn extract_pdf_lines_capture(
     }
 
     let result = if lines.is_empty() { None } else { Some(lines) };
+    #[cfg(feature = "ocr")]
+    let ocr_confidence = if ocr_used { ocr_score.mean() } else { None };
+    #[cfg(not(feature = "ocr"))]
+    let ocr_confidence = None;
     PdfExtraction {
         lines: result,
         truncated: truncated_by_time,
         ocr_used,
+        ocr_confidence,
         origins,
     }
 }
@@ -2885,7 +2901,7 @@ mod tests {
         let lines = result.expect("plain literal-string Tj text must still extract");
         assert!(lines.contains(&"Hello".to_string()));
         assert!(lines.contains(&"World".to_string()));
-        let (_, _, ocr_used) = extract_pdf_lines_with_metadata(pdf.as_bytes(), 15, None, true);
+        let (_, _, ocr_used, _) = extract_pdf_lines_with_metadata(pdf.as_bytes(), 15, None, true);
         assert!(
             !ocr_used,
             "an existing PDF text layer must bypass OCR even when enabled"
@@ -3196,11 +3212,13 @@ mod tests {
     fn ocr_extracts_real_text_from_the_real_scanned_pdf_fixture() {
         let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/benches/data");
         let bytes = std::fs::read(format!("{data_dir}/xlarge-scanned.pdf")).unwrap();
-        let (lines, _, ocr_used) = extract_pdf_lines_with_metadata(&bytes, 15, None, true);
+        let (lines, _, ocr_used, ocr_confidence) = extract_pdf_lines_with_metadata(&bytes, 15, None, true);
         assert!(
             ocr_used,
             "text returned from this scanned PDF must be marked OCR-derived"
         );
+        let confidence = ocr_confidence.expect("OCR text carries the model's mean character probability");
+        assert!(confidence > 0.5 && confidence <= 1.0, "{confidence}");
         let joined = lines
             .expect("OCR must return text from the scanned PDF")
             .join(" ");

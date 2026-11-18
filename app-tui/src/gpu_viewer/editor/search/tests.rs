@@ -48,6 +48,7 @@ fn result(name: &str, hits: usize, size: i64) -> FileSearchResult {
         total_line_count: 0,
         proximity_min_range: None,
         low_confidence_pdf: false,
+        ocr_confidence: None,
         error_message: None,
     }
 }
@@ -61,6 +62,36 @@ fn with_results() -> SearchSession {
     ];
     s.st.run.started = Some(Instant::now());
     s
+}
+
+#[test]
+fn pdf_warning_shows_the_ocr_percent_in_the_ribbon_and_the_detail_note() {
+    let mut s = with_results();
+    s.selected = Some(0);
+    {
+        let r = s.st.run.results.get_mut(0).unwrap();
+        r.low_confidence_pdf = true;
+        r.ocr_confidence = Some(0.62);
+    }
+    s.poll();
+    let doc = view::document(&s);
+    let warning = doc.ribbon.as_ref().and_then(|r| r.warning.clone());
+    assert_eq!(warning.as_deref(), Some("OCR 62%: poorly read"));
+    let detail = doc.detail.as_ref().expect("a detail for the selected file");
+    let note = detail.notes.iter().find(|n| n.text == "PDF: check source").expect("a PDF note");
+    assert!(note.hint.contains("62%"), "{}", note.hint);
+
+    // The same flagged PDF without a stored score keeps the plain label.
+    s.st.run.results.get_mut(0).unwrap().ocr_confidence = None;
+    let doc = view::document(&s);
+    assert_eq!(doc.ribbon.as_ref().and_then(|r| r.warning.clone()).as_deref(), Some("PDF text may be misread"));
+
+    // A result that is not flagged shows neither.
+    s.selected = Some(1);
+    s.poll();
+    let doc = view::document(&s);
+    assert!(doc.ribbon.as_ref().and_then(|r| r.warning.clone()).is_none());
+    assert!(!doc.detail.as_ref().is_some_and(|d| d.notes.iter().any(|n| n.text == "PDF: check source")));
 }
 
 #[test]
