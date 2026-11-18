@@ -108,7 +108,9 @@ pub fn open_or_create_with_rebuild(index_directory: &Path) -> NsResult<NativeSea
 /// joined into words, and non-content streams are no longer scanned for text. 4 = PDF words broken over two lines by a
 /// soft hyphen are joined. 5 = words broken over two lines by an ordinary hyphen are repaired when the document
 /// confirms the joined word. 6 = a folded trigram field (`trigram_folded`) lets a search that ignores accents narrow candidates.
-pub const INDEX_SEMANTIC_VERSION: u32 = 6;
+/// 7 = each document stores a SHA-256 of its file bytes (`content_hash`) so [`verify_content`] can find an edit that kept the
+/// size and modified time.
+pub const INDEX_SEMANTIC_VERSION: u32 = 7;
 const SEMANTIC_VERSION_FILE: &str = "semantic-version";
 /// Records whether the PDFs in the index were extracted with OCR on (`1`) or off (`0`). The per-file
 /// (modified, size) check cannot see a settings change, so turning OCR on re-extracts every PDF once.
@@ -207,8 +209,9 @@ pub fn index_hits_for_fast_search(
             .map(|e| format!(".{}", e.to_string_lossy()))
             .unwrap_or_default();
         let body = r.lines_cache.join("\n");
+        let content_hash = hash_if_unchanged(path, (modified_unix, r.file_length));
 
-        engine.index_document_folded(
+        engine.index_document_hashed(
             DocumentInput {
                 id: &r.full_name,
                 path: &r.full_name,
@@ -221,6 +224,7 @@ pub fn index_hits_for_fast_search(
                 body: &body,
             },
             folded_trigram_text(&body).as_deref(),
+            content_hash.as_ref().map(|h| h.as_slice()),
         )?;
         outcome.indexed_count += 1;
     }
@@ -600,6 +604,48 @@ struct IndexedLines {
     pages: Option<Vec<Option<std::num::NonZeroU32>>>,
 }
 
+/// SHA-256 of a file's bytes, stored per document so [`verify_content`] can recognise an edit that kept the size and
+/// modified time (the only thing the `(modified, size)` freshness check cannot see).
+pub type ContentHash = [u8; 32];
+
+fn hash_bytes(bytes: &[u8]) -> ContentHash {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).into()
+}
+
+/// Streams a file through SHA-256 without holding it in memory.
+fn hash_file(path: &Path) -> std::io::Result<ContentHash> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            return Ok(hasher.finalize().into());
+        }
+        hasher.update(&buffer[..n]);
+    }
+}
+
+/// `(modified in ns, size)` of a file as the freshness check reads them, `None` when it cannot be read.
+fn current_stamp(path: &Path) -> Option<(i64, i64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = ticks_from_modified(chrono::DateTime::<chrono::Local>::from(meta.modified().ok()?));
+    Some((modified, i64::try_from(meta.len()).ok()?))
+}
+
+/// The hash of `path` for a text that was read when the file stood at `(modified, size)`: `None` unless the file still
+/// does before and after hashing, so a hash is never stored for bytes the indexed text did not come from.
+fn hash_if_unchanged(path: &Path, stamp: (i64, i64)) -> Option<ContentHash> {
+    if current_stamp(path)? != stamp {
+        return None;
+    }
+    let hash = hash_file(path).ok()?;
+    (current_stamp(path)? == stamp).then_some(hash)
+}
+
 /// Why [`read_and_extract`] produced no lines.
 enum ReadFail {
     /// Binary file or a format that yielded no text - indexed as an empty doc.
@@ -607,15 +653,15 @@ enum ReadFail {
     Error(String),
 }
 
-/// Reads one file and extracts its text lines. Errors are pre-formatted
-/// strings (the failure list is display-only).
+/// Reads one file and extracts its text lines, with the hash of the bytes that were read (`None` when the file could
+/// not be read). Errors are pre-formatted strings (the failure list is display-only).
 async fn read_and_extract(
     full_name: String,
     ext: String,
     p: ReadParams,
     cancellation: CancellationToken,
-) -> Result<IndexedLines, ReadFail> {
-    let bytes = file_reader::read_file_bytes_robust(
+) -> (Option<ContentHash>, Result<IndexedLines, ReadFail>) {
+    let bytes = match file_reader::read_file_bytes_robust(
         &full_name,
         p.file_timeout_seconds,
         p.max_retries,
@@ -624,10 +670,14 @@ async fn read_and_extract(
         &cancellation,
     )
     .await
-    .map_err(|e| ReadFail::Error(e.to_string()))?;
+    {
+        Ok(bytes) => bytes,
+        Err(e) => return (None, Err(ReadFail::Error(e.to_string()))),
+    };
     // Extraction is synchronous and CPU-bound (PDF/OOXML/zip) - keep it off
     // the async worker threads so concurrent reads are never starved by it.
     tokio::task::spawn_blocking(move || {
+        let hash = hash_bytes(&bytes);
         #[cfg(feature = "semantic-search")]
         let extracted = if p.capture_pdf_pages {
             extraction::extract_for_semantic_index(
@@ -665,13 +715,14 @@ async fn read_and_extract(
             lines: doc.lines,
             pages: None,
         });
-        extracted.map_err(|e| match e {
+        let extracted = extracted.map_err(|e| match e {
             extraction::ExtractLinesError::Binary => ReadFail::NoText("binary file"),
             extraction::ExtractLinesError::Failed => ReadFail::NoText("no extractable text"),
-        })
+        });
+        (Some(hash), extracted)
     })
     .await
-    .map_err(|e| ReadFail::Error(format!("extraction task failed: {e}")))?
+    .unwrap_or_else(|e| (None, Err(ReadFail::Error(format!("extraction task failed: {e}")))))
 }
 
 /// One staged-but-uncommitted document, kept so a failed commit (the writer
@@ -684,6 +735,7 @@ struct PendingDoc {
     created: i64,
     size: i64,
     body: String,
+    content_hash: Option<ContentHash>,
 }
 
 /// The folded text a document's `trigram_folded` field is built from: `None` when it equals the
@@ -698,17 +750,21 @@ fn folded_trigram_text(body: &str) -> Option<String> {
 
 impl PendingDoc {
     fn stage(&self, engine: &NativeSearchEngine) -> NsResult<()> {
-        engine.index_document_folded(DocumentInput {
-            id: &self.id,
-            path: &self.id,
-            filename: &self.filename,
-            extension: &self.ext,
-            title: "",
-            modified_unix: self.modified,
-            created_unix: self.created,
-            size: self.size,
-            body: &self.body,
-        }, folded_trigram_text(&self.body).as_deref())
+        engine.index_document_hashed(
+            DocumentInput {
+                id: &self.id,
+                path: &self.id,
+                filename: &self.filename,
+                extension: &self.ext,
+                title: "",
+                modified_unix: self.modified,
+                created_unix: self.created,
+                size: self.size,
+                body: &self.body,
+            },
+            folded_trigram_text(&self.body).as_deref(),
+            self.content_hash.as_ref().map(|h| h.as_slice()),
+        )
     }
 }
 
@@ -1010,6 +1066,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         file_reader::EnumeratedFile,
         String,
         String,
+        Option<ContentHash>,
         Result<IndexedLines, ReadFail>,
     );
     let mut in_flight: tokio::task::JoinSet<Extracted> = tokio::task::JoinSet::new();
@@ -1023,8 +1080,8 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
             };
             let (cancel, names) = (cancellation.clone(), (full_name.clone(), ext.clone()));
             let handle = in_flight.spawn(async move {
-                let result = read_and_extract(full_name.clone(), ext.clone(), params, cancel).await;
-                (file, full_name, ext, result)
+                let (hash, result) = read_and_extract(full_name.clone(), ext.clone(), params, cancel).await;
+                (file, full_name, ext, hash, result)
             });
             in_flight_names.insert(handle.id(), names);
         }
@@ -1035,7 +1092,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         let Some(joined) = in_flight.join_next_with_id().await else {
             break;
         };
-        let (file, full_name, ext, extracted) = match joined {
+        let (file, full_name, ext, content_hash, extracted) = match joined {
             Ok((id, item)) => {
                 in_flight_names.remove(&id);
                 item
@@ -1102,6 +1159,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
             created: file.created.timestamp(),
             size: file.length,
             body: lines.join("\n"),
+            content_hash,
         };
         // A single document failure must not abort the loop and discard
         // every remaining file: count it, keep going.
@@ -1456,6 +1514,90 @@ pub fn verify_index(index_directory: &Path) -> NsResult<u64> {
     }
     let engine = NativeSearchEngine::open_or_create(index_directory)?;
     Ok(engine.num_docs())
+}
+
+/// Outcome of [`verify_content`].
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ContentCheck {
+    /// Indexed files that were read and compared.
+    pub checked: usize,
+    /// Files whose bytes differ from what was indexed, or that were indexed without a hash. Each was dropped from the
+    /// index (and from the semantic index) so the next update reads it again.
+    pub changed: usize,
+    /// Of `changed`, the files whose modified time and size still equal the indexed ones: the edits the freshness
+    /// check cannot see.
+    pub hidden: usize,
+    /// Indexed files that could not be read (locked, permission). They are left in the index.
+    pub unreadable: usize,
+    pub cancelled: bool,
+}
+
+/// Reads every indexed file once and compares its SHA-256 with the one stored when it was indexed. The `(modified, size)`
+/// freshness check cannot see an edit that keeps both; this can, at the cost of reading every file, so it runs on request
+/// and not on every search. A file that differs is deleted from the index, which makes the next update index it as new.
+/// Files that no longer exist are left to [`remove_orphaned_documents`]. Blocking: call it from a blocking thread.
+/// `on_progress(done, total)` is called about every 64 files.
+pub fn verify_content(
+    engine: &NativeSearchEngine,
+    cancellation: &CancellationToken,
+    mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
+) -> NsResult<ContentCheck> {
+    let hashes = engine.all_document_content_hashes()?;
+    let stamps = engine.all_document_metadata()?;
+    let mut ids: Vec<&String> = hashes.keys().collect();
+    ids.sort();
+    let total = ids.len();
+    let mut check = ContentCheck::default();
+    let mut dropped: Vec<&str> = Vec::new();
+    for (i, id) in ids.into_iter().enumerate() {
+        if cancellation.is_cancelled() {
+            check.cancelled = true;
+            break;
+        }
+        if i % 64 == 0 {
+            if let Some(progress) = on_progress.as_deref_mut() {
+                progress(i, total);
+            }
+        }
+        let path = Path::new(id);
+        let actual = match hash_file(path) {
+            Ok(hash) => hash,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                check.unreadable += 1;
+                continue;
+            }
+        };
+        check.checked += 1;
+        let stored = hashes.get(id).and_then(|h| h.as_deref());
+        if stored == Some(actual.as_slice()) {
+            continue;
+        }
+        check.changed += 1;
+        if stored.is_some() && current_stamp(path) == stamps.get(id).copied() {
+            check.hidden += 1;
+        }
+        engine.delete_document(id)?;
+        dropped.push(id);
+    }
+    if !dropped.is_empty() {
+        engine.commit()?;
+        #[cfg(feature = "semantic-search")]
+        if let Some(semantic) = Some(engine.index_directory().join("semantic.sqlite"))
+            .filter(|path| path.is_file())
+            .and_then(|path| crate::semantic_index::SemanticIndex::open(&path).ok())
+        {
+            for id in &dropped {
+                if let Err(error) = semantic.remove_document(id) {
+                    tracing::warn!(error = %error, "could not drop a changed document from the semantic index");
+                }
+            }
+        }
+    }
+    if let Some(progress) = on_progress.as_deref_mut() {
+        progress(total, total);
+    }
+    Ok(check)
 }
 
 #[cfg(test)]
@@ -1925,6 +2067,102 @@ mod tests {
             1,
             "a file that would never be a search 'hit' for most terms is still indexed"
         );
+    }
+
+    /// A folder with `a.txt`, `b.txt` indexed once: (folder, settings, engine, cancellation token).
+    async fn indexed_pair() -> (tempfile::TempDir, crate::models::SearchSettings, NativeSearchEngine, CancellationToken) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "apple pie recipe").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "unrelated notes").unwrap();
+        let index_dir = index_directory(&dir.path().to_string_lossy());
+        ensure_index_directory_exists(&index_dir).unwrap();
+        let engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
+        let mut exclude_folders = Vec::new();
+        ensure_index_folder_excluded(&mut exclude_folders);
+        let settings = crate::models::SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            output_folder: dir.path().to_string_lossy().into_owned(),
+            extensions: Some(vec![".txt".to_string()]),
+            exclude_folders,
+            ..Default::default()
+        };
+        let cancel = CancellationToken::new();
+        let first = build_or_update_corpus_index(&settings, &engine, &cancel, None).await.unwrap();
+        assert_eq!(first.indexed_count, 2);
+        (dir, settings, engine, cancel)
+    }
+
+    /// Rewrites `path` with `text` and puts back the modified time it had, as `touch -r` or an archive extraction would.
+    fn rewrite_keeping_mtime(path: &Path, text: &str) {
+        let before = std::fs::metadata(path).unwrap().modified().unwrap();
+        std::fs::write(path, text).unwrap();
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(before).unwrap();
+    }
+
+    #[tokio::test]
+    async fn verify_content_finds_a_same_size_same_time_edit_the_freshness_check_misses() {
+        let (dir, settings, engine, cancel) = indexed_pair().await;
+        let clean = verify_content(&engine, &cancel, None).unwrap();
+        assert_eq!((clean.checked, clean.changed, clean.hidden), (2, 0, 0), "an untouched folder verifies clean");
+
+        rewrite_keeping_mtime(&dir.path().join("a.txt"), "apple pig recipe");
+        let update = build_or_update_corpus_index(&settings, &engine, &cancel, None).await.unwrap();
+        assert_eq!(update.indexed_count, 0, "the (modified, size) check cannot see this edit: that is the gap");
+        assert!(search(&engine, "pig", 10).unwrap().is_empty(), "the index still holds the old text");
+
+        let check = verify_content(&engine, &cancel, None).unwrap();
+        assert_eq!((check.checked, check.changed, check.hidden), (2, 1, 1));
+        assert_eq!(engine.num_docs(), 1, "the changed file left the index");
+
+        let update = build_or_update_corpus_index(&settings, &engine, &cancel, None).await.unwrap();
+        assert_eq!(update.indexed_count, 1, "the next update reads only the changed file");
+        assert_eq!(search(&engine, "pig", 10).unwrap().len(), 1, "the new text is searchable");
+        assert_eq!(verify_content(&engine, &cancel, None).unwrap().changed, 0);
+    }
+
+    #[tokio::test]
+    async fn verify_content_counts_an_ordinary_edit_but_not_as_hidden_and_leaves_missing_and_unhashed_files_alone() {
+        let (dir, _settings, engine, cancel) = indexed_pair().await;
+        std::fs::write(dir.path().join("a.txt"), "a longer replacement text").unwrap();
+        std::fs::remove_file(dir.path().join("b.txt")).unwrap();
+        let check = verify_content(&engine, &cancel, None).unwrap();
+        assert_eq!((check.checked, check.changed, check.hidden), (1, 1, 0), "a deleted file is not this check's business");
+        assert!(engine.all_document_ids().unwrap().iter().any(|id| id.ends_with("b.txt")), "orphan removal owns missing files");
+
+        let loose = dir.path().join("loose.txt");
+        std::fs::write(&loose, "indexed without a hash").unwrap();
+        let (modified, size) = current_stamp(&loose).unwrap();
+        engine
+            .index_document(DocumentInput {
+                id: &loose.to_string_lossy(),
+                path: &loose.to_string_lossy(),
+                filename: "loose.txt",
+                extension: ".txt",
+                title: "",
+                modified_unix: modified,
+                created_unix: 0,
+                size,
+                body: "indexed without a hash",
+            })
+            .unwrap();
+        engine.commit().unwrap();
+        let check = verify_content(&engine, &cancel, None).unwrap();
+        assert_eq!((check.changed, check.hidden), (1, 0), "no stored hash means no baseline: re-read it, but it is not a hidden edit");
+    }
+
+    #[tokio::test]
+    async fn verify_content_stops_when_cancelled_and_reports_progress() {
+        let (_dir, _settings, engine, _cancel) = indexed_pair().await;
+        let mut seen = Vec::new();
+        let mut record = |done: usize, total: usize| seen.push((done, total));
+        verify_content(&engine, &CancellationToken::new(), Some(&mut record)).unwrap();
+        assert_eq!(seen.last(), Some(&(2, 2)), "the last report is done of total");
+
+        let stopped = CancellationToken::new();
+        stopped.cancel();
+        let check = verify_content(&engine, &stopped, None).unwrap();
+        assert!(check.cancelled);
+        assert_eq!(check.checked, 0);
     }
 
     #[tokio::test]
