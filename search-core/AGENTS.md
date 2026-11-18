@@ -184,6 +184,10 @@ enumerate_files_safely → read_file_bytes_robust → extract_lines_by_extension
 - No ANN index above `MAX_CACHED_CHUNKS`: the exact scan is cheap (about 35 ms for 250,000 chunks on one thread, 20 ms
   on 8); IVF needed 15% to 57% of the lists for recall@100 >= 0.98. `examples/ann_probe.rs` reproduces the measurement.
   The limit is memory (1.5 KB per chunk), snapshot build time and the per-file `stat`, not the dot products.
+  Past the limit queries are not cheap, though: `examples/semantic_stream_probe.rs` (2026-11-17, replicated rows) measured
+  steady queries at 41 ms from the snapshot at 241k chunks and 18 to 20 s streaming at 286k (30 MB against 600 MB resident).
+  The streaming path re-decodes and re-tokenises every chunk; do not assume it scales like the dot product. Details in
+  `docs/search-benchmarks.md`, "semantic index above the snapshot limit".
 - `search_ml::embed_queries` remembers the last 32 distinct queries.
 - Not done, by design: releasing the keyword index before embedding finishes. Embedding runs inside the same per-file
   loop as the exact index build and the semantic version stamp means "complete"; showing results early needs a
