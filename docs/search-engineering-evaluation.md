@@ -152,3 +152,17 @@ Same 160 judged queries, restricted to the 10 documents that hold judged pages (
 - **Cost:** about 150x the indexing time on this 8 GB M1 (measured; the first part of the run competed with a Rust eval and swapped, so an uncontended rate would be better but not 150x better), about 17x the index size, a 4.6 GB model, and a VLM forward pass per query (43 s for 160 queries, plus 18 s to score) that must run on a GPU or large CPU model.
 - **Verdict:** no. The gain is real but is mostly in deep recall and page-level ordering; the top-10 hit rate, which is what a reader sees, barely moves. It does not justify GBs of model, a GPU requirement, and a multi-hour first index on the target machine, so it is not delivered. Revisit only if a much smaller late-interaction model or an accelerator becomes available, or if recall@100 for a reranker candidate set becomes the binding limit.
 - **Limits:** one machine, 10 documents, 160 queries, binary relevance, one image size (896); no tuning of either side; MaxSim over all pages (no ANN), which is exact and would only get less accurate at scale. Scratch venv and model cache (about 9 GB) lived in `/private/tmp`.
+
+## 2026-11-17: folder acceptance harness on 400 FAA airworthiness directives (first run)
+
+Harness: `search-core/examples/folder_acceptance.rs`, questions `search-core/examples/data/faa_ad_questions.tsv` (25 rows). It builds the product index of a folder (exact plus semantic), asks each question of `SemanticIndex::search_with_settings` as the Search window does, and scores file-level hits for answerable questions and the best passage's similarity for separating answerable from unanswerable ones. Folder: 400 public FAA directives as text (`../benchmarks/faa-ad`, 401 files, 400 embedded). Command: `cargo run -p search-core --release --features semantic-search --example folder_acceptance -- <work-dir> ../benchmarks/faa-ad search-core/examples/data/faa_ad_questions.tsv .txt`.
+
+The question set is **machine-authored** from the directive summaries (17 answerable, 8 out of domain such as oat flour or a pressure-vessel hoop stress); the gold set for an answerable question is every file whose text contains all its key phrases. It is not human judged.
+
+| Questions | hit@1 | hit@3 | hit@10 | MRR@10 | mean top similarity | AUC answerable vs unanswerable |
+|---|---:|---:|---:|---:|---:|---:|
+| 17 answerable, 8 unanswerable | 0.941 | 1.000 | 1.000 | 0.961 | 0.623 answerable, 0.337 unanswerable | 0.978 |
+
+Reading. One answerable question ranked its file third (AS332 gearbox suspension bar screws; top similarity 0.714), the other 16 ranked first. The AUC of 0.978 means the two groups overlap slightly (the unanswerable interference-fit question reached 0.415, the nearest bushing directive; one answerable question reached 0.714 at rank 3), and 25 questions cannot place an abstention threshold for real folders. Indexing 400 files took 1,406 s on this 8 GB M1 while another embedding run shared the CPU (not an uncontended rate).
+
+Limits. 25 machine-written questions with phrase-based gold, one folder of short text files (no PDFs, tables or scans), one machine. It shows the harness works and that a plain directive folder is easy; the acceptance set that matters is still a human-judged one built from the user's own folders. No default was changed on this basis.

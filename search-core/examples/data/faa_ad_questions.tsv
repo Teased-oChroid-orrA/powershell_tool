@@ -1,0 +1,26 @@
+# query<TAB>expected file names separated by |, or - when the folder holds no answer. Machine-authored from the AD summaries; gold = every file whose text contains all key phrases. Not human judged: add rows for your own folders.
+Which directive is about jamming of the cockpit fuel shut-off controls on the EC225LP?	2014-12717.txt
+Which AD requires checking washers for movement on the EC135 and BK 117 C-2?	2015-14852.txt|2016-00664.txt
+Which AD requires inspecting the BO-105 main rotor blade for debonding of the shell?	2017-03963.txt
+AD about the throttle twist grip operation check on AS350B3 and EC130B4	2016-30020.txt|2018-27715.txt|2020-26867.txt|2025-18083.txt|2025-19079.txt
+Which AD covers the attachment screws of the main gearbox suspension bar rear fitting on AS332 helicopters?	2020-05848.txt|2025-22238.txt
+Inspection of the control rod attachment yokes on the main rotor rotating swashplate of an EC225LP	2018-08096.txt|2020-25472.txt|2022-26219.txt
+Repetitive inspection of the bearing in the swashplate assembly of the main rotor mast, EC225LP	2020-25466.txt|2021-04869.txt|2025-02703.txt
+Which AD addresses deformation of the protective cover of the SHEAR pushbutton on the copilot collective stick?	2020-16415.txt|2021-06867.txt|2021-26604.txt
+Excessively worn bolts connecting the cardan-pivot joint to the tail rotor servo piston rod on the BK 117 C-2	2022-21884.txt|2024-31500.txt
+Corrosion found on landing gear assemblies of the EC120B and EC130	2023-16555.txt
+Fatigue cracks at the root of tail rotor blades on the EC130 B4 and T2	2025-15657.txt
+Which AD says the force needed to jettison the windows is too high on the EC155?	2025-22225.txt
+Rupture of the scissors link of the rotating swashplate caused by a seized ball joint on the AS332	2026-04164.txt
+AD concerning an MS18027 hook that may be subject to failure on the BK 117	2026-09521.txt
+Cracks in the legs of the side supports of the tail rotor transmission fan on the AS355	2026-16505.txt
+Flight manual discrepancy about stay-up flying capability for Category B operation on the AS332L2 and EC225LP	2022-07174.txt|2022-07709.txt
+Modification of the main gearbox tail rotor drive flange installation on AS365 and EC155	2020-22241.txt|2021-28471.txt
+What is the recommended tightening torque for an M8x1.25 class 8.8 bolt?	-
+Which AD applies to the wing spar of the Cessna 172 fixed-wing aircraft?	-
+How do I configure a PostgreSQL replication slot?	-
+What is the fatigue life of a Boeing 737 main landing gear trunnion pin?	-
+Maximum permitted cabin pressure differential of an Airbus A320	-
+Pressure vessel hoop stress for a thin-walled cylinder	-
+What are the nutritional values of oat flour?	-
+Interference fit between a steel bushing and an aluminium lug bore	-

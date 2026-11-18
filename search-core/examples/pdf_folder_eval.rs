@@ -4,7 +4,7 @@
 //! recall, hit rate and nDCG@10 (binary relevance), so extraction and page mapping errors count against the result.
 //!
 //!   python3 scripts/prepare_vidore_folder.py <dir>
-//!   cargo run -p search-core --release --features semantic-search,pdf-yolow --example pdf_folder_eval -- <work-dir> <dir> <scanner|yolow|yolow-ocr|yolow-shuffle|yolow-hdr> [max-pdfs]
+//!   cargo run -p search-core --release --features semantic-search,pdf-yolow,ocr --example pdf_folder_eval -- <work-dir> <dir> <scanner|yolow|yolow-ocr|yolow-shuffle|yolow-hdr> [max-pdfs]
 use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::path::Path;
