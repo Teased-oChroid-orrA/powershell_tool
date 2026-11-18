@@ -824,7 +824,7 @@ That is 15% to 17% faster with identical vectors, so no `retrieval_eval` run and
 
 What remains: inference itself is the cost, and nothing else in the loop is worth changing (database writes are 0.5%). Not tried: a different inference runtime or a newer `rten` (would need the bit comparison above, and the five-set run if any vector changes), the other callers of `search_ml::embed_batch` (`alerts.rs`, `neural_search.rs`, `relevance.rs` send lines; the 80 and 200 character columns say their batching is already the right way round), Windows.
 
-## 2026-11-17: first hosted Windows rows (, `search-bench-windows.yml`, PR #305)
+## 2026-11-17: first hosted Windows rows (`search-bench-windows.yml`, PR #305)
 
 Host: AMD EPYC 9V74 (hosted runner, `windows-latest`), release, one run. Evidence for that host only.
 

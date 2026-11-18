@@ -38,3 +38,10 @@ This 2D triangulation dependency does not replace OpenCASCADE's CAD functionalit
 The native diagnostic STEP association path uses **sha2 0.10.9**
 (<https://github.com/RustCrypto/hashes>), MIT OR Apache-2.0. This distribution
 elects MIT; `licenses/sha2-LICENSE-MIT.txt` retains the upstream notice.
+
+## OCR for scanned PDFs
+
+The OCR fallback uses **ocrs 0.12.2** (<https://github.com/robertknight/ocrs>), MIT OR Apache-2.0, vendored in
+`third_party/ocrs/` with one change (per-character recognition confidence; see `third_party/ocrs/NOTICE.md`). This
+distribution elects its MIT license; `licenses/ocrs-LICENSE-MIT.txt` retains the upstream copyright and permission notice
+(also kept as `third_party/ocrs/LICENSE-MIT`).
