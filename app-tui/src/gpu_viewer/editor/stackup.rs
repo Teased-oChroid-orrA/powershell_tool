@@ -1108,6 +1108,7 @@ impl Authoring for StackupSession {
                             select: action(StackupAct::Select(index)),
                             open: None,
                             badge: None,
+                            mark: None,
                         }
                     })
                     .collect(),
@@ -1178,6 +1179,7 @@ impl Authoring for StackupSession {
                 select: action(StackupAct::Select(index)),
                 open: None,
                 badge: None,
+                mark: None,
             };
             let state = if self.current() {
                 format!("{:?}: {}", lr.status, lr.comparison)

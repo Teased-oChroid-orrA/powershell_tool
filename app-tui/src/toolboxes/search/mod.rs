@@ -181,15 +181,21 @@ pub fn request_cancel(state: &SearchToolState) {
 /// `Effect` `main.rs` executes - `handle_event`'s call graph never touches
 /// the async runtime directly.
 pub fn start_index_build(state: &mut SearchToolState) -> Vec<Effect> {
-    start_index_job(state, None)
+    start_index_job(state, None, false)
+}
+
+/// Like [`start_index_build`], but first reads every indexed file and compares its content hash, so an edit that kept
+/// the size and modified time is found and re-indexed too (`search_core::native_index::verify_content`).
+pub fn start_index_verify(state: &mut SearchToolState) -> Vec<Effect> {
+    start_index_job(state, None, true)
 }
 
 /// Like [`start_index_build`], but updating only `paths` (what a folder watcher reported).
 pub fn start_index_update(state: &mut SearchToolState, paths: Vec<String>) -> Vec<Effect> {
-    start_index_job(state, Some(paths))
+    start_index_job(state, Some(paths), false)
 }
 
-fn start_index_job(state: &mut SearchToolState, paths: Option<Vec<String>>) -> Vec<Effect> {
+fn start_index_job(state: &mut SearchToolState, paths: Option<Vec<String>>, verify_content: bool) -> Vec<Effect> {
     if state.index_run.is_building || state.config.search_path.trim().is_empty() {
         return Vec::new();
     }
@@ -200,7 +206,7 @@ fn start_index_job(state: &mut SearchToolState, paths: Option<Vec<String>>) -> V
     let cancel = CancellationToken::new();
     state.index_cancel = Some(cancel.clone());
     let embed = state.config.index.embed_policy();
-    vec![Effect::BuildIndex { settings, index_dir, cancel, paths, embed }]
+    vec![Effect::BuildIndex { settings, index_dir, cancel, paths, verify_content, embed }]
 }
 
 /// Toolbox-local key routing for whichever workspace pane currently has

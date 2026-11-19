@@ -462,6 +462,36 @@ pub struct Document {
     pub ribbon: Option<DocRibbon>,
     /// A card between the bar and the results for what Find found besides files (passages, conditions).
     pub insight: Option<DocInsight>,
+    /// A left rail of choices that narrow the table (Material Lookup's groups, basis, form and property limits).
+    /// Search keeps its own in `sidebar`.
+    pub rail: Option<DocNarrow>,
+    /// A tray along the page's bottom edge holding what was set aside for comparison.
+    pub basket: Option<DocBasket>,
+}
+
+/// The compare basket: fixed slots (filled first), then the two buttons.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocBasket {
+    pub slots: Vec<Option<DocBasketSlot>>,
+    /// Shown in an empty slot.
+    pub empty: String,
+    pub compare: Entry,
+    pub clear: Entry,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocBasketSlot {
+    pub name: String,
+    pub detail: String,
+    pub remove: UiAction,
+}
+
+/// A row's own box in the first cell: ticked while the row is in the basket; a click on it runs `action` and
+/// leaves the row's own click (the highlight) alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DocMark {
+    pub on: bool,
+    pub action: UiAction,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -491,6 +521,64 @@ pub struct DocSidebar {
     pub index_name: String,
     pub index_detail: String,
     pub index_action: Option<Entry>,
+    /// Choices that narrow the results already found; `None` while there are none.
+    pub narrow: Option<DocNarrow>,
+}
+
+/// The sidebar's "narrow results" block: sections of options, a count of what is shown and a way back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocNarrow {
+    /// The block's heading ("NARROW RESULTS") and what is counted ("files").
+    pub title: String,
+    pub noun: String,
+    pub sections: Vec<DocNarrowSection>,
+    /// Sliders under the sections (property limits); a drag reports the value as a `DocField` of the slider's id.
+    pub sliders: Vec<DocSlider>,
+    pub shown: usize,
+    pub total: usize,
+    /// Drops every choice; `None` when none is active.
+    pub clear: Option<UiAction>,
+}
+
+/// A limit on a number: the slider runs `min..=max`; an end that means "no limit" reports an empty text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocSlider {
+    pub id: u8,
+    pub label: String,
+    pub value: f64,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    pub decimals: usize,
+    pub unit: String,
+    /// The end of the range that leaves the number unlimited.
+    pub free_at_max: bool,
+    /// A limit is set (the value is drawn in the accent colour).
+    pub active: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocNarrowSection {
+    pub title: String,
+    /// Short options laid out as pills (the date window) rather than checkboxes with counts.
+    pub pills: bool,
+    pub options: Vec<DocNarrowOption>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocNarrowOption {
+    pub label: String,
+    /// Results this option would show with the other choices kept.
+    pub count: usize,
+    pub on: bool,
+    pub action: UiAction,
+}
+
+/// An active choice shown over the table; a click takes it back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocChip {
+    pub label: String,
+    pub remove: UiAction,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -600,6 +688,8 @@ pub struct DocProgress {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct DocTable {
     pub title: String,
+    /// Choices that narrow the rows, drawn after the title with a click to take one back.
+    pub chips: Vec<DocChip>,
     /// A filter over the rows, drawn in the table's header.
     pub filter: Option<DocInput>,
     pub columns: Vec<DocColumn>,
@@ -632,6 +722,8 @@ pub struct DocRow {
     pub open: Option<UiAction>,
     /// A small badge after the first cell (the file type).
     pub badge: Option<String>,
+    /// A box before the name that sets the row aside for comparison.
+    pub mark: Option<DocMark>,
 }
 
 /// The selected row in full: a title, a subtitle, actions and the text blocks that matter (the matching lines).

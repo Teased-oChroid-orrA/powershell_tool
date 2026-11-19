@@ -10,6 +10,7 @@
 #[cfg(feature = "neural-search")]
 mod alerts;
 mod find;
+pub(crate) mod narrow;
 #[cfg(feature = "semantic-search")]
 mod diff;
 #[cfg(feature = "nl-find")]
@@ -68,6 +69,13 @@ pub enum SearchAct {
     Match(search_core::models::MatchMode),
     /// Show only results of extension `.0` (an index into `types()`); `None` shows all.
     OnlyType(Option<usize>),
+    /// Narrow the shown results to file type `.0` (a position in `facets().types`), or back out of it.
+    NarrowType(usize),
+    /// The same for folder `.0` (a position in `facets().folders`).
+    NarrowFolder(usize),
+    NarrowModified(narrow::Modified),
+    NarrowQuality(narrow::Quality),
+    ClearNarrow,
     /// A setting of the terminal form (`settings_view::settings`): type a value, or flip / cycle it.
     Edit(usize),
     Step(usize),
@@ -78,6 +86,8 @@ pub enum SearchAct {
     /// Choose the folder reports and exports are written to, with the same picker.
     BrowseOutput,
     BuildIndex,
+    /// Like `BuildIndex`, but first reads every indexed file once to find edits that kept the size and modified time.
+    VerifyIndexContent,
     /// Add every other folder with a recorded fast index to this search (the machine-level catalog).
     AlsoIndexedFolders,
     #[cfg(feature = "neural-search")]
@@ -191,9 +201,22 @@ const SETTING_EXCLUDE: usize = 3;
 const SETTING_EXCLUDE_SCOPE: usize = 8;
 const SETTING_OUTPUT: usize = 14;
 
+/// What `SearchSession::facets` was built for: run start, result count, folder searched, choices.
+type FacetKey = (Option<Instant>, usize, String, narrow::Narrow);
+
+fn toggle<T: Ord>(set: &mut std::collections::BTreeSet<T>, value: T) {
+    if !set.remove(&value) {
+        set.insert(value);
+    }
+}
+
 pub struct SearchSession {
     st: SearchToolState,
     rows_cache: RefCell<Option<view::RowsCache>>,
+    /// The sidebar's choices that hide rows of the results (type, folder, modified, text quality).
+    narrow: narrow::Narrow,
+    /// The facet lists for the run state and choices they were built for.
+    facets: RefCell<Option<(FacetKey, std::rc::Rc<narrow::Facets>)>>,
     /// Position of each result in the Best match order, kept for the run state it was computed for.
     best_match: RefCell<Option<((usize, String), Vec<usize>)>>,
     notes: NotificationQueue,
@@ -835,6 +858,8 @@ impl SearchSession {
         };
         Ok(Self {
             rows_cache: RefCell::new(None),
+            narrow: narrow::Narrow::default(),
+            facets: RefCell::new(None),
             best_match: RefCell::new(None),
             notes: NotificationQueue::default(),
             rt,
@@ -1380,11 +1405,21 @@ impl SearchSession {
     }
 
     fn build_index(&mut self) {
+        self.start_index_job(search::start_index_build, "Building the fast index...");
+    }
+
+    /// Reads every indexed file once and compares it with the content hash stored when it was indexed, then updates the
+    /// index: finds the edits the time-and-size check cannot see.
+    fn verify_index_content(&mut self) {
+        self.start_index_job(search::start_index_verify, "Checking the content of every indexed file...");
+    }
+
+    fn start_index_job(&mut self, start: fn(&mut SearchToolState) -> Vec<Effect>, started: &str) {
         if self.st.run.is_running {
             self.status = "Wait for the search to finish before building the index.".into();
             return;
         }
-        let effects = search::start_index_build(&mut self.st);
+        let effects = start(&mut self.st);
         if effects.is_empty() {
             self.status = if self.st.index_run.is_building {
                 "The index is already building.".into()
@@ -1394,7 +1429,7 @@ impl SearchSession {
             return;
         }
         self.index_started = Some(Instant::now());
-        self.status = "Building the fast index...".into();
+        self.status = started.into();
         self.execute(effects);
     }
 
@@ -1633,13 +1668,49 @@ impl SearchSession {
 
     // ------------------------------------------------------------------ results
 
+    /// Whether result `i` is in the table: it passes the name / folder filter and the sidebar's narrowing.
+    pub(crate) fn shown(&self) -> impl Fn(usize) -> bool + '_ {
+        let needle = self.filter.trim().to_lowercase();
+        let root = narrow::root_of(&self.st.config.search_path);
+        let now = chrono::Local::now();
+        move |i| {
+            self.st.run.results.get(i).is_some_and(|r| {
+                (needle.is_empty() || r.full_name.to_lowercase().contains(&needle))
+                    && self.narrow.matches(r, &root, now)
+            })
+        }
+    }
+
+    /// The sidebar's facet lists for the results found so far (rebuilt when the run, the results, the folder or a
+    /// choice changes, not every frame).
+    pub(crate) fn facets(&self) -> std::rc::Rc<narrow::Facets> {
+        let key = (
+            self.st.run.started,
+            self.st.run.results.len(),
+            self.st.config.search_path.clone(),
+            self.narrow.clone(),
+        );
+        let mut cache = self.facets.borrow_mut();
+        if let Some((cached, facets)) = cache.as_ref() {
+            if *cached == key {
+                return facets.clone();
+            }
+        }
+        let facets = std::rc::Rc::new(narrow::Facets::build(
+            &self.st.run.results,
+            &self.narrow,
+            &narrow::root_of(&self.st.config.search_path),
+            chrono::Local::now(),
+        ));
+        *cache = Some((key, facets.clone()));
+        facets
+    }
+
     /// The results in table order: filtered, then sorted.
     pub(crate) fn view(&self) -> Vec<usize> {
-        let needle = self.filter.trim().to_lowercase();
         let results = &self.st.run.results;
-        let mut v: Vec<usize> = (0..results.len())
-            .filter(|&i| needle.is_empty() || results[i].full_name.to_lowercase().contains(&needle))
-            .collect();
+        let shown = self.shown();
+        let mut v: Vec<usize> = (0..results.len()).filter(|&i| shown(i)).collect();
         let (key, asc) = self.sort;
         let name = |r: &FileSearchResult| file_name(&r.full_name).to_lowercase();
         match key {
@@ -1705,19 +1776,11 @@ impl SearchSession {
     /// The selected result, or the first shown when nothing is selected.
     pub(crate) fn current(&self) -> Option<usize> {
         if self.sort.0 == SortKey::Found {
-            let needle = self.filter.trim().to_lowercase();
-            let visible = |i: usize| {
-                self.st.run.results.get(i).is_some_and(|r| {
-                    needle.is_empty() || r.full_name.to_lowercase().contains(&needle)
-                })
-            };
-            return self.selected.filter(|&i| visible(i)).or_else(|| {
-                self.st
-                    .run
-                    .results
-                    .iter()
-                    .position(|r| needle.is_empty() || r.full_name.to_lowercase().contains(&needle))
-            });
+            let shown = self.shown();
+            return self
+                .selected
+                .filter(|&i| i < self.st.run.results.len() && shown(i))
+                .or_else(|| (0..self.st.run.results.len()).find(|&i| shown(i)));
         }
         let view = self.view();
         self.selected
@@ -2461,6 +2524,21 @@ impl SearchSession {
                     .unwrap_or_default();
                 self.step = "Results";
             }
+            SearchAct::NarrowType(i) => {
+                if let Some(v) = self.facets().types.get(i) {
+                    toggle(&mut self.narrow.types, v.key.clone());
+                }
+                self.step = "Results";
+            }
+            SearchAct::NarrowFolder(i) => {
+                if let Some(v) = self.facets().folders.get(i) {
+                    toggle(&mut self.narrow.folders, v.key.clone());
+                }
+                self.step = "Results";
+            }
+            SearchAct::NarrowModified(m) => self.narrow.modified = m,
+            SearchAct::NarrowQuality(q) => toggle(&mut self.narrow.quality, q),
+            SearchAct::ClearNarrow => self.narrow = narrow::Narrow::default(),
             SearchAct::Edit(idx) => match settings_view::setting(idx).map(|s| s.4) {
                 Some(settings_view::SettingKind::Typed)
                     if idx == settings_view::EXTENSIONS_FIELD =>
@@ -2492,6 +2570,7 @@ impl SearchSession {
             SearchAct::AlsoIndexedFolders => self.also_indexed_folders(),
             SearchAct::BrowseOutput => self.browse_output(),
             SearchAct::BuildIndex => self.build_index(),
+            SearchAct::VerifyIndexContent => self.verify_index_content(),
             #[cfg(feature = "neural-search")]
             SearchAct::SaveAlert => self.save_alert(),
             #[cfg(feature = "neural-search")]

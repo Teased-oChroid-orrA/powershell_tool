@@ -80,7 +80,8 @@ fn basis_and_group_filter_the_results() {
     let curated = model::groups().iter().position(|g| g == model::CURATED_GROUP).unwrap();
     run(&mut s, MaterialsAct::Group(curated));
     assert!(s.state().hits.iter().all(|&i| model::catalog()[i].extra.is_none()));
-    assert!(s.tree().iter().any(|n| n.selected && n.label == model::CURATED_GROUP));
+    let rail = doc(&s).rail.unwrap();
+    assert!(rail.sections[2].options.iter().any(|o| o.on && o.label == model::CURATED_GROUP));
     run(&mut s, MaterialsAct::Group(10_000));
     assert_eq!(s.state().query.group, curated, "an unknown group is ignored");
 }
@@ -153,4 +154,81 @@ fn every_material_has_a_property_grid() {
     let g = view::property_grid(curated);
     assert!(g.rows.iter().any(|r| r.cells[0] == "Solver values"));
     assert!(g.note.contains("no density"));
+}
+
+fn rail_option(s: &MaterialsSession, section: &str, label: &str) -> crate::gpu_viewer::ui::DocNarrowOption {
+    let rail = doc(s).rail.unwrap();
+    let sec = rail.sections.into_iter().find(|x| x.title == section).unwrap();
+    sec.options.into_iter().find(|o| o.label.starts_with(label)).unwrap_or_else(|| panic!("no {label} in {section}"))
+}
+
+#[test]
+fn the_rail_lists_every_group_form_and_basis_with_counts_that_match_the_choice() {
+    let mut s = session();
+    let d = doc(&s);
+    let rail = d.rail.as_ref().unwrap();
+    assert_eq!(rail.sections[2].options.len(), model::groups().len() - 1, "every group but All");
+    assert_eq!(rail.sections[1].options.len(), model::FORMS.len());
+    assert!(rail.clear.is_none() && rail.shown == rail.total);
+    // Choosing an option shows what its count promised, and takes the same click back.
+    let plate = rail_option(&s, "FORM", "Plate");
+    s.act(EditorAction::Materials(MaterialsAct::Form(model::FORMS.iter().position(|f| *f == "Plate").unwrap())));
+    assert_eq!(s.state().hits.len(), plate.count);
+    assert!(rail_option(&s, "FORM", "Plate").on);
+    assert!(doc(&s).rail.unwrap().clear.is_some());
+    assert_eq!(doc(&s).table.chips.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["Plate"]);
+    let b = rail_option(&s, "BASIS", "A-basis");
+    assert_eq!(b.action, act(MaterialsAct::Basis(model::Basis::A)));
+    run(&mut s, MaterialsAct::Basis(model::Basis::A));
+    assert_eq!(rail_option(&s, "BASIS", "A-basis").action, act(MaterialsAct::Basis(model::Basis::Any)), "again goes back to any");
+    run(&mut s, MaterialsAct::ClearFacets);
+    assert_eq!(s.state().hits.len(), model::catalog().len());
+    assert!(doc(&s).table.chips.is_empty());
+}
+
+#[test]
+fn a_slider_sets_and_drops_a_property_limit_and_a_chip_takes_it_back() {
+    let mut s = session();
+    let all = s.state().hits.len();
+    s.document_field(INPUT_FLOOR0, "100".into());
+    assert_eq!(s.state().query.min_fty, Some(100.0));
+    assert!(s.state().hits.len() < all && s.state().hits.iter().all(|&i| model::catalog()[i].sy_ksi >= 100.0));
+    let d = doc(&s);
+    let slider = &d.rail.as_ref().unwrap().sliders[0];
+    assert!(slider.active && slider.value == 100.0 && slider.id == INPUT_FLOOR0);
+    let chip = &d.table.chips[0];
+    assert_eq!(chip.label, "Fty >= 100 ksi");
+    assert_eq!(chip.remove, act(MaterialsAct::ClearFloor(model::Floor::Fty)));
+    // Dragging back to the free end sends an empty text; the density slider is free at its largest value.
+    s.document_field(INPUT_FLOOR0, String::new());
+    assert_eq!(s.state().hits.len(), all);
+    assert!(!doc(&s).rail.unwrap().sliders[0].active);
+    s.document_field(INPUT_FLOOR0 + 1, "0.1".into());
+    assert_eq!(s.state().query.max_density, Some(0.1));
+    run(&mut s, MaterialsAct::ClearFloor(model::Floor::Density));
+    assert_eq!(s.state().query.max_density, None);
+    s.document_field(INPUT_FLOOR0 + 7, "5".into());
+    assert_eq!(s.state().hits.len(), all, "an unknown slider id is ignored");
+}
+
+#[test]
+fn the_basket_shows_the_marks_in_slots_and_a_row_box_toggles_one() {
+    let mut s = session();
+    let d = doc(&s);
+    let b = d.basket.as_ref().unwrap();
+    assert_eq!(b.slots.len(), model::MAX_COMPARE);
+    assert!(b.slots.iter().all(Option::is_none));
+    let first = s.state().hits[0];
+    let mark = d.table.rows[0].mark.unwrap();
+    assert!(!mark.on);
+    assert_eq!(mark.action, act(MaterialsAct::ToggleMark(first)));
+    s.act(EditorAction::Materials(MaterialsAct::ToggleMark(first)));
+    let d = doc(&s);
+    assert!(d.table.rows[0].mark.unwrap().on);
+    let slot = d.basket.as_ref().unwrap().slots[0].as_ref().unwrap();
+    assert_eq!(slot.name, model::catalog()[first].name);
+    assert_eq!(slot.remove, act(MaterialsAct::ToggleMark(first)));
+    // The slot's own remove button empties it again.
+    s.act(EditorAction::Materials(MaterialsAct::ToggleMark(first)));
+    assert!(doc(&s).basket.unwrap().slots[0].is_none());
 }

@@ -9,7 +9,7 @@ use crate::gpu_viewer::{
     menu::{Entry, Menu, Outcome},
     results::{result_card, results_tree, GuiInput},
     text::{colormap, fmt_value},
-    ui::{visible_nodes, Bar, DocSidebar, DockItem, Plot, RibbonTab, TreeNode, Workbench},
+    ui::{visible_nodes, Bar, DocNarrow, DocSidebar, DockItem, Plot, RibbonTab, TreeNode, Workbench},
 };
 use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Order, Pos2, Rect, RichText,
@@ -527,7 +527,12 @@ impl Gui {
                     egui::ScrollArea::vertical()
                         .id_salt("search-sidebar-recents")
                         .auto_shrink([false, true])
-                        .max_height((ui.available_height() - 190.0).max(0.0))
+                        .max_height(if sidebar.narrow.is_some() {
+                            // Leave the room to the narrowing block.
+                            (ui.available_height() - 190.0).clamp(0.0, 118.0)
+                        } else {
+                            (ui.available_height() - 190.0).max(0.0)
+                        })
                         .show(ui, |ui| {
                             for (index, recent) in sidebar.recent_searches.iter().enumerate() {
                                 ui.horizontal(|ui| {
@@ -604,6 +609,10 @@ impl Gui {
                                 );
                             }
                         });
+                    if let Some(narrow) = &sidebar.narrow {
+                        ui.add_space(14.0);
+                        self.narrow_block(ui, narrow, p, out, 110.0);
+                    }
                     ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                         ui.label(
                             RichText::new("Offline-ready · Local files stay local")
@@ -692,6 +701,155 @@ impl Gui {
             }
         }
         let _ = (p, hint);
+    }
+
+    /// The sidebar's choices that narrow the results already found: checkbox rows with live counts, the date window as
+    /// pills, sliders for numeric limits, and a count of what is shown with a way back. Only the action of the row
+    /// clicked (or the slider's value, as a `DocField`) leaves (`Outcome`). `reserve` is the room under the block
+    /// that the scrolling part leaves to what follows it (the index card in Search's sidebar).
+    pub(super) fn narrow_block(&mut self, ui: &mut egui::Ui, narrow: &DocNarrow, p: &Palette, out: &mut Vec<Outcome>, reserve: f32) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&narrow.title).strong().size(9.0).color(p.muted));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if let Some(action) = narrow.clear {
+                    let clear = ui.add(egui::Button::new(RichText::new("Clear all").size(9.0).color(p.muted)).frame(false));
+                    self.targets.push(("Clear narrowing".into(), clear.rect));
+                    if clear.clicked() {
+                        out.push(Outcome::Action(action));
+                    }
+                } else {
+                    ui.label(RichText::new(format!("{} {}", narrow.total, narrow.noun)).size(9.0).color(p.muted));
+                }
+            });
+        });
+        if narrow.clear.is_some() {
+            ui.label(
+                RichText::new(format!("{} of {} {} shown", narrow.shown, narrow.total, narrow.noun))
+                    .size(10.0)
+                    .color(p.dim),
+            );
+        }
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical()
+            .id_salt("search-sidebar-narrow")
+            .auto_shrink([false, true])
+            .max_height((ui.available_height() - reserve).max(0.0))
+            .show(ui, |ui| {
+                if !narrow.sliders.is_empty() {
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("PROPERTIES").strong().size(9.0).color(p.muted));
+                }
+                for slider in &narrow.sliders {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&slider.label).size(11.0).color(p.dim));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let text = if slider.active {
+                                format!("{:.*} {}", slider.decimals, slider.value, slider.unit)
+                            } else {
+                                "any".to_string()
+                            };
+                            ui.label(RichText::new(text).size(11.0).color(if slider.active { p.accent } else { p.muted }));
+                        });
+                    });
+                    let mut v = slider.value;
+                    ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(60.0);
+                    let r = ui.add(egui::Slider::new(&mut v, slider.min..=slider.max).step_by(slider.step).show_value(false).trailing_fill(true));
+                    self.targets.push((slider.label.clone(), r.rect));
+                    if r.changed() {
+                        // The end that means "no limit" reports an empty text.
+                        let free = if slider.free_at_max { slider.max } else { slider.min };
+                        let text = if (v - free).abs() < slider.step * 0.5 { String::new() } else { format!("{:.*}", slider.decimals, v) };
+                        out.push(Outcome::DocField { id: slider.id, text });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{:.*}", slider.decimals, slider.min)).size(9.0).color(p.muted));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(RichText::new(format!("{:.*}", slider.decimals, slider.max)).size(9.0).color(p.muted));
+                        });
+                    });
+                }
+                for section in &narrow.sections {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(&section.title).strong().size(9.0).color(p.muted));
+                    ui.add_space(3.0);
+                    if section.pills {
+                        ui.horizontal_wrapped(|ui| {
+                            for option in &section.options {
+                                let pill = ui
+                                    .add(
+                                        egui::Button::new(RichText::new(&option.label).size(10.0).color(if option.on {
+                                            p.accent
+                                        } else {
+                                            p.dim
+                                        }))
+                                        .fill(if option.on { with_alpha(p.accent, 28) } else { p.raised })
+                                        .stroke(Stroke::new(1.0, if option.on { with_alpha(p.accent, 110) } else { p.line }))
+                                        .corner_radius(CornerRadius::same(10)),
+                                    )
+                                    .on_hover_text(format!("{} {}", option.count, narrow.noun));
+                                self.targets.push((format!("{}: {}", section.title, option.label), pill.rect));
+                                if pill.clicked() {
+                                    out.push(Outcome::Action(option.action));
+                                }
+                            }
+                        });
+                        continue;
+                    }
+                    for option in &section.options {
+                        let (rect, response) =
+                            ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), egui::Sense::click());
+                        let dimmed = option.count == 0 && !option.on;
+                        if response.hovered() || option.on {
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(7),
+                                if option.on { with_alpha(p.accent, 22) } else { p.raised },
+                            );
+                        }
+                        let boxed = Rect::from_center_size(Pos2::new(rect.left() + 12.0, rect.center().y), Vec2::splat(13.0));
+                        ui.painter().rect(
+                            boxed,
+                            CornerRadius::same(4),
+                            if option.on { p.accent } else { Color32::TRANSPARENT },
+                            Stroke::new(1.0, if option.on { p.accent } else { p.muted }),
+                            egui::StrokeKind::Inside,
+                        );
+                        if option.on {
+                            let c = boxed.center();
+                            let tick = Stroke::new(1.6, p.on_accent);
+                            ui.painter().line_segment([c + Vec2::new(-3.0, 0.5), c + Vec2::new(-0.8, 3.0)], tick);
+                            ui.painter().line_segment([c + Vec2::new(-0.8, 3.0), c + Vec2::new(3.5, -2.5)], tick);
+                        }
+                        let count = option.count.to_string();
+                        let count_galley = ui.painter().layout_no_wrap(count, FontId::proportional(10.0), p.muted);
+                        let label_right = rect.right() - 8.0 - count_galley.size().x - 6.0;
+                        ui.painter().galley(
+                            Pos2::new(rect.right() - 8.0 - count_galley.size().x, rect.center().y - count_galley.size().y / 2.0),
+                            count_galley,
+                            p.muted,
+                        );
+                        let color = if option.on {
+                            p.text
+                        } else if dimmed {
+                            p.muted
+                        } else {
+                            p.dim
+                        };
+                        ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(label_right, rect.max.y))).text(
+                            Pos2::new(rect.left() + 26.0, rect.center().y),
+                            Align2::LEFT_CENTER,
+                            &option.label,
+                            FontId::proportional(11.0),
+                            color,
+                        );
+                        self.targets.push((format!("{}: {}", section.title, option.label), rect));
+                        if response.on_hover_text(&option.label).clicked() {
+                            out.push(Outcome::Action(option.action));
+                        }
+                    }
+                }
+            });
     }
 
     pub(super) fn search_status_bar(&mut self, ui: &mut egui::Ui, input: &GuiInput, p: &Palette) {

@@ -47,7 +47,103 @@ struct XrefEntry {
 
 /// Return exact stream-body offsets mapped to 1-based page-tree ordinals.
 /// Returns `None` when the PDF is unsupported, malformed, or over budget.
+///
+/// The strict classic-xref reader below runs first; PDFs it refuses (cross-reference streams,
+/// object streams, `/Prev` chains, hybrid files: most PDFs written as 1.5 or later) go through
+/// `lopdf`, which reads those structures.
 pub(crate) fn page_by_stream_offset(bytes: &[u8]) -> Option<HashMap<usize, NonZeroU32>> {
+    page_by_stream_offset_classic(bytes).or_else(|| page_by_stream_offset_lopdf(bytes))
+}
+
+/// Same contract through `lopdf`'s page tree: a page owns the stream bodies of its `/Contents`.
+/// A stream shared by two pages is left out (as the classic reader does), and any panic in the
+/// parser on a malformed file means "no map", never a failed search.
+fn page_by_stream_offset_lopdf(bytes: &[u8]) -> Option<HashMap<usize, NonZeroU32>> {
+    if bytes.is_empty() || bytes.len() > MAX_PDF_BYTES || !bytes.starts_with(b"%PDF-") {
+        return None;
+    }
+    std::panic::catch_unwind(|| {
+        let doc = lopdf::Document::load_mem(bytes).ok()?;
+        if doc.is_encrypted() {
+            return None;
+        }
+        // Like the classic reader, distrust a page tree whose root /Count disagrees with its leaves.
+        let pages = doc.get_pages();
+        let declared = doc
+            .catalog()
+            .ok()
+            .and_then(|catalog| catalog.get(b"Pages").ok())
+            .and_then(|root| doc.dereference(root).ok())
+            .and_then(|(_, root)| root.as_dict().ok())
+            .and_then(|root| root.get(b"Count").ok())
+            .and_then(|count| count.as_i64().ok())?;
+        if declared != pages.len() as i64 {
+            return None;
+        }
+        let mut owners = HashMap::<usize, Option<NonZeroU32>>::new();
+        let mut count = 0usize;
+        for (number, page_id) in pages {
+            count += 1;
+            if count > MAX_PAGES {
+                return None;
+            }
+            let page = NonZeroU32::new(number)?;
+            for id in doc.get_page_contents(page_id) {
+                let Some(lopdf::Object::Stream(stream)) = doc.objects.get(&id) else { continue };
+                let Some(lopdf::xref::XrefEntry::Normal { offset, .. }) = doc.reference_table.get(id.0) else {
+                    continue;
+                };
+                let Some(start) = stream_body_start(bytes, *offset as usize, &stream.content) else { continue };
+                owners
+                    .entry(start)
+                    .and_modify(|owner| {
+                        if *owner != Some(page) {
+                            *owner = None;
+                        }
+                    })
+                    .or_insert(Some(page));
+            }
+        }
+        let map: HashMap<usize, NonZeroU32> =
+            owners.into_iter().filter_map(|(offset, page)| page.map(|page| (offset, page))).collect();
+        (count > 0 && !map.is_empty()).then_some(map)
+    })
+    .ok()
+    .flatten()
+}
+
+/// `lopdf` loads a stream's bytes but drops where they sat in the file, so find the body start
+/// again: the first `stream` keyword after the object's xref offset whose following bytes are
+/// exactly the loaded (still encoded) content. Matching the content makes a `stream` inside the
+/// dictionary, or a wrong keyword, impossible to confuse with the body.
+fn stream_body_start(bytes: &[u8], object_offset: usize, content: &[u8]) -> Option<usize> {
+    const DICT_WINDOW: usize = 16 * 1024;
+    if content.is_empty() {
+        return None;
+    }
+    let window = bytes.get(object_offset..)?;
+    let window = &window[..window.len().min(DICT_WINDOW)];
+    let mut from = 0usize;
+    while let Some(rel) = find_bytes(&window[from..], b"stream") {
+        let after = object_offset + from + rel + b"stream".len();
+        for eol in [&b"\r\n"[..], &b"\n"[..]] {
+            if bytes.get(after..after + eol.len()) == Some(eol) {
+                let start = after + eol.len();
+                if bytes.get(start..start + content.len()) == Some(content) {
+                    return Some(start);
+                }
+            }
+        }
+        from += rel + 1;
+    }
+    None
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+fn page_by_stream_offset_classic(bytes: &[u8]) -> Option<HashMap<usize, NonZeroU32>> {
     if bytes.is_empty() || bytes.len() > MAX_PDF_BYTES || !bytes.starts_with(b"%PDF-") {
         return None;
     }
@@ -718,6 +814,79 @@ mod tests {
         assert_eq!(map.get(&second).unwrap().get(), 2);
     }
 
+    /// The same document rewritten with a cross-reference stream and object streams, which the
+    /// classic reader refuses.
+    fn modern_two_page_pdf() -> Vec<u8> {
+        let (pdf, _, _) = two_page_pdf();
+        let mut doc = lopdf::Document::load_mem(&pdf).unwrap();
+        let mut out = Vec::new();
+        doc.save_modern(&mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn xref_stream_pdfs_are_mapped_through_lopdf() {
+        let modern = modern_two_page_pdf();
+        assert!(page_by_stream_offset_classic(&modern).is_none(), "fixture must need the fallback");
+        let map = page_by_stream_offset(&modern).expect("lopdf fallback maps it");
+        assert_eq!(map.len(), 2);
+        let extracted = crate::extraction::extract_for_semantic_index(".pdf", &modern, 10, false).unwrap();
+        let pages = extracted.pages.expect("page map");
+        let by_line: HashMap<&str, Option<u32>> = extracted
+            .lines
+            .iter()
+            .map(String::as_str)
+            .zip(pages.iter().map(|p| p.map(NonZeroU32::get)))
+            .collect();
+        assert_eq!(by_line["PAGE ONE"], Some(1));
+        assert_eq!(by_line["PAGE TWO"], Some(2));
+    }
+
+    #[test]
+    fn both_readers_agree_on_a_classic_file() {
+        let (pdf, _, _) = two_page_pdf();
+        assert_eq!(page_by_stream_offset_classic(&pdf), page_by_stream_offset_lopdf(&pdf));
+    }
+
+    #[test]
+    fn a_stream_shared_by_two_pages_is_not_attributed_by_the_fallback() {
+        use lopdf::{Dictionary, Object, Stream};
+        fn dict(entries: Vec<(&str, Object)>) -> Dictionary {
+            let mut d = Dictionary::new();
+            for (k, v) in entries {
+                d.set(k, v);
+            }
+            d
+        }
+        let mut doc = lopdf::Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let content = doc.add_object(Stream::new(Dictionary::new(), b"BT (SHARED) Tj ET".to_vec()));
+        let kids: Vec<Object> = (0..2)
+            .map(|_| {
+                let page = dict(vec![
+                    ("Type", Object::Name(b"Page".to_vec())),
+                    ("Parent", pages_id.into()),
+                    ("Contents", content.into()),
+                ]);
+                doc.add_object(page).into()
+            })
+            .collect();
+        let pages = dict(vec![
+            ("Type", Object::Name(b"Pages".to_vec())),
+            ("Kids", Object::Array(kids)),
+            ("Count", Object::Integer(2)),
+        ]);
+        doc.objects.insert(pages_id, pages.into());
+        let catalog = doc.add_object(dict(vec![
+            ("Type", Object::Name(b"Catalog".to_vec())),
+            ("Pages", pages_id.into()),
+        ]));
+        doc.trailer.set("Root", catalog);
+        let mut out = Vec::new();
+        doc.save_modern(&mut out).unwrap();
+        assert!(page_by_stream_offset(&out).is_none(), "an ambiguous stream must not get a page");
+    }
+
     #[test]
     fn extracted_pdf_lines_keep_verified_page_provenance() {
         let (pdf, _, _) = two_page_pdf();
@@ -827,7 +996,9 @@ mod tests {
             .position(|w| w == b"/Size 7")
             .unwrap();
         pdf.splice(trailer..trailer, b"/Prev 1 ".iter().copied());
-        assert!(page_by_stream_offset(&pdf).is_none());
+        // The strict reader still refuses a `/Prev` chain; `lopdf` reads real ones (and every
+        // stream it attributes is matched byte for byte against the file).
+        assert!(page_by_stream_offset_classic(&pdf).is_none());
         assert!(page_by_stream_offset(b"%PDF-1.4\nstartxref\nnot-an-offset\n%%EOF").is_none());
     }
 

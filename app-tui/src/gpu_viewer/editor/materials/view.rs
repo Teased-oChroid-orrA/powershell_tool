@@ -1,16 +1,19 @@
 //! What the Material Lookup workbench shows: the page (search bar, results table, property or comparison card), the
-//! tree of groups and marks, the ribbon and the menus. Pure reads of the session.
-use super::{act, MaterialsAct, MaterialsSession, INPUT_SEARCH};
+//! tree of marks, the Refine rail, the compare basket, the ribbon and the menus. Pure reads of the session.
+use super::{act, MaterialsAct, MaterialsSession, INPUT_FLOOR0, INPUT_SEARCH};
 use crate::gpu_viewer::{
     controller::UiAction,
     editor::session::Tone,
     menu::{Entry, Item, Menu},
     ui::{
-        DocColumn, DocDetail, DocGrid, DocGridRow, DocInput, DocRow, DocTable, Document, RibbonTab,
+        DocBasket, DocBasketSlot, DocChip, DocColumn, DocDetail, DocGrid, DocGridRow, DocInput, DocMark,
+        DocNarrow, DocNarrowOption, DocNarrowSection, DocRow, DocSlider, DocTable, Document, RibbonTab,
         TreeNode,
     },
 };
-use crate::toolboxes::material_lookup::model::{self, compare_rows, format_value, Basis, SortKey};
+use crate::toolboxes::material_lookup::model::{
+    self, compare_rows, format_value, Basis, FacetCounts, Floor, SortKey,
+};
 use crate::widgets::material_detail;
 use mechanics_core::materials::Material;
 
@@ -178,6 +181,158 @@ pub(super) fn document(s: &MaterialsSession) -> Document {
         modal: None,
         ribbon: None,
         insight: None,
+        rail: Some(rail(s)),
+        basket: Some(basket(s)),
+    }
+}
+
+/// The rail's counts, recomputed only when the query changes.
+fn counts(s: &MaterialsSession) -> FacetCounts {
+    let mut cache = s.facets_cache.borrow_mut();
+    if let Some((q, c)) = cache.as_ref() {
+        if *q == s.st.query {
+            return c.clone();
+        }
+    }
+    let c = model::facet_counts(&s.st.query);
+    *cache = Some((s.st.query.clone(), c.clone()));
+    c
+}
+
+/// "Aluminum", "PH & TH Stainless Steels": the rail is narrow, the full name is in the table's second line.
+fn short_group(g: &str) -> String {
+    g.replace("Precipitation and Transformation-Hardening", "PH & TH")
+        .replace("Beta, Near-Beta and Metastable-Beta", "Beta")
+        .trim_end_matches(" Alloys")
+        .to_string()
+}
+
+fn rail(s: &MaterialsSession) -> DocNarrow {
+    let q = &s.st.query;
+    let c = counts(s);
+    let option = |label: String, count: usize, on: bool, a: MaterialsAct| DocNarrowOption {
+        label,
+        count,
+        on,
+        action: act(a),
+    };
+    // A group and a basis are one choice each: the chosen one again goes back to "all".
+    let groups = model::groups()
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(k, g)| {
+            let on = q.group == k;
+            option(short_group(g), c.groups[k], on, MaterialsAct::Group(if on { 0 } else { k }))
+        })
+        .collect();
+    let basis = [(Basis::A, "A-basis"), (Basis::B, "B-basis"), (Basis::S, "S-basis")]
+        .into_iter()
+        .enumerate()
+        .map(|(k, (b, name))| {
+            let on = q.basis == b;
+            option(
+                format!("{name} · {}", group_digits(c.bases[k])),
+                c.bases[k],
+                on,
+                MaterialsAct::Basis(if on { Basis::Any } else { b }),
+            )
+        })
+        .collect();
+    let forms = model::FORMS
+        .iter()
+        .enumerate()
+        .map(|(k, f)| option((*f).to_string(), c.forms[k], q.forms.contains(&k), MaterialsAct::Form(k)))
+        .collect();
+    let sections = vec![
+        DocNarrowSection { title: "BASIS".into(), pills: true, options: basis },
+        DocNarrowSection { title: "FORM".into(), pills: false, options: forms },
+        // The longest list goes last: it is the one that scrolls.
+        DocNarrowSection { title: "GROUP".into(), pills: false, options: groups },
+    ];
+    let sliders = Floor::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(k, f)| {
+            let (min, max) = f.range();
+            let free_at_max = f == Floor::Density;
+            DocSlider {
+                id: INPUT_FLOOR0 + k as u8,
+                label: f.label().into(),
+                value: q.limit(f).unwrap_or(if free_at_max { max } else { min }),
+                min,
+                max,
+                step: f.step(),
+                decimals: f.decimals(),
+                unit: f.unit().into(),
+                free_at_max,
+                active: q.limit(f).is_some(),
+            }
+        })
+        .collect();
+    DocNarrow {
+        title: "REFINE".into(),
+        noun: "materials".into(),
+        sections,
+        sliders,
+        shown: s.st.hits.len(),
+        total: model::catalog().len(),
+        clear: q.has_facets().then(|| act(MaterialsAct::ClearFacets)),
+    }
+}
+
+/// One chip per active facet, in the order of the rail.
+fn chips(s: &MaterialsSession) -> Vec<DocChip> {
+    let q = &s.st.query;
+    let mut out = Vec::new();
+    let mut chip = |label: String, a: MaterialsAct| out.push(DocChip { label, remove: act(a) });
+    if let Some(g) = model::groups().get(q.group).filter(|_| q.group != 0) {
+        chip(short_group(g), MaterialsAct::Group(0));
+    }
+    if q.basis != Basis::Any {
+        chip(q.basis.label().to_string(), MaterialsAct::Basis(Basis::Any));
+    }
+    for &f in &q.forms {
+        chip(model::FORMS[f].to_string(), MaterialsAct::Form(f));
+    }
+    for f in Floor::ALL {
+        if let Some(v) = q.limit(f) {
+            let op = if f == Floor::Density { "<=" } else { ">=" };
+            let name = match f {
+                Floor::Fty => "Fty",
+                Floor::Density => "Density",
+                Floor::SpecificYield => "Fty/density",
+            };
+            chip(format!("{name} {op} {v:.*} {}", f.decimals(), f.unit()), MaterialsAct::ClearFloor(f));
+        }
+    }
+    out
+}
+
+/// The compare tray: the marked materials in their slots, then Compare and Clear.
+fn basket(s: &MaterialsSession) -> DocBasket {
+    let cat = model::catalog();
+    let slots = (0..model::MAX_COMPARE)
+        .map(|k| {
+            s.st.marked.get(k).map(|&i| {
+                let m = cat[i];
+                DocBasketSlot {
+                    name: m.name.to_string(),
+                    detail: format!(
+                        "{} ksi Fty  ·  {} lb/in^3",
+                        value(m.sy_ksi, 0),
+                        format_value(model::density(m), 3)
+                    ),
+                    remove: act(MaterialsAct::ToggleMark(i)),
+                }
+            })
+        })
+        .collect();
+    DocBasket {
+        slots,
+        empty: "Add a material".into(),
+        compare: compare_entry(s),
+        clear: clear_marks_entry(s),
     }
 }
 
@@ -229,6 +384,10 @@ fn table(s: &MaterialsSession) -> DocTable {
                             .iter()
                             .position(|&x| x == i)
                             .map(|p| format!("#{}", p + 1)),
+                        mark: Some(DocMark {
+                            on: s.st.marked.contains(&i),
+                            action: act(MaterialsAct::ToggleMark(i)),
+                        }),
                     }
                 })
                 .collect();
@@ -244,6 +403,7 @@ fn table(s: &MaterialsSession) -> DocTable {
     let total = model::catalog().len();
     let shown = s.st.hits.len();
     DocTable {
+        chips: chips(s),
         title: if shown == total {
             format!("Materials  ·  {}", group_digits(total))
         } else {
@@ -267,7 +427,7 @@ fn table(s: &MaterialsSession) -> DocTable {
         rows: rows.into(),
         empty_title: "No materials match".into(),
         empty_body:
-            "Clear the search (Esc), choose Any basis, or pick All in the Groups of the tree."
+            "Clear the search (Esc) or take a choice back in the Refine rail."
                 .into(),
     }
 }
@@ -429,30 +589,18 @@ pub(super) fn compare_grid(ms: &[&Material]) -> DocGrid {
 
 // ---------------------------------------------------------------------- tree, ribbon, menus
 
-const NODE_GROUPS: u32 = 1;
 const NODE_MARKED: u32 = 2;
-const NODE_GROUP0: u32 = 100;
 const NODE_MARK0: u32 = 1_000;
 
 pub(super) fn tree(s: &MaterialsSession) -> Vec<TreeNode> {
-    let mut t = vec![TreeNode::new(NODE_GROUPS, 0, '+', "Groups").folder()];
-    for (k, g) in model::groups().iter().enumerate() {
-        t.push(
-            TreeNode::new(NODE_GROUP0 + k as u32, 1, 'f', g.clone())
-                .selected(s.st.query.group == k)
-                .on_click(act(MaterialsAct::Group(k))),
-        );
-    }
-    t.push(
-        TreeNode::new(
-            NODE_MARKED,
-            0,
-            '+',
-            format!("Marked ({} of {})", s.st.marked.len(), model::MAX_COMPARE),
-        )
-        .folder()
-        .on_click(act(MaterialsAct::Compare)),
-    );
+    let mut t = vec![TreeNode::new(
+        NODE_MARKED,
+        0,
+        '+',
+        format!("Marked ({} of {})", s.st.marked.len(), model::MAX_COMPARE),
+    )
+    .folder()
+    .on_click(act(MaterialsAct::Compare))];
     for (k, &i) in s.st.marked.iter().enumerate() {
         t.push(
             TreeNode::new(

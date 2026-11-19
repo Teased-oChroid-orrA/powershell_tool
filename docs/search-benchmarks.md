@@ -853,9 +853,15 @@ Proof: `folded_narrowing_keeps_every_file_the_folding_matcher_finds` runs 16 fil
 
 Measured (`exact_bench` 10,000 files, this Mac, other builds running): a search ignoring accents narrows to 104 candidates in 55 ms against a full scan of 1.0 to 1.2 s (about 20 times; the 10,000 files were on disk, hot). Cost: this bench corpus is a worst case (every document holds a character that folds), and the index build took 1.75 to 1.85 times as long (5.4 and 9.6 s before, 9.3 and 17.8 s after, alternated, loaded machine). Share of real documents with a foldable character (approximate fold; English, first 20,000): Cranfield 0 %, SciFact 9.8 %, NFCorpus 14.3 %, MS MARCO 15.0 %, TREC-COVID 19.9 %, AeroEngQA 37.8 %, a Spanish set 99.3 %, an industrial PDF set 0.4 %. For typical English engineering text the extra index work is the folded share of the trigram field (10 to 20 %); a Spanish or German corpus approaches the bench's worst case. Index size was not measured. Not measured on Windows.
 
-### Item 9: same-size, same-mtime edits: analysis, not built
+### Item 9: same-size, same-mtime edits: built as an on-request content check
 
-Freshness is `(modified, size)` per document. Two ways an edit can hide: (1) the file system's timestamp tick is coarse (FAT/exFAT 2 s, some network shares 1 to 2 s) and the edit happens inside the tick of the last index, (2) a tool preserves the old mtime (copy with preserved times, archive extraction, `touch -r`) and the size is the same. The first is closed in the result cache by a racily-clean rule (an entry whose mtime is within 2 s of its save is not trusted). The same rule in the index needs the time each document was indexed: a new stored field, a schema change that forces every user's index to rebuild. It would protect only coarse-timestamp file systems for a 2 s window after indexing; NTFS and APFS ticks are 100 ns and 1 ns. The second case is not protected by any timestamp rule: only reading the content (a hash) detects it, which is the cost the index exists to avoid. Not built; revisit if a coarse-timestamp share or a content-hash policy is wanted. Item 4's schema change would carry the field at no extra rebuild cost if so.
+Freshness is `(modified, size)` per document. Two ways an edit can hide: (1) the file system's timestamp tick is coarse (FAT/exFAT 2 s, some network shares 1 to 2 s) and the edit happens inside the tick of the last index, (2) a tool preserves the old mtime (copy with preserved times, archive extraction, `touch -r`) and the size is the same. No timestamp rule protects the second case; only reading the content does, which is the cost the index exists to avoid. Options compared (mockup, owner choice 2026-11-18): A keep as is, B racy window (per-document index time), C verify on demand, D hash on every search. **C was built.**
+
+Built: every indexed document stores the SHA-256 of the bytes it was indexed from (`content_hash`, `INDEX_SEMANTIC_VERSION` 7, so existing indexes rebuild once). The hash is taken over bytes the builder already reads, so it adds no file read. `native_index::verify_content` (button `Verify content` in the Search window's Index card) reads every indexed file once, compares, drops the differing ones from the index and the semantic index, and the build that follows re-indexes them; the status line reports `content check: N changed, M without a new time or size`. Not run automatically and not run on search, so searches cost the same as before.
+
+Proof: `native_index::tests::verify_content_finds_a_same_size_same_time_edit_the_freshness_check_misses` rewrites a file with the same size and restored mtime: the normal update indexes 0 files and the old text stays searchable (the gap); `verify_content` reports 1 changed, 1 hidden; the next update indexes 1 and the new text is found. `verify_content_finds_an_edit_that_build_update_cannot_see` does the same through the Search window action.
+
+Measured cost of the check (5,839 files, 828 MB, repo folder, warm cache, Python script, not the Rust code): time and size 16 ms, sampled hash (three 4 KiB reads) 221 ms, full SHA-256 901 ms, so about 154 us per 138 KiB file; a cold disk is bound by reading every byte and was not measured, nor was Windows, nor the added index-build time of hashing in Rust. B (racy window) was not built: it protects only coarse-timestamp file systems for 2 s after indexing and needs a per-document index time.
 
 ## 2026-11-17: OCR confidence from a vendored `ocrs`
 
@@ -883,3 +889,33 @@ Ordinary-quality conditions (clean, 100 and 300 dpi, blur 1, low contrast, rotat
 **Caveats.** The set is synthetic (document prose, macOS fonts). Real scanners, CCITT scans and Windows were not run. The score is the model's certainty, not accuracy, and cannot see text the detector missed (which is why pages with missed lines can still score high). Reproduce: `python3 scripts/make_ocr_confidence_set.py OUT_DIR`, then `cargo run -p search-core --release --features ocr --example ocr_confidence_eval -- OUT_DIR [--lines lines.tsv]`.
 
 Tests: `models::tests::{ocr_percent_floors_and_clamps, ocr_is_poor_switches_at_the_threshold, pdf_warning_*}`, `report::tests::html_report_note_states_the_ocr_confidence_when_known`, `cache::tests::{ocr_confidence_survives_save_and_load, entry_without_the_ocr_confidence_field_still_loads}`, `pdf_yolow::tests::recognition_confidence_is_high_on_a_clean_scan_and_falls_with_noise`, and the app-tui `pdf_warning_shows_the_ocr_percent_in_the_ribbon_and_the_detail_note`.
+
+
+## 2026-11-17: page citations for xref-stream PDFs on the scanner path (#127, #240)
+
+The scanner's page mapper (`pdf_page_map.rs`) read only classic cross-reference tables, so a PDF written as 1.5 or later (cross-reference streams, compressed object streams) got no page at all (page 5 above: 32 of 80 KG-RAG files). `page_by_stream_offset` now falls back to `lopdf`'s page tree when the strict reader refuses. `lopdf` does not keep where a stream body sat in the file, so the body offset is rebuilt from the xref entry and accepted only when the bytes there equal the loaded stream content.
+
+`pdf_citation_bench scanner` over the 27 readable ViDoRe Industrial source PDFs (poppler per-page text as oracle; a line is checkable when its first five words occur on some page), one machine, release build:
+
+| | lines | lines citing a page | checkable | cited correctly | files with any page |
+|---|---:|---:|---:|---:|---:|
+| before (classic reader only) | 512,110 | 0 | 62,227 | 0 | 0 of 27 |
+| after (lopdf fallback) | 512,110 | 111,229 | 62,227 | 57,965 (93.2%) | 25 of 27 |
+
+Uncited lines are mostly fragments from streams no page draws from (fonts, metadata); of lines poppler can check, 93.2% now carry the right page. Mapping Form XObject streams as well added one line (111,230), so it is not in the code. Two files stay uncited (`TO_35-1-18`, `TO_36-1-191`, the second also yields nothing under yolowpdf). Cost: the fallback loads the file with `lopdf` (21 s for all 27 files together, including the extraction). Tests: `pdf_page_map::tests::{xref_stream_pdfs_are_mapped_through_lopdf, both_readers_agree_on_a_classic_file, a_stream_shared_by_two_pages_is_not_attributed_by_the_fallback}`. #127: not reproduced (see 2026-11-10); the mapper limit it was filed for is now removed.
+
+## 2026-11-17: semantic index above the snapshot limit (streaming path, #240 P2-1)
+
+Probe: `search-core/examples/semantic_stream_probe.rs` (`cargo run -p search-core --release --features semantic-search --example semantic_stream_probe -- <source semantic.sqlite> <out-dir> <copies>`). It copies the rows of a real index (the 15,075-chunk scanner index of the 27 ViDoRe PDFs, 26 documents) `copies` times under new paths, each with a real one-byte file whose size and mtime match its row (otherwise `semantic_path_fresh` drops the row), then opens it in a fresh process and queries. Vectors are copied, so scan cost is real and ranking quality is not measured. Release build, one machine (Apple silicon Mac, SSD), query "fatigue crack growth in aluminium alloy", hybrid, limit 100.
+
+| Chunks | Database | Path | `open` | `warm` | First query | Steady query | Resident memory after queries |
+|---:|---:|---|---:|---:|---:|---:|---:|
+| 241,200 | 1,048 MB | snapshot (under the limit) | 6.6 s | 18.1 s | 226 ms | 41 to 46 ms | 600 MB |
+| 286,425 | 1,248 MB | streaming (over the limit) | 10.3 s | 2.0 s (returns `false`, builds nothing) | 17.7 s | 18.4 to 19.8 s | 30 MB |
+
+Reading. The cliff at `MAX_CACHED_CHUNKS` is about 450 times in steady query time, not the 35 ms exact-scan cost the ANN probe measured: the streaming path decodes every vector and tokenises every chunk on each query. With Search settings (`search_with_settings`, one `stat` per document; 468 documents here) the time is the same, so the per-file `stat` is not the cost at this scale. Memory is the opposite: the streaming path holds 30 MB where the snapshot holds 600 MB. `open` is 6.6 to 10.3 s on an index this size (it runs `PRAGMA quick_check` over the whole file), which a person waits for at the first Search of a session; this was not isolated further. The snapshot build (`warm`) takes 18 s at 241k chunks, close to the linear extrapolation (15 to 20 s) in earlier entries.
+
+Limits. Replicated rows (each chunk repeated 16 to 19 times, so the keyword postings are repetitive and the cost split between vectors and text may differ on real text); one machine; one query; Windows and spinning disks not run; `open` time split between `quick_check` and everything else not measured.
+
+Not changed, and why: an index over 250,000 chunks is hours of embedding at 20 chunks per second (earlier entry), so this is a limit for large corpora, not a common case. Making the streaming path fast (a vector-only pass with the keyword side from a postings table, or a larger or quantised snapshot) changes the exact-equality contract between the two paths and the memory budget on an 8 GB machine (see the int8 entries above), which is a product decision about index size, not a defect fix. The measurement is the input to that decision.
+

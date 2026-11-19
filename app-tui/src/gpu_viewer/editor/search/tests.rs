@@ -2240,6 +2240,70 @@ fn keep_index_current_updates_the_index_for_changed_files_only() {
     assert_eq!(hits.len(), 1);
 }
 
+/// "Verify content" reads every indexed file once, so an edit that kept the size and the modified time (invisible to
+/// Build / update) is found, says so in the status, and is searchable afterwards.
+#[test]
+fn verify_content_finds_an_edit_that_build_update_cannot_see() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::write(root.join("a.txt"), "alpha apple").unwrap();
+    std::fs::write(root.join("b.txt"), "bravo stays").unwrap();
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = root.to_string_lossy().into_owned();
+    s.st.config.index.enabled = true;
+    let spin = |s: &mut SearchSession| {
+        let started = Instant::now();
+        while s.st.index_run.is_building {
+            assert!(started.elapsed() < Duration::from_secs(60), "timed out: {}", s.status);
+            s.poll();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        s.poll();
+    };
+    act_on(&mut s, SearchAct::BuildIndex);
+    spin(&mut s);
+    assert_eq!(s.st.index_run.docs, Some(2));
+
+    let before = std::fs::metadata(root.join("a.txt")).unwrap().modified().unwrap();
+    std::fs::write(root.join("a.txt"), "alpha pears").unwrap();
+    std::fs::File::options().write(true).open(root.join("a.txt")).unwrap().set_modified(before).unwrap();
+
+    act_on(&mut s, SearchAct::BuildIndex);
+    spin(&mut s);
+    assert!(s.st.index_run.status_text.contains("0 new/updated"), "{}", s.st.index_run.status_text);
+
+    act_on(&mut s, SearchAct::VerifyIndexContent);
+    assert!(s.st.index_run.is_building, "{}", s.status);
+    spin(&mut s);
+    let text = &s.st.index_run.status_text;
+    assert!(text.contains("1 new/updated") && text.contains("1 changed, 1 without a new time or size"), "{text}");
+
+    let index_dir = crate::toolboxes::search::indexing::index_directory(s.st.config.index.location, &s.st.config.search_path, "");
+    let engine = native_search::engine::NativeSearchEngine::open_or_create(&index_dir).unwrap();
+    assert_eq!(search_core::native_index::search(&engine, "pears", 5).unwrap().len(), 1, "the new text is indexed");
+
+    act_on(&mut s, SearchAct::VerifyIndexContent);
+    spin(&mut s);
+    assert!(s.st.index_run.status_text.contains("all 2 files match"), "{}", s.st.index_run.status_text);
+}
+
+/// The window shows the Fast index card in its Options popover (the ribbon is not on this page), so that card is where
+/// "Verify content" has to be reachable, and only once an index exists.
+#[test]
+fn the_options_popover_offers_verify_content_once_an_index_exists() {
+    let verify_row = |s: &SearchSession| {
+        let doc = view::document(s);
+        index_card(&doc).items.iter().filter_map(DockItem::plain_text).any(|row| row.starts_with("Verify content now"))
+    };
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = std::env::temp_dir().to_string_lossy().into_owned();
+    assert!(!verify_row(&s), "nothing to verify before an index is built");
+    s.st.index_run.docs = Some(3);
+    assert!(verify_row(&s));
+    s.st.index_run.is_building = true;
+    assert!(!verify_row(&s), "not while a build is running");
+}
+
 #[test]
 fn related_files_note_lists_reasons_and_marks_the_inferred_ones() {
     use search_core::catalog_edges::Reason;
@@ -2412,4 +2476,131 @@ fn gap_hints_wait_for_a_click_and_never_change_anything() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert_eq!(s.status, "Gap hints unavailable: catalog locked");
+}
+
+// ------------------------------------------------------------------ narrowing (sidebar choices)
+
+fn aged(name: &str, days: i64) -> FileSearchResult {
+    let mut r = result(name, 1, 10);
+    r.modified = chrono::Local::now() - chrono::Duration::days(days);
+    r
+}
+
+fn narrowed_session() -> SearchSession {
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = "/w".into();
+    let mut scan = aged("/w/b/scan.pdf", 400);
+    scan.low_confidence_pdf = true;
+    scan.ocr_confidence = Some(0.5);
+    s.st.run.results = vec![aged("/w/a/spec.pdf", 2), aged("/w/notes.txt", 20), aged("/w/b/plan.pdf", 100), scan];
+    s.st.run.started = Some(Instant::now());
+    s
+}
+
+fn names(s: &SearchSession) -> Vec<String> {
+    s.view().into_iter().map(|i| s.st.run.results[i].full_name.clone()).collect()
+}
+
+#[test]
+fn narrowing_by_type_and_folder_hides_rows_and_counts_what_each_choice_would_show() {
+    let mut s = narrowed_session();
+    let f = s.facets();
+    assert_eq!(f.types.iter().map(|v| (v.label.as_str(), v.count)).collect::<Vec<_>>(), [("PDF", 3), ("TXT", 1)]);
+    let pdf = f.types.iter().position(|v| v.key == ".pdf").unwrap();
+    act_on(&mut s, SearchAct::NarrowType(pdf));
+    assert_eq!(names(&s), ["/w/a/spec.pdf", "/w/b/plan.pdf", "/w/b/scan.pdf"]);
+    // Folder counts follow the type choice, the type counts do not follow their own.
+    let f = s.facets();
+    let folder = |label: &str| f.folders.iter().find(|v| v.label == label).map(|v| v.count);
+    assert_eq!((folder("a"), folder("b"), folder("(top folder)")), (Some(1), Some(2), Some(0)));
+    assert_eq!(f.types.iter().find(|v| v.key == ".txt").unwrap().count, 1, "TXT would add its one file");
+    let b = f.folders.iter().position(|v| v.label == "b").unwrap();
+    act_on(&mut s, SearchAct::NarrowFolder(b));
+    assert_eq!(names(&s), ["/w/b/plan.pdf", "/w/b/scan.pdf"]);
+    assert_eq!((s.facets().shown, s.facets().total), (2, 4));
+    // Choosing the same value again takes it back.
+    act_on(&mut s, SearchAct::NarrowType(pdf));
+    assert_eq!(names(&s), ["/w/b/plan.pdf", "/w/b/scan.pdf"].map(String::from));
+    act_on(&mut s, SearchAct::ClearNarrow);
+    assert_eq!(s.view().len(), 4);
+    assert!(s.narrow.is_empty());
+}
+
+#[test]
+fn narrowing_by_modified_window_and_text_quality() {
+    let mut s = narrowed_session();
+    act_on(&mut s, SearchAct::NarrowModified(narrow::Modified::Month));
+    assert_eq!(names(&s), ["/w/a/spec.pdf", "/w/notes.txt"]);
+    let counts: Vec<_> = s.facets().modified.iter().map(|&(m, n)| (m.label(), n)).collect();
+    assert_eq!(counts, [("Any time", 4), ("7 days", 1), ("30 days", 2), ("Year", 3)]);
+    act_on(&mut s, SearchAct::NarrowModified(narrow::Modified::Any));
+    act_on(&mut s, SearchAct::NarrowQuality(narrow::Quality::Poor));
+    assert_eq!(names(&s), ["/w/b/scan.pdf"]);
+    // The quality section appears only when some result carries a warning (or a choice is active).
+    let doc = view::document(&s);
+    let titles: Vec<_> = doc.sidebar.unwrap().narrow.unwrap().sections.into_iter().map(|x| x.title).collect();
+    assert_eq!(titles, ["FILE TYPE", "FOLDER", "MODIFIED", "TEXT QUALITY"]);
+    let mut clean = with_results();
+    let titles: Vec<_> = view::document(&clean).sidebar.unwrap().narrow.unwrap().sections.into_iter().map(|x| x.title).collect();
+    assert_eq!(titles, ["FILE TYPE", "FOLDER", "MODIFIED"]);
+    clean.st.run.results.clear();
+    assert!(view::document(&clean).sidebar.unwrap().narrow.is_none(), "nothing to narrow before there are results");
+}
+
+#[test]
+fn the_table_follows_the_narrowing_and_shows_a_chip_for_each_choice() {
+    let mut s = narrowed_session();
+    assert_eq!(view::document(&s).table.rows.len(), 4);
+    assert!(view::document(&s).table.chips.is_empty());
+    let txt = s.facets().types.iter().position(|v| v.key == ".txt").unwrap();
+    act_on(&mut s, SearchAct::NarrowType(txt));
+    act_on(&mut s, SearchAct::NarrowModified(narrow::Modified::Year));
+    let table = view::document(&s).table;
+    assert_eq!(table.rows.len(), 1);
+    assert_eq!(table.rows[0].cells[0], "notes.txt");
+    assert_eq!(table.chips.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["TXT", "Last year"]);
+    assert!(table.title.contains("1 of 4"), "{}", table.title);
+    // A chip's own action takes its choice back.
+    let first = table.chips[0].remove;
+    let crate::gpu_viewer::controller::UiAction::Editor(action) = first else { panic!("a chip carries an editor action") };
+    s.act(action);
+    assert_eq!(view::document(&s).table.chips.len(), 1);
+    assert_eq!(view::document(&s).table.rows.len(), 3);
+}
+
+#[test]
+fn results_arriving_after_a_narrowing_are_shown_only_when_they_match() {
+    let mut s = narrowed_session();
+    let txt = s.facets().types.iter().position(|v| v.key == ".txt").unwrap();
+    act_on(&mut s, SearchAct::NarrowType(txt));
+    assert_eq!(view::document(&s).table.rows.len(), 1);
+    s.st.run.results.push(aged("/w/more.txt", 1));
+    s.st.run.results.push(aged("/w/more.pdf", 1));
+    let rows = view::document(&s).table.rows;
+    assert_eq!(rows.iter().map(|r| r.cells[0].as_str()).collect::<Vec<_>>(), ["notes.txt", "more.txt"]);
+    assert_eq!(s.facets().total, 6, "the facet lists are rebuilt for the new results");
+}
+
+#[test]
+fn a_choice_that_no_longer_has_results_stays_listed_so_it_can_be_taken_back() {
+    let mut s = narrowed_session();
+    let txt = s.facets().types.iter().position(|v| v.key == ".txt").unwrap();
+    act_on(&mut s, SearchAct::NarrowType(txt));
+    s.st.run.results = vec![aged("/w/a/spec.pdf", 2)];
+    s.st.run.started = Some(Instant::now());
+    let f = s.facets();
+    let kept = f.types.iter().find(|v| v.key == ".txt").expect("the chosen type is still listed");
+    assert!(kept.on);
+    assert_eq!(kept.count, 0);
+    assert_eq!(s.view().len(), 0);
+    assert_eq!(view::document(&s).table.empty_title, "Nothing matches the filter");
+}
+
+#[test]
+fn the_selected_file_moves_to_the_first_shown_when_narrowing_hides_it() {
+    let mut s = narrowed_session();
+    s.selected = Some(0);
+    let txt = s.facets().types.iter().position(|v| v.key == ".txt").unwrap();
+    act_on(&mut s, SearchAct::NarrowType(txt));
+    assert_eq!(s.current(), Some(1));
 }

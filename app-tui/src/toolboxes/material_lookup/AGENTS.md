@@ -11,6 +11,7 @@ Does not own: material data or any property conversion (`mechanics-core::materia
 |---|---|
 | `catalog()`, `groups()`, `Query`, `filter_sort`, `compare_rows`, `report_text` | `model.rs` |
 | `MaterialLookupState`, `handle_key`, mark/compare/export | `mod.rs` |
+| `Query` facets (`forms`, `min_fty`, `max_density`, `min_specific_yield`), `FORMS` / `form_class`, `Floor` (limits, slider range), `facet_counts`, `filter_sort` | `model.rs` (consumed by the native window's Refine rail, `gpu_viewer/editor/materials`) |
 | List + property/comparison panels | `view.rs` |
 
 ## Contracts

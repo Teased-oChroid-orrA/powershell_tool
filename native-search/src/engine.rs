@@ -174,6 +174,10 @@ struct Fields {
     /// its `trigram` ones). Lets a search that ignores accents narrow candidates; see
     /// [`NativeSearchEngine::trigram_candidate_paths_folded`].
     trigram_folded: tantivy::schema::Field,
+    /// SHA-256 of the file's bytes as they were when indexed (`index_document_hashed`); absent for a
+    /// document written without one. Stored so a content check can find an edit that kept the same size
+    /// and modified time. See [`NativeSearchEngine::all_document_content_hashes`].
+    content_hash: tantivy::schema::Field,
 }
 
 fn build_schema() -> (Schema, Fields) {
@@ -195,6 +199,7 @@ fn build_schema() -> (Schema, Fields) {
         .set_indexing_options(TextFieldIndexing::default().set_tokenizer(TRIGRAM_TOKENIZER_NAME));
     let trigram = builder.add_text_field("trigram", trigram_options.clone());
     let trigram_folded = builder.add_text_field("trigram_folded", trigram_options);
+    let content_hash = builder.add_bytes_field("content_hash", STORED);
     let schema = builder.build();
     (
         schema,
@@ -210,6 +215,7 @@ fn build_schema() -> (Schema, Fields) {
             body,
             trigram,
             trigram_folded,
+            content_hash,
         },
     )
 }
@@ -322,6 +328,17 @@ impl NativeSearchEngine {
     /// form differs from its lowercased form (`None` when they are equal): the caller owns the
     /// folding rule (`search_core::textfold::fold_lower`), this crate only indexes its trigrams.
     pub fn index_document_folded(&self, doc: DocumentInput<'_>, folded: Option<&str>) -> NsResult<()> {
+        self.index_document_hashed(doc, folded, None)
+    }
+
+    /// [`index_document_folded`](Self::index_document_folded) plus the SHA-256 of the file's bytes
+    /// (`None` when the caller has no trustworthy hash for the text it indexes).
+    pub fn index_document_hashed(
+        &self,
+        doc: DocumentInput<'_>,
+        folded: Option<&str>,
+        content_hash: Option<&[u8]>,
+    ) -> NsResult<()> {
         if doc.id.is_empty() {
             return Err(NsError::invalid_argument("document id must not be empty"));
         }
@@ -341,6 +358,9 @@ impl NativeSearchEngine {
             );
             if let Some(folded) = folded {
                 document.add_text(self.fields.trigram_folded, folded);
+            }
+            if let Some(hash) = content_hash {
+                document.add_bytes(self.fields.content_hash, hash);
             }
             writer.add_document(document)
         })?;
@@ -781,6 +801,17 @@ impl NativeSearchEngine {
                 text_value(d, self.fields.id),
                 (int_value(d, self.fields.modified), int_value(d, self.fields.size)),
             );
+        })?;
+        Ok(map)
+    }
+
+    /// Every indexed document's stored content hash keyed by id (`None` for a document indexed without
+    /// one), in ONE ordered pass over the store like [`all_document_metadata`](Self::all_document_metadata).
+    pub fn all_document_content_hashes(&self) -> NsResult<std::collections::HashMap<String, Option<Vec<u8>>>> {
+        let mut map = std::collections::HashMap::with_capacity(self.num_docs() as usize);
+        self.for_each_stored_document(|d| {
+            let hash = d.get_first(self.fields.content_hash).and_then(|v| v.as_bytes()).map(<[u8]>::to_vec);
+            map.insert(text_value(d, self.fields.id), hash);
         })?;
         Ok(map)
     }
@@ -1329,6 +1360,22 @@ mod tests {
             engine.get_document_metadata("1").unwrap(),
             Some((2_000, 20))
         );
+    }
+
+    #[test]
+    fn content_hashes_are_stored_replaced_on_reindex_and_absent_when_not_given() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document_hashed(sample("a", "one"), None, Some(&[1, 2, 3])).unwrap();
+        engine.index_document(sample("b", "two")).unwrap();
+        engine.commit().unwrap();
+        let hashes = engine.all_document_content_hashes().unwrap();
+        assert_eq!(hashes.get("a"), Some(&Some(vec![1, 2, 3])));
+        assert_eq!(hashes.get("b"), Some(&None), "a document indexed without a hash reports none");
+
+        engine.index_document_hashed(sample("a", "one again"), None, Some(&[9])).unwrap();
+        engine.commit().unwrap();
+        assert_eq!(engine.all_document_content_hashes().unwrap().get("a"), Some(&Some(vec![9])));
     }
 
     #[test]

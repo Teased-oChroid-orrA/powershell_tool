@@ -241,30 +241,34 @@ fn bench_highlight_line(
         return bench_html_escape(line);
     }
 
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    for f in matched_filters {
-        if f.is_empty() {
-            continue;
-        }
-        let pattern = if settings.use_regex {
-            f.clone()
-        } else if settings.whole_word {
-            search_core::matching::whole_word_pattern(f)
-        } else {
-            fancy_regex::escape(f).into_owned()
-        };
+    let all_filters: Vec<String> = settings.all_filters().map(|f| f.to_lowercase()).collect();
+    let mut ranges: Vec<(usize, usize, usize)> = Vec::new();
+    for filter in matched_filters {
+        let slot = all_filters.iter().position(|f| *f == filter.to_lowercase()).unwrap_or(0) % 6;
+        for f in &search_core::near::expand_terms(std::slice::from_ref(filter), settings.use_regex) {
+            if f.is_empty() {
+                continue;
+            }
+            let pattern = if settings.use_regex {
+                f.clone()
+            } else if settings.whole_word {
+                search_core::matching::whole_word_pattern(f)
+            } else {
+                fancy_regex::escape(f).into_owned()
+            };
 
-        let rx = match fancy_regex::RegexBuilder::new(&pattern)
-            .case_insensitive(true)
-            .build()
-        {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
+            let rx = match fancy_regex::RegexBuilder::new(&pattern)
+                .case_insensitive(true)
+                .build()
+            {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
 
-        for m in rx.find_iter(line).flatten() {
-            if !m.as_str().is_empty() {
-                ranges.push((m.start(), m.end()));
+            for m in rx.find_iter(line).flatten() {
+                if !m.as_str().is_empty() {
+                    ranges.push((m.start(), m.end(), slot));
+                }
             }
         }
     }
@@ -274,7 +278,7 @@ fn bench_highlight_line(
     }
 
     ranges.sort_by_key(|r| r.0);
-    let mut merged: Vec<(usize, usize)> = Vec::new();
+    let mut merged: Vec<(usize, usize, usize)> = Vec::new();
     for r in ranges {
         if let Some(last) = merged.last_mut() {
             if r.0 <= last.1 {
@@ -289,11 +293,15 @@ fn bench_highlight_line(
 
     let mut out = String::new();
     let mut pos = 0usize;
-    for (start, end) in merged {
+    for (start, end, slot) in merged {
         if start > pos {
             out.push_str(&bench_html_escape(&line[pos..start]));
         }
-        out.push_str("<mark>");
+        if slot == 0 {
+            out.push_str("<mark>");
+        } else {
+            out.push_str(&format!("<mark class=\"m{}\">", slot + 1));
+        }
         out.push_str(&bench_html_escape(&line[start..end]));
         out.push_str("</mark>");
         pos = end;

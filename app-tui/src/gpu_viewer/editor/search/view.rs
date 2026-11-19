@@ -14,10 +14,11 @@ use crate::gpu_viewer::{
     menu::{Entry, Item, Menu},
     ui::{
         CardRow, DocColumn, DocDetail, DocHelp, DocNote, DocSignal, DocInput, DocMatchNavigation, DocModal, DocNotice,
-        DocInsight, DocPanel, DocProgress, DocRibbon, DocRow, DocSidebar, DocSidebarRecent, DocTable, DocText, DockItem,
+        DocChip, DocInsight, DocNarrow, DocNarrowOption, DocNarrowSection, DocPanel, DocProgress, DocRibbon, DocRow, DocSidebar, DocSidebarRecent, DocTable, DocText, DockItem,
         Document, HelpRow, HelpSection, RibbonTab, TreeNode, ValueCard,
     },
 };
+use super::narrow;
 use crate::toolboxes::search::{indexing::format_eta, model, preview, run_view, settings_view};
 use search_core::models::{ExcludeScope, MatchMode};
 
@@ -28,6 +29,7 @@ pub(super) struct RowsCache {
     result_count: usize,
     sort: (SortKey, bool),
     filter: String,
+    narrow: narrow::Narrow,
     root: String,
     #[cfg(feature = "neural-search")]
     relevance_key: String,
@@ -44,6 +46,7 @@ impl RowsCache {
         self.started == s.st.run.started
             && self.sort == s.sort
             && self.filter == s.filter
+            && self.narrow == s.narrow
             && self.root == s.st.config.search_path
     }
 
@@ -693,6 +696,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
         .into(),
         index_name: file_name(s.st.config.search_path.trim()).to_string(),
         index_detail,
+        narrow: narrow_block(s),
         index_action: (!ix.is_building && !s.st.config.search_path.trim().is_empty()).then(|| {
             e(
                 if ix.docs.is_some() {
@@ -728,6 +732,8 @@ pub(super) fn document(s: &SearchSession) -> Document {
         modal,
         ribbon: Some(status_strip(s)),
         insight: insight(s),
+        rail: None,
+        basket: None,
     }
 }
 
@@ -999,21 +1005,14 @@ fn table(s: &SearchSession) -> DocTable {
         sort: Some(act(SearchAct::SortBy(key))),
         sorted: (s.sort.0 == key).then_some(s.sort.1),
     };
-    let root =
-        s.st.config
-            .search_path
-            .trim()
-            .trim_end_matches(['/', '\\'])
-            .to_string();
+    let root = narrow::root_of(&s.st.config.search_path);
     let cached = {
         let mut cache = s.rows_cache.borrow_mut();
         cache.as_mut().and_then(|c| {
             if c.can_extend(s) {
-                let needle = s.filter.trim().to_lowercase();
+                let shown = s.shown();
                 for i in c.result_count..run.results.len() {
-                    if needle.is_empty()
-                        || run.results[i].full_name.to_lowercase().contains(&needle)
-                    {
+                    if shown(i) {
                         std::sync::Arc::make_mut(&mut c.rows).push(result_row(s, i, false, &root));
                         c.order.push(i);
                     }
@@ -1048,6 +1047,7 @@ fn table(s: &SearchSession) -> DocTable {
             result_count: run.results.len(),
             sort: s.sort,
             filter: s.filter.clone(),
+            narrow: s.narrow.clone(),
             root: s.st.config.search_path.clone(),
             #[cfg(feature = "neural-search")]
             relevance_key: s.relevance_key(),
@@ -1072,7 +1072,7 @@ fn table(s: &SearchSession) -> DocTable {
     let (empty_title, empty_body) = if total > 0 {
         (
             "Nothing matches the filter".to_string(),
-            "Clear the filter to see every file with matches.".to_string(),
+            "Clear the filter or the sidebar's choices to see every file with matches.".to_string(),
         )
     } else if run.is_running {
         (
@@ -1086,6 +1086,7 @@ fn table(s: &SearchSession) -> DocTable {
     };
     DocTable {
         title,
+        chips: narrow_chips(s),
         filter: (total > 0).then(|| DocInput {
             id: INPUT_FILTER,
             label: "Filter".into(),
@@ -1118,18 +1119,7 @@ fn result_row(s: &SearchSession, i: usize, selected: bool, root: &str) -> DocRow
     #[cfg(test)]
     ROWS_BUILT.with(|n| n.set(n.get() + 1));
     let r = &s.st.run.results[i];
-    let folder = std::path::Path::new(&r.full_name)
-        .parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let rel = folder
-        .strip_prefix(root)
-        .map(|f| f.trim_start_matches(['/', '\\']).to_string());
-    let sub = match rel {
-        Some(f) if f.is_empty() => "(top folder)".to_string(),
-        Some(f) => f,
-        None => folder,
-    };
+    let sub = narrow::folder_of(&r.full_name, root);
     DocRow {
         cells: vec![
             file_name(&r.full_name).to_string(),
@@ -1147,6 +1137,7 @@ fn result_row(s: &SearchSession, i: usize, selected: bool, root: &str) -> DocRow
         badge: std::path::Path::new(&r.full_name)
             .extension()
             .map(|x| x.to_string_lossy().to_uppercase()),
+        mark: None,
     }
 }
 
@@ -1622,6 +1613,14 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
             Some(act(SearchAct::BuildIndex)),
             false,
         ));
+        if ix.docs.is_some() {
+            index.push(DockItem::row(
+                "Verify content now (reads every indexed file)",
+                Tone::Title,
+                Some(act(SearchAct::VerifyIndexContent)),
+                false,
+            ));
+        }
     }
     if !ix.status_text.is_empty() {
         index.push(DockItem::text(plain(&ix.status_text), Tone::Dim));
@@ -2360,6 +2359,15 @@ pub(super) fn ribbon(s: &SearchSession) -> Vec<RibbonTab> {
                     ix.is_building,
                     "no index is building",
                 ),
+                when(
+                    e("Verify content", "", SearchAct::VerifyIndexContent),
+                    !ix.is_building && !s.st.run.is_running && !c.search_path.trim().is_empty(),
+                    if ix.is_building {
+                        "the index is building"
+                    } else {
+                        "choose a folder first, and wait for a running search"
+                    },
+                ),
                 Entry::new(
                     format!("Location: {}", settings_view::setting_display(c, 30)),
                     "",
@@ -2464,4 +2472,76 @@ pub(super) fn menus(s: &SearchSession) -> Vec<Menu> {
             items: tools,
         },
     ]
+}
+
+/// The sidebar's choices over the results found, once there are any to narrow.
+fn narrow_block(s: &SearchSession) -> Option<DocNarrow> {
+    let f = s.facets();
+    if f.total == 0 {
+        return None;
+    }
+    let option = |label: String, count: usize, on: bool, a: SearchAct| DocNarrowOption { label, count, on, action: act(a) };
+    let mut sections = Vec::new();
+    let mut push = |title: &str, pills: bool, options: Vec<DocNarrowOption>| {
+        if !options.is_empty() {
+            sections.push(DocNarrowSection { title: title.into(), pills, options });
+        }
+    };
+    push(
+        "FILE TYPE",
+        false,
+        f.types.iter().enumerate().map(|(i, v)| option(v.label.clone(), v.count, v.on, SearchAct::NarrowType(i))).collect(),
+    );
+    push(
+        "FOLDER",
+        false,
+        f.folders.iter().enumerate().map(|(i, v)| option(v.label.clone(), v.count, v.on, SearchAct::NarrowFolder(i))).collect(),
+    );
+    push(
+        "MODIFIED",
+        true,
+        f.modified
+            .iter()
+            .map(|&(m, n)| option(m.label().into(), n, s.narrow.modified == m, SearchAct::NarrowModified(m)))
+            .collect(),
+    );
+    // Text quality only matters when some result has a warning.
+    if f.quality.iter().any(|&(q, n)| q != narrow::Quality::Clean && n > 0) || !s.narrow.quality.is_empty() {
+        push(
+            "TEXT QUALITY",
+            false,
+            f.quality
+                .iter()
+                .map(|&(q, n)| option(q.label().into(), n, s.narrow.quality.contains(&q), SearchAct::NarrowQuality(q)))
+                .collect(),
+        );
+    }
+    Some(DocNarrow {
+        title: "NARROW RESULTS".into(),
+        noun: "files".into(),
+        sections,
+        sliders: Vec::new(),
+        shown: f.shown,
+        total: f.total,
+        clear: (!s.narrow.is_empty()).then(|| act(SearchAct::ClearNarrow)),
+    })
+}
+
+/// One chip per active choice, in the order of the sidebar.
+fn narrow_chips(s: &SearchSession) -> Vec<DocChip> {
+    let f = s.facets();
+    let mut chips = Vec::new();
+    for (i, v) in f.types.iter().enumerate().filter(|(_, v)| v.on) {
+        chips.push(DocChip { label: v.label.clone(), remove: act(SearchAct::NarrowType(i)) });
+    }
+    for (i, v) in f.folders.iter().enumerate().filter(|(_, v)| v.on) {
+        chips.push(DocChip { label: v.label.clone(), remove: act(SearchAct::NarrowFolder(i)) });
+    }
+    if s.narrow.modified != narrow::Modified::Any {
+        chips.push(DocChip { label: s.narrow.modified.chip().into(), remove: act(SearchAct::NarrowModified(narrow::Modified::Any)) });
+    }
+    for &q in &s.narrow.quality {
+        chips.push(DocChip { label: q.label().into(), remove: act(SearchAct::NarrowQuality(q)) });
+    }
+    chips
 }

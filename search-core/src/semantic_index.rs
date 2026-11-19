@@ -167,6 +167,18 @@ fn generation(conn: &Connection) -> Result<i64, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Bumped whenever `SemanticIndex::migrate` changes the schema, so an open can tell a current database from an older one
+/// without taking the write lock. Stored in `PRAGMA user_version` in the same transaction as the migration.
+const SCHEMA_VERSION: i64 = 1;
+
+/// `true` when the schema is at `SCHEMA_VERSION` and the instance id exists. Any error (no table yet, a busy
+/// database) counts as not current, so the caller falls back to the migration, which waits for the write lock.
+fn schema_is_current(conn: &Connection) -> bool {
+    conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .is_ok_and(|version| version == SCHEMA_VERSION)
+        && instance(conn).is_ok()
+}
+
 /// `true` when `path` holds a readable SQLite database that passes `PRAGMA quick_check`.
 fn database_is_sound(path: &Path) -> bool {
     Connection::open(path)
@@ -193,9 +205,42 @@ impl SemanticIndex {
 
     fn open_checked(path: &Path) -> rusqlite::Result<Self> {
         let mut conn = Connection::open(path)?;
-        // Every open writes (`INSERT OR IGNORE` of the instance id), so concurrent opens (warm-up and search threads)
-        // must take the write lock up front: a deferred transaction that starts as a read and then upgrades fails
-        // at once with `database is locked` instead of waiting for the busy timeout.
+        // A database already at the current schema is only read: taking the write lock on every open let a busy
+        // writer starve an open past the busy timeout (`database is locked`, seen on Windows CI), while readers
+        // wait only for a writer's short commit. Otherwise (new, older or unreadable) migrate under the write lock.
+        if !schema_is_current(&conn) {
+            Self::migrate(&mut conn)?;
+        }
+        // SQLite ignores this pragma inside a transaction, so it must be set here: replacing or removing a document
+        // relies on the cascade to drop its chunks.
+        conn.pragma_update(None, "foreign_keys", true)?;
+        let version: Option<i64> = conn
+            .query_row(
+                "SELECT value FROM semantic_meta WHERE key = 'embedding_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if version != Some(EMBEDDING_VERSION) {
+            conn.execute_batch("DELETE FROM semantic_chunks; DELETE FROM semantic_documents;")?;
+            bump_generation(&conn)?;
+            conn.execute(
+                "INSERT INTO semantic_meta(key,value) VALUES('embedding_version',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [EMBEDDING_VERSION],
+            )?;
+        }
+        Ok(Self {
+            conn: Mutex::new(conn),
+            path: path.to_path_buf(),
+            cache_limit: MAX_CACHED_CHUNKS,
+        })
+    }
+
+    /// Creates or upgrades the schema and stamps `SCHEMA_VERSION`. Concurrent migrations (warm-up and search threads)
+    /// take the write lock up front: a deferred transaction that starts as a read and then upgrades fails at once
+    /// with `database is locked` instead of waiting for the busy timeout.
+    fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch(
             "PRAGMA foreign_keys = ON;
@@ -228,31 +273,8 @@ impl SemanticIndex {
         use std::hash::BuildHasher;
         let random = std::collections::hash_map::RandomState::new().hash_one(std::time::SystemTime::now()) as i64;
         tx.execute("INSERT OR IGNORE INTO semantic_meta(key,value) VALUES('instance',?1)", [random])?;
-        tx.commit()?;
-        // SQLite ignores this pragma inside a transaction, so it must be set here: replacing or removing a document
-        // relies on the cascade to drop its chunks.
-        conn.pragma_update(None, "foreign_keys", true)?;
-        let version: Option<i64> = conn
-            .query_row(
-                "SELECT value FROM semantic_meta WHERE key = 'embedding_version'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if version != Some(EMBEDDING_VERSION) {
-            conn.execute_batch("DELETE FROM semantic_chunks; DELETE FROM semantic_documents;")?;
-            bump_generation(&conn)?;
-            conn.execute(
-                "INSERT INTO semantic_meta(key,value) VALUES('embedding_version',?1)
-                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                [EMBEDDING_VERSION],
-            )?;
-        }
-        Ok(Self {
-            conn: Mutex::new(conn),
-            path: path.to_path_buf(),
-            cache_limit: MAX_CACHED_CHUNKS,
-        })
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()
     }
 
     /// Store bounded, line-cited chunks for a document. Replacing a document
@@ -1169,6 +1191,9 @@ mod tests {
             let (path, stop) = (path.clone(), stop.clone());
             std::thread::spawn(move || {
                 let conn = Connection::open(&path).unwrap();
+                // This writer competes with the openers for the write lock; without a wait its own insert failed
+                // with `database is locked` (seen on a hosted Windows runner), which says nothing about `open`.
+                conn.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
                 let mut n = 0i64;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     n += 1;
@@ -1194,6 +1219,32 @@ mod tests {
         for result in results {
             result.expect("open waits for the write lock");
         }
+    }
+
+    /// A database at the current schema is opened by reading only, so a long writer cannot starve the open past the
+    /// busy timeout (the Windows CI `database is locked` failure of the test above).
+    #[test]
+    fn opening_a_current_database_does_not_wait_for_a_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("semantic.sqlite");
+        SemanticIndex::open(&path).unwrap();
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let started = std::time::Instant::now();
+        SemanticIndex::open(&path).expect("open reads a current database while another connection holds the write lock");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "open waited for the writer");
+        writer.execute_batch("COMMIT").unwrap();
+    }
+
+    #[test]
+    fn an_unversioned_database_is_migrated_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("semantic.sqlite");
+        SemanticIndex::open(&path).unwrap();
+        Connection::open(&path).unwrap().pragma_update(None, "user_version", 0).unwrap();
+        SemanticIndex::open(&path).unwrap();
+        let version: i64 = Connection::open(&path).unwrap().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]

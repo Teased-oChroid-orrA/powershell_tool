@@ -59,19 +59,38 @@ jobs:
       - name: Verify bare executable opens the dashboard
         shell: pwsh
         run: |
-          $app = Start-Process "target/x86_64-pc-windows-msvc/release/app-tui.exe" -PassThru
+          $out = Join-Path $env:RUNNER_TEMP "app-tui.stdout.txt"
+          $err = Join-Path $env:RUNNER_TEMP "app-tui.stderr.txt"
+          $app = Start-Process "target/x86_64-pc-windows-msvc/release/app-tui.exe" -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          $failure = $null
           try {
             for ($i = 0; $i -lt 60; $i++) {
               Start-Sleep -Milliseconds 500
               $app.Refresh()
-              if ($app.HasExited) { throw "app-tui.exe exited before opening the dashboard" }
+              if ($app.HasExited) {
+                $app.WaitForExit()
+                $failure = "app-tui.exe exited before opening the dashboard (exit code 0x{0:X8})" -f $app.ExitCode
+                break
+              }
               if ($app.MainWindowTitle -eq "GS Engineering Toolbench") { break }
             }
-            if ($app.MainWindowTitle -ne "GS Engineering Toolbench") {
-              throw "app-tui.exe did not open the Toolbench dashboard"
+            if (-not $failure -and $app.MainWindowTitle -ne "GS Engineering Toolbench") {
+              $failure = "app-tui.exe did not open the Toolbench dashboard (window title '$($app.MainWindowTitle)')"
             }
           } finally {
             if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          }
+          if ($failure) {
+            # What the exit left behind: the process's own output, the app's debug log (written to the launch folder),
+            # and Windows' record of a crash (exception code and faulting module).
+            Write-Host "::group::stdout"; if (Test-Path $out) { Get-Content $out }; Write-Host "::endgroup::"
+            Write-Host "::group::stderr"; if (Test-Path $err) { Get-Content $err }; Write-Host "::endgroup::"
+            Write-Host "::group::toolbench-debug.log"; if (Test-Path toolbench-debug.log) { Get-Content toolbench-debug.log -Tail 80 } else { "no toolbench-debug.log in $PWD" }; Write-Host "::endgroup::"
+            Write-Host "::group::Windows Application log (app-tui.exe)"
+            Get-WinEvent -FilterHashtable @{ LogName = "Application"; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue |
+              Where-Object { $_.Message -match "app-tui" } | Select-Object -First 3 | ForEach-Object { $_.Message }
+            Write-Host "::endgroup::"
+            throw $failure
           }
 
       - name: Stage the release folder (the executable and its notices)

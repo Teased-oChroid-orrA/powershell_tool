@@ -4,6 +4,7 @@
 //! inspector, and adapts to that width: the bar's inputs stack on a narrow window. The table and the detail are placed
 //! by `page_layout`: a card dragged by its grip to a side of the room goes there and the other makes room, the
 //! splitter between them sets their shares, and both are kept between sessions (`PageLayout` in the display settings).
+mod rail;
 mod stackup;
 use super::{
     page_layout,
@@ -214,6 +215,8 @@ impl Gui {
         if search_shell {
             ui.painter().rect_filled(area, 0.0, p.bg);
         }
+        // The basket tray takes the page's bottom edge and the Refine rail its left edge; the page keeps the rest.
+        let area = self.rail_and_basket(ui, area, doc, p, out, hint);
         let inner = area.shrink2(if search_shell {
             Vec2::new(26.0, 12.0)
         } else {
@@ -1884,10 +1887,41 @@ impl Gui {
                         } else {
                             ui.label(RichText::new(&t.title).strong().size(14.0));
                         }
+                        // Fixed before the chips take room, so the filter keeps its width with or without them.
+                        let filter_w = (ui.available_width() * 0.55).clamp(120.0, 260.0);
+                        if !t.chips.is_empty() {
+                            let mut room = ui.available_width() - if t.filter.is_some() { filter_w + 16.0 } else { 0.0 };
+                            ui.add_space(8.0);
+                            room -= 8.0;
+                            for chip in &t.chips {
+                                let galley = ui.painter().layout_no_wrap(chip.label.clone(), FontId::proportional(11.0), p.accent);
+                                let w = galley.size().x + 30.0;
+                                if w > room {
+                                    break;
+                                }
+                                room -= w + ui.spacing().item_spacing.x;
+                                let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 22.0), Sense::click());
+                                ui.painter().rect(
+                                    rect,
+                                    CornerRadius::same(11),
+                                    with_alpha(p.accent, if resp.hovered() { 40 } else { 26 }),
+                                    Stroke::new(1.0, with_alpha(p.accent, 110)),
+                                    egui::StrokeKind::Inside,
+                                );
+                                ui.painter().galley(Pos2::new(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, p.accent);
+                                let x = Pos2::new(rect.right() - 11.0, rect.center().y);
+                                let cross = Stroke::new(1.3, p.accent);
+                                ui.painter().line_segment([x + Vec2::new(-2.5, -2.5), x + Vec2::new(2.5, 2.5)], cross);
+                                ui.painter().line_segment([x + Vec2::new(-2.5, 2.5), x + Vec2::new(2.5, -2.5)], cross);
+                                self.targets.push((format!("Remove filter {}", chip.label), rect));
+                                if resp.on_hover_text("Remove this choice").clicked() {
+                                    out.push(Outcome::Action(chip.remove));
+                                }
+                            }
+                        }
                         if let Some(f) = &t.filter {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                let w = (ui.available_width() * 0.55).clamp(120.0, 260.0);
-                                self.text_box(ui, f, w, 28.0, p, out, hint);
+                                self.text_box(ui, f, filter_w, 28.0, p, out, hint);
                             });
                         }
                     });
@@ -2106,6 +2140,8 @@ impl Gui {
             );
         }
         let mut x = rect.left() + 14.0;
+        // Where the row's basket box was drawn: a click inside it sets the row aside instead of highlighting it.
+        let mut mark_box: Option<Rect> = None;
         for (k, (cell, w)) in row.cells.iter().zip(cols).enumerate() {
             let r = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(*w - 8.0, ROW_H));
             let clip = painter.with_clip_rect(r.intersect(painter.clip_rect()));
@@ -2115,6 +2151,26 @@ impl Gui {
             if k == 0 {
                 // The badge leads the name: a long name is cut at the cell's edge, the badge must still show.
                 let mut name_x = r.left() + 4.0;
+                if let Some(mark) = row.mark {
+                    let b = Rect::from_center_size(Pos2::new(name_x + 8.0, r.top() + 14.0), Vec2::splat(15.0));
+                    mark_box = Some(b.expand(4.0));
+                    let over = resp.hovered() && ui.input(|x| x.pointer.latest_pos()).is_some_and(|at| b.expand(4.0).contains(at));
+                    self.targets.push((format!("Basket {}", cell), b));
+                    clip.rect(
+                        b,
+                        CornerRadius::same(4),
+                        if mark.on { p.accent } else if over { p.raised } else { Color32::TRANSPARENT },
+                        Stroke::new(1.0, if mark.on || over { p.accent } else { p.muted }),
+                        egui::StrokeKind::Inside,
+                    );
+                    if mark.on {
+                        let c = b.center();
+                        let tick = Stroke::new(1.6, p.on_accent);
+                        clip.line_segment([c + Vec2::new(-3.5, 0.5), c + Vec2::new(-1.0, 3.0)], tick);
+                        clip.line_segment([c + Vec2::new(-1.0, 3.0), c + Vec2::new(3.5, -2.5)], tick);
+                    }
+                    name_x += 24.0;
+                }
                 if let Some(b) = &row.badge {
                     let g = clip.layout_no_wrap(b.clone(), FontId::monospace(10.0), p.accent);
                     let br = Rect::from_min_size(
@@ -2128,7 +2184,7 @@ impl Gui {
                 let name = clip.layout_no_wrap(cell.clone(), FontId::proportional(13.5), p.text);
                 clip.galley(Pos2::new(name_x, r.top() + 5.0), name, p.text);
                 let sub = clip.layout_no_wrap(row.sub.clone(), FontId::proportional(11.5), p.dim);
-                clip.galley(Pos2::new(r.left() + 4.0, r.top() + 23.0), sub, p.dim);
+                clip.galley(Pos2::new(r.left() + 4.0 + if row.mark.is_some() { 24.0 } else { 0.0 }, r.top() + 23.0), sub, p.dim);
             } else if let Some(fraction) = relevance_fraction(&t.columns[k].title, cell) {
                 // A relevance score is a short bar and its number, so a column of them reads at a glance.
                 let bar = Rect::from_min_size(
@@ -2163,10 +2219,13 @@ impl Gui {
             }
             x += w;
         }
-        if resp.clicked() || resp.secondary_clicked() {
+        let on_box = |resp: &egui::Response| mark_box.zip(resp.interact_pointer_pos()).is_some_and(|(b, at)| b.contains(at));
+        if let (true, Some(mark)) = (resp.clicked() && on_box(&resp), row.mark) {
+            out.push(Outcome::Action(mark.action));
+        } else if resp.clicked() || resp.secondary_clicked() {
             out.push(Outcome::Action(row.select));
         }
-        if resp.double_clicked() {
+        if resp.double_clicked() && !on_box(&resp) {
             if let Some(a) = row.open {
                 out.push(Outcome::Action(a));
             }
