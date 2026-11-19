@@ -72,8 +72,6 @@ pub mod step_nurbs;
 pub mod step_nurbs_surface;
 mod step_units;
 mod step_topology;
-#[cfg(feature = "occt")]
-pub mod occt;
 
 use bvh::{Bvh, Region};
 use fea_core::tetmesh::{FaceHit, MeshReport, Solid, TetOptions};

@@ -207,7 +207,6 @@ fn open_browser_navigates_and_uses_existing_open_validation() {
     s.do_action(SolidAction::BrowseEntry(index));
     assert!(s.status.starts_with("Open failed"));
     assert_eq!(s.problem, before);
-    #[cfg(not(feature = "occt"))]
     {
         let step = nested.join("cube.step");
         std::fs::write(&step, solid_kernel::native_brep::NativeBrep::box_from_corners([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).unwrap().to_step_text()).unwrap();

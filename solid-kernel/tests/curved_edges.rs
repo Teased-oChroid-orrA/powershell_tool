@@ -133,36 +133,6 @@ fn grading_lifts_the_shells_with_spline_edges_and_keeps_the_edge_on_its_curve() 
     }
 }
 
-#[cfg(feature = "occt")]
-#[test]
-fn the_recorded_reference_volumes_are_opencascade_s_and_native_agrees_with_them() {
-    for c in cases() {
-        let live = solid_kernel::occt::Brep::from_step_text(c.source)
-            .unwrap()
-            .solid(0.001)
-            .unwrap()
-            .volume();
-        eprintln!(
-            "{:<62} OpenCASCADE {live:.6} (recorded {:.6})",
-            c.name, c.reference
-        );
-        assert!(
-            (live / c.reference - 1.).abs() < 1e-6,
-            "{}: recorded {} but OpenCASCADE says {live}",
-            c.name,
-            c.reference
-        );
-        let native = sample(c.source, 0.01).unwrap();
-        let rel = native.signed_volume_mm3 / live - 1.;
-        assert!(
-            rel.abs() < 2e-3,
-            "{}: native {} vs OpenCASCADE {live}: {rel}",
-            c.name,
-            native.signed_volume_mm3
-        );
-    }
-}
-
 /// `cross-bore.step` with its spline edge #79 split in two at a point inside the curve: both pieces keep the whole curve
 /// (`SURFACE_CURVE` #82), as exporters write an edge that uses part of a spline (OpenCASCADE's `screw.step` does). The pieces
 /// read, end at the new vertex and give the unsplit volume; a vertex off the curve, or one the curve passes twice, refuses.

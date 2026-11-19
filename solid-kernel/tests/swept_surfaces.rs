@@ -157,27 +157,3 @@ fn an_interior_trim_of_a_revolution_profile_acquires_only_its_bounded_meridian()
     assert_eq!(s.source_faces.len(), 3);
     assert!((s.signed_volume_mm3 / REF_VASE - 1.).abs() < 3e-3);
 }
-
-#[cfg(feature = "occt")]
-#[test]
-// OpenCASCADE's tessellation volume depends on the platform's floating point at about 5e-6 (the revolved vase: 1503.0205 on macOS arm64,
-// 1503.0272 on the hosted Linux runner), so the recorded value is checked to 1e-4, far below the 3e-3 the native import is held to.
-fn the_recorded_reference_volumes_are_opencascade_s() {
-    for c in cases() {
-        let live = solid_kernel::occt::Brep::from_step_text(c.source)
-            .unwrap()
-            .solid(0.001)
-            .unwrap()
-            .volume();
-        eprintln!(
-            "{:<52} OpenCASCADE {live:.6} (recorded {:.6})",
-            c.name, c.reference
-        );
-        assert!(
-            (live / c.reference - 1.).abs() < 1e-4,
-            "{}: recorded {} but OpenCASCADE says {live}",
-            c.name,
-            c.reference
-        );
-    }
-}

@@ -70,8 +70,7 @@ Does not own: search/matching/extraction (`search-core`), the index engine (`nat
 - **Failure guidance and STEP solids live in the native solid editor** (`src/gpu_viewer/editor/solid/guidance.rs`, `stepops.rs`): the
   card / status-bar fix come from `fea_problem::diagnose` (ADR-020; ranker "Failure fixes" in `Advisors`, same measured gate);
   STEP open, hole / boss / fillet run on the native pipeline by default (`fea_problem::native_solid`: round holes and bosses on flat
-  faces, fillet of a convex polyhedron) and on OpenCASCADE with `--features occt` (prebuilt via `cadrum`; set `OCCT_ROOT` to an
-  extracted tarball if its download fails). A shape the native modeller cannot edit is refused in the status bar with a reason
+  faces, fillet of a convex polyhedron) A shape the native modeller cannot edit is refused in the status bar with a reason
   starting "without OpenCASCADE" (capability matrix: `docs/issue-46-phase-166.md`). A kernel edit renumbers
   `faceN`; `Problem::apply_solid_op` carries supports and loads across it by geometry (`solid::remap_faces`) and renames a lost
   one `removed:faceN`, which the diagnosis offers to retarget / drop. Findings that need a result (`diagnose_result`, e.g. an
@@ -84,7 +83,7 @@ Does not own: search/matching/extraction (`search-core`), the index engine (`nat
 - **The terminal Workbench is manual by default** (`u` mesh, `r` solve, `a` automatic mode). Tests of the automatic behaviour use
   `auto_state()`.
 - **Window tests drive real input**: `gpu_viewer/window.rs` tests click the viewport (`click`, `move_to`, `Input::Key`), including the
-  STEP hole workflow under `--features occt`. Prefer them to calling session methods when the thing under test is a pointer or
+  STEP hole workflow. Prefer them to calling session methods when the thing under test is a pointer or
   key path; `type_text` feeds egui text fields only, an editor prompt takes `Input::Key(Key::Character(..))`.
 - **Linker error = check `df -h` first.** `target/debug/incremental` alone reached 14 GB and the build then failed with "No space
   left on device" behind a bare `clang: linker command failed`. Delete `target/debug/incremental` (a cache), use `CARGO_INCREMENTAL=0`

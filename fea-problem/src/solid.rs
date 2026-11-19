@@ -128,13 +128,7 @@ pub fn resolution_note(p: &Problem, mesh: &Mesh) -> Option<String> {
 
 /// Tessellate STEP text into a cache (chord deflection `deflection`). The optional `occt` feature selects OpenCascade;
 /// otherwise the native reader and sampler are used.
-#[cfg(feature = "occt")]
-pub fn tessellate_step(step: &str, deflection: f64) -> Result<SolidCache, String> {
-    let brep = solid_kernel::cad::Brep::from_step_text(step)?;
-    Ok(SolidCache::new(step, brep.tessellate(deflection)?, deflection))
-}
 
-#[cfg(not(feature = "occt"))]
 pub fn tessellate_step(step: &str, deflection: f64) -> Result<SolidCache, String> {
     crate::native_solid::tessellate_step_native(step, deflection)
 }
@@ -314,18 +308,6 @@ pub fn flat_face(c: &SolidCache, face: usize) -> Result<([f64; 3], [f64; 3]), St
     ))
 }
 
-#[cfg(feature = "occt")]
-pub fn import_step(step: &str) -> Result<StepImport, String> {
-    let brep = solid_kernel::cad::Brep::from_step_text(step)?;
-    let (lo, hi) = brep.bounds();
-    let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
-    if !(diag.is_finite() && diag > 0.0) {
-        return Err("the STEP solid has no extent".into());
-    }
-    let cache = SolidCache::new(step, brep.tessellate(diag * 1e-3)?, diag * 1e-3);
-    Ok(finish_import(cache, lo, hi, diag))
-}
-
 /// The element size a freshly imported solid gets: an eighteenth of the bounding-box diagonal, capped by a third of the thinnest
 /// wall between opposite flat faces and of the smallest box side (shared by the OpenCascade and the native import).
 pub(crate) fn finish_import(cache: SolidCache, lo: [f64; 3], hi: [f64; 3], diag: f64) -> StepImport {
@@ -419,70 +401,13 @@ pub fn smallest_curvature_radius(c: &SolidCache) -> Option<f64> {
 }
 
 /// Without OpenCascade the native pipeline reads the solid (`native_solid`).
-#[cfg(not(feature = "occt"))]
 pub fn import_step(step: &str) -> Result<StepImport, String> {
     crate::native_solid::import_step_native(step)
 }
 
 /// Apply `op` to the solid (`step`, `cache`); returns the new STEP text and its tessellation. Face numbers change with the
 /// shape: supports and loads that name faces must be checked afterwards (`diagnose` finds the ones left dangling).
-#[cfg(feature = "occt")]
-pub fn apply_op(step: &str, cache: &SolidCache, op: &SolidOp,
-) -> Result<(String, SolidCache), String> {
-    use solid_kernel::cad::{Bool, Brep};
-    let brep = Brep::from_step_text(step)?;
-    let (lo, hi) = brep.bounds();
-    let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
-    let positive = |v: f64, what: &str| {
-        if v.is_finite() && v > 0.0 { Ok(()) } else { Err(format!("the {what} must be a positive number")) }
-    };
-    let result = match *op {
-        SolidOp::Fillet { radius } => {
-            positive(radius, "fillet radius")?;
-            brep.fillet_all(radius / cache.coordinate_scale)?
-        }
-        SolidOp::Hole { face, diameter } => {
-            positive(diameter, "hole diameter")?;
-            let (mut c, n) = flat_face(cache, face)?;
-            for x in &mut c {
-                *x /= cache.coordinate_scale;
-            }
-            // A cutter that passes through the whole part along the inward normal.
-            let base = [c[0] + n[0] * diag, c[1] + n[1] * diag, c[2] + n[2] * diag];
-            brep.boolean(Bool::Cut, &Brep::cylinder(base, 0.5 * diameter / cache.coordinate_scale, [-n[0], -n[1], -n[2]], 3.0 * diag,
-                ),
-            )?
-        }
-        SolidOp::Boss { face, diameter, height,
-        } => {
-            positive(diameter, "boss diameter")?;
-            positive(height, "boss height")?;
-            let (mut c, n) = flat_face(cache, face)?;
-            for x in &mut c {
-                *x /= cache.coordinate_scale;
-            }
-            // Start slightly inside the part so the union fuses instead of touching.
-            let base = [c[0] - n[0] * 1e-3 * diag, c[1] - n[1] * 1e-3 * diag, c[2] - n[2] * 1e-3 * diag,
-            ];
-            brep.boolean(Bool::Union, &Brep::cylinder(base, 0.5 * diameter / cache.coordinate_scale, n, height / cache.coordinate_scale + 1e-3 * diag,
-                ),
-            )?
-        }
-    };
-    let new_step = result.to_step_text()?;
-    let deflection = cache.deflection;
-    let mut new_cache = SolidCache::new(&new_step, result.tessellate(deflection / cache.coordinate_scale)?, deflection,
-    );
-    new_cache.coordinate_scale = cache.coordinate_scale;
-    for v in &mut new_cache.vertices {
-        for x in v {
-            *x *= cache.coordinate_scale;
-        }
-    }
-    Ok((new_step, new_cache))
-}
 
-#[cfg(not(feature = "occt"))]
 pub fn apply_op(step: &str, cache: &SolidCache, op: &SolidOp) -> Result<(String, SolidCache), String> {
     crate::native_solid::apply_op_native(step, cache, op)
 }

@@ -17,27 +17,24 @@ workbenches, and launches terminal tools where those remain the interface.
 The viewport uses direct Rust wgpu with egui controls. The terminal interface
 remains available with `cargo run -p app-tui`.
 
-For STEP import and solid editing, build with `--features occt` (OpenCASCADE).
-On Windows with the self-contained static CRT, use `--features occt-source`.
+STEP import, solid editing and volume meshing use the native Rust kernel (`solid-kernel`); no CAD library is linked.
 The release folder must include `THIRD-PARTY-NOTICES.md` and `licenses/`.
-A default build can display and solve a saved tessellation without the CAD kernel.
 
 Choose the model's unit system in the Units dropdown; conversion preserves the
-physical model. STEP coordinates are normalized by OpenCASCADE to millimetres.
+physical model. STEP coordinates are normalized to millimetres.
 Results remain subject to the displayed convergence, equilibrium and formulation
 checks; an exaggerated deformation is labelled separately from true scale.
 
 Run `python scripts/qualify.py` for the complete workspace and terminal-only
-checks. Add `--gpu` on a machine with a native GPU adapter, and `--cad` to include
-STEP kernel tests. The JSON report records the tested commit, commands and exits.
+checks. Add `--gpu` on a machine with a native GPU adapter. The JSON report records the tested commit, commands and exits.
 Native desktop interaction and clean-machine packaged startup still require a
 platform smoke check; a successful compile alone does not establish those.
 
 ## Native CAD and meshing development
 
-The native Rust CAD/advanced meshing epic is **in progress**; OpenCASCADE remains
-the production CAD backend. Diagnostic spline/STEP and bounded meshing foundations
-do not yet establish general native CAD or constrained tetrahedralization parity.
+The native Rust CAD/advanced meshing epic is **complete for retirement**: OpenCASCADE was removed (ADR-023) and
+the native kernel is the only CAD backend. Native import reads 32 of the 33 NIST PMI files; see `docs/issue-46-phase-182.md` and
+ADR-023 for the capability limits.
 
 To resume this statement of work with Claude Code, start with the
 [resume instructions](docs/issue-46-resume.md), then the
@@ -149,8 +146,8 @@ measured performance numbers - not fabricated ones.
 
 Requires the Rust toolchain (`rustup`). Native workbenches run on Windows, macOS
 and Linux/X11 with a supported graphics driver; default builds include wgpu.
-Use `--no-default-features` for the terminal-only application. Optional STEP
-editing needs the OpenCASCADE feature described above.
+Use `--no-default-features` for the terminal-only application. STEP editing
+uses the native kernel.
 
 ```sh
 # Run the GUI locally (any platform)

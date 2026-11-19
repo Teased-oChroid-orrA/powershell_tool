@@ -2,12 +2,10 @@
 
 > TL;DR: B-rep solids for the FEA preprocessor (ADR-019). Always built: `SurfaceSolid` (a closed, outward, face-tagged
 > surface mesh with BVH signed-distance and per-face distance queries) and `mesh_volume` (tetrahedra through
-> `fea-core::tetmesh`). Feature `occt` (off by default; the `cadrum` crate links a prebuilt static OpenCASCADE 8.0.1, no C++
-> toolchain; set `OCCT_ROOT` to an extracted tarball if its build-script download fails): `occt::Brep` (extrude a sketch profile, union / cut / intersect,
-> fillet, STEP in and out, face-tagged tessellation).
+> `fea-core::tetmesh`). Modelling, booleans, fillets, STEP in and out and face-tagged tessellation are native (`native_brep`, `analytic_step`, `native_surface`); OpenCascade was retired (ADR-023).
 
 ## Purpose
-Owns: the surface-mesh solid and its distance queries, the OpenCascade modelling wrapper, the tessellation into face-tagged triangles.
+Owns: the surface-mesh solid and its distance queries, the native modeller, the tessellation into face-tagged triangles.
 Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema (`fea-problem`), any UI.
 
 ## Code Map
@@ -15,7 +13,6 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 |---|---|
 | `SurfaceMesh`, `SurfaceSolid` (weld, closed-manifold check, outward orientation, `signed_distance`, `faces_near`, `nearest_face`, `face_areas`), `mesh_volume` | `src/lib.rs` |
 | Triangle BVH, closest point on a triangle with its region (face / edge / vertex) | `src/bvh.rs` |
-| OpenCascade: `Brep::extrude/boolean/fillet_all/faces/tessellate/solid/write_step/read_step` | `src/occt.rs` (feature `occt`) |
 | Finite p-curve trims and oriented arcs (`step_pcurve_candidates`, `step_pcurve_arc`, `step_curve_audit` `finite_arcs`) | `src/step_pcurve_{candidates,arc}.rs`, `docs/issue-46-phase-54.md`..`57` |
 | Incremental 3D Delaunay engine (walk location, cavity BFS, exact predicates) | `src/delaunay3.rs` (crate-private) |
 | Conforming Delaunay recovery of a closed triangulated PLC by Steiner points (`plc_conform::conform`; surrounds the shell with 8 far points so no insertion is on the hull) | `src/plc_conform.rs`, `docs/issue-46-phase-58.md` |
@@ -35,7 +32,6 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 | Native editing of an existing STEP solid: `NativeBrep::from_step_text` (exact plane / cylinder / cone / sphere / torus + line / circle; B-spline etc. refused), `drill` (blind / through, across cavities) and `boss` for round tools perpendicular to a planar face; unproven configurations are errors, never approximations | `src/native_brep_read.rs`, `src/native_brep_drill.rs`, `tests/native_brep_boolean.rs`, `docs/issue-46-phase-121.md` |
 | Native `fillet_all` for convex simple polyhedra (offset body + ball: planes, edge cylinders, vertex spheres; non-convex / curved / degree != 3 / too-large radius refused) | `src/native_brep_fillet.rs`, `tests/native_brep_fillet.rs`, `docs/issue-46-phase-122.md` |
 | Analytic tests (box, tube) | `tests/surface.rs` |
-| OpenCascade tests | `tests/occt.rs` (`cargo test -p solid-kernel --features occt`) |
 
 ## Contracts
 - A `SurfaceSolid` is only built from a **closed manifold** (every edge in exactly two triangles, opposite directions); an open or
@@ -49,21 +45,19 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - Plain per-face native sampling leaves needles on most faces (sparse boundaries, no interior points): use `AnalyticModel::graded` + `Limits::chart_quality` before `plc_conform` (graded generic parts reach ~25 degrees and a radius-edge ratio of 2; plain ones are refused). What grading cannot fix is near-degenerate CAD (the bracket's 5 micrometre sliver faces): that needs B-rep healing, and shell-level `shell_defeature` rejects the clusters of a graded shell. Grading keeps the chart's split fractions (their concentric-shell placement is what grades toward small features: bisecting every split left the bracket over its needle gate) but drops a new edge sample nearer than the model's geometry tolerance to another sample of its segment; spline intervals are bisected. Without that, two faces' copies of each split and small-angle cascades left samples nanometres apart (ABC `00006600`, Phase 157). The `floor_mm` check is on the world chord: sphere and torus charts are conformal, not millimetres, and the spindle chart is a projection (meridian lengths shrink by the slope).
 - `plc_conform` quality refinement: the cheap recipe is a graded shell, `protect_encroached: false`, `max_radius_edge: Some(2.)` (radius-edge ~2 with 10x fewer cells); protect-everything cascades at acute (< 90 degree) wedges and now stops at `min_segment_relative`. Circumcentres are inserted only strictly inside their cell's exact circumsphere.
 - `plc_conform` converges for well-conditioned PLCs (boxes, plates with holes) but NOT for sampled surface meshes with skinny triangles such as the NEMA17 bracket: every triangle edge is a protected segment and Delaunay refinement cascades past any budget (it refuses with a `Limit` error in ~2 s). Do not raise `max_steiner` to compensate; the fix is TetGen-style boundary recovery by local reconnection, or an isotropic surface remesh first. `shell_patch::dissolve_flat` (also `step-inventory --clean-shell`) removes redundant flat/collinear vertices but cannot dissolve a vertex shared with curved triangles at a tangent seam, which is where the remaining bracket needles are. `shell_weld::weld_short_edges` collapses short needle edges safely; what was left there, sliver faces, `shell_defeature` now removes by welding whole cross-section groups; the remaining bracket needles lie along a thin curved band; opt-in `shell_refine` fixes chords on flat faces but cannot raise a face's own input angle. Measured boundary (Phase 83, `tests/plc_angle_sweep.rs`): plain recovery terminates on simple/surface-mesh-like slabs down to <1 degree, but `max_radius_edge = 2` refinement fails at 18 degrees and below and succeeds at 22+; the smallest input angle is not a predictor for recovery alone.
-- `cadrum`'s `Face::id` is not unique (an extrusion's two caps share one) and is session-local (not kept by STEP). `tessellate`
+- (Historic, OpenCascade removed in ADR-023.) `cadrum`'s `Face::id` is not unique (an extrusion's two caps share one) and is session-local (not kept by STEP). `tessellate`
   splits a shared id into connected pieces and matches them to faces by centre; a face without triangles makes it fail
   instead of guessing. Never use the kernel id as a persistent face name.
 - Meshing a solid thinner than about two boundary elements is not resolved (see `fea-core/src/tetmesh.rs`).
-- The `occt` feature downloads or needs a ~30 MB prebuilt OCCT: keep it opt-in so default builds and tests stay offline. ADR-019 addendum records why `cadrum` replaced `opencascade`.
-
 - **Tessellation/welding correction (2026-10-15)**: welding checks Euclidean distance in neighbouring grid cells, not bucket
-  equality, and volume integration uses a translated origin. `occt::Brep::tessellate` locally splits coincident interior
+  equality, and volume integration uses a translated origin. the removed `occt::Brep::tessellate` locally split coincident interior
   curved-face chords by projecting their midpoints onto the exact trimmed kernel face; face tags and manifold acceptance
   remain intact. The NEMA17 fixture needs eight extra triangles; global very fine tessellation was prohibitively expensive.
   Kernel validity alone does not prove a particular triangle tessellation is a closed manifold.
 
-- `src/cad.rs` owns backend-neutral profile/boolean/face contracts and the production shape handle; the existing OCCT adapter dispatches through it. `occt` retains compatibility exports. Capability availability is not a claim of exchange-entity/healing parity. Evidence: `docs/issue-46-phase-1.md`.
+- `src/cad.rs` owns the backend-neutral sketch contracts (`Loop`, `Profile`) used by `native_brep`. Evidence: `docs/issue-46-phase-1.md`.
 
-- `src/step_assembly.rs`: tree-shaped STEP assemblies to placed leaf instances; the transformation direction was fixed against OpenCASCADE (`tests/step_assembly.rs`, feature `occt`), membership of the placement among the representation items decides source/target, ambiguous cases refuse (Phase 95). `step_body::BodyContext::read_all` reads every instance through it into the root's frame from a rigidly moved copy of the document (`Inventory::rigidly_moved`, its own fingerprint; `BodyContext::document`), one body per instance; `MAPPED_ITEM`s held only by `DRAUGHTING_MODEL`s (PMI views, every NIST PMI model) place no shape and are left out, an orphan or malformed one refuses; a part's solid in an `ADVANCED_BREP_SHAPE_REPRESENTATION` joined by a plain `SHAPE_REPRESENTATION_RELATIONSHIP` sits at the part's placement. A cone's semi-angle uses the plane-angle unit assigned in the body's context: the SI radian or a conversion-based unit stated in SI radians, the declared factor exactly (Phase 168, `tests/step_placement.rs`).
+- `src/step_assembly.rs`: tree-shaped STEP assemblies to placed leaf instances; the transformation direction was fixed against OpenCASCADE before its retirement (recorded in `tests/step_assembly.rs` fixtures), membership of the placement among the representation items decides source/target, ambiguous cases refuse (Phase 95). `step_body::BodyContext::read_all` reads every instance through it into the root's frame from a rigidly moved copy of the document (`Inventory::rigidly_moved`, its own fingerprint; `BodyContext::document`), one body per instance; `MAPPED_ITEM`s held only by `DRAUGHTING_MODEL`s (PMI views, every NIST PMI model) place no shape and are left out, an orphan or malformed one refuses; a part's solid in an `ADVANCED_BREP_SHAPE_REPRESENTATION` joined by a plain `SHAPE_REPRESENTATION_RELATIONSHIP` sits at the part's placement. A cone's semi-angle uses the plane-angle unit assigned in the body's context: the SI radian or a conversion-based unit stated in SI radians, the declared factor exactly (Phase 168, `tests/step_placement.rs`).
 - `src/step.rs` / `step_units.rs`: bounded native physical-file inventory and assigned length-unit metadata. These do not construct/validate geometric B-Rep or certify CAD import. `examples/step-inventory.rs` runs without OCCT; unsupported input/unit semantics are explicit. Evidence: `docs/issue-46-phase-2.md`.
 
 - `step_topology`: raw local body connectivity with cumulative expansion limits. Edge-use counts/closed loops are not geometric validity or a manifold certificate; explicit/unset outer-loop roles and unplaced source coordinates remain distinct. See `docs/issue-46-phase-3.md`.

@@ -213,13 +213,12 @@ mod tests {
 
     #[test]
     fn a_strip_alternates_orientation_and_a_bad_index_refuses() {
-        let (mut out, mut p) = (Vec::new(), [1usize, 2, 3, 4]);
+        let (mut out, p) = (Vec::new(), [1usize, 2, 3, 4]);
         strip(&p, &mut out);
         assert_eq!(out, vec![[1, 2, 3], [3, 2, 4]]);
         out.clear();
         fan(&p, &mut out);
         assert_eq!(out, vec![[1, 2, 3], [1, 3, 4]]);
-        p[3] = 9;
         let bad = cube(false).replace("(2,3,7,6)", "(2,3,7,9)");
         assert!(import_tessellated(&bad).unwrap_err().contains("past"));
     }

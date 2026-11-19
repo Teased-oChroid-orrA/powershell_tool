@@ -337,6 +337,7 @@ impl Gui {
         self.drawer = Some(if results { workbench::Drawer::Results } else { workbench::Drawer::Inputs });
     }
 
+    #[cfg(test)]
     pub(crate) fn set_card_open(&mut self, id: &str, open: bool) {
         self.card_open.insert(id.into(), open);
     }

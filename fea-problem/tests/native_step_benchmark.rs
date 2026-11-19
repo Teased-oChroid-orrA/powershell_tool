@@ -5,7 +5,6 @@
 //! the feature is off, so it runs on any host, Windows included (`docs/issue-46-windows-runtime-plan.md`, `docs/issue-46-phase-167.md`).
 //! The chord and element size come from the native import, not OpenCascade's, so the numbers are not the `occt_vs_native` table's.
 //! Run: `cargo test -p fea-problem --no-default-features --release --test native_step_benchmark -- --ignored --nocapture`.
-#![cfg(not(feature = "occt"))]
 
 use fea_core::meshing::adjacency::Adjacency;
 use fea_core::meshing::quality::QualityThresholds;
