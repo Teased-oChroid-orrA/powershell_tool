@@ -2287,6 +2287,23 @@ fn verify_content_finds_an_edit_that_build_update_cannot_see() {
     assert!(s.st.index_run.status_text.contains("all 2 files match"), "{}", s.st.index_run.status_text);
 }
 
+/// The window shows the Fast index card in its Options popover (the ribbon is not on this page), so that card is where
+/// "Verify content" has to be reachable, and only once an index exists.
+#[test]
+fn the_options_popover_offers_verify_content_once_an_index_exists() {
+    let verify_row = |s: &SearchSession| {
+        let doc = view::document(s);
+        index_card(&doc).items.iter().filter_map(DockItem::plain_text).any(|row| row.starts_with("Verify content now"))
+    };
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = std::env::temp_dir().to_string_lossy().into_owned();
+    assert!(!verify_row(&s), "nothing to verify before an index is built");
+    s.st.index_run.docs = Some(3);
+    assert!(verify_row(&s));
+    s.st.index_run.is_building = true;
+    assert!(!verify_row(&s), "not while a build is running");
+}
+
 #[test]
 fn related_files_note_lists_reasons_and_marks_the_inferred_ones() {
     use search_core::catalog_edges::Reason;
