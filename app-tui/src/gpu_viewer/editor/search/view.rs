@@ -2351,6 +2351,15 @@ pub(super) fn ribbon(s: &SearchSession) -> Vec<RibbonTab> {
                     ix.is_building,
                     "no index is building",
                 ),
+                when(
+                    e("Verify content", "", SearchAct::VerifyIndexContent),
+                    !ix.is_building && !s.st.run.is_running && !c.search_path.trim().is_empty(),
+                    if ix.is_building {
+                        "the index is building"
+                    } else {
+                        "choose a folder first, and wait for a running search"
+                    },
+                ),
                 Entry::new(
                     format!("Location: {}", settings_view::setting_display(c, 30)),
                     "",

@@ -154,6 +154,10 @@ impl IndexRunState {
                     p.total_files
                 )
             }
+            IndexStage::Verifying => {
+                self.percent = ratio(p.files_processed, p.total_files);
+                format!("{} {}/{}", p.stage.label(), p.files_processed, p.total_files)
+            }
             IndexStage::Committing => format!("{} ({} indexed)…", p.stage.label(), p.indexed_count),
             IndexStage::Indexing => {
                 let started = *self.indexing_started.get_or_insert_with(Instant::now);
@@ -205,6 +209,9 @@ impl IndexRunState {
         } else {
             self.embedding = None;
         }
+        if let Some(check) = &outcome.content_check {
+            self.status_text.push_str(&content_check_text(check));
+        }
         if outcome.no_text_count > 0 {
             self.status_text
                 .push_str(&format!(" · {} without text", outcome.no_text_count));
@@ -240,6 +247,24 @@ impl IndexRunState {
             None => error,
         });
     }
+}
+
+/// The status suffix for a finished content check: what differed, and how many of those edits the time-and-size check
+/// could not see.
+fn content_check_text(check: &search_core::native_index::ContentCheck) -> String {
+    let mut text = if check.hidden > 0 {
+        format!(" · content check: {} changed, {} without a new time or size", check.changed, check.hidden)
+    } else if check.changed > 0 {
+        format!(" · content check: {} changed", check.changed)
+    } else if check.cancelled {
+        format!(" · content check stopped after {} files", check.checked)
+    } else {
+        format!(" · content check: all {} files match", check.checked)
+    };
+    if check.unreadable > 0 {
+        text.push_str(&format!(" · {} unreadable", check.unreadable));
+    }
+    text
 }
 
 pub(crate) fn format_eta(secs: f64) -> String {
@@ -537,7 +562,20 @@ pub async fn build_or_rebuild_index_with(
     cancel: CancellationToken,
     embed: EmbedPolicy,
 ) -> bool {
-    run_index_job(tx, settings, index_dir, cancel, None, embed).await
+    run_index_job(tx, settings, index_dir, cancel, None, embed, false).await
+}
+
+/// [`build_or_rebuild_index_with`] preceded by a content check: every indexed file is read once and compared with the
+/// hash stored when it was indexed (`search_core::native_index::verify_content`), so an edit that kept the file's size
+/// and modified time is found, dropped from the index and indexed again by the build that follows.
+pub async fn verify_and_update_index(
+    tx: UnboundedSender<AppEvent>,
+    settings: SearchSettings,
+    index_dir: PathBuf,
+    cancel: CancellationToken,
+    embed: EmbedPolicy,
+) -> bool {
+    run_index_job(tx, settings, index_dir, cancel, None, embed, true).await
 }
 
 /// Brings the index up to date for just the paths a folder watcher reported (see
@@ -549,7 +587,7 @@ pub async fn update_index_paths(
     cancel: CancellationToken,
     paths: Vec<String>,
 ) -> bool {
-    run_index_job(tx, settings, index_dir, cancel, Some(paths), EmbedPolicy::default()).await
+    run_index_job(tx, settings, index_dir, cancel, Some(paths), EmbedPolicy::default(), false).await
 }
 
 async fn run_index_job(
@@ -559,6 +597,7 @@ async fn run_index_job(
     cancel: CancellationToken,
     paths: Option<Vec<String>>,
     embed: EmbedPolicy,
+    verify: bool,
 ) -> bool {
     log("INDEX", if paths.is_some() { "=== update from watcher" } else { "=== build start" });
     let _ = tx.send(AppEvent::IndexBuildProgress(CorpusIndexProgress {
@@ -573,7 +612,7 @@ async fn run_index_job(
     // Run in its own task so a panic is a `JoinError` here rather than a
     // silently dead task that leaves the UI spinning forever.
     let joined = tokio::spawn(async move {
-        match build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, false, &cancel, paths.as_deref(), &embed).await {
+        match build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, false, &cancel, paths.as_deref(), &embed, verify).await {
             Err(e) if e.status == NsStatus::CorruptIndex => {
                 log(
                     "WARN",
@@ -583,7 +622,7 @@ async fn run_index_job(
                     ),
                 );
                 // A damaged index cannot take a path delta: rebuild it completely.
-                build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, true, &cancel, None, &embed).await
+                build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, true, &cancel, None, &embed, false).await
             }
             other => other,
         }
@@ -634,6 +673,7 @@ async fn build_or_rebuild_index_inner(
     cancel: &CancellationToken,
     paths: Option<&[String]>,
     embed: &EmbedPolicy,
+    verify: bool,
 ) -> NsResult<CorpusIndexOutcome> {
     {
         let (s, d) = (settings.clone(), index_dir.to_path_buf());
@@ -670,8 +710,10 @@ async fn build_or_rebuild_index_inner(
     let opened = Instant::now();
     // Any failure to open an existing index means it is unusable: the caller
     // then wipes it and rebuilds from scratch (one retry).
-    let engine = open_or_create_with_rebuild(index_dir)
-        .map_err(|e| NsError::new(NsStatus::CorruptIndex, format!("cannot open index: {e}")))?;
+    let engine = std::sync::Arc::new(
+        open_or_create_with_rebuild(index_dir)
+            .map_err(|e| NsError::new(NsStatus::CorruptIndex, format!("cannot open index: {e}")))?,
+    );
     log(
         "INDEX",
         format!(
@@ -681,6 +723,40 @@ async fn build_or_rebuild_index_inner(
             engine.segment_count()
         ),
     );
+
+    // A content check reads every indexed file once; the build below then indexes the files it dropped.
+    let content_check = if verify && paths.is_none() {
+        let (engine, cancel, verify_tx) = (engine.clone(), cancel.clone(), tx.clone());
+        let started = Instant::now();
+        let check = tokio::task::spawn_blocking(move || {
+            let mut report = |done: usize, total: usize| {
+                let _ = verify_tx.send(AppEvent::IndexBuildProgress(CorpusIndexProgress {
+                    stage: IndexStage::Verifying,
+                    files_processed: i32::try_from(done).unwrap_or(i32::MAX),
+                    total_files: i32::try_from(total).unwrap_or(i32::MAX),
+                    ..Default::default()
+                }));
+            };
+            native_index::verify_content(&engine, &cancel, Some(&mut report))
+        })
+        .await
+        .map_err(|e| NsError::index_error(format!("content check task failed: {e}")))??;
+        log(
+            "INDEX",
+            format!(
+                "content check in {:?}: checked={} changed={} hidden={} unreadable={} cancelled={}",
+                started.elapsed(),
+                check.checked,
+                check.changed,
+                check.hidden,
+                check.unreadable,
+                check.cancelled
+            ),
+        );
+        Some(check)
+    } else {
+        None
+    };
 
     let progress_tx = tx.clone();
     let mut last_sent: Option<Instant> = None;
@@ -751,6 +827,7 @@ async fn build_or_rebuild_index_inner(
         }
     }
     outcome.index_docs = engine.num_docs();
+    outcome.content_check = content_check;
     drop(engine); // release the writer lock/mmaps before verifying through a fresh open
 
     verify_built_index(index_dir, &outcome)

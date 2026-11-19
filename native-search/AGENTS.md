@@ -18,7 +18,7 @@ Does not own: file discovery, text extraction, or change-detection policy (all `
 | Mutex-poison recovery | `src/engine.rs` `lock_writer` |
 | Skip-reindex-if-unchanged lookup | `src/engine.rs` `get_document_metadata` |
 | Orphan-cleanup support | `src/engine.rs` `all_document_ids` |
-| Schema definition | `src/engine.rs` `build_schema` / `struct Fields` |
+| Schema definition | `src/engine.rs` `build_schema` / `struct Fields` (`content_hash`: stored SHA-256 bytes, written by `index_document_hashed`, read in bulk by `all_document_content_hashes`) |
 | Error/status codes | `src/error.rs` `NsStatus`, `NsError` |
 | Cancelling an in-flight search | `src/engine.rs` `CancellationFlag` |
 | Perf sanity harness (not an SLA) | `benches/*.rs` |
