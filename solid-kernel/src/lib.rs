@@ -16,7 +16,6 @@ pub mod analytic_step;
 pub mod chart_grade;
 pub(crate) mod curved_surface;
 pub mod face_identity;
-pub mod features;
 pub mod hybrid;
 pub mod hybrid_region;
 pub mod chart_mesh;
