@@ -14,7 +14,7 @@ fixture runs those regressions without requiring an OCCT-enabled test build.
 ## Sphere, cone and torus fixtures
 
 `ball` (a sphere, refused), `filleted-box`, `cylinder-filleted-top`, `cylinder-chamfered-top`, `cone`, `frustum`, `hemisphere`, `capsule` and `torus` were written by
-`cargo run -p solid-kernel --features occt --example write-shapes -- DIR` (OpenCASCADE 8.0.1 through `cadrum`; the shapes are
+the `write-shapes` example (OpenCASCADE 8.0.1 through `cadrum`; removed with OpenCascade in ADR-023, recoverable from git history before commit d0f596c; the shapes were
 listed in that example: a 2 x 3 x 4 box with every edge rounded by 0.2, a R5 x 10 cylinder with its top edge rounded by 1.5 or
 chamfered by 1.5, a cone R5 x 8, a hemisphere R4, a cylinder R3 x 8 capped by two spheres, a torus R6 / r2). They declare
 millimetres and are exact analytic shapes, so `tests/curved_step.rs` compares the native import with closed-form volumes

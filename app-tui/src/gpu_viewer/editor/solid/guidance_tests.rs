@@ -99,7 +99,6 @@ fn a_step_solid_opens_gets_a_hole_and_a_dangling_support_is_diagnosed() {
     let mut s = session("step");
     let dir = temp("step-files");
     std::fs::create_dir_all(&dir).unwrap();
-    #[cfg(not(feature = "occt"))]
     {
         use super::stepops::PromptOp;
         // A file that is no solid is refused with the reason, and no edit is offered on the unchanged model.
@@ -131,41 +130,6 @@ fn a_step_solid_opens_gets_a_hole_and_a_dangling_support_is_diagnosed() {
         assert_eq!(s.problem, holed);
         s.do_action(SolidAction::Undo);
         assert_eq!(s.problem.edge_names().len(), 6);
-    }
-    #[cfg(feature = "occt")]
-    {
-        use super::stepops::PromptOp;
-        let step = solid_kernel::occt::Brep::box_from_corners([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).to_step_text().unwrap();
-        let path = dir.join("cube.step");
-        std::fs::write(&path, step).unwrap();
-        s.open_path(path.to_str().unwrap());
-        assert!(matches!(s.problem.geometry, Geometry::Solid { .. }) && s.status.contains("6 faces"), "{}", s.status);
-        // A flat face is required for a hole; pick the top (the one whose middle is at z = 10).
-        let top = (1..=6).find(|f| fea_problem::solid::flat_face(match &s.problem.geometry { Geometry::Solid { cache: Some(c), .. } => c, _ => unreachable!() }, *f).is_ok_and(|(c, _)| (c[2] - 10.0).abs() < 1e-6)).unwrap();
-        // The solid meshes for the viewport: its faces are the pickable surfaces face1..face6.
-        s.do_action(SolidAction::GenerateMesh);
-        let t = std::time::Instant::now();
-        while s.preview.is_none() {
-            s.poll();
-            assert!(t.elapsed().as_secs() < 120, "{}", s.status);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let preview = s.preview.as_ref().unwrap();
-        assert!(preview.mesh.n_elems() > 50, "{}", s.status);
-        assert_eq!(s.names(), (1..=6).map(|i| format!("face{i}")).collect::<Vec<_>>());
-        assert!(s.solid_op_availability(PromptOp::Hole).is_err(), "no face picked yet");
-        s.selected = Some(format!("face{top}"));
-        s.begin_solid_op(PromptOp::Hole);
-        assert!(s.prompt.is_some());
-        s.prompt.as_mut().unwrap().text = "2".into();
-        s.commit_prompt();
-        assert_eq!(s.problem.edge_names().len(), 7, "{}", s.status);
-        s.do_action(SolidAction::Undo);
-        assert_eq!(s.problem.edge_names().len(), 6);
-        // A support on a face number that a fillet removes is found by the diagnosis, with the retarget offered.
-        s.problem.supports = vec![Support::fixed("face30")];
-        let kinds: Vec<_> = s.findings().iter().map(|d| d.class).collect();
-        assert!(kinds.contains(&fea_problem::diagnose::FailureClass::UnknownSurface), "{kinds:?}");
     }
 }
 

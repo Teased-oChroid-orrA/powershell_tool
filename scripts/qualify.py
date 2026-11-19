@@ -10,23 +10,17 @@ import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--gpu', action='store_true', help='run ignored native GPU rendering tests')
-parser.add_argument('--cad', action='store_true', help='include OpenCASCADE STEP import/edit tests')
 parser.add_argument('--jobs', type=int, default=4)
 parser.add_argument('--scope', choices=['workspace', 'foundations'], default='workspace', help='full qualification or targeted meshing/derivative checks')
 parser.add_argument('--output', default='qualification.json')
 args = parser.parse_args()
-if args.scope == 'foundations' and (args.cad or args.gpu):
-    parser.error('foundations scope does not run CAD/GPU qualification; use workspace scope')
+if args.scope == 'foundations' and args.gpu:
+    parser.error('foundations scope does not run GPU qualification; use workspace scope')
 root = pathlib.Path(__file__).resolve().parents[1]
 base = ['cargo', 'test', '--workspace', '--locked', '-j', str(args.jobs), '--no-fail-fast']
-cad_feature = 'app-tui/occt-source' if sys.platform == 'win32' else 'app-tui/occt'
-if args.cad:
-    base += ['--features', cad_feature]
 commands = [base, ['cargo', 'check', '-p', 'app-tui', '--no-default-features', '--bins', '--lib', '--tests', '--locked', '-j', str(args.jobs)]]
 if args.gpu:
     gpu = ['cargo', 'test', '-p', 'app-tui', '--lib', '--locked', '-j', str(args.jobs)]
-    if args.cad:
-        gpu += ['--features', cad_feature]
     commands.append(gpu + ['--', '--ignored', 'gpu_viewer', '--skip', 'snapshot'])
 if args.scope == 'foundations':
     commands = [

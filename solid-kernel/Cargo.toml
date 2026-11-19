@@ -7,34 +7,13 @@ publish = false
 
 # B-rep solids for the FEA preprocessor (ADR-019). The part that does not need a C++ toolchain: a face-tagged,
 # watertight surface mesh with signed-distance and per-face distance queries (BVH), and the tetrahedral volume
-# meshing of it through `fea-core::tetmesh`. The `occt` feature adds the OpenCascade side (modelling, booleans,
-# fillets, STEP, tessellation into that surface mesh); it uses a prebuilt OCCT by default
-# (OCCT_ROOT overrides its location). The separate occt-source feature requires CMake and a longer build.
-[features]
-default = []
-occt = ["dep:cadrum"]
-# Build OpenCascade from source instead of the prebuilt tarball (30+ minutes). The prebuilt MSVC library is /MD, which the
-# workspace's `crt-static` setting (.cargo/config.toml) cannot link; a source build follows the setting.
-occt-source = ["occt", "cadrum/source"]
-
+# meshing of it through `fea-core::tetmesh`. Modelling, booleans, fillets and STEP are native
+# (OpenCascade was retired, ADR-023).
 [dependencies]
 fea-core = { path = "../fea-core" }
-cadrum = { version = "0.9", default-features = false, optional = true }
 
 # Audited MIT OR Apache-2.0; bounded 2D chart CDT, not a CAD/3D kernel.
 spade = "=2.15.1"
 
 # Reuse locked RustCrypto SHA-256 for exact-source association identity.
 sha2 = { version = "=0.10.9", default-features = false }
-
-[[example]]
-name = "assembly-probe"
-required-features = ["occt"]
-
-[[example]]
-name = "shell-angle-probe"
-required-features = ["occt"]
-
-[[example]]
-name = "write-shapes"
-required-features = ["occt"]

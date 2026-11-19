@@ -90,7 +90,7 @@ nodes.
 | General FEA kernel (2D/3D elements, sparse solve, loads, contact, plasticity, modal / buckling / transient, heat conduction, sensitivities, verified adaptive solve) | `fea-core/` | `fea-core/AGENTS.md` | Active; phases 0-11 done (`docs/fea-core.md`; decisions `docs/adr/ADR-012`, `ADR-013`). `lug-solver` runs the lug on it (`lug-solver/src/fea*.rs`) and `app-tui` Lug Analysis uses that as its main solver; `fea-problem` / the FEA Workbench define and solve general problems on it (including interference-fit bushings with contact); `edge-check`'s plane-stress FE and Preload's member-compliance check run on it (Preload can also solve with the FE member stiffness: `Member Stiffness: Finite Element`). |
 | Problem definition over the kernel (sketch / extrusion / imported mesh, supports, loads, solve, results, raster; bolt-joint member compliance) | `fea-problem/` | `fea-problem/AGENTS.md` | Active. Consumed by the `app-tui` FEA Workbench and Preload Analysis. |
 | Eccentric bushing spin capacity (offset bore: friction torque of the fit vs F e sin(angle); maximum offset / load; meshed elastic pin, direct spin simulation, round boss or edge-limited plate) | `eccentric-bushing/` | `eccentric-bushing/AGENTS.md` + `app-tui/src/toolboxes/eccentric_bushing/AGENTS.md` | Active. Plane contact FE on `fea-core`; the terminal toolbox currently uses a default Bushing case until #242 restores case handoff. Plan/evidence: `docs/eccentric-bushing.md`. |
-| B-rep solids (ADR-019): face-tagged surface mesh with BVH signed distance, tetrahedral volume meshing; OpenCascade modelling behind the off-by-default `occt` feature (STEP, booleans, fillets) | `solid-kernel/` | `solid-kernel/AGENTS.md` | Active. `occt` uses prebuilt OCCT; `occt-source` builds it with CMake and is required for static-CRT Windows releases. Volume mesher: `fea-core/src/tetmesh.rs`. |
+| B-rep solids (ADR-019, ADR-023): face-tagged surface mesh with BVH signed distance, tetrahedral volume meshing, native STEP import and modelling (OpenCascade was retired, ADR-023) | `solid-kernel/` | `solid-kernel/AGENTS.md` | Active. No CAD library is linked. Volume mesher: `fea-core/src/tetmesh.rs`. |
 | Pressure vessel solver (Lame, failure margins, UG-27 heads, shell-to-head junction FE on `fea-core`, supported-tube line run) | `pressure-vessel-solver/` | `pressure-vessel-solver/AGENTS.md` | Active. Sibling pattern to `bushing-solver`; line run: `docs/pressure-vessel-line-run.md`; heads and junction: `docs/pressure-vessel-heads.md`. |
 | Shared math (Lamé, materials) | `engineering-math/`, `mechanics-core/` | *(no node)* | No re-export shim; import directly. |
 | Vendored OCR engine (`ocrs` 0.12.2 plus per-character confidence) | `third_party/ocrs/` | `third_party/ocrs/NOTICE.md` | Active. Excluded from the workspace (own `[workspace]`); `search-core` uses it as a path dependency. Keep the `rten =0.24.0` pin. Standalone tests: `cargo test --release --manifest-path third_party/ocrs/Cargo.toml` (delete the `target/` and `Cargo.lock` it creates). To update: re-vendor upstream, re-apply the `TextChar::confidence` change in `recognition.rs`, rerun `ocr_confidence_eval` (`docs/search-benchmarks.md`). |
@@ -152,16 +152,14 @@ history if a discrepancy is ever suspected.
   pass from a shared target is not evidence for the intended checkout.
 
 - **Hosted Windows CI is the only Windows evidence.** The old test workflows (`ci.yml`, `windows-tests.yml`, `solid-kernel-occt.yml`)
-  were removed. `qualification.yml` runs `scripts/qualify.py` (workspace tests; Windows without CAD features) on ubuntu, macOS and
-  Windows for code PRs; `windows-step-runtime.yml` runs the feature-off STEP import/mesh/solve tests and native benchmark rows on
+  were removed. `qualification.yml` runs `scripts/qualify.py` (workspace tests) on ubuntu, macOS and
+  Windows for code PRs; `windows-step-runtime.yml` runs the native STEP import/mesh/solve tests and native benchmark rows on
   Windows for PRs touching those crates (`docs/issue-46-phase-167.md`). Rerun the Windows `app-tui` exe build (`app-tui-build.yml`) by hand. The separate `search-cli` Windows workflow was disabled and removed by owner request;
   the CLI source remains. A test workflow can be restored from git history. Hosted runners are not one machine: a numerical failure that appears only on some runs is first a
   hardware question (`Win32_Processor` name; `private-gemm-x86` 0.1.20 returned wrong products on AMD EPYC 7763 hosts, fixed by
   the 0.1.22 pin in `Cargo.lock`). New workflow files cannot be dispatched until they are on the default branch: give them a
   `pull_request` trigger. Every push cancels the in-flight run of the same workflow (batch pushes).
-- **OpenCASCADE (`occt` feature) is LGPL 2.1 + exception**: a release that includes it ships `THIRD-PARTY-NOTICES.md` and
-  `licenses/` (the release workflow stages and checks them); the default build has no OCCT. Static-CRT linking on Windows needs
-  `--features occt-source` (ADR-019 addendum).
+- **OpenCASCADE was retired (ADR-023, 2026-11-19).** No CAD library is linked and no LGPL notice is needed; `git log` before that date holds the `occt` / `occt-source` features and `cadrum` if one is ever needed again.
 
 ## CodeGraph-First Engineering Workflow
 
@@ -230,8 +228,6 @@ The app writes `toolbench-debug.log` into the folder it was launched from (`app-
 ### Ask First
 - Deleting anything under `docs/` — it's an append-only historical record
   (see `docs/AGENTS.md`).
-- Setting `occt_retirement_approved` to true (OCCT retirement needs a
-  separate explicit approval from the owner).
 
 ### Never
 - Add a PowerShell or C#/.NET dependency or shell-out.
@@ -246,12 +242,12 @@ The app writes `toolbench-debug.log` into the folder it was launched from (`app-
 
 ## Architecture Decisions
 
-Formal ADRs live in `docs/adr/` (ADR-001 through ADR-022: ADR-001..011
+Formal ADRs live in `docs/adr/` (ADR-001 through ADR-023: ADR-001..011
 cover the Rust/native-search boundary, Tantivy, extraction and index
-location; ADR-012..022 cover the FEA kernel, eigen/transient methods,
+location; ADR-012..023 cover the FEA kernel, eigen/transient methods,
 native CAD, sketch history, mesh lifecycle, front end/layout, the
 OpenCascade solid kernel, failure guidance, thermal studies and hybrid
-meshing). See `docs/AGENTS.md` for the
+meshing, OpenCascade retirement). See `docs/AGENTS.md` for the
 full index mapping decision topics to ADR numbers.
 
 ## Entry Points

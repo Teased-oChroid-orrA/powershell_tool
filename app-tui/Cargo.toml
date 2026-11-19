@@ -16,11 +16,6 @@ path = "src/main.rs"
 
 [features]
 default = ["gpu-viewer", "neural-search", "semantic-search", "nl-find"]
-# Open, edit (hole / boss / fillet) and re-tessellate STEP solids: links a prebuilt OpenCASCADE through `cadrum`.
-occt = ["fea-problem/occt", "dep:solid-kernel", "solid-kernel/occt"]
-# The same, building OpenCASCADE from source so it follows the workspace's static CRT (the prebuilt MSVC library is /MD and cannot link
-# under `crt-static`; ADR-019 addendum). About 30 minutes the first time; the Windows release workflow uses it.
-occt-source = ["occt", "solid-kernel/occt-source"]
 gpu-viewer = ["dep:wgpu", "dep:winit", "dep:bytemuck", "dep:pollster", "dep:egui", "dep:egui-wgpu", "dep:egui-winit", "dep:rfd"]
 neural-search = ["search-core/neural-search"]
 semantic-search = ["search-core/semantic-search"]
@@ -30,8 +25,6 @@ nl-find = ["semantic-search", "search-core/nl-find"]
 [dependencies]
 # Local clock for the circadian theme (`gpu_viewer/gui/theme.rs`); already in the graph through `search-core`.
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-# Only for tests that build a STEP file with the kernel (feature `occt`).
-solid-kernel = { path = "../solid-kernel", optional = true }
 wgpu = { version = "30", optional = true }
 winit = { version = "0.30", default-features = false, features = ["x11", "rwh_06"], optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
@@ -94,5 +87,5 @@ fastened-joint-solver = { path = "../fastened-joint-solver" }
 winresource = "0.1"
 
 [dev-dependencies]
-# Test-only: builds a STEP cube with the native modeller (the same crate the optional `occt` dependency names).
+# Test-only: builds a STEP cube with the native modeller.
 solid-kernel = { path = "../solid-kernel" }

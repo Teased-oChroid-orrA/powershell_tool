@@ -2,11 +2,6 @@ name: Build app-tui Windows executable
 
 on:
   workflow_dispatch:
-    inputs:
-      occt:
-        description: "Build with STEP / OpenCASCADE support (LGPL: ships the notices; needs the static-CRT OCCT build to link, see ADR-019)"
-        type: boolean
-        default: false
   # Release builds only.
   push:
     tags:
@@ -40,11 +35,7 @@ jobs:
       - name: Build app-tui (release, win-x64)
         shell: pwsh
         run: |
-          if ("${{ inputs.occt }}" -eq "true") {
-            cargo build --release -p app-tui --features occt-source,gpu-viewer --target x86_64-pc-windows-msvc
-          } else {
-            cargo build --release -p app-tui --features gpu-viewer --target x86_64-pc-windows-msvc
-          }
+          cargo build --release -p app-tui --features gpu-viewer --target x86_64-pc-windows-msvc
 
       - name: Verify and list app-tui.exe
         shell: pwsh
@@ -100,8 +91,7 @@ jobs:
           Copy-Item target/x86_64-pc-windows-msvc/release/app-tui.exe dist/
           Copy-Item THIRD-PARTY-NOTICES.md dist/
           Copy-Item licenses/* dist/licenses/
-          # An OpenCASCADE build must not be published without the LGPL texts (THIRD-PARTY-NOTICES.md).
-          foreach ($f in "THIRD-PARTY-NOTICES.md", "licenses/OpenCASCADE-LICENSE_LGPL_21.txt", "licenses/OpenCASCADE-OCCT_LGPL_EXCEPTION.txt") {
+          foreach ($f in "THIRD-PARTY-NOTICES.md") {
             if (-not (Test-Path "dist/$f")) { Write-Error "dist/$f is missing"; exit 1 }
           }
           Get-ChildItem -Recurse dist | Format-Table FullName, Length

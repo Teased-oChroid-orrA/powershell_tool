@@ -133,7 +133,6 @@ fn a_solid_the_native_modeller_cannot_edit_is_refused_for_every_edit() {
     for op in [SolidOp::Fillet { radius: 0.2 }, SolidOp::Hole { face: flat, diameter: 0.5 }, SolidOp::Boss { face: flat, diameter: 0.5, height: 0.5 }] {
         let e = apply_op_native(text, &c, &op).unwrap_err();
         assert!(e.starts_with("without OpenCASCADE, this solid cannot be edited:") && e.contains("not supported by the native modeller"), "{op:?}: {e}");
-        #[cfg(not(feature = "occt"))]
         {
             let mut q = p.clone();
             assert_eq!(q.apply_solid_op(&op).unwrap_err(), e);

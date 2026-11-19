@@ -177,20 +177,6 @@ fn placements_compose_and_invert() {
     assert!(near(a.after(&a.inverse()).apply(p), p));
 }
 
-#[cfg(feature = "occt")]
-#[test]
-fn the_native_placements_agree_with_opencascade_reading_the_same_file() {
-    let parts = placed(SOURCE);
-    let (lo, hi) = bounds(parts.iter().flat_map(|(_, b)| [b.0, b.1]));
-    let reference = solid_kernel::occt::Brep::from_step_text(SOURCE).unwrap();
-    let (rlo, rhi) = reference.bounds();
-    // OpenCASCADE pads its bounding box by its tolerance (1e-7).
-    assert!(
-        (0..3).all(|k| (lo[k] - rlo[k]).abs() < 1e-6 && (hi[k] - rhi[k]).abs() < 1e-6),
-        "native {lo:?}..{hi:?} vs OpenCASCADE {rlo:?}..{rhi:?}"
-    );
-}
-
 const MAPPED: &str = include_str!("data/assembly-mapped-items.step");
 
 #[test]
@@ -271,25 +257,4 @@ fn mapped_item_structure_that_is_ambiguous_or_inconsistent_is_refused() {
     );
     // two holders that are mapped by none
     refuse(MAPPED.replace("#954 = SHAPE_DEFINITION_REPRESENTATION(#953,#901);", "#954 = SHAPE_DEFINITION_REPRESENTATION(#953,#901);\n#955 = SHAPE_REPRESENTATION('',(#910),#345);"), "root representations");
-}
-
-#[cfg(feature = "occt")]
-#[test]
-fn the_native_mapped_placements_agree_with_opencascade_reading_the_same_file() {
-    // OpenCASCADE also returns the unplaced part (a product of its own in the file): the reference box is the union of the two
-    // placed instances and that part's own extent (0..2, 0..1, 0..3).
-    let parts = placed(MAPPED);
-    let own = ([0., 0., 0.], [2., 1., 3.]);
-    let (lo, hi) = bounds(
-        parts
-            .iter()
-            .flat_map(|(_, b)| [b.0, b.1])
-            .chain([own.0, own.1]),
-    );
-    let reference = solid_kernel::occt::Brep::from_step_text(MAPPED).unwrap();
-    let (rlo, rhi) = reference.bounds();
-    assert!(
-        (0..3).all(|k| (lo[k] - rlo[k]).abs() < 1e-6 && (hi[k] - rhi[k]).abs() < 1e-6),
-        "native {lo:?}..{hi:?} vs OpenCASCADE {rlo:?}..{rhi:?}"
-    );
 }

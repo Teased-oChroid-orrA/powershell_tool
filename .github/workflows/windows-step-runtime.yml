@@ -1,5 +1,5 @@
 name: Windows native STEP runtime
-# Feature-off (no OpenCascade) STEP import, volume mesh and static solve on hosted Windows x64: the focused fea-problem tests and
+# Native (no CAD library) STEP import, volume mesh and static solve on hosted Windows x64: the focused fea-problem tests and
 # the built-in native rows of the same-STEP benchmark (docs/issue-46-windows-runtime-plan.md). Evidence for the host that ran it;
 # not the clean-machine, packaged-app gate.
 on:
@@ -44,11 +44,10 @@ jobs:
             cargo -V
             "commit $(git rev-parse HEAD)"
           } *>&1 | Tee-Object -FilePath evidence/host.txt
-      - name: OpenCascade is not in the feature set
+      - name: Record the feature set
         shell: bash
         run: |
           cargo tree -p fea-problem -e features --no-default-features --locked > evidence/features.txt
-          if grep -i occt evidence/features.txt; then echo "::error::occt is active"; exit 1; fi
           grep -c . evidence/features.txt
       - name: Focused feature-off STEP tests (native_solid, solid)
         shell: bash

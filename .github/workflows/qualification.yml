@@ -25,11 +25,8 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            cad_flags: --cad
           - os: macos-latest
-            cad_flags: --cad
           - os: windows-latest
-            cad_flags: ''
     steps:
       - uses: actions/checkout@v7
         with:
@@ -42,7 +39,7 @@ jobs:
             target
           key: qualification-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.github/workflows/qualification.yml', 'scripts/qualify.py') }}
           restore-keys: qualification-${{ runner.os }}-
-      - run: python scripts/qualify.py --jobs 2 ${{ matrix.cad_flags }}
+      - run: python scripts/qualify.py --jobs 2
         env:
           CARGO_INCREMENTAL: '0'
           CARGO_PROFILE_TEST_DEBUG: '0'
