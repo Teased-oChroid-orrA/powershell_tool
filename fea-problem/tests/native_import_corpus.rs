@@ -3,6 +3,8 @@
 //! `cargo test -p fea-problem --release --test native_import_corpus -- --ignored --nocapture`
 //! With `MESH=1` every imported file is also meshed through `solid_mesh` at the import's own size (the application's path),
 //! printing tets, the volume against the tessellation's and the share of cells under the default quality gate.
+//! `MESH_TETS=<n>` meshes at an explicit size instead: the element size at which the refusal's estimate (V / (0.1179 h^3)) is `n`
+//! (never finer than the import's own size), so files the default-size rule refuses are still measured.
 use fea_core::meshing::adjacency::Adjacency;
 use fea_core::meshing::quality::QualityThresholds;
 use fea_problem::native_solid::import_step_native;
@@ -26,7 +28,8 @@ fn the_native_import_over_a_local_corpus() {
         }
     }
     paths.sort();
-    let mesh = std::env::var_os("MESH").is_some();
+    let target: Option<f64> = std::env::var("MESH_TETS").ok().and_then(|s| s.parse().ok());
+    let mesh = std::env::var_os("MESH").is_some() || target.is_some();
     let (mut ok, mut n, mut meshed) = (0, 0, 0);
     for p in &paths {
         let text = String::from_utf8_lossy(&std::fs::read(p).unwrap()).into_owned();
@@ -54,7 +57,14 @@ fn the_native_import_over_a_local_corpus() {
         eprintln!("{:<42} {:>6.1}s  {what}", p.file_name().unwrap().to_string_lossy(), t.elapsed().as_secs_f64());
         if mesh && r.is_ok() {
             let t = std::time::Instant::now();
-            let line = match Problem::from_step("corpus", &text).and_then(|pr| solid_mesh(&pr)) {
+            let line = match Problem::from_step("corpus", &text).and_then(|mut pr| {
+                if let Some(n) = target {
+                    let v = fea_problem::solid::solid_surface(&pr)?.volume();
+                    pr.mesh.size = pr.mesh.size.max((v / (0.1179 * n)).cbrt());
+                }
+                eprintln!("{:<42} size {:.4}", "  mesh", pr.mesh.size);
+                solid_mesh(&pr)
+            }) {
                 Ok((m, rep)) => {
                     meshed += 1;
                     let gate = QualityThresholds::default();

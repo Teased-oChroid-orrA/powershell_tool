@@ -118,7 +118,10 @@ pub(crate) fn classify(loops: &mut [PlanarLoop], max_checks: usize) -> Result<()
                 if intersects(a, b, l.points[j], l.points[(j + 1) % n])? {
                     return Err(fail(
                         ErrorKind::Geometry,
-                        "sampled trim polygon self-intersects or touches",
+                        &format!(
+                            "sampled trim polygon self-intersects or touches in bound #{}: segment {i} {:?}-{:?} with segment {j} {:?}-{:?} of {n}",
+                            l.bound_id, a, b, l.points[j], l.points[(j + 1) % n]
+                        ),
                     ));
                 }
             }

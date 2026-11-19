@@ -206,10 +206,10 @@ impl AnalyticModel {
                         })?;
                         let world_deviation_mm = crate::norm(crate::sub(projected, p));
                         let parameter_shift = (chart[0] - before[0]).hypot(chart[1] - before[1]);
-                        if !world_deviation_mm.is_finite()
-                            || world_deviation_mm > self.geometry_tolerance_mm()
-                            || parameter_shift > self.geometry_tolerance_mm()
-                        {
+                        // a foreign-CAD read heals edges up to `heal_limit_mm` onto their faces (0 on a strict read), so snapping a
+                        // sample to its face's exact constraint may move it by as much as that
+                        let allowed = self.geometry_tolerance_mm().max(self.heal_limit_mm());
+                        if !world_deviation_mm.is_finite() || world_deviation_mm > allowed || parameter_shift > allowed {
                             return Err(fail(
                                 ErrorKind::Geometry,
                                 "chart canonicalization exceeds the geometry tolerance",
@@ -244,7 +244,13 @@ impl AnalyticModel {
             let closing = unwrap_period(first, points.last().unwrap()[0], period)?;
             // Arithmetic-only closure bound, independent of the geometry chord
             // tolerance. No multi-turn or noncontractible loop is closed by fiat.
-            let roundoff = 64. * f64::EPSILON * period;
+            // The unwrapped values are `raw + k * period`: their representation error scales with the largest magnitude
+            // among them, which on a long boundary exceeds the period.
+            let magnitude = points.iter().fold(period, |m, p| m.max(p[0].abs()));
+            // A healed vertex is only on its surfaces to `heal_point`'s convergence (1e-10 of the coordinate size, so both
+            // ends of a seam can differ by that): a foreign-CAD read allows 1e-9 mm, a strict read none.
+            let healed = if self.heal_limit_mm() > 0. { 1e-9 } else { 0. };
+            let roundoff = (64. * f64::EPSILON * magnitude).max(healed);
             if (closing - first).abs() > roundoff {
                 return Err(fail(
                     ErrorKind::Geometry,

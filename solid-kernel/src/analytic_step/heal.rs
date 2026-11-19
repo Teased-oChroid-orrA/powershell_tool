@@ -150,9 +150,10 @@ impl AnalyticModel {
         }
         // Exactly on every surface, or the compromise of surfaces that have no common point: tangent faces separated by a
         // gap meet nowhere, and the iteration then stalls halfway between them. A stalled iteration is a heal only when
-        // every face is within the geometry tolerance, the file's own measure of conformance.
+        // every face is within the heal limit (the bound the move itself obeys; a strict read has a heal limit of 0, so there the
+        // geometry tolerance, the file's own measure of conformance, decides).
         let exact = worst(&f) <= converged(p).max(1e-4 * self.geometry_tolerance_mm);
-        if !exact && !(stalled && worst(&f) <= self.geometry_tolerance_mm) {
+        if !exact && !(stalled && worst(&f) <= self.geometry_tolerance_mm.max(self.heal_limit_mm)) {
             let kinds: Vec<String> = surfaces.iter().zip(&f).map(|(s, r)| format!("{}:{r:.2e}", format!("{s:?}").chars().take(12).collect::<String>())).collect();
             let cosines: Vec<String> = (0..normals.len()).flat_map(|i| (i + 1..normals.len()).map(move |j| (i, j))).map(|(i, j)| format!("{:.6}", dot(normals[i], normals[j]))).collect();
             return Err(format!("no convergence (worst distance {:e} mm, stalled {stalled}, {} faces; {kinds:?}; cosines {cosines:?})", worst(&f), surfaces.len()));
@@ -316,5 +317,24 @@ mod tests {
         let bottom = planes.iter().copied().find(|id| m.surfaces[id].point([0., 0.]).unwrap()[2].abs() < 1e-9).unwrap();
         let top = planes.iter().copied().find(|id| m.surfaces[id].point([0., 0.]).unwrap()[2] > 1.).unwrap();
         assert!(m.heal_point([1., 1., 5.], &[bottom, top]).is_err());
+    }
+
+    /// Two parallel planes 0.03 mm apart (six times the 0.005 geometry tolerance, under the 0.05 heal limit) have no common
+    /// point: the compromise halfway is a heal, 0.015 from each (over the geometry tolerance, under the heal limit). At 0.12 mm each face is 0.06 from it, over the heal limit: refused.
+    #[test]
+    fn a_compromise_between_tangent_faces_within_the_heal_limit_is_a_heal() {
+        let mut m = model(4.);
+        let top = m.surfaces.iter().find(|(_, s)| s.point([0., 0.]).is_some_and(|p| matches!(s, Surface::Plane(_)) && (p[2] - 10.).abs() < 1e-9)).map(|(id, _)| *id).unwrap();
+        let Surface::Plane(frame) = m.surfaces[&top].clone() else { unreachable!() };
+        for (gap, healed) in [(0.03, true), (0.12, false)] {
+            let mut above = frame.clone();
+            above.origin[2] += gap;
+            m.surfaces.insert(9_999, Surface::Plane(above));
+            let r = m.heal_point([1., 1., 10. + gap / 2.], &[top, 9_999]);
+            assert_eq!(r.is_ok(), healed, "gap {gap}: {r:?}");
+            if let Ok(p) = r {
+                assert!((p[2] - (10. + gap / 2.)).abs() < 1e-6, "halfway, got z = {}", p[2]);
+            }
+        }
     }
 }
