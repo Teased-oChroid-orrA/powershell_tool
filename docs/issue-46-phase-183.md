@@ -26,3 +26,7 @@ Date 2026-11-19. Decision: `docs/adr/ADR-023-retire-opencascade.md` (owner appro
 ## Proof
 
 `cargo test --workspace --release --offline --locked --no-fail-fast -j4` on macOS arm64: 3,569 passed, 0 failed, 131 ignored (`.audit/retire-tests.log`). `cargo check --workspace --tests --examples` has no `occt` feature left. Hosted CI (`qualification.yml`, `windows-step-runtime.yml`) is the Windows and Linux evidence.
+
+## Phase 182 follow-up evidence
+
+`MESH_TETS=20000` on ftc_08 e1-tg (the tessellated-only file read by `native_tessellated`): imports (272 faces, 3,368 triangles, volume 503,280.8 mm3) and **meshes through `solid_mesh`** ("1 of 1 imported files mesh"), 4,058 s wall time while the workspace tests and hosted-CI builds shared the CPU. Native meshing speed on real CAD is the open optimization item above.
