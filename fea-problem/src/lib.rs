@@ -12,6 +12,7 @@ pub mod joint;
 pub mod member_checks;
 pub mod members;
 pub mod native_solid;
+pub mod native_tessellated;
 pub mod mesh_store;
 pub mod mesh_telemetry;
 pub mod path;

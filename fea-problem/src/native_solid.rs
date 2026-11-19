@@ -46,6 +46,9 @@ pub fn tessellate_step_native(step: &str, deflection: f64) -> Result<SolidCache,
 
 /// Read a STEP solid natively: its cache at a thousandth of the bounding-box diagonal and the element size the editor starts with.
 pub fn import_step_native(step: &str) -> Result<StepImport, String> {
+    if crate::native_tessellated::is_tessellated_solid(step) {
+        return crate::native_tessellated::import_tessellated(step);
+    }
     // A first, coarse read gives the extent.
     let (model, _) = sample(step, DEFAULT_CHORD)?;
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
