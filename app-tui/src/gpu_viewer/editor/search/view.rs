@@ -1613,6 +1613,14 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
             Some(act(SearchAct::BuildIndex)),
             false,
         ));
+        if ix.docs.is_some() {
+            index.push(DockItem::row(
+                "Verify content now (reads every indexed file)",
+                Tone::Title,
+                Some(act(SearchAct::VerifyIndexContent)),
+                false,
+            ));
+        }
     }
     if !ix.status_text.is_empty() {
         index.push(DockItem::text(plain(&ix.status_text), Tone::Dim));
