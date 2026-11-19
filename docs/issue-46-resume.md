@@ -131,4 +131,6 @@ The root `CLAUDE.md` now authorizes qualified PR creation, squash merge and shor
 
 **2026-11-16 arc end off its circle:** [Phase 181](issue-46-phase-181.md): an arc end off its own circle by more than the geometry tolerance and within the heal limit is healed with its edge instead of refused (no tolerance or limit changed): native import reads 29 of 33 (ctc_05 rd). Left: the 3 tangent-spline files (chord / 9, owner decision) and the tessellated-only file. Retirement remains unapproved.
 
+**2026-11-19 closed B-spline bands (Phase 184):** [Phase 184](issue-46-phase-184.md): ctc_02 ap203 imports, native import 33 of 33 NIST files; refusal wording; mesher profile.
+
 **2026-11-19 tangent-face heals and tessellated solids:** [Phase 182](issue-46-phase-182.md): native import reads 32 of 33 NIST files (ctc_02 rc, ctc_05 e1 via heal-limit tolerances; ftc_08 e1-tg via a `TESSELLATED_SOLID` reader in `fea-problem/src/native_tessellated.rs`). Left: ctc_02 ap203 (v-closed spline band, needs a seam-cut chart). Same-size OCCT vs native meshes match; no native-only failure.

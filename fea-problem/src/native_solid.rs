@@ -1,6 +1,5 @@
-//! The solid editor without OpenCascade: read, tessellate and edit a STEP solid with `solid-kernel`'s native pipeline
-//! (`AnalyticModel` for the face-tagged surface mesh, `NativeBrep` for the edits). The default build uses this in place of the
-//! `occt` functions of `solid`; an `occt` build keeps OpenCascade and these stay available for comparison.
+//! The solid editor: read, tessellate and edit a STEP solid with `solid-kernel`'s native pipeline (`AnalyticModel` for the
+//! face-tagged surface mesh, `NativeBrep` for the edits). It is the only CAD backend (OpenCascade was retired, ADR-023).
 //!
 //! Face numbers: the native face order is the order of the face entities in the STEP text, which is also the order of the
 //! surface mesh this module produces. A cache made by another kernel numbers faces differently, so an edit finds its flat face by
@@ -102,11 +101,11 @@ fn refusal(what: &str, step: &str, cache: &SolidCache, err: String) -> String {
         rest = &tail[digits..];
     }
     out.push_str(rest);
-    format!("without OpenCASCADE, {what}: {out}")
+    format!("{what}: {out}")
 }
 
-/// Apply `op` natively; returns the new STEP text and its tessellation (the same contract as the OpenCascade `apply_op`). A shape
-/// the native modeller cannot edit is refused with its reason, prefixed "without OpenCASCADE".
+/// Apply `op` natively; returns the new STEP text and its tessellation. A shape the native modeller cannot edit is refused with
+/// its reason (`"<what cannot be done>: <why>"`).
 pub fn apply_op_native(step: &str, cache: &SolidCache, op: &SolidOp) -> Result<(String, SolidCache), String> {
     let brep = NativeBrep::from_step_text(step).map_err(|e| refusal("this solid cannot be edited", step, cache, e))?;
     let scale = cache.coordinate_scale;
