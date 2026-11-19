@@ -1,7 +1,6 @@
 //! STEP solids in the editor: opening a `.step` file and the hole / boss / fillet operations on a stored solid
-//! (`fea_problem::solid`). The default build does them with the native pipeline (`fea_problem::native_solid`: round holes and
-//! bosses on flat faces, fillet of a convex polyhedron; anything else is refused with the reason); the `occt` feature uses
-//! OpenCascade, which handles more shapes.
+//! (`fea_problem::solid`), done with the native pipeline (`fea_problem::native_solid`: round holes and bosses on flat faces,
+//! fillet of a convex polyhedron; anything else is refused with the reason).
 use super::*;
 use fea_problem::solid::SolidOp;
 

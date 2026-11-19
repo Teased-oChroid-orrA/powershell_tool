@@ -111,18 +111,18 @@ fn a_native_refusal_names_the_face_as_the_editor_does() {
     p.geometry = Geometry::Solid { step: step.clone(), cache: Some(cache.clone()) };
     // Every face with the through hole's rim is flat and normal to z: the fillet names one of them.
     let e = apply_op_native(&step, &cache, &SolidOp::Fillet { radius: 0.5 }).unwrap_err();
-    assert!(e.starts_with("without OpenCASCADE, the edges cannot be filleted: face") && e.contains("has a hole"), "{e}");
+    assert!(e.starts_with("the edges cannot be filleted: face") && e.contains("has a hole"), "{e}");
     let (_, n) = flat_face(&cache, named(&e)).unwrap();
     assert!((n[2].abs() - 1.0).abs() < 1e-9, "{e}: {n:?}");
     // A hole across the first one's axis may touch its wall, the only curved face.
     let side = face_with_normal(&p, [1., 0., 0.]);
     let e = apply_op_native(&step, &cache, &SolidOp::Hole { face: side, diameter: 1.0 }).unwrap_err();
-    assert!(e.starts_with("without OpenCASCADE, this hole cannot be cut:") && e.contains("may touch"), "{e}");
+    assert!(e.starts_with("this hole cannot be cut:") && e.contains("may touch"), "{e}");
     assert!(flat_face(&cache, named(&e)).unwrap_err().contains("curved"), "{e}");
 }
 
-/// A STEP solid the native importer reads (B-spline edges) but the native modeller cannot edit: every edit says so, and in the
-/// build without OpenCascade the problem is left as it was. Phase 166.
+/// A STEP solid the native importer reads (B-spline edges) but the native modeller cannot edit: every edit says so, and the
+/// problem is left as it was. Phase 166.
 #[test]
 fn a_solid_the_native_modeller_cannot_edit_is_refused_for_every_edit() {
     use fea_problem::native_solid::apply_op_native;
@@ -132,7 +132,7 @@ fn a_solid_the_native_modeller_cannot_edit_is_refused_for_every_edit() {
     let flat = (1..=c.face_names().len()).find(|f| flat_face(&c, *f).is_ok()).expect("a flat cap");
     for op in [SolidOp::Fillet { radius: 0.2 }, SolidOp::Hole { face: flat, diameter: 0.5 }, SolidOp::Boss { face: flat, diameter: 0.5, height: 0.5 }] {
         let e = apply_op_native(text, &c, &op).unwrap_err();
-        assert!(e.starts_with("without OpenCASCADE, this solid cannot be edited:") && e.contains("not supported by the native modeller"), "{op:?}: {e}");
+        assert!(e.starts_with("this solid cannot be edited:") && e.contains("not supported by the native modeller"), "{op:?}: {e}");
         {
             let mut q = p.clone();
             assert_eq!(q.apply_solid_op(&op).unwrap_err(), e);
@@ -143,7 +143,7 @@ fn a_solid_the_native_modeller_cannot_edit_is_refused_for_every_edit() {
 
 /// Every OpenCascade-written fixture of `solid-kernel/tests/data` (30 files: analytic and spline solids, holes, fillets, chamfers,
 /// assemblies) through every native edit: an edit either gives a closed solid with more faces, or is refused with its reason (a
-/// face check shared with OpenCascade, or the native modeller's own refusal starting "without OpenCASCADE"). Nothing panics,
+/// face check shared with OpenCascade, or the native modeller's own refusal, "<what cannot be done>: <why>"). Nothing panics,
 /// nothing is approximated silently. The editor-operation capability matrix rests on this sweep (`docs/issue-46-phase-166.md`).
 #[test]
 fn every_native_edit_of_every_fixture_succeeds_or_says_why() {
@@ -181,7 +181,7 @@ fn every_native_edit_of_every_fixture_succeeds_or_says_why() {
                     edited += 1;
                 }
                 Ok(Err(e)) => {
-                    assert!(e.starts_with("without OpenCASCADE, ") || e.contains("pick a flat face"), "{name} {op:?}: {e}");
+                    assert!(e.starts_with("this ") || e.starts_with("the edges cannot be") || e.contains("pick a flat face"), "{name} {op:?}: {e}");
                     refused += 1;
                 }
             }

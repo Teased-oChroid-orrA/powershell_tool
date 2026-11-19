@@ -1,6 +1,6 @@
 //! `Geometry::Solid`: a B-rep solid stored as its STEP text plus the cached face-tagged surface mesh the solve needs.
-//! The solve path (`solid_mesh`) uses only `solid-kernel`'s surface mesh and volume mesher, so it works in a build without
-//! OpenCascade; reading and editing STEP uses the native kernel without `occt`, or OpenCascade with that feature.
+//! The solve path (`solid_mesh`) uses only `solid-kernel`'s surface mesh and volume mesher; reading and editing STEP uses
+//! the native kernel (OpenCascade was retired, ADR-023).
 use crate::problem::{Geometry, Load, Problem, Support};
 use fea_core::tetmesh::MeshReport;
 use fea_core::Mesh;
@@ -126,8 +126,7 @@ pub fn resolution_note(p: &Problem, mesh: &Mesh) -> Option<String> {
     (!names.is_empty()).then(|| format!("CAD surfaces {} have no boundary elements at this size; refine before applying conditions there and check mesh convergence.", names.join(", ")))
 }
 
-/// Tessellate STEP text into a cache (chord deflection `deflection`). The optional `occt` feature selects OpenCascade;
-/// otherwise the native reader and sampler are used.
+/// Tessellate STEP text into a cache (chord deflection `deflection`) with the native reader and sampler.
 
 pub fn tessellate_step(step: &str, deflection: f64) -> Result<SolidCache, String> {
     crate::native_solid::tessellate_step_native(step, deflection)
@@ -400,7 +399,7 @@ pub fn smallest_curvature_radius(c: &SolidCache) -> Option<f64> {
     }).min_by(f64::total_cmp)
 }
 
-/// Without OpenCascade the native pipeline reads the solid (`native_solid`).
+/// The native pipeline reads the solid (`native_solid`).
 pub fn import_step(step: &str) -> Result<StepImport, String> {
     crate::native_solid::import_step_native(step)
 }
