@@ -844,8 +844,8 @@ fn face_triangles(outer: &[V3], holes: &[Vec<V3>], u: V3, v: V3) -> Option<(Vec<
     Some((triangulate(&flat(outer))?, holes.iter().map(|h| triangulate(&flat(h))).collect::<Option<Vec<_>>>()?))
 }
 
-/// Planar faces of different bodies with opposite normals, no more than the tolerance apart along them, and positive common
-/// area. Returns the interfaces and the face pairs that passed the geometric screen but whose common area could not be
+/// Planar faces of different bodies with opposite normals, no more than the tolerance apart along them, and a common area of
+/// more than a strip one tolerance wide along the longer face diagonal. Returns the interfaces and the face pairs that passed the geometric screen but whose common area could not be
 /// computed (a boundary that is not a simple polygon): those are reported, not dropped.
 ///
 /// Only contact within the tolerance is an interface: a real gap (a washer, a shim, a clearance) is not detected here.
@@ -896,7 +896,10 @@ pub fn find_interfaces(models: &[AnalyticModel], faces: &[ClassifiedFace]) -> (V
                     take(1.0, overlap_of(x, y));
                 }
             }
-            if m[0] <= tol * tol {
+            // A strip no wider than the tolerance along a shared edge is not a contact: its area is at most `tol` times the
+            // length of the edge, which is at most `length`. (`tol * tol` is below the rounding noise of a placed body: an edge
+            // contact of two rotated bodies read 6e-14 mm2 against 1e-14.)
+            if m[0] <= tol * length {
                 continue;
             }
             let centroid = add(add(mul(u, m[1] / m[0]), mul(v, m[2] / m[0])), mul(*na, *oa));
