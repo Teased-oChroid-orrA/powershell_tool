@@ -12,13 +12,14 @@
 //! - [`Plan::NoViewer`]: binaries and types with no text; the caller opens the default app, as before.
 
 pub mod reader;
+pub mod structure;
 
 use std::path::Path;
 
 use serde_json::{json, Value};
 
 use crate::extraction::{extract_lines_by_extension, looks_binary};
-use crate::models::{FileSearchResult, SearchSettings};
+use crate::models::{FileSearchResult, LineHit, SearchSettings};
 use crate::report::{file_uri, highlight_ranges, human_size, FilterColors};
 
 /// Plain text files above this many bytes are served by the local reader instead of being embedded.
@@ -86,22 +87,25 @@ pub struct HitSet {
 impl HitSet {
     pub fn from_result(result: &FileSearchResult, settings: &SearchSettings) -> Self {
         let filters: Vec<String> = settings.all_filters().cloned().collect();
-        let lower: Vec<String> = filters.iter().map(|f| f.to_lowercase()).collect();
-        let mut entries: Vec<(u32, u64)> = Vec::with_capacity(result.hits.len());
-        for h in &result.hits {
-            if h.line_number < 1 {
-                continue;
-            }
+        let mut set = Self { colors: FilterColors::new(settings), filters, entries: Vec::with_capacity(result.hits.len()) };
+        set.merge(&result.hits);
+        set
+    }
+
+    /// Add hit lines (a line already present gets the union of the filter bits); keeps `entries` sorted by line.
+    pub fn merge(&mut self, hits: &[LineHit]) {
+        let lower: Vec<String> = self.filters.iter().map(|f| f.to_lowercase()).collect();
+        for h in hits.iter().filter(|h| h.line_number >= 1) {
             let mut bits = 0u64;
             for f in &h.matched_filters {
                 if let Some(i) = lower.iter().position(|x| *x == f.to_lowercase()).filter(|i| *i < 64) {
                     bits |= 1 << i;
                 }
             }
-            entries.push((h.line_number as u32, bits));
+            self.entries.push((h.line_number as u32, bits));
         }
-        entries.sort_by_key(|e| e.0);
-        entries.dedup_by(|b, a| {
+        self.entries.sort_by_key(|e| e.0);
+        self.entries.dedup_by(|b, a| {
             if a.0 == b.0 {
                 a.1 |= b.1;
                 true
@@ -109,7 +113,6 @@ impl HitSet {
                 false
             }
         });
-        Self { colors: FilterColors::new(settings), filters, entries }
     }
 
     /// The colour slot (0..6) of filter `i`, the same one the report gives it.
@@ -140,7 +143,7 @@ impl HitSet {
             .iter()
             .enumerate()
             .map(|(i, f)| (f.clone(), self.slot_of(i), self.entries.iter().filter(|e| e.1 >> i & 1 == 1).count()))
-            .filter(|c| c.2 > 0)
+            .filter(|c| c.2 > 0 || self.entries.is_empty()) // a file with no listed hits still shows its filters, so a scan has chips to fill
             .collect()
     }
 }
@@ -281,7 +284,7 @@ pub fn build_page(path: &Path, result: &FileSearchResult, settings: &SearchSetti
         _ if container => (
             "lines",
             format!("Extracted text \u{b7} {}", human_size(size as i64)),
-            "Built from the text Search extracts. Fonts, images and page layout are not reproduced.".to_string(),
+            "Built from the text Search extracts. Fonts and page layout are not reproduced; pictures show in the Structured view.".to_string(),
         ),
         _ => ("lines", text_label(path, size), "Source view. The text is embedded in this page, so it works offline.".to_string()),
     };
@@ -291,11 +294,33 @@ pub fn build_page(path: &Path, result: &FileSearchResult, settings: &SearchSetti
     cfg.insert("total".into(), json!(total));
     cfg.insert("capped".into(), json!(capped));
     cfg.insert("embedded".into(), json!({ "lines": lines, "hits": hit_rows }));
+    if let Some(st) = office_structure(&ext, &bytes, &lines, total) {
+        cfg.insert("structure".into(), st.to_json());
+    }
     if plan == Plan::Pdf {
         cfg.insert("pdf".into(), json!(file_uri(&path.to_string_lossy())));
     }
     let n = lines.len();
     Ok(ViewerPage { html: assemble(&Value::Object(cfg)), plan, lines: n })
+}
+
+/// Pages with more lines than this are shown as text only: the structured view draws every line as its own element.
+const STRUCTURE_MAX_LINES: usize = 60_000;
+
+/// What the "Structured" view needs for an Office file: `lines` are the lines of the page (possibly cut from `total`).
+fn office_structure(ext: &str, bytes: &[u8], lines: &[String], total: usize) -> Option<structure::Structure> {
+    if lines.len() > STRUCTURE_MAX_LINES {
+        return None;
+    }
+    let mut st = match ext {
+        ".docx" => structure::docx_structure(bytes).filter(|s| s.meta.len() == total)?,
+        ".pptx" => structure::pptx_structure(bytes, lines)?,
+        ".xlsx" => structure::Structure { kind: "xlsx", ..Default::default() },
+        _ => return None,
+    };
+    st.meta.truncate(lines.len());
+    st.refs.retain(|r| (r.0 as usize) <= lines.len());
+    Some(st)
 }
 
 /// The page the reader serves for a registered large file; `base` is the URL prefix of its data endpoints.

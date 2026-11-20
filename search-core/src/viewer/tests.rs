@@ -259,7 +259,7 @@ fn reader_serves_any_window_and_listed_lines_of_a_multi_stride_file() {
     assert!(v.lines(v.total_lines() + 1, 5).unwrap().is_empty());
     assert!(v.lines(0, 5).unwrap().is_empty());
     // listed lines come back ascending with one entry each, hits carry mask and UTF-16 spans
-    let rows = v.lines_of(&[300, 5, 5, 100, STRIDE * 6, 9_999_999]).unwrap();
+    let rows = v.lines_of(&[300, 5, 5, 100, STRIDE * 6, 9_999_999], true).unwrap();
     let got: Vec<u64> = rows.iter().map(|r| r[0].as_u64().unwrap()).collect();
     assert_eq!(got, vec![5, 100, 300, STRIDE * 6]);
     assert_eq!(rows[1][2], 1);
@@ -406,4 +406,91 @@ fn reader_shutdown_forgets_files_and_refuses_new_requests() {
 #[test]
 fn line_index_build_reports_a_missing_file() {
     assert!(LineIndex::build(Path::new("/definitely/not/here.log")).is_err());
+}
+
+#[test]
+fn reader_scan_finds_the_hits_the_search_would_and_highlights_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let text: String = (1..=30_000).map(|i| format!("row {i} {}\n", if i % 7 == 0 { "Needle here" } else if i % 11 == 0 { "a pin there" } else { "plain" })).collect();
+    let path = write(dir.path(), "scan.log", text.as_bytes());
+    let v = open_view(&path, Vec::new(), &["needle", "pin"]);
+    assert!(v.hit_list().is_empty(), "the search had no hits");
+    let (mut found, mut from, mut slices) = (Vec::new(), 1u64, 0);
+    loop {
+        let (h, next) = v.scan_hits(from).unwrap().expect("filters compile");
+        found.extend(h.chunks(2).map(|c| c[0]));
+        slices += 1;
+        if next == 0 {
+            break;
+        }
+        assert!(next > from, "the scan always moves forward");
+        from = next;
+    }
+    let want: Vec<u32> = (1..=30_000u32).filter(|i| i % 7 == 0 || i % 11 == 0).collect();
+    assert_eq!(found, want, "every line holding a filter, once, in order ({slices} slices)");
+    let list = v.hit_list();
+    assert_eq!(list.len(), want.len() * 2, "the scan is part of the hit set now");
+    let row = &v.lines(7, 1).unwrap()[0];
+    assert_eq!(row[1], "row 7 Needle here");
+    let span = &row[3][0];
+    assert_eq!((span[0].as_u64(), span[1].as_u64()), (Some(6), Some(12)), "the matched word is highlighted");
+    assert_eq!(v.lines(1, 1).unwrap()[0].as_array().unwrap().len(), 2, "a plain line stays a plain row");
+}
+
+#[test]
+fn reader_scan_applies_line_exclusions_and_extra_groups() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "g.log", b"alpha one\nalpha skipme\nbeta two\nnothing\n");
+    let mut s = settings(&["alpha"]);
+    s.exclude_filters = vec!["skipme".into()];
+    s.filter_groups = vec![crate::models::FilterGroup { filters: vec!["beta".into()], match_mode: crate::models::MatchMode::AnyLine, proximity_lines: 0, exclude: None }];
+    let v = LargeView::open(&path, &result_for(&path, Vec::new()), &s).unwrap();
+    let (h, next) = v.scan_hits(1).unwrap().unwrap();
+    assert_eq!(next, 0);
+    assert_eq!(h.chunks(2).map(|c| c[0]).collect::<Vec<_>>(), vec![1, 3], "line 2 is excluded, the group's beta is found");
+}
+
+#[test]
+fn reader_scan_route_is_served_and_past_the_end_is_empty() {
+    let (srv, url, _dir, _path) = server_with_file();
+    let base = path_of(&url).replace("/v/", "/f/");
+    let (code, body) = http(srv.port(), &format!("127.0.0.1:{}", srv.port()), "GET", &format!("{base}/scan?from=1"));
+    assert_eq!(code, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert!(v["h"].is_array() && v["next"].is_u64(), "{body}");
+    let (code, body) = http(srv.port(), &format!("127.0.0.1:{}", srv.port()), "GET", &format!("{base}/scan?from=99999999"));
+    assert_eq!(code, 200);
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["next"], 0);
+}
+
+#[test]
+fn reader_lines_can_leave_the_highlight_spans_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "s.log", b"plain\nthe needle here\nmore\n");
+    let v = open_view(&path, vec![hit(2, &["needle"])], &["needle"]);
+    let full = &v.lines_of(&[2], true).unwrap()[0];
+    assert_eq!(full.as_array().unwrap().len(), 4, "[n, text, mask, spans]");
+    let bare = &v.lines_of(&[1, 2], false).unwrap();
+    assert_eq!(bare[0].as_array().unwrap().len(), 2, "a plain line is [n, text] either way");
+    assert_eq!(bare[1].as_array().unwrap().len(), 3, "a hit row is [n, text, mask] without spans");
+    assert_eq!(bare[1][1], "the needle here");
+    assert_eq!(bare[1][2], full[2], "the filter mask is the same");
+}
+
+#[test]
+fn chips_keep_every_filter_when_the_file_has_no_listed_hits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "c.log", b"a\n");
+    let s = settings(&["alpha", "beta"]);
+    let none = HitSet::from_result(&result_for(&path, Vec::new()), &s);
+    assert_eq!(none.chips().iter().map(|c| (c.0.as_str(), c.2)).collect::<Vec<_>>(), vec![("alpha", 0), ("beta", 0)], "chips exist before a scan");
+    let some = HitSet::from_result(&result_for(&path, vec![hit(1, &["alpha"])]), &s);
+    assert_eq!(some.chips().iter().map(|c| (c.0.as_str(), c.2)).collect::<Vec<_>>(), vec![("alpha", 1)], "with hits, a filter that never hit has no chip");
+}
+
+#[test]
+fn structure_is_skipped_for_a_page_longer_than_the_cap() {
+    let lines: Vec<String> = (0..STRUCTURE_MAX_LINES + 1).map(|i| format!("row{i}")).collect();
+    assert!(office_structure(".xlsx", b"", &lines, lines.len()).is_none());
+    assert!(office_structure(".xlsx", b"", &lines[..10], 10).is_some(), "a short xlsx page gets the grid view");
 }

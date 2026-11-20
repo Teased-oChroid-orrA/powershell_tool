@@ -602,11 +602,11 @@ fn tag_strip_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new("<[^>]+>").unwrap())
 }
 
-fn strip_tags(xml: &str) -> String {
+pub(crate) fn strip_tags(xml: &str) -> String {
     tag_strip_re().replace_all(xml, "").into_owned()
 }
 
-fn decode_xml_entities(xml: &str) -> String {
+pub(crate) fn decode_xml_entities(xml: &str) -> String {
     xml.replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
@@ -629,7 +629,7 @@ fn decode_xml_entities(xml: &str) -> String {
 /// as `extract_zip_entries`'s own per-entry check), then bounds the
 /// actual read with `Read::take` as defense-in-depth against a
 /// deliberately-wrong declared size, not just a trusted-header check.
-fn read_zip_entry_to_string(
+pub(crate) fn read_zip_entry_to_string(
     zip: &mut zip::ZipArchive<Cursor<&[u8]>>,
     name: &str,
 ) -> Option<String> {
