@@ -215,6 +215,9 @@ fn toggle<T: Ord>(set: &mut std::collections::BTreeSet<T>, value: T) {
 
 /// A query and the typo corrections computed for it.
 type TypoCache = (String, std::rc::Rc<Vec<search_core::synonyms::TypoCorrection>>);
+/// Mined terms for the query and hit lines they were computed from.
+#[cfg(feature = "neural-search")]
+type CorpusTermCache = (String, Vec<String>, Vec<String>);
 
 pub struct SearchSession {
     st: SearchToolState,
@@ -234,6 +237,10 @@ pub struct SearchSession {
     completed_search_query: Option<String>,
     /// Typo corrections for the query they were computed for, so a redraw does not redo them.
     typo_cache: RefCell<Option<TypoCache>>,
+    /// Related-from-hits terms for the query and hit lines they were mined from (about 3 ms to mine, asked several
+    /// times per redraw).
+    #[cfg(feature = "neural-search")]
+    corpus_term_cache: RefCell<Option<CorpusTermCache>>,
     step: &'static str,
     /// The results filter (file name or folder text, case-insensitive).
     filter: String,
@@ -260,7 +267,7 @@ pub struct SearchSession {
     #[cfg(feature = "neural-search")]
     neural_running: bool,
     #[cfg(feature = "neural-search")]
-    neural_order: Option<(String, Vec<usize>)>,
+    neural_order: Option<(String, NeuralOrder)>,
     #[cfg(feature = "neural-search")]
     summary_tx: mpsc::UnboundedSender<SummaryEvent>,
     #[cfg(feature = "neural-search")]
@@ -415,7 +422,14 @@ struct EntityEvent {
 #[cfg(feature = "neural-search")]
 struct NeuralRankEvent {
     key: String,
-    order: Result<Vec<usize>, String>,
+    order: Result<NeuralOrder, String>,
+}
+
+/// Suggestion candidates in neural order, and which of them mean nearly the same thing.
+#[cfg(feature = "neural-search")]
+struct NeuralOrder {
+    order: Vec<usize>,
+    groups: Vec<Vec<usize>>,
 }
 
 #[cfg(feature = "neural-search")]
@@ -887,6 +901,8 @@ impl SearchSession {
             },
             completed_search_query: None,
             typo_cache: RefCell::new(None),
+            #[cfg(feature = "neural-search")]
+            corpus_term_cache: RefCell::new(None),
             step: "Search",
             filter: String::new(),
             sort: (SortKey::Found, false),
@@ -2217,11 +2233,21 @@ impl SearchSession {
                 .take(40)
                 .map(|hit| hit.match_line.clone())
                 .collect();
-            return search_core::neural_search::corpus_term_candidates(
-                &groups[0].filters[0],
-                &lines,
-                24,
-            );
+            let query = &groups[0].filters[0];
+            let mut cache = self.corpus_term_cache.borrow_mut();
+            return match cache.as_ref() {
+                Some((cached_query, cached_lines, terms))
+                    if cached_query == query && *cached_lines == lines =>
+                {
+                    terms.clone()
+                }
+                _ => {
+                    let terms =
+                        search_core::neural_search::corpus_term_candidates(query, &lines, 24);
+                    *cache = Some((query.clone(), lines, terms.clone()));
+                    terms
+                }
+            };
         }
         #[cfg(not(feature = "neural-search"))]
         {
@@ -2290,8 +2316,11 @@ impl SearchSession {
             let tx = self.neural_tx.clone();
             self.rt.spawn(async move {
                 let order = tokio::task::spawn_blocking(move || {
-                    search_core::neural_search::rank_suggestions(&context, &candidates)
-                        .map(|scores| scores.into_iter().map(|score| score.index).collect())
+                    search_core::neural_search::rank_and_group(&context, &candidates)
+                        .map(|ranked| NeuralOrder {
+                            order: ranked.scores.into_iter().map(|score| score.index).collect(),
+                            groups: ranked.groups,
+                        })
                         .map_err(|error| error.to_string())
                 })
                 .await
