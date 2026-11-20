@@ -136,3 +136,11 @@ Limits (not hidden):
 - The model's polygon boundary must be simple for the overlap area; a face that is not is listed in `Features::unresolved`, never dropped.
 
 Not done: Phases B to D; the multi-body `Problem` representation; a native window.
+
+## Phase B step 1: read-only advice (2026-11-19)
+
+Built: `fea-problem/src/assembly_advice.rs` (`recommend(&Features)`, `recommend_step(step)`), `fea-problem/tests/assembly_advice.rs` (3 tests, pass). Items: `Tie` (an interface: faces, gap, shared area), `Fastener` (coaxial bores: bodies, bore faces, smallest common standard size, diameter mismatch flag) and `Unresolved` (interface pairs whose common area could not be computed, so they are never dropped). Each carries a reason with the measured numbers; faces are `FaceKey { body, face }`, body numbers in the text are 1-based. Fixture check: a 5.0 mm bore under a 6.6 mm bore, stacked 40 x 30 mm plates, gives one `Tie` (no gap, 1166 mm²) and one `Fastener` (M6, mismatch flagged, 20 mm of axis).
+
+Decision: the items are read-only and no `Problem` is edited. A `Problem` holds one body (`Geometry::Solid` is one STEP text), and there is no tie or fastener on it to apply until the multi-body representation and the solver exposure of Phase C exist. Building the multi-body `Problem` first would change `Geometry::Solid` consumers across `solid.rs`, `solve.rs`, `facts.rs`, `units.rs` and the face-numbering rules (`remap_faces`, `removed:faceN`) without any solver using it; that is held for Phase C's product decisions.
+
+Not done: "support or load on the bolt hole" advice (needs a body to carry the boundary); the multi-body `Problem`; the native window (needs an approved mockup; none exists yet, so none was built); the inch fastener table check; the exit-gate corpus.

@@ -1,0 +1,122 @@
+//! Advice over the assembly features `solid_kernel::features::detect` finds (epic `docs/epic-assembly-feature-advice.md`, Phase B).
+//!
+//! Read-only: each item names the faces it concerns by `FaceKey` (body index, STEP face id; never a persisted kernel id) and carries
+//! a reason string with the measured numbers. Nothing here edits a `Problem`: a `Problem` still holds one body, so there is nothing
+//! to apply a tie or a fastener to until the multi-body representation (and the solver exposure of epic Phase C) exists. Body numbers
+//! in the text are 1-based (the order of the STEP product structure); `FaceKey::body` is the 0-based index.
+use solid_kernel::analytic_step::{AnalyticModel, Options};
+use solid_kernel::features::{detect, FaceKey, FastenerSite, FitClass, Features, Interface, SizeMatch};
+use solid_kernel::step::{inventory, Limits};
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AssemblyAdvice {
+    /// Two planar faces of different bodies that touch: bond (tie) them, or model contact between them.
+    Tie { a: FaceKey, b: FaceKey, gap: f64, overlap_area: f64, reason: String },
+    /// Coaxial bores of different bodies: one fastener passes through them.
+    Fastener { bodies: Vec<usize>, faces: Vec<FaceKey>, size: Option<&'static str>, mismatch: bool, reason: String },
+    /// Faces that looked like an interface but whose common area could not be computed: check them by hand.
+    Unresolved { a: FaceKey, b: FaceKey, reason: String },
+}
+
+impl AssemblyAdvice {
+    pub fn label(&self) -> String {
+        match self {
+            AssemblyAdvice::Tie { a, b, .. } => format!("Tie body {} face {} to body {} face {}", a.body + 1, a.face, b.body + 1, b.face),
+            AssemblyAdvice::Fastener { bodies, size, .. } => {
+                let list = bodies.iter().map(|b| (b + 1).to_string()).collect::<Vec<_>>().join(", ");
+                match size {
+                    Some(s) => format!("Treat the coaxial holes of bodies {list} as one {s} fastener"),
+                    None => format!("Treat the coaxial holes of bodies {list} as one fastener"),
+                }
+            }
+            AssemblyAdvice::Unresolved { a, b, .. } => format!("Check body {} face {} against body {} face {}", a.body + 1, a.face, b.body + 1, b.face),
+        }
+    }
+    pub fn reason(&self) -> &str {
+        match self {
+            AssemblyAdvice::Tie { reason, .. } | AssemblyAdvice::Fastener { reason, .. } | AssemblyAdvice::Unresolved { reason, .. } => reason,
+        }
+    }
+    /// The faces to highlight when the item is selected.
+    pub fn faces(&self) -> Vec<FaceKey> {
+        match self {
+            AssemblyAdvice::Tie { a, b, .. } | AssemblyAdvice::Unresolved { a, b, .. } => vec![*a, *b],
+            AssemblyAdvice::Fastener { faces, .. } => faces.clone(),
+        }
+    }
+}
+
+fn fit_word(f: FitClass) -> &'static str {
+    match f {
+        FitClass::Tap => "tap drill",
+        FitClass::Nominal => "nominal (press / locating)",
+        FitClass::Close => "close clearance",
+        FitClass::Normal => "normal clearance",
+        FitClass::Loose => "loose clearance",
+    }
+}
+
+fn matches_text(m: &[SizeMatch]) -> String {
+    if m.is_empty() {
+        "no standard size".to_string()
+    } else {
+        m.iter().map(|x| format!("{} {}", x.size, fit_word(x.fit))).collect::<Vec<_>>().join(" or ")
+    }
+}
+
+fn tie(i: &Interface) -> AssemblyAdvice {
+    let gap = if i.gap.abs() < 5e-7 { "no gap".to_string() } else if i.gap > 0.0 { format!("a {:.4} mm gap", i.gap) } else { format!("{:.4} mm of interpenetration", -i.gap) };
+    AssemblyAdvice::Tie {
+        a: i.a,
+        b: i.b,
+        gap: i.gap,
+        overlap_area: i.overlap_area,
+        reason: format!(
+            "Body {} face {} and body {} face {} face each other with {gap} and share {:.2} mm\u{b2}: a bonded (tie) interface is the cheap model of a bolted or welded joint there; contact is the one that lets them separate.",
+            i.a.body + 1,
+            i.a.face,
+            i.b.body + 1,
+            i.b.face,
+            i.overlap_area
+        ),
+    }
+}
+
+fn fastener(f: &Features, s: &FastenerSite) -> AssemblyAdvice {
+    let mut faces = Vec::new();
+    let mut bores = Vec::new();
+    for b in &s.bores {
+        let h = &f.holes[b.hole];
+        faces.extend(h.faces.iter().map(|&face| FaceKey { body: h.body, face }));
+        bores.push(format!("body {} \u{d8}{:.3} mm ({})", h.body + 1, b.diameter, matches_text(&b.matches)));
+    }
+    let mut reason = format!("{} coaxial bores over {:.2} mm of axis: {}.", s.bores.len(), s.span[1] - s.span[0], bores.join("; "));
+    match s.fastener {
+        Some(size) => reason.push_str(&format!(" Every bore fits {size}, so one {size} fastener can pass through them.")),
+        None => reason.push_str(" No single standard size fits every bore."),
+    }
+    if s.diameter_mismatch {
+        reason.push_str(" The bore diameters differ (a clearance hole in one part and a tapped or smaller hole in another is normal for a bolted joint; a mismatch with no common size is not).");
+    }
+    AssemblyAdvice::Fastener { bodies: s.bodies.clone(), faces, size: s.fastener, mismatch: s.diameter_mismatch, reason }
+}
+
+/// The advice for detected features, in the detector's order: interfaces, fastener sites, then unresolved pairs.
+pub fn recommend(f: &Features) -> Vec<AssemblyAdvice> {
+    let unresolved = f.unresolved.iter().map(|(a, b)| AssemblyAdvice::Unresolved {
+        a: *a,
+        b: *b,
+        reason: format!("Body {} face {} and body {} face {} look like a contact (anti-parallel, within the gap tolerance) but the area they share could not be computed.", a.body + 1, a.face, b.body + 1, b.face),
+    });
+    f.interfaces.iter().map(tie).chain(f.sites.iter().map(|s| fastener(f, s))).chain(unresolved).collect()
+}
+
+/// Read every body of a STEP assembly the way the solid editor does (strict, then the tolerant foreign-CAD read), detect its
+/// features and recommend.
+pub fn recommend_step(step: &str) -> Result<Vec<AssemblyAdvice>, String> {
+    let data = inventory(step, Limits::default()).map_err(|e| e.to_string())?;
+    let models = AnalyticModel::read_all(&data, Options::default())
+        .or_else(|first| AnalyticModel::read_all(&data, Options::foreign_cad(0.05)).map_err(|second| format!("{first}; tolerant read: {second}")))
+        .map_err(|e| e.to_string())?;
+    Ok(recommend(&detect(&models).map_err(|e| e.to_string())?))
+}
