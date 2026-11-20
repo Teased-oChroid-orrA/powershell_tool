@@ -322,6 +322,31 @@ impl NurbsSurface {
             sides: [u_side, v_side],
         })
     }
+    /// The curve of constant parameter `fixed` (0: u, 1: v) at `t`, along the other parameter: its control net is the
+    /// homogeneous combination of the surface's rows through the fixed parameter's basis, so it is the exact iso-curve.
+    /// It is evaluated on the other parameter's active domain.
+    pub fn iso_curve(&self, fixed: usize, t: f64, limits: Limits) -> Result<nurbs::NurbsCurve, Error> {
+        let (basis, other) = if fixed == 0 { (&self.u, &self.v) } else { (&self.v, &self.u) };
+        let span = basis.span(t)?;
+        let count = self.dimensions[1 - fixed];
+        let mut controls = Vec::with_capacity(count);
+        let mut weights = Vec::with_capacity(count);
+        for j in 0..count {
+            let h = basis.homogeneous(span, t, |i| {
+                let k = if fixed == 0 { j * self.dimensions[0] + i } else { i * self.dimensions[0] + j };
+                Ok(nurbs::homogeneous_control(self.control_points[k], self.weights[k]))
+            })?;
+            controls.push(nurbs::project(h)?);
+            weights.push(h[3]);
+        }
+        nurbs::NurbsCurve::new_active_domain(
+            other.degree(),
+            other.knots().to_vec(),
+            controls,
+            weights,
+            CurveLimits { control_points: limits.control_points, degree: limits.degree },
+        )
+    }
     /// Retains homogeneous weights through both basis recurrences; projecting
     /// individual rows first would change the rational surface. No clamping.
     pub fn evaluate(&self, parameters: [f64; 2]) -> Result<V3, Error> {
@@ -800,5 +825,19 @@ mod tests {
             ErrorKind::Limit
         );
         assert!(s.enclose([[0.5; 2]; 2], 4).is_ok());
+    }
+    #[test]
+    fn an_iso_curve_is_the_surface_along_one_parameter() {
+        let s = quarter_cylinder();
+        for (fixed, t) in [(0usize, 0.3), (0, 0.8), (1, 0.25), (1, 0.9)] {
+            let curve = s.iso_curve(fixed, t, Limits::default()).unwrap();
+            let [lo, hi] = curve.domain();
+            for i in 0..=10 {
+                let q = lo + (hi - lo) * i as f64 / 10.;
+                let uv = if fixed == 0 { [t, q] } else { [q, t] };
+                let (a, b) = (s.evaluate(uv).unwrap(), curve.evaluate(q).unwrap());
+                assert!((0..3).all(|k| (a[k] - b[k]).abs() < 1e-12), "{fixed} {t} {q}: {a:?} {b:?}");
+            }
+        }
     }
 }

@@ -171,7 +171,7 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
             }
         }
         Geometry::Imported { .. } => r.extend([ImportPath, Reorient]),
-        // A stored STEP solid is edited in the native window (needs the OpenCascade build), not row by row.
+        // A stored STEP solid is edited in the native window not row by row.
         Geometry::Solid { .. } => {}
     }
     r.push(Header("Mesh"));

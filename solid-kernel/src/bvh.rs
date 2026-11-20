@@ -147,12 +147,15 @@ impl Bvh {
         best
     }
 
-    /// Call `f(triangle, squared distance)` for every triangle within `radius` of `p`.
-    pub fn within(&self, vertices: &[V3], triangles: &[[usize; 3]], p: V3, radius: f64, f: &mut dyn FnMut(usize, f64)) {
+    /// Call `f(triangle, squared distance, closest point)` for every triangle within `radius` of `p`.
+    pub fn within(&self, vertices: &[V3], triangles: &[[usize; 3]], p: V3, radius: f64, f: &mut dyn FnMut(usize, f64, V3)) {
         let r2 = radius * radius;
-        let mut stack = vec![0usize];
-        while let Some(n) = stack.pop() {
-            let node = self.nodes[n];
+        // the tree is balanced by a median split, so its depth is log2(triangles) and one child is pushed per level
+        let mut stack = [0usize; 128];
+        let mut top = 1;
+        while top > 0 {
+            top -= 1;
+            let node = &self.nodes[stack[top]];
             if box_dist2(node.lo, node.hi, p) > r2 {
                 continue;
             }
@@ -163,12 +166,13 @@ impl Bvh {
                     let d = sub(p, c);
                     let d2 = dot(d, d);
                     if d2 <= r2 {
-                        f(t, d2);
+                        f(t, d2, c);
                     }
                 }
             } else {
-                stack.push(node.a);
-                stack.push(node.b);
+                stack[top] = node.a;
+                stack[top + 1] = node.b;
+                top += 2;
             }
         }
     }

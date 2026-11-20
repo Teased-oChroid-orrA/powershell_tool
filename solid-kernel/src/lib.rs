@@ -9,8 +9,8 @@
 //! (Baerentzen and Aanaes), which is robust at edges and vertices where a plain face normal is not. The tessellation
 //! deflection bounds the geometric error, so it should be a small fraction of the boundary element size.
 //!
-//! The OpenCascade side (`occt` feature) only has to produce the tessellation, the faces and the STEP files; nothing
-//! here depends on it, which is also what makes this part testable on analytic shapes.
+//! Nothing here links a CAD library (OpenCascade was retired, ADR-023), which also makes this part testable on analytic
+//! shapes.
 
 pub mod analytic_step;
 pub mod chart_grade;
@@ -389,25 +389,29 @@ impl SurfaceSolid {
     /// Model faces within `radius`, with signed trimmed-patch distances and projection directions.
     /// On a patch, the direction is its nearest triangle's outward normal.
     pub fn faces_near(&self, p: V3, radius: f64) -> Vec<FaceHit> {
-        let mut best: HashMap<usize, (f64, usize)> = HashMap::new();
-        self.bvh.within(&self.vertices, &self.triangles, p, radius, &mut |t, d2| {
+        // the nearest triangle of each face within the radius (a handful of faces: a linear scan beats hashing)
+        let mut best: Vec<(usize, f64, usize, V3)> = Vec::new();
+        self.bvh.within(&self.vertices, &self.triangles, p, radius, &mut |t, d2, closest| {
             let f = self.face[t];
-            let e = best.entry(f).or_insert((f64::INFINITY, t));
-            if d2 < e.0 {
-                *e = (d2, t);
+            match best.iter_mut().find(|e| e.0 == f) {
+                Some(e) => {
+                    if d2 < e.1 {
+                        *e = (f, d2, t, closest);
+                    }
+                }
+                None => best.push((f, d2, t, closest)),
             }
         });
         let mut hits: Vec<FaceHit> = best
             .into_iter()
-            .map(|(face, (d2, t))| {
+            .map(|(face, d2, t, q)| {
                 let n = self.normal[t];
-                let [a, b, c] = self.triangles[t].map(|i| self.vertices[i]);
+                let a = self.vertices[self.triangles[t][0]];
                 let plane = dot(sub(p, a), n);
                 // Snapping moves a point by `dist * normal`. Along the plane's normal it would reach the face's whole *plane*, which
                 // runs past the face where it meets a tangent fillet (a vertex 0.1 mm beyond the tangent line was put on the flat
                 // face's extension, 3 % of its area). So the pair is (distance to the face itself, direction to its nearest point);
                 // on the face or within round-off of it that is the plane distance and the triangle normal.
-                let (q, _) = bvh::closest_on_triangle(p, a, b, c);
                 let off = sub(p, q);
                 let d = d2.max(0.0).sqrt();
                 if d > 1e-9 * (1.0 + plane.abs()) && d > 1e-12 {

@@ -713,6 +713,9 @@ pub struct SplineSurface {
     grid: Vec<([f64; 2], V3)>,
     /// cells of `grid` along each parameter
     grid_n: [usize; 2],
+    /// the parameter a linear band closes in (see `closed_band`): its chart is unwrapped, so chart coordinates are
+    /// folded back into the domain
+    periodic: Option<usize>,
 }
 
 impl SplineSurface {
@@ -729,6 +732,40 @@ impl SplineSurface {
     pub(crate) fn revolution_parameter(&self, p: V3, tolerance: f64) -> Option<f64> {
         self.revolution_profile()?;
         self.candidates(p)?.into_iter().find(|candidate| candidate.1 <= tolerance).map(|candidate| candidate.0[1])
+    }
+    /// The parameter `k` in which a B-spline band closes on itself: its two end curves coincide within `tolerance`.
+    /// The surface can then be cut along an iso-curve of `k`. `None` for any other surface, or one closed in both.
+    pub(crate) fn closed_band(&self, tolerance: f64) -> Option<usize> {
+        let Geometry::Nurbs(s) = &self.surface else { return None };
+        let domain = s.domain();
+        let closed = |k: usize| -> bool {
+            let other = 1 - k;
+            (0..=8).all(|i| {
+                let t = domain[other][0] + (domain[other][1] - domain[other][0]) * i as f64 / 8.;
+                let at = |c: f64| if k == 0 { [c, t] } else { [t, c] };
+                match (s.evaluate(at(domain[k][0])), s.evaluate(at(domain[k][1]))) {
+                    (Ok(a), Ok(b)) => norm(sub(a, b)) <= tolerance,
+                    _ => false,
+                }
+            })
+        };
+        match (closed(0), closed(1)) {
+            (true, false) => Some(0),
+            (false, true) => Some(1),
+            _ => None,
+        }
+    }
+    /// The curve of constant parameter `fixed` at `t` along the other parameter (B-spline surfaces only).
+    pub(crate) fn iso_curve(&self, fixed: usize, t: f64) -> Option<crate::nurbs::NurbsCurve> {
+        let Geometry::Nurbs(s) = &self.surface else { return None };
+        s.iso_curve(fixed, t, crate::nurbs_surface::Limits::default()).ok()
+    }
+    /// The parameters of a point within `tolerance` of the surface, and the range of parameter `k`.
+    pub(crate) fn parameters(&self, p: V3, tolerance: f64) -> Option<[f64; 2]> {
+        self.candidates(p)?.into_iter().find(|c| c.1 <= tolerance).map(|c| c.0)
+    }
+    pub(crate) fn parameter_range(&self, k: usize) -> [f64; 2] {
+        self.surface.domain()[k]
     }
     pub(crate) fn new(surface: crate::nurbs_surface::NurbsSurface) -> Result<Self, Error> {
         Self::from_geometry(Geometry::Nurbs(surface))
@@ -846,10 +883,17 @@ impl SplineSurface {
         if !(scale[0].is_finite() && scale[1].is_finite() && scale[0] > 0. && scale[1] > 0.) {
             return Err(fail(ErrorKind::Geometry, "a degenerate spline surface (zero metric)"));
         }
-        Ok(Self { surface, domain, scale, grid, grid_n })
+        let mut this = Self { surface, domain, scale, grid, grid_n, periodic: None };
+        this.periodic = this.closed_band(1e-3);
+        Ok(this)
     }
     fn param_of_chart(&self, c: [f64; 2]) -> [f64; 2] {
-        [self.domain[0][0] + c[0] / self.scale[0], self.domain[1][0] + c[1] / self.scale[1]]
+        let mut uv = [self.domain[0][0] + c[0] / self.scale[0], self.domain[1][0] + c[1] / self.scale[1]];
+        if let Some(k) = self.periodic {
+            let [lo, hi] = self.domain[k];
+            uv[k] = lo + (uv[k] - lo).rem_euclid(hi - lo);
+        }
+        uv
     }
     fn chart_of_param(&self, uv: [f64; 2]) -> [f64; 2] {
         [self.scale[0] * (uv[0] - self.domain[0][0]), self.scale[1] * (uv[1] - self.domain[1][0])]
@@ -1061,6 +1105,8 @@ impl SplineSurface {
     /// before it. The first point has no predecessor, so each of its images is tried and the loop of least chart length kept.
     pub(crate) fn chart_loop(&self, points: &[V3]) -> Option<Vec<[f64; 2]>> {
         let first = self.candidates(*points.first()?)?;
+        // A band closed in one parameter is charted unwrapped: each sample may also continue the loop one period either way.
+        let period = self.periodic.map(|k| (k, self.scale[k] * (self.domain[k][1] - self.domain[k][0])));
         let mut best: Option<(f64, Vec<[f64; 2]>)> = None;
         for (uv0, _) in first {
             let mut chart = vec![self.chart_of_param(uv0)];
@@ -1076,6 +1122,16 @@ impl SplineSurface {
                     .iter()
                     .filter(|f| f.1 <= nearest + 1e-3)
                     .map(|f| self.chart_of_param(f.0))
+                    .flat_map(|c| {
+                        (-1..=1).map(move |m| {
+                            let mut c = c;
+                            if let Some((k, length)) = period {
+                                c[k] += m as f64 * length;
+                            }
+                            c
+                        })
+                        .take(if period.is_some() { 3 } else { 1 })
+                    })
                     .min_by(|a, b| {
                         (a[0] - hint[0]).hypot(a[1] - hint[1]).total_cmp(&(b[0] - hint[0]).hypot(b[1] - hint[1]))
                     })?;

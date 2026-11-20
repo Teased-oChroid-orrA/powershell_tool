@@ -203,10 +203,14 @@ fn append_rail(out: &mut String, hit_results: &[&FileSearchResult]) {
         "<aside class=\"rail\" aria-label=\"Files with hits\"><h2>Files with hits <span id=\"railCount\">{}</span></h2>\n<nav class=\"rail-list\" id=\"rail\">\n",
         hit_results.len()
     ));
+    let density = |r: &FileSearchResult| r.hits.len() as f64 / (r.total_line_count.max(0) as usize).max(r.lines_cache.len()).max(1) as f64;
+    let densest = hit_results.iter().map(|r| density(r)).fold(0.0_f64, f64::max);
     for (idx, r) in hit_results.iter().enumerate() {
         let ext = ext_of(&r.full_name);
+        // The bar under a file's name is its hit density against the densest file: where the hits are packed tight.
+        let heat = if densest > 0.0 { (100.0 * density(r) / densest).clamp(6.0, 100.0) } else { 6.0 };
         out.push_str(&format!(
-            "<a href=\"#file-{n}\" data-id=\"file-{n}\"><span class=\"ftype sm\" style=\"background:{}\">{}</span><span class=\"nm\">{}</span><span class=\"n\">{}</span></a>\n",
+            "<a href=\"#file-{n}\" data-id=\"file-{n}\" style=\"--heat:{heat:.0}%\"><span class=\"ftype sm\" style=\"background:{}\">{}</span><span class=\"nm\">{}</span><span class=\"n\">{}</span></a>\n",
             type_color(&ext),
             type_label(&ext),
             html_escape(&file_name_of(&r.full_name)),
@@ -493,7 +497,8 @@ fn append_file_block(out: &mut String, r: &FileSearchResult, settings: &SearchSe
     }
     for f in settings.all_filters().filter(|f| per_filter_counts.contains_key(&f.to_lowercase())) {
         out.push_str(&format!(
-            "<span class=\"chip\"><i class=\"dot\" style=\"background:{}\"></i>{} {}</span>",
+            "<span class=\"chip\" data-slot=\"{}\"><i class=\"dot\" style=\"background:{}\"></i>{} {}</span>",
+            colors.slot(f),
             color_var(colors.slot(f)),
             html_escape(f),
             per_filter_counts[&f.to_lowercase()]
@@ -542,7 +547,7 @@ fn append_file_block(out: &mut String, r: &FileSearchResult, settings: &SearchSe
 
     if !r.lines_cache.is_empty() {
         out.push_str(&format!(
-            "<div class=\"code\"><div class=\"code-h\"><span>{hit_count} matching {} &middot; {} extracted lines</span></div><div class=\"lines\">\n",
+            "<div class=\"code\"><div class=\"code-h\"><span>{hit_count} matching {} &middot; {} extracted lines</span></div><div class=\"cwrap\"><div class=\"lines\">\n",
             if hit_count == 1 { "line" } else { "lines" },
             r.lines_cache.len()
         ));
@@ -555,12 +560,12 @@ fn append_file_block(out: &mut String, r: &FileSearchResult, settings: &SearchSe
                 out.push_str(&format!("<div class=\"ln\"><i>{ln}</i><span>{}</span></div>\n", html_escape(raw_line)));
             }
         }
-        out.push_str("</div></div>\n");
+        out.push_str("</div></div></div>\n");
     }
 
     let beyond_hits: Vec<&LineHit> = r.hits.iter().filter(|h| h.line_number as usize > r.lines_cache.len()).collect();
     if !beyond_hits.is_empty() {
-        out.push_str("<div class=\"code\"><div class=\"code-h\"><span>Additional hit(s) beyond the shown preview</span></div><div class=\"lines\">\n");
+        out.push_str("<div class=\"code\"><div class=\"code-h\"><span>Additional hit(s) beyond the shown preview</span></div><div class=\"cwrap\"><div class=\"lines\">\n");
         for h in beyond_hits {
             if let Some(before) = &h.before {
                 out.push_str(&format!("<div class=\"ln ctx\"><i></i><span>{}</span></div>\n", html_escape(before)));
@@ -574,7 +579,7 @@ fn append_file_block(out: &mut String, r: &FileSearchResult, settings: &SearchSe
                 out.push_str(&format!("<div class=\"ln ctx\"><i></i><span>{}</span></div>\n", html_escape(after)));
             }
         }
-        out.push_str("</div></div>\n");
+        out.push_str("</div></div></div>\n");
     }
 
     out.push_str("</div></details>\n");
@@ -1097,12 +1102,36 @@ const CSS_BLOCK: &str = concat!(
   .ln > span { padding:0 12px; }
   .ln.hit { background:var(--hit-bg); box-shadow:inset 3px 0 0 var(--hit-bar); }
   .ln.hit > i { color:var(--ink); font-weight:700; }
+  .ln.cur { outline:2px solid var(--accent); }
   .ln.ctx > span { color:var(--ink-3); }
   mark { background:var(--mark-bg); color:var(--mark-ink); padding:0 2px; border-radius:3px; font-weight:700; }
   mark.m2 { background:var(--m2); color:var(--m2-ink); } mark.m3 { background:var(--m3); color:var(--m3-ink); }
   mark.m4 { background:var(--m4); color:var(--m4-ink); } mark.m5 { background:var(--m5); color:var(--m5-ink); }
   mark.m6 { background:var(--m6); color:var(--m6-ink); }
 
+  .rail a { position:relative; }
+  .rail a::after { content:''; position:absolute; left:8px; right:8px; bottom:1px; height:3px; border-radius:2px; background:linear-gradient(to right,var(--hit-bar) var(--heat,0%),var(--line) var(--heat,0%)); opacity:.85; }
+  .cwrap { display:flex; background:var(--code-bg); }
+  .cwrap .lines { flex:1; min-width:0; font-size:var(--code-fs,12.5px); }
+  .nowrap .ln > span { white-space:pre; word-break:normal; }
+  .ctools { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:6px 12px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-3); }
+  .ctools .btn { padding:3px 9px; font-size:12px; }
+  .ctools .hint { margin-left:auto; }
+  .ctools kbd { font:11px var(--mono); border:1px solid var(--line-strong); border-radius:4px; padding:0 5px; background:var(--surface-2); color:var(--ink-2); }
+  .sb { position:sticky; top:0; z-index:2; display:flex; justify-content:space-between; gap:12px; padding:3px 12px; background:var(--surface-2); border-bottom:1px solid var(--line); font:11.5px var(--sans); color:var(--ink-2); }
+  .gut { position:relative; width:18px; flex:none; background:var(--surface-2); border-left:1px solid var(--line); cursor:pointer; }
+  .gut .tk { position:absolute; left:3px; right:3px; height:4px; border-radius:2px; box-shadow:0 0 0 1px color-mix(in srgb,var(--ink) 22%,transparent); pointer-events:none; }
+  .gut .tk.on { left:0; right:0; height:6px; box-shadow:0 0 0 1.5px var(--accent); }
+  .gut .th { position:absolute; left:0; right:0; border-radius:3px; background:var(--ink); opacity:.14; pointer-events:none; }
+  .gtip { position:fixed; z-index:50; max-width:340px; padding:4px 9px; border-radius:7px; background:var(--ink); color:var(--bg); font:12px var(--sans); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; display:none; }
+  .fmeta .chip[data-slot] { cursor:pointer; user-select:none; }
+  .fmeta .chip[data-slot].off { opacity:.45; text-decoration:line-through; }
+  .ln.hit.dim { background:none; box-shadow:none; }
+  .ln.hit.dim > i { color:var(--ink-3); font-weight:400; }
+  mark.off { background:transparent; color:inherit; font-weight:400; }
+  .ln.hid { display:none; }
+  .foldm { padding:1px 12px 1px 66px; font:11px var(--sans); color:var(--ink-3); background:var(--surface-2); border-top:1px dashed var(--line); border-bottom:1px dashed var(--line); cursor:pointer; }
+  .foldm:hover { color:var(--ink); }
   .warnings .w { display:flex; gap:10px; padding:8px 0; border-bottom:1px dashed var(--line); font-size:13px; }
   .warnings .w:last-child { border:0; }
   .no-hits { color:var(--ink-3); font-style:italic; }
@@ -1117,6 +1146,8 @@ const CSS_BLOCK: &str = concat!(
     .masthead { background:#0d2b4e !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
     details.file { box-shadow:none; break-inside:avoid; }
     .lines { max-height:none; overflow:visible; }
+    .gut,.ctools,.sb,.foldm,.gtip { display:none !important; } .ln.hid { display:grid; }
+    .rail a::after { display:none; }
   }
   @media (prefers-reduced-motion:reduce) { * { transition:none !important; scroll-behavior:auto !important; } }
 </style>"
@@ -1192,24 +1223,245 @@ const REPORT_SCRIPT: &str = r#"<script>
   });
   window.addEventListener('afterprint', function () { reopen.forEach(function (d) { d.open = false; }); reopen = []; });
 
+  // Code view: hit gutter beside the scrollbar, the current-hit outline, filter chips, folding, keys and line links.
+  // Built lazily when a file opens; without script the cards stay plain <details> (nothing here is needed to read them).
+  var curFile = null, tip = null, scheduled = {};
+  var view = { wrap: true, fs: 12.5 };
+  try {
+    var saved = JSON.parse(localStorage.getItem('rpt-view') || '{}');
+    if (saved.wrap === false) view.wrap = false;
+    if (saved.fs >= 10 && saved.fs <= 20) view.fs = saved.fs;
+  } catch (x) {}
+  var MARK = ['var(--mark-bg)', 'var(--m2)', 'var(--m3)', 'var(--m4)', 'var(--m5)', 'var(--m6)'];
+  function slotOf(el) { var m = /\bm(\d)\b/.exec(el.className || ''); return m ? +m[1] - 1 : 0; }
+  function cwraps(d) { return $$('.cwrap', d); }
+  function liveRows(w) { return $$('.ln.hit:not(.dim)', w); }
+  function allHits(d) { var out = []; cwraps(d).forEach(function (w) { out = out.concat(liveRows(w)); }); return out; }
+  function openReady() { return files.filter(function (d) { return d.open && d._ready; }); }
+
+  function applyView() {
+    var r = document.documentElement;
+    r.classList.toggle('nowrap', !view.wrap);
+    r.style.setProperty('--code-fs', view.fs + 'px');
+    $$('.js-wrap').forEach(function (b) { b.setAttribute('aria-pressed', view.wrap ? 'true' : 'false'); });
+    try { localStorage.setItem('rpt-view', JSON.stringify(view)); } catch (x) {}
+    requestAnimationFrame(function () { openReady().forEach(draw); });
+  }
+  function later(d) {
+    if (scheduled[d.id]) return;
+    scheduled[d.id] = true;
+    requestAnimationFrame(function () { scheduled[d.id] = false; draw(d); });
+  }
+  function thumb(s) {
+    var G = s.gut.clientHeight, tot = s.lines.scrollHeight || 1;
+    s.th.style.top = Math.round(s.lines.scrollTop / tot * G) + 'px';
+    s.th.style.height = Math.max(10, Math.round(s.lines.clientHeight / tot * G)) + 'px';
+  }
+  // The hit a code view is showing: the selected one when it lives in this view, else the one at the top third of it.
+  function viewRow(w, here) {
+    var s = w._s;
+    if (here && w.contains(here)) return here;
+    var best = 0, top = s.lines.scrollTop + s.lines.clientHeight / 3;
+    s.rows.forEach(function (r, i) { if (r.offsetTop <= top) best = i; });
+    return s.rows[best];
+  }
+  function draw(d) {
+    var hits = allHits(d);
+    if (d._i >= hits.length) d._i = Math.max(0, hits.length - 1);
+    var here = hits[d._i], name = ($('.fname', d) || {}).textContent || '';
+    cwraps(d).forEach(function (w) {
+      var s = w._s; if (!s) return;
+      var G = s.gut.clientHeight, tot = s.lines.scrollHeight || 1, last = -9;
+      $$('.tk', s.gut).forEach(function (t) { t.remove(); });
+      s.rows = liveRows(w); s.ys = [];
+      var shown = s.rows.length ? viewRow(w, here) : null;
+      s.rows.forEach(function (r) {
+        var y = Math.round(r.offsetTop / tot * G), on = r === shown;
+        s.ys.push(y);
+        if (y === last && !on) return;
+        last = y;
+        var mk = r.querySelector('mark:not(.off)'), t = document.createElement('div');
+        t.className = 'tk' + (on ? ' on' : '');
+        t.style.background = MARK[mk ? Math.min(slotOf(mk), 5) : 0];
+        t.style.top = y + 'px';
+        s.gut.appendChild(t);
+      });
+      thumb(s);
+      s.sb.innerHTML = '<span></span><span></span>';
+      s.sb.firstChild.textContent = name;
+      s.sb.lastChild.textContent = shown ? 'Hit ' + (hits.indexOf(shown) + 1) + ' of ' + hits.length + ' · line ' + (shown.querySelector('i').textContent || '') : 'No hits shown';
+    });
+  }
+  function select(d, i, smooth) {
+    var hits = allHits(d); if (!hits.length) return;
+    i = (i + hits.length) % hits.length;
+    d._i = d._sel = i;
+    $$('.ln.cur', d).forEach(function (r) { r.classList.remove('cur'); });
+    var row = hits[i], w = row.closest('.cwrap'), lines = w._s.lines;
+    row.classList.add('cur');
+    lines.scrollTo({ top: Math.max(0, row.offsetTop - 48), behavior: smooth ? 'smooth' : 'auto' });
+    if (w !== cwraps(d)[0]) w.scrollIntoView({ block: 'nearest', behavior: smooth ? 'smooth' : 'auto' });
+    draw(d);
+  }
+  // Next / previous steps from the hit last selected (the outlined one), not from the one the scroll happens to show.
+  function step(d, dir) {
+    var hits = allHits(d); if (!hits.length) return;
+    var at = d._sel === undefined || !hits[d._sel] || !hits[d._sel].classList.contains('cur') ? -1 : d._sel;
+    select(d, at < 0 ? (dir > 0 ? 0 : hits.length - 1) : at + dir, true);
+  }
+  function onScroll(d, w) {
+    var s = w._s; thumb(s);
+    var hits = allHits(d), rows = s.rows || [], best = 0, top = s.lines.scrollTop + s.lines.clientHeight / 3;
+    rows.forEach(function (r, i) { if (r.offsetTop <= top) best = i; });
+    var gi = rows.length ? hits.indexOf(rows[best]) : -1;
+    if (gi >= 0 && gi !== d._i) { d._i = gi; later(d); }
+  }
+  function nearest(s, y) {
+    var bi = -1, bd = 1e9;
+    (s.ys || []).forEach(function (v, i) { var dd = Math.abs(v - y); if (dd < bd) { bd = dd; bi = i; } });
+    return { i: bi, d: bd };
+  }
+  function showTip(e, d, w) {
+    var s = w._s, r = s.gut.getBoundingClientRect(), n = nearest(s, e.clientY - r.top);
+    if (!tip) { tip = document.createElement('div'); tip.className = 'gtip'; document.body.appendChild(tip); }
+    if (n.i < 0 || n.d >= 9) { tip.style.display = 'none'; return; }
+    var row = s.rows[n.i];
+    tip.textContent = 'Line ' + row.querySelector('i').textContent + ': ' + row.querySelector('span').textContent.trim().slice(0, 140);
+    tip.style.display = 'block';
+    tip.style.left = (r.left - 8) + 'px'; tip.style.top = Math.max(4, e.clientY - 14) + 'px';
+    tip.style.transform = 'translateX(-100%)';
+  }
+  function setup(d) {
+    if (d._ready) return;
+    d._ready = true; d._off = {}; d._fold = false; d._i = 0;
+    cwraps(d).forEach(function (w, k) {
+      var lines = $('.lines', w), sb = document.createElement('div'), gut = document.createElement('div'), th = document.createElement('div');
+      sb.className = 'sb'; lines.insertBefore(sb, lines.firstChild);
+      gut.className = 'gut'; gut.setAttribute('role', 'button');
+      gut.setAttribute('aria-label', 'Hit map: click a mark to jump to that hit');
+      th.className = 'th'; gut.appendChild(th); w.appendChild(gut);
+      w._s = { lines: lines, gut: gut, th: th, sb: sb, rows: [], ys: [] };
+      if (k === 0) {
+        var bar = document.createElement('div'); bar.className = 'ctools js-only';
+        bar.innerHTML = '<button class="btn js-fold" type="button">Fold lines without hits</button><button class="btn js-wrap" type="button" aria-pressed="' + view.wrap + '">Wrap</button><button class="btn js-sm" type="button" title="Smaller text">A&minus;</button><button class="btn js-lg" type="button" title="Larger text">A+</button><span class="hint"><kbd>n</kbd> <kbd>p</kbd> hit &middot; <kbd>[</kbd> <kbd>]</kbd> file</span>';
+        w.parentNode.insertBefore(bar, w);
+      }
+      lines.addEventListener('scroll', function () { onScroll(d, w); });
+      gut.addEventListener('click', function (e) {
+        var s = w._s, r = gut.getBoundingClientRect(), y = e.clientY - r.top, n = nearest(s, y);
+        if (n.i >= 0 && n.d < 9) select(d, allHits(d).indexOf(s.rows[n.i]), true);
+        else s.lines.scrollTo({ top: y / r.height * s.lines.scrollHeight - s.lines.clientHeight / 2, behavior: 'smooth' });
+      });
+      gut.addEventListener('mousemove', function (e) { showTip(e, d, w); });
+      gut.addEventListener('mouseleave', function () { if (tip) tip.style.display = 'none'; });
+    });
+    draw(d);
+  }
+  function applyFold(d) {
+    cwraps(d).forEach(function (w) {
+      var s = w._s; if (!s) return;
+      $$('.foldm', s.lines).forEach(function (m) { m.remove(); });
+      $$('.ln.hid', s.lines).forEach(function (r) { r.classList.remove('hid'); });
+      if (!d._fold) return;
+      var rows = $$('.ln', s.lines), keep = rows.map(function () { return false; }), group = [];
+      rows.forEach(function (r, i) {
+        if (r.classList.contains('hit') && !r.classList.contains('dim')) {
+          for (var k = i - 1; k <= i + 1; k++) if (k >= 0 && k < rows.length) keep[k] = true;
+        }
+      });
+      function flush() {
+        if (!group.length) return;
+        var m = document.createElement('div'); m.className = 'foldm'; m._rows = group;
+        m.textContent = '··· ' + group.length + (group.length === 1 ? ' line' : ' lines') + ' without hits';
+        group[0].parentNode.insertBefore(m, group[0]);
+        group.forEach(function (r) { r.classList.add('hid'); });
+        group = [];
+      }
+      rows.forEach(function (r, i) { if (keep[i]) flush(); else group.push(r); });
+      flush();
+    });
+    $$('.js-fold', d).forEach(function (b) { b.textContent = d._fold ? 'Show all lines' : 'Fold lines without hits'; });
+  }
+  function applyChips(d) {
+    $$('mark', d).forEach(function (m) { m.classList.toggle('off', !!d._off[slotOf(m)]); });
+    $$('.ln.hit', d).forEach(function (r) {
+      var ms = $$('mark', r);
+      r.classList.toggle('dim', ms.length > 0 && ms.every(function (m) { return d._off[slotOf(m)]; }));
+    });
+    applyFold(d); draw(d);
+  }
+  function navFile(dir) {
+    var vis = files.filter(function (d) { return !d.hidden; }); if (!vis.length) return;
+    var i = vis.indexOf(curFile), d = vis[(i < 0 ? (dir > 0 ? 0 : vis.length - 1) : (i + dir + vis.length) % vis.length)];
+    d.open = true; setup(d); curFile = d;
+    d.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    select(d, 0, false);
+  }
+  function openHash() {
+    var m = /^#(file-\d+)-L(\d+)$/.exec(location.hash), d = m && document.getElementById(m[1]);
+    if (!d) return;
+    d.hidden = false; d.open = true; setup(d); curFile = d;
+    var cell = $$('.ln > i', d).filter(function (x) { return x.textContent === m[2]; })[0];
+    if (!cell) return;
+    var row = cell.parentNode;
+    $$('.ln.cur', d).forEach(function (r) { r.classList.remove('cur'); });
+    row.classList.add('cur'); d._sel = allHits(d).indexOf(row);
+    d.scrollIntoView();
+    var lines = row.closest('.lines'); lines.scrollTop = Math.max(0, row.offsetTop - 48);
+    draw(d);
+  }
+
+  box.addEventListener('toggle', function (e) {
+    var d = e.target;
+    if (d.matches && d.matches('details.file') && d.open) { setup(d); curFile = d; draw(d); }
+  }, true);
+  window.addEventListener('resize', function () { openReady().forEach(later); });
+  window.addEventListener('hashchange', openHash);
   document.addEventListener('click', function (e) {
-    var b = e.target.closest('[data-act]'); if (!b) return;
-    var d = b.closest('details');
-    if (b.dataset.act === 'copy') {
-      if (navigator.clipboard) navigator.clipboard.writeText(b.dataset.path).then(function () { toast('Path copied'); }, function () { toast('Copy failed'); });
+    var t = e.target, d = t.closest ? t.closest('details.file') : null;
+    if (d) { curFile = d; setup(d); }
+    var b = t.closest('[data-act]');
+    if (b) {
+      if (b.dataset.act === 'copy') {
+        if (navigator.clipboard) navigator.clipboard.writeText(b.dataset.path).then(function () { toast('Path copied'); }, function () { toast('Copy failed'); });
+      } else if (d) { step(d, b.dataset.act === 'next' ? 1 : -1); }
       return;
     }
-    var hits = $$('.ln.hit', d);
-    if (!hits.length) return;
-    d._i = ((d._i === undefined ? -1 : d._i) + (b.dataset.act === 'next' ? 1 : -1) + hits.length) % hits.length;
-    hits.forEach(function (h) { h.style.outline = ''; });
-    var h = hits[d._i], lines = h.closest('.lines');
-    lines.scrollTo({ top: h.offsetTop - 40, behavior: 'smooth' });
-    h.style.outline = '2px solid var(--accent)';
+    if (!d) return;
+    var chip = t.closest('.fmeta .chip[data-slot]');
+    if (chip) {
+      var slot = +chip.dataset.slot; d._off[slot] = !d._off[slot];
+      chip.classList.toggle('off', !!d._off[slot]); chip.setAttribute('aria-pressed', d._off[slot] ? 'false' : 'true');
+      applyChips(d); return;
+    }
+    var fm = t.closest('.foldm');
+    if (fm) { fm._rows.forEach(function (r) { r.classList.remove('hid'); }); fm.remove(); draw(d); return; }
+    var num = t.closest('.cwrap .ln > i');
+    if (num && /^\d+$/.test(num.textContent)) {
+      var link = location.href.split('#')[0] + '#' + d.id + '-L' + num.textContent;
+      if (navigator.clipboard) navigator.clipboard.writeText(link).then(function () { toast('Link to line ' + num.textContent + ' copied'); }, function () { toast('Copy failed'); });
+      return;
+    }
+    var btn = t.closest('.ctools button');
+    if (!btn) return;
+    if (btn.classList.contains('js-fold')) { d._fold = !d._fold; applyFold(d); draw(d); }
+    else if (btn.classList.contains('js-wrap')) { view.wrap = !view.wrap; applyView(); }
+    else if (btn.classList.contains('js-sm')) { view.fs = Math.max(10, view.fs - 1); applyView(); }
+    else if (btn.classList.contains('js-lg')) { view.fs = Math.min(20, view.fs + 1); applyView(); }
   });
   document.addEventListener('keydown', function (e) {
-    if (e.key === '/' && document.activeElement !== q) { e.preventDefault(); q.focus(); }
+    if (e.key === '/' && document.activeElement !== q) { e.preventDefault(); q.focus(); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var tg = e.target, tag = tg && tg.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || (tg && tg.isContentEditable)) return;
+    if (e.key === 'n' || e.key === 'p') {
+      var d = curFile && !curFile.hidden && curFile.open ? curFile : files.filter(function (f) { return f.open && !f.hidden; })[0];
+      if (!d) return;
+      setup(d); curFile = d; step(d, e.key === 'n' ? 1 : -1); e.preventDefault();
+    } else if (e.key === '[' || e.key === ']') { navFile(e.key === ']' ? 1 : -1); e.preventDefault(); }
   });
+  applyView();
+  openHash();
   if ('IntersectionObserver' in window) {
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (en) {
@@ -1255,6 +1507,101 @@ mod tests {
             after: None,
             matched_filters: filters.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+    /// A file with `n` lines of filler whose hit lines (1-based, with their filters) read like a real document.
+    fn document_with_hits(name: &str, n: usize, hits: &[(i32, &[&str])]) -> FileSearchResult {
+        let filler = [
+            "General notes for this section of the document.",
+            "Identify all existing tools using the current implementation.",
+            "Migrate consumers to the shared module.",
+            "Validate results after the change.",
+            "All dimensions are in millimetres unless stated.",
+        ];
+        let mut r = sample_result(name, Vec::new());
+        r.lines_cache = (1..=n).map(|i| filler[i % filler.len()].to_string()).collect();
+        r.total_line_count = n as i32;
+        for (line, filters) in hits {
+            let text = format!("Establish {} before release.", filters.join(" and "));
+            if let Some(slot) = r.lines_cache.get_mut(*line as usize - 1) {
+                *slot = text.clone();
+            }
+            r.hits.push(hit(*line, &text, filters));
+        }
+        r
+    }
+
+    #[test]
+    fn the_hit_highlight_is_unchanged_and_the_code_view_has_a_wrapper_for_the_gutter() {
+        let settings = SearchSettings { filters: vec!["apple".to_string(), "banana".to_string()], ..Default::default() };
+        let mut run = SearchRunResult::default();
+        run.file_results.push(document_with_hits("/x/a.txt", 30, &[(12, &["apple"])]));
+        let html = build_html_report(&settings, &run);
+        assert!(html.contains("<div class=\"ln hit\"><i>12</i><span>Establish <mark>apple</mark> before release.</span></div>"), "the hit row markup is as before");
+        assert!(html.contains("<div class=\"cwrap\"><div class=\"lines\">"), "the gutter hangs off a wrapper the script fills");
+        for rule in [
+            ".ln.hit { background:var(--hit-bg); box-shadow:inset 3px 0 0 var(--hit-bar); }",
+            ".ln.hit > i { color:var(--ink); font-weight:700; }",
+            "mark { background:var(--mark-bg); color:var(--mark-ink); padding:0 2px; border-radius:3px; font-weight:700; }",
+            ".ln.cur { outline:2px solid var(--accent); }",
+        ] {
+            assert!(html.contains(rule), "the highlight rule is kept: {rule}");
+        }
+        assert!(html.contains("--hit-bg:#33290f; --hit-bar:#e0a800; --mark-bg:#e6a817; --mark-ink:#1a1200;"), "dark palette values");
+        assert_eq!(html.matches("<script").count(), 2, "no extra script tag: the gutter is built by the existing report script");
+    }
+
+    #[test]
+    fn filter_chips_carry_their_colour_slot_so_the_script_can_dim_a_filter() {
+        let settings = SearchSettings { filters: vec!["apple".to_string(), "banana".to_string()], ..Default::default() };
+        let mut run = SearchRunResult::default();
+        run.file_results.push(document_with_hits("/x/a.txt", 30, &[(3, &["apple"]), (9, &["banana"])]));
+        let html = build_html_report(&settings, &run);
+        assert!(html.contains("<span class=\"chip\" data-slot=\"0\"><i class=\"dot\""), "{html}");
+        assert!(html.contains("<span class=\"chip\" data-slot=\"1\"><i class=\"dot\""));
+    }
+
+    #[test]
+    fn the_rail_bar_is_hit_density_against_the_densest_file() {
+        let settings = SearchSettings { filters: vec!["apple".to_string()], ..Default::default() };
+        let mut run = SearchRunResult::default();
+        run.file_results.push(document_with_hits("/x/dense.txt", 10, &[(2, &["apple"]), (4, &["apple"]), (6, &["apple"])]));
+        run.file_results.push(document_with_hits("/x/sparse.txt", 100, &[(50, &["apple"])]));
+        let html = build_html_report(&settings, &run);
+        let bar = |name: &str| -> f64 {
+            let at = html.find(&format!("<span class=\"nm\">{name}</span>")).expect("a rail link for the file");
+            let tag = &html[..at];
+            let start = tag.rfind("--heat:").expect("a heat value on its link") + "--heat:".len();
+            tag[start..].split('%').next().unwrap().parse().unwrap()
+        };
+        assert_eq!(bar("dense.txt"), 100.0, "the densest file fills the bar");
+        let sparse = bar("sparse.txt");
+        assert!((6.0..10.0).contains(&sparse), "1 hit in 100 lines against 3 in 10 is about 3 %, floored to a visible 6 %: {sparse}");
+    }
+
+    /// Writes a report with three filters, a long file with a hit beyond its shown lines and a few short ones, for
+    /// looking at the gutter in a browser: `FEA_REPORT_SAMPLE_OUT=/tmp/report.html cargo test -p search-core --lib
+    /// writes_a_sample_report -- --ignored`.
+    #[test]
+    #[ignore = "writes a sample report to FEA_REPORT_SAMPLE_OUT"]
+    fn writes_a_sample_report_for_the_browser() {
+        let Ok(out) = std::env::var("FEA_REPORT_SAMPLE_OUT") else { return };
+        let all: [&str; 3] = ["regression tests", "baseline", "migration"];
+        let settings = SearchSettings { filters: all.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+        let mut run = SearchRunResult::default();
+        let mut long = document_with_hits(
+            "/Engineering/Specs/torque-specification.pdf",
+            400,
+            &[(7, &["regression tests"]), (19, &["baseline"]), (20, &["baseline"]), (34, &["regression tests"]), (48, &["migration"]), (49, &["regression tests"]),
+              (120, &["baseline"]), (121, &["regression tests", "baseline"]), (250, &["migration"]), (251, &["migration"]), (380, &["regression tests"]), (382, &["regression tests", "baseline"])],
+        );
+        long.total_line_count = 1294;
+        long.hits.push(hit(1100, "Late in the file: baseline behavior is restated.", &["baseline"]));
+        run.file_results.push(long);
+        run.file_results.push(document_with_hits("/Engineering/Memos/design-memo.docx", 60, &[(12, &["regression tests"]), (33, &["baseline"]), (41, &["regression tests", "migration"])]));
+        run.file_results.push(document_with_hits("/Projects/Alpha/migration-plan.md", 120, &[(5, &["migration"]), (18, &["migration"]), (19, &["regression tests"]), (40, &["baseline"]), (52, &["migration"]), (70, &["regression tests"]), (88, &["migration"])]));
+        run.file_results.push(document_with_hits("/Projects/Alpha/notes.txt", 24, &[(9, &["baseline"])]));
+        std::fs::write(out, build_html_report(&settings, &run)).unwrap();
     }
 
     #[test]
@@ -1599,7 +1946,7 @@ mod tests {
         // Ungrouped, files are listed by path, case-insensitively.
         let a = html.find("<details class=\"file\" id=\"file-1\"").unwrap();
         assert!(html[a..a + 400].contains("data-name=\"/x/a.txt\""));
-        assert!(html.contains("<a href=\"#file-2\" data-id=\"file-2\">"));
+        assert!(html.contains("<a href=\"#file-2\" data-id=\"file-2\" style=\"--heat:"));
         assert!(html.contains("data-hits=\"2\""));
         assert!(html.contains("<span class=\"n\">2</span>"));
         assert!(html.contains("<button aria-pressed=\"true\" data-ext=\"pdf\">.pdf</button>"));

@@ -1965,6 +1965,7 @@ impl AnalyticModel {
         }
         self.seam_unseamed_torus_bands(&mut next);
         self.seam_unseamed_revolution_bands(&mut next);
+        self.seam_unseamed_spline_bands(&mut next);
         self.seam_cone_tips(&mut next);
     }
     /// Join the loops `la` and `lb` of the bounds `pair` of a band face into one through a new seam edge from `ends.0` (the
@@ -2316,6 +2317,63 @@ impl AnalyticModel {
                 samples,
                 next,
             );
+        }
+    }
+    /// Cut a B-spline band that closes on itself in one parameter between its two winding loops along the iso-curve of that
+    /// parameter, like [`Self::seam_unseamed_revolution_bands`].
+    fn seam_unseamed_spline_bands(&mut self, next: &mut u64) {
+        let reach = self.geometry_tolerance_mm.max(self.heal_limit_mm);
+        let faces: Vec<u64> = self.body.faces.values()
+            .filter(|f| f.bounds.len() == 2)
+            .filter(|f| matches!(self.surfaces.get(&f.id), Some(Surface::Param(s)) if s.closed_band(self.geometry_tolerance_mm).is_some()))
+            .map(|f| f.id).collect();
+        for face_id in faces {
+            let Some(Surface::Param(surface)) = self.surfaces.get(&face_id) else { continue };
+            let surface = surface.clone();
+            let Some(k) = surface.closed_band(self.geometry_tolerance_mm) else { continue };
+            let range = surface.parameter_range(k);
+            let span = range[1] - range[0];
+            let angle = |p: V3| match surface.parameters(p, reach) {
+                Some(uv) => TAU * (uv[k] - range[0]) / span,
+                None => f64::NAN,
+            };
+            let wrap = |a: f64| a - TAU * (a / TAU).round();
+            let Some(turns) = self.bound_turns(face_id, &angle, &wrap) else { continue };
+            let Some(pair) = winding_pair(&turns) else { continue };
+            let (la, lb, tb) = (turns[pair.0].0.clone(), turns[pair.1].0.clone(), turns[pair.1].1);
+            let Some(va) = la.first().and_then(|u| self.use_start(u)) else { continue };
+            let pa = self.vertices[&va];
+            let Some(vb) = self.vertex_of_loop_at_angle(&lb, tb.signum(), angle(pa), &angle, &wrap, next) else { continue };
+            let Some(turns) = self.bound_turns(face_id, &angle, &wrap) else { continue };
+            let (la, mut lb) = (turns[pair.0].0.clone(), turns[pair.1].0.clone());
+            let Some(at) = lb.iter().position(|u| self.use_start(u) == Some(vb)) else { continue };
+            lb.rotate_left(at);
+            let pb = self.vertices[&vb];
+            // the seam is the iso-curve of the closed parameter between the two vertices
+            let (Some(a), Some(b)) = (surface.parameters(pa, reach), surface.parameters(pb, reach)) else { continue };
+            let gap = (a[k] - b[k]).abs();
+            if gap.min(span - gap) > 1e-9 * span {
+                continue;
+            }
+            let Some(iso) = surface.iso_curve(k, a[k]) else { continue };
+            let o = 1 - k;
+            let (ta, tb) = (a[o], b[o]);
+            if (ta - tb).abs() <= 1e-10 * (surface.parameter_range(o)[1] - surface.parameter_range(o)[0]) {
+                continue;
+            }
+            let reverse = ta > tb;
+            let Ok((mut params, mut samples)) = sample_spline_range(&iso, [ta.min(tb), ta.max(tb)], self.chord_mm, 100_000, SPLIT_SHARE) else { continue };
+            if reverse {
+                samples.reverse();
+                params.reverse();
+            }
+            let (first, last) = (samples[0], *samples.last().unwrap());
+            if norm(sub(first, pa)) > reach || norm(sub(last, pb)) > reach {
+                continue;
+            }
+            samples[0] = pa;
+            *samples.last_mut().unwrap() = pb;
+            self.install_band_seam(face_id, pair, la, lb, (va, vb), Curve::Spline { curve: std::sync::Arc::new(iso), params }, samples, next);
         }
     }
     fn use_start(&self, u: &EdgeUse) -> Option<u64> {
