@@ -942,18 +942,35 @@ Result: `lighte` loses SciFact and MS MARCO (mean +0.0003). Porter2 wins four se
 
 Not measured: engineering folders (no labelled set), non-English text, and lemmatization with a dictionary (irregular forms such as `broke` / `broken`); `rust-stemmers` is English-only. The shipped stemmer stays.
 
-### Addendum (same day): two engineering sets
+### Addendum: nlprule lemmatization and the engineering sets
 
-Same method, default hybrid variant, release build, same indexes per set.
+Question: does dictionary lemmatization (`nlprule` 0.6.4, English tagger) beat Snowball Porter2 (`rust-stemmers` English) and the shipped stemmer? `rust-bert` was excluded: it has no stemmer or lemmatizer and needs libtorch or ONNX, which breaks the clean-Windows, nothing-pre-installed rule.
 
-| Set | light (shipped) | porter2 |
-|---|---|---|
-| AeroEngQA (40 queries) nDCG@10 | 0.9462 | 0.9537 |
-| ViDoRe industrial shard (149 queries) nDCG@10 | 0.4023 | 0.3992 |
-| ViDoRe industrial shard Recall@100 | 0.7822 | 0.7975 |
-| ViDoRe industrial shard MRR@10 | 0.4948 | 0.4981 |
+Method: as above, one process per mode, same indexes, hybrid `default` variant, release build, one rerun of all four modes for a like-for-like table. Temporary switch in `lexical::stem` (not committed): `light` (shipped), `porter2`, `nlp` (first tagger lemma of an all-ASCII-letter word, else the word unchanged), `nlpfb` (same, but untagged words go through the shipped stemmer). Two engineering sets added as tiebreakers, not part of the gate: AeroEngQA and the ViDoRe industrial shard 0.
 
-Over all seven sets Porter2 wins five and loses two (MS MARCO -0.0044, ViDoRe industrial -0.0031); mean nDCG@10 +0.0033. Verdict unchanged: not adopted under the no-loss rule. Every gain is at most 0.008 absolute, which is inside plausible sampling noise for 40 to 200 queries (per-query variance was not measured: the default variant prints no per-query output), and the two engineering sets do not agree with each other. Adopting it would need an explicit owner exception, a new direct dependency (`rust-stemmers`) and about 2 ms per query, for English only.
+nDCG@10:
+
+| Set | light (shipped) | porter2 | nlp | nlpfb |
+|---|---|---|---|---|
+| SciFact | 0.7518 | 0.7572 | 0.7420 | 0.7437 |
+| NFCorpus | 0.3844 | 0.3886 | 0.3829 | 0.3830 |
+| Cranfield | 0.3988 | 0.4041 | 0.4024 | 0.4024 |
+| MS MARCO | 0.6674 | 0.6630 | 0.6691 | 0.6677 |
+| TREC-COVID | 0.4121 | 0.4201 | 0.3983 | 0.4006 |
+| gate mean (5) | 0.5229 | 0.5266 (+0.0037) | 0.5189 (-0.0035) | 0.5195 (-0.0029) |
+| AeroEngQA | 0.9462 | 0.9537 | 0.9462 | 0.9462 |
+| ViDoRe industrial | 0.4023 | 0.3992 | 0.3996 | 0.4005 |
+| mean (7) | 0.5661 | 0.5694 (+0.0033) | 0.5629 (-0.0032) | 0.5634 (-0.0027) |
+
+ViDoRe Recall@100: light 0.7822, porter2 0.7975, nlp 0.7826, nlpfb 0.7822. MRR@10: 0.4948, 0.4981, 0.4966, 0.5017.
+
+Result: nothing is adopted; the shipped stemmer stays. Under the five-set rule Porter2 loses MS MARCO (-0.0044), `nlp` loses SciFact (-0.0098), NFCorpus (-0.0015) and TREC-COVID (-0.0138), and `nlpfb` loses the same three (-0.0081, -0.0014, -0.0115). Lemmatization wins only Cranfield and MS MARCO, by small margins, and the first-lemma simplification (ambiguous words such as `leaves` have several lemmas) is a likely reason it trails on the scientific and biomedical sets; the shipped-stemmer fallback recovers only about 0.0006 of the gate mean.
+
+Ranking of the three: Porter2 (`rust-stemmers`) is best on retrieval (highest mean on both the five and seven sets, wins four gate sets and AeroEngQA, loses MS MARCO and ViDoRe nDCG); the shipped stemmer is second and is the only one with no data or dependency cost; `nlprule` is last. `nlprule` also needs an 11.6 MB tokenizer file whose language data is LGPL 2.1 (LanguageTool-derived), which the project avoided by retiring OpenCascade (ADR-023); the latest release is 0.6.4 and its maintenance is unconfirmed. Adopting it would have been an owner decision even if it had won.
+
+Latency: not comparable. The reruns ran while other builds and tests loaded the machine (shipped stemmer SciFact 108.8 ms/query here against 22.4 ms in the first run), so no per-query cost is claimed for any mode. `nlprule` also loads the tokenizer once per process.
+
+Not measured: engineering folders with real relevance labels beyond the two sets above, non-English text, and a lemma chooser that uses part of speech instead of the first tag.
 
 ## 2026-11-20: term clusters for the "Related from hits" chips
 
