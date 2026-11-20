@@ -16,14 +16,15 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use super::HitSet;
 use crate::extraction::decode_text;
-use crate::models::{FileSearchResult, SearchSettings};
+use crate::matching::{apply_line_matching, CompiledMatchState};
+use crate::models::{ExcludeScope, FileSearchResult, LineHit, MatchMode, SearchSettings};
 
 /// One index checkpoint per this many lines.
 pub const STRIDE: u64 = 256;
@@ -31,6 +32,8 @@ pub const STRIDE: u64 = 256;
 const MAX_LINES: usize = 2000;
 /// Time one `find` request scans before it hands back what it has and where to continue.
 const FIND_SLICE: Duration = Duration::from_millis(120);
+/// Lines handed to the matcher at once while scanning a file for hits.
+const SCAN_CHUNK: usize = 4096;
 
 /// Byte offsets of every [`STRIDE`]th line of a file, plus the line count.
 pub struct LineIndex {
@@ -148,16 +151,35 @@ fn decode_line(bytes: &[u8]) -> String {
 pub struct LargeView {
     path: PathBuf,
     index: LineIndex,
-    hits: HitSet,
+    /// The search's hits, plus whatever [`LargeView::scan_hits`] has found since.
+    hits: RwLock<HitSet>,
     settings: SearchSettings,
     result: FileSearchResult,
+    /// The search's filters compiled for a per-line scan, on first use (`None`: they do not compile).
+    scan_units: OnceLock<Option<Vec<(SearchSettings, CompiledMatchState)>>>,
+}
+
+/// One matcher per filter group of `settings` (the primary filters and every extra group), each in "any line" mode so a
+/// line is a hit on its own, with the line-scope exclusions of the search applied to all of them.
+fn scan_units(settings: &SearchSettings) -> Option<Vec<(SearchSettings, CompiledMatchState)>> {
+    let mut excludes = if settings.exclude_scope == ExcludeScope::Line { settings.exclude_filters.clone() } else { Vec::new() };
+    excludes.extend(settings.filter_groups.iter().filter(|g| g.exclude == Some(ExcludeScope::Line)).flat_map(|g| g.filters.iter().cloned()));
+    let mut sets: Vec<Vec<String>> = vec![settings.filters.clone()];
+    sets.extend(settings.filter_groups.iter().filter(|g| g.exclude.is_none()).map(|g| g.filters.clone()));
+    sets.into_iter()
+        .filter(|f| !f.is_empty())
+        .map(|filters| {
+            let unit = SearchSettings { filters, filter_groups: Vec::new(), match_mode: MatchMode::AnyLine, exclude_filters: excludes.clone(), exclude_scope: ExcludeScope::Line, ..settings.clone() };
+            CompiledMatchState::build(&unit).ok().map(|state| (unit, state))
+        })
+        .collect()
 }
 
 impl LargeView {
     /// Open `path` for reading: builds the line index (reads the whole file once, without keeping it).
     pub fn open(path: &Path, result: &FileSearchResult, settings: &SearchSettings) -> std::io::Result<Self> {
         let index = LineIndex::build(path)?;
-        Ok(Self { path: path.to_path_buf(), index, hits: HitSet::from_result(result, settings), settings: settings.clone(), result: result.clone() })
+        Ok(Self { path: path.to_path_buf(), index, hits: RwLock::new(HitSet::from_result(result, settings)), settings: settings.clone(), result: result.clone(), scan_units: OnceLock::new() })
     }
 
     pub fn total_lines(&self) -> u64 {
@@ -181,10 +203,19 @@ impl LargeView {
     }
 
     fn row(&self, n: u64, text: String) -> Value {
-        match self.hits.entries.binary_search_by_key(&(n as u32), |e| e.0) {
+        self.row_with(n, text, true)
+    }
+
+    /// `spans: false` leaves the highlight ranges out (a hit row is then `[n, text, slotMask]`), which is much cheaper.
+    fn row_with(&self, n: u64, text: String, spans: bool) -> Value {
+        let hits = self.hits.read().expect("hits lock");
+        match hits.entries.binary_search_by_key(&(n as u32), |e| e.0) {
             Ok(i) => {
-                let spans = self.hits.spans(n as u32, &text, &self.settings);
-                json!([n, text, self.hits.slot_mask(self.hits.entries[i].1), spans])
+                let mask = hits.slot_mask(hits.entries[i].1);
+                if !spans {
+                    return json!([n, text, mask]);
+                }
+                json!([n, text, mask, hits.spans(n as u32, &text, &self.settings)])
             }
             Err(_) => json!([n, text]),
         }
@@ -206,8 +237,8 @@ impl LargeView {
         Ok(out)
     }
 
-    /// The listed lines (ascending or not), at most [`MAX_LINES`].
-    pub fn lines_of(&self, wanted: &[u64]) -> std::io::Result<Vec<Value>> {
+    /// The listed lines (ascending or not), at most [`MAX_LINES`]; `spans` as for [`LargeView::row_with`].
+    pub fn lines_of(&self, wanted: &[u64], spans: bool) -> std::io::Result<Vec<Value>> {
         let mut sorted: Vec<u64> = wanted.iter().copied().filter(|n| *n >= 1 && *n <= self.index.total).take(MAX_LINES).collect();
         sorted.sort_unstable();
         sorted.dedup();
@@ -220,7 +251,7 @@ impl LargeView {
             // keep reading forward while the next wanted line is close, so a run of nearby lines costs one seek
             while i < sorted.len() && sorted[i] - n <= STRIDE && lr.next_line(&mut buf)? {
                 if n == sorted[i] {
-                    out.push(self.row(n, decode_line(&buf)));
+                    out.push(self.row_with(n, decode_line(&buf), spans));
                     i += 1;
                 }
                 n += 1;
@@ -234,7 +265,48 @@ impl LargeView {
 
     /// Flat `[line, slotMask, line, slotMask, ...]` of every hit.
     pub fn hit_list(&self) -> Vec<u32> {
-        self.hits.entries.iter().flat_map(|&(n, bits)| [n, self.hits.slot_mask(bits) as u32]).collect()
+        let hits = self.hits.read().expect("hits lock");
+        hits.entries.iter().flat_map(|&(n, bits)| [n, hits.slot_mask(bits) as u32]).collect()
+    }
+
+    /// Scan from line `from` for about [`FIND_SLICE`] with the search's own matcher, adding what is found to the hit
+    /// set (so [`LargeView::lines`] highlights it). Returns the newly found hit lines as `[line, slotMask, ...]` and the
+    /// line to continue from (`0` at the end of the file). `None` when the search's filters do not compile.
+    pub fn scan_hits(&self, from: u64) -> std::io::Result<Option<(Vec<u32>, u64)>> {
+        let Some(units) = self.scan_units.get_or_init(|| scan_units(&self.settings)).as_ref() else { return Ok(None) };
+        if from == 0 || from > self.index.total {
+            return Ok(Some((Vec::new(), 0)));
+        }
+        let start = Instant::now();
+        let mut lr = self.lines_from(from)?;
+        let (mut found, mut buf, mut n) = (Vec::<LineHit>::new(), Vec::new(), from);
+        'slices: loop {
+            let mut chunk: Vec<String> = Vec::with_capacity(SCAN_CHUNK);
+            while chunk.len() < SCAN_CHUNK && n + (chunk.len() as u64) <= self.index.total && lr.next_line(&mut buf)? {
+                chunk.push(decode_line(&buf));
+            }
+            if chunk.is_empty() {
+                break;
+            }
+            let base = n as i32 - 1;
+            for (unit, state) in units {
+                for mut h in apply_line_matching(&chunk, unit, state).hits {
+                    h.line_number += base;
+                    found.push(h);
+                }
+            }
+            n += chunk.len() as u64;
+            if n > self.index.total || start.elapsed() >= FIND_SLICE {
+                break 'slices;
+            }
+        }
+        let mut set = self.hits.write().expect("hits lock");
+        set.merge(&found);
+        let mut lines: Vec<u32> = found.iter().map(|h| h.line_number as u32).collect();
+        lines.sort_unstable();
+        lines.dedup();
+        let out = lines.into_iter().flat_map(|l| set.bits_of(l).map(|b| [l, set.slot_mask(b) as u32]).unwrap_or([l, 0])).collect();
+        Ok(Some((out, if n > self.index.total { 0 } else { n })))
     }
 
     /// Scan for lines matching `re` from line `from`, for about [`FIND_SLICE`]. Returns the matching line numbers and
@@ -425,13 +497,13 @@ fn handle(mut stream: TcpStream, sh: &Shared) -> std::io::Result<()> {
     match (segs[2], segs.get(4).copied()) {
         ("v", None) => {
             let base = format!("/r/{}/f/{}", sh.token, segs[3]);
-            let html = super::reader_page(&view.path, &view.result, &view.hits, view.index.total, view.index.size, &base);
+            let html = super::reader_page(&view.path, &view.result, &view.hits.read().expect("hits lock"), view.index.total, view.index.size, &base);
             respond(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
         }
         ("f", Some("lines")) => {
             let rows = if let Some(list) = args.get("l") {
                 let wanted: Vec<u64> = list.split(',').filter_map(|s| s.parse().ok()).collect();
-                view.lines_of(&wanted)
+                view.lines_of(&wanted, args.get("spans").map(|v| v.as_str()) != Some("0"))
             } else {
                 view.lines(num("from", 1), num("count", 100) as usize)
             };
@@ -451,6 +523,11 @@ fn handle(mut stream: TcpStream, sh: &Shared) -> std::io::Result<()> {
             }
         }
         ("f", Some("hits")) => json_ok(&mut stream, &json!({ "h": view.hit_list() })),
+        ("f", Some("scan")) => match view.scan_hits(num("from", 1)) {
+            Ok(Some((h, next))) => json_ok(&mut stream, &json!({ "h": h, "next": next })),
+            Ok(None) => json_ok(&mut stream, &json!({ "err": "The search's filters could not be compiled for a scan." })),
+            Err(e) => respond(&mut stream, "500 Internal Server Error", "text/plain", e.to_string().as_bytes()),
+        },
         ("f", Some("find")) => {
             let mut pat = args.get("q").cloned().unwrap_or_default();
             if args.get("rx").map(|v| v.as_str()) != Some("1") {
