@@ -126,3 +126,4 @@ See Decisions above for the index, extension-catalog, and runner choices. In sho
 
 ## Navigation
 Parent: `app-tui/AGENTS.md` (crate-wide contracts: `Effect` reducer rule, `Number`-row editing, Caps-Lock key patterns, scroll widgets, disk-space `-p app-tui` scoping). Depends on `search-core/AGENTS.md` and `native-search/AGENTS.md`.
+- `viewer.rs` carries out `Effect::OpenViewer` (native Search window only): the terminal toolbox's Open still emits `Effect::OpenPath`. The process-wide `ReaderServer` starts on first use and lives until exit; `open_with` takes the page folder, reader and opener as arguments so tests never open a real browser.

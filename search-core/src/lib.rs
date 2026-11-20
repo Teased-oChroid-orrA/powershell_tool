@@ -52,3 +52,4 @@ pub mod semantic_index;
 pub mod synonyms;
 pub mod watch;
 pub mod textfold;
+pub mod viewer;

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>{{TITLE}} - Toolbench</title>
+<style>
+{{CSS}}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+      <div class="vbar">
+        <div class="vtitle"><b id="vName"></b><small id="vMeta"></small></div>
+        <div class="chips" id="chips"></div><div class="chipctl" id="chipctl"></div>
+        <div class="btns">
+          <button class="btn" id="prev" type="button">&uarr; Prev</button><span class="count" id="count"></span><button class="btn" id="next" type="button">&darr; Next</button>
+          <div class="menuwrap">
+            <button class="btn ico" id="menuBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions" title="More actions">&middot;&middot;&middot;</button>
+            <div class="menu" id="menu" role="menu" hidden>
+              <button type="button" role="menuitem" id="mCopyPath">Copy file path</button>
+              <button type="button" role="menuitem" id="mCopyLink">Copy link to this view</button>
+              <button type="button" role="menuitem" id="mCopySel">Copy selected lines</button>
+              <button type="button" role="menuitem" id="mExport">Export hits as text</button>
+              <hr>
+              <button type="button" role="menuitem" id="mTheme">Switch light / dark theme</button>
+              <button type="button" role="menuitem" id="mKeys">Keyboard shortcuts <kbd>?</kbd></button>
+              <hr>
+              <button type="button" role="menuitem" id="native">Open the file itself &#8599;</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stale" id="stale" role="status" hidden><span id="staleTxt"></span><button type="button" id="staleGo">Search again</button><button type="button" class="x" id="staleX" aria-label="Dismiss">&times;</button></div>
+
+      <div class="vtools" role="toolbar" aria-label="View options">
+        <button class="tbtn" type="button" id="railBtn" aria-pressed="true" title="Show or hide the matches panel  ( [ )">Matches panel</button>
+        <button class="tbtn" type="button" id="moBtn" aria-pressed="false">Matches only</button>
+        <button class="tbtn" type="button" id="wrapBtn" aria-pressed="false" disabled title="Line wrap is not available yet">Wrap</button>
+        <span class="tsep" aria-hidden="true"></span>
+        <button class="tbtn sq" type="button" id="fsDown" aria-label="Smaller text" title="Smaller text  ( - )">A&minus;</button>
+        <button class="tbtn sq" type="button" id="fsUp" aria-label="Larger text" title="Larger text  ( + )">A+</button>
+        <span class="tsep" aria-hidden="true"></span>
+        <button class="tbtn" type="button" id="findBtn" aria-pressed="false" title="Find in the whole file  ( Ctrl+F )">Find</button>
+        <button class="tbtn" type="button" id="gotoBtn" title="Go to line  ( Ctrl+G )">Go to line</button>
+        <span class="gotowrap" id="gotoWrap" hidden><input id="gotoIn" inputmode="numeric" placeholder="line number" aria-label="Go to line"></span>
+        <span class="tgrow"></span>
+        <span class="rdpill" id="rdPill" title="Large files are read through a local reader on this machine"><span id="rdTxt">Local reader</span></span>
+      </div>
+
+      <div class="findbar" id="findbar" hidden role="search">
+        <input id="findbox" type="text" placeholder="Find in this file" aria-label="Find in this file" autocomplete="off" spellcheck="false">
+        <button class="tbtn sq" type="button" id="fCase" aria-pressed="false" title="Match case">Aa</button>
+        <button class="tbtn sq" type="button" id="fWord" aria-pressed="false" title="Whole word">W</button>
+        <button class="tbtn sq" type="button" id="fRe" aria-pressed="false" title="Regular expression">.*</button>
+        <span class="fcount" id="findCount" aria-live="polite"></span>
+        <button class="btn" type="button" id="fPrev" aria-label="Previous match">&uarr;</button><button class="btn" type="button" id="fNext" aria-label="Next match">&darr;</button>
+        <span class="fhint" id="findHint"></span>
+        <button class="btn" type="button" id="fClose" aria-label="Close find">Close</button>
+      </div>
+
+      <div class="vbody" id="vbody">
+        <aside class="hits" aria-label="Matches in this file">
+          <input class="q" id="q" placeholder="Filter matches   ( / )" aria-label="Filter matches">
+          <h4 id="hitHead">Matches</h4>
+          <div id="hitList" role="listbox" tabindex="0" aria-label="Hits in this file"></div>
+        </aside>
+        <div class="split" id="split" role="separator" aria-orientation="vertical" aria-label="Resize the matches panel" tabindex="0" title="Drag to resize. Double-click to hide or show."></div>
+        <div class="docwrap">
+          <main class="doc" id="doc" tabindex="0"></main><div class="rail" id="rail"><div class="flags" id="flagsDoc" title="Hits near what you are reading, two lanes by filter"></div><div class="ruler" id="ruler" title="Whole file: where the hits are, what you see now and your position"><canvas id="rcv"></canvas><div class="win" id="rwin"></div><i class="rmk" id="rmk"></i></div></div>
+          <div class="readerdown" id="readerDown" hidden role="alert"><div class="rd"><h3>The local reader stopped</h3><p>Toolbench closed the reader that serves this file, so no more of it can be read. Lines already on screen stay. Open the file again from the workbench, or retry the connection.</p><button class="btn pri" type="button" id="readerRetry">Retry</button></div></div>
+        </div>
+      </div>
+      <div class="status"><span id="stPos"></span><span id="stEnc"></span><div class="foot" id="foot"></div></div>
+      
+</div>
+<div class="peek" id="peek" role="tooltip" hidden></div>
+<div class="tip" id="tip" hidden></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="ovl" id="kbd" hidden role="dialog" aria-modal="true" aria-label="Keyboard shortcuts"><div class="obox">
+  <h3>Keyboard shortcuts <button class="btn" type="button" id="kbdClose">Close</button></h3>
+  <div class="kgrid">
+    <span class="k"><kbd>n</kbd> <kbd>F3</kbd> / <kbd>p</kbd></span><span>Next / previous match</span>
+    <span class="k"><kbd>1</kbd> &hellip; <kbd>6</kbd></span><span>Turn the first to sixth filter on or off</span>
+    <span class="k"><kbd>M</kbd></span><span>Matches only, with 2 lines of context and folded gaps</span>
+    <span class="k"><kbd>Ctrl</kbd>+<kbd>F</kbd></span><span>Find in the whole file (the browser's own find only sees what is loaded)</span>
+    <span class="k"><kbd>Ctrl</kbd>+<kbd>G</kbd></span><span>Go to line</span>
+    <span class="k"><kbd>/</kbd></span><span>Filter the match list</span>
+    <span class="k"><kbd>+</kbd> <kbd>-</kbd></span><span>Larger / smaller text</span>
+    <span class="k"><kbd>[</kbd></span><span>Hide or show the matches panel</span>
+    <span class="k">Line number</span><span>Click to select the line and copy a link to it. Shift-click for a range.</span>
+    <span class="k">Filter chip</span><span>Click to switch it. Alt-click to show only that filter.</span>
+    <span class="k"><kbd>Esc</kbd></span><span>Close the menu, find, dialog or filter text</span>
+    <span class="k"><kbd>?</kbd></span><span>This sheet</span>
+  </div>
+</div></div>
+<div class="ovl" id="linebox" hidden role="dialog" aria-modal="true" aria-label="Whole line"><div class="obox">
+  <h3><span id="lineTitle"></span><span><button class="btn" type="button" id="lineCopy">Copy</button> <button class="btn" type="button" id="lineClose">Close</button></span></h3>
+  <div class="linetext" id="lineText"></div>
+</div></div>
+<script id="cfg" type="application/json">{{CFG}}</script>
+<script>
+{{JS}}
+</script>
+</body>
+</html>

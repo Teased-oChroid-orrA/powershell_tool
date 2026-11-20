@@ -18,6 +18,7 @@ pub mod preview;
 pub mod run_view;
 pub mod runner;
 pub mod settings_view;
+pub mod viewer;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio_util::sync::CancellationToken;
