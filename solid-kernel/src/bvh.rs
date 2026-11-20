@@ -115,8 +115,12 @@ impl Bvh {
     /// `(squared distance, triangle, region, closest point)` of the nearest triangle.
     pub fn nearest(&self, vertices: &[V3], triangles: &[[usize; 3]], p: V3) -> (f64, usize, Region, V3) {
         let mut best = (f64::INFINITY, 0usize, Region::Face, p);
-        let mut stack = vec![0usize];
-        while let Some(n) = stack.pop() {
+        // every level pops one node and pushes two, so the stack holds at most depth + 1 entries (depth is log2 of the triangles)
+        let mut stack = [0usize; 128];
+        let mut top = 1;
+        while top > 0 {
+            top -= 1;
+            let n = stack[top];
             let node = self.nodes[n];
             if box_dist2(node.lo, node.hi, p) >= best.0 {
                 continue;
@@ -136,12 +140,13 @@ impl Bvh {
                 let (l, r) = (node.a, node.b);
                 let (dl, dr) = (box_dist2(self.nodes[l].lo, self.nodes[l].hi, p), box_dist2(self.nodes[r].lo, self.nodes[r].hi, p));
                 if dl < dr {
-                    stack.push(r);
-                    stack.push(l);
+                    stack[top] = r;
+                    stack[top + 1] = l;
                 } else {
-                    stack.push(l);
-                    stack.push(r);
+                    stack[top] = l;
+                    stack[top + 1] = r;
                 }
+                top += 2;
             }
         }
         best
