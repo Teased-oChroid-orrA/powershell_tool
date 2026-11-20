@@ -205,14 +205,38 @@ pub fn corpus_term_candidates(query: &str, lines: &[String], limit: usize) -> Ve
         .collect()
 }
 
+/// Two candidates are one group when their average similarity to the group's members reaches this. Chosen on the
+/// labelled terms of `examples/data/term_clusters.tsv` (`term_cluster_eval`, `docs/search-benchmarks.md`).
+pub const GROUP_SIMILARITY: f32 = 0.60;
+
+/// Candidates ranked against a context, and which candidates mean nearly the same thing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RankedSuggestions {
+    /// Every candidate, most similar to the context first.
+    pub scores: Vec<CandidateScore>,
+    /// Candidate indices grouped by meaning: members in input order, groups in order of their first member.
+    pub groups: Vec<Vec<usize>>,
+}
+
 /// Rank bounded local suggestion candidates by neural sentence similarity.
 /// The caller supplies candidates; this does not search files or change exact results.
 pub fn rank_suggestions(
     context: &str,
     candidates: &[String],
 ) -> Result<Vec<CandidateScore>, search_ml::MlError> {
+    rank_and_group(context, candidates).map(|ranked| ranked.scores)
+}
+
+/// [`rank_suggestions`] plus the candidates grouped by meaning, from the same embedding call.
+pub fn rank_and_group(
+    context: &str,
+    candidates: &[String],
+) -> Result<RankedSuggestions, search_ml::MlError> {
     if candidates.is_empty() {
-        return Ok(Vec::new());
+        return Ok(RankedSuggestions {
+            scores: Vec::new(),
+            groups: Vec::new(),
+        });
     }
     let mut inputs = Vec::with_capacity(candidates.len() + 1);
     inputs.push(context);
@@ -234,7 +258,36 @@ pub fn rank_suggestions(
             .total_cmp(&left.similarity)
             .then_with(|| left.index.cmp(&right.index))
     });
-    Ok(scores)
+    let groups = group_by_similarity(&embeddings[1..], GROUP_SIMILARITY);
+    Ok(RankedSuggestions { scores, groups })
+}
+
+/// Greedy average-link grouping in input order: an embedding joins the group whose members it is most similar to on
+/// average when that average reaches `threshold`, and starts a group otherwise. Input order is the caller's
+/// priority (the first member of a group is its representative).
+pub fn group_by_similarity(embeddings: &[search_ml::Embedding], threshold: f32) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (index, embedding) in embeddings.iter().enumerate() {
+        let best = groups
+            .iter()
+            .enumerate()
+            .map(|(group, members)| {
+                let total: f32 = members
+                    .iter()
+                    .map(|&member| {
+                        search_ml::cosine_similarity(embedding, &embeddings[member])
+                            .unwrap_or(f32::NEG_INFINITY)
+                    })
+                    .sum();
+                (group, total / members.len() as f32)
+            })
+            .max_by(|left, right| left.1.total_cmp(&right.1));
+        match best {
+            Some((group, average)) if average >= threshold => groups[group].push(index),
+            _ => groups.push(vec![index]),
+        }
+    }
+    groups
 }
 
 #[cfg(test)]
@@ -254,6 +307,28 @@ mod tests {
             [1, 0]
         );
         assert!(ranked[0].similarity > ranked[1].similarity);
+    }
+
+    #[test]
+    fn rank_and_group_groups_synonymous_terms_and_keeps_the_ranking() {
+        let candidates = vec![
+            "outer diameter".to_string(),
+            "landing gear".to_string(),
+            "outside diameter".to_string(),
+        ];
+        let context = "Search query: bolt hole diameter.";
+        let ranked = rank_and_group(context, &candidates).unwrap();
+        assert_eq!(ranked.groups, vec![vec![0, 2], vec![1]]);
+        assert_eq!(
+            ranked.scores,
+            rank_suggestions(context, &candidates).unwrap()
+        );
+    }
+
+    #[test]
+    fn rank_and_group_of_nothing_is_empty() {
+        let ranked = rank_and_group("context", &[]).unwrap();
+        assert!(ranked.scores.is_empty() && ranked.groups.is_empty());
     }
 
     #[test]

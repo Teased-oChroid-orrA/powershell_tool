@@ -23,6 +23,7 @@
               <button type="button" role="menuitem" id="mCopyLink">Copy link to this view</button>
               <button type="button" role="menuitem" id="mCopySel">Copy selected lines</button>
               <button type="button" role="menuitem" id="mExport">Export hits as text</button>
+              <button type="button" role="menuitem" id="mScan" hidden>Scan the file for the filters</button>
               <hr>
               <button type="button" role="menuitem" id="mTheme">Switch light / dark theme</button>
               <button type="button" role="menuitem" id="mKeys">Keyboard shortcuts <kbd>?</kbd></button>
@@ -38,7 +39,8 @@
       <div class="vtools" role="toolbar" aria-label="View options">
         <button class="tbtn" type="button" id="railBtn" aria-pressed="true" title="Show or hide the matches panel  ( [ )">Matches panel</button>
         <button class="tbtn" type="button" id="moBtn" aria-pressed="false">Matches only</button>
-        <button class="tbtn" type="button" id="wrapBtn" aria-pressed="false" disabled title="Line wrap is not available yet">Wrap</button>
+        <button class="tbtn" type="button" id="wrapBtn" aria-pressed="false">Wrap</button>
+        <span class="seg" id="viewSeg" hidden role="group" aria-label="View"><button type="button" data-v="text" aria-pressed="false">Text</button><button type="button" data-v="struct" aria-pressed="true">Structured</button></span>
         <span class="tsep" aria-hidden="true"></span>
         <button class="tbtn sq" type="button" id="fsDown" aria-label="Smaller text" title="Smaller text  ( - )">A&minus;</button>
         <button class="tbtn sq" type="button" id="fsUp" aria-label="Larger text" title="Larger text  ( + )">A+</button>
@@ -65,6 +67,10 @@
         <aside class="hits" aria-label="Matches in this file">
           <input class="q" id="q" placeholder="Filter matches   ( / )" aria-label="Filter matches">
           <h4 id="hitHead">Matches</h4>
+          <div class="seg mini" id="listSeg" role="group" aria-label="Group the matches" hidden><button type="button" data-m="all" aria-pressed="true">All hits</button><button type="button" data-m="msg" aria-pressed="false">By message</button><button type="button" data-m="range" aria-pressed="false">By range</button></div>
+          <div class="tplpill" id="tplPill" hidden><span id="tplTxt"></span><button type="button" id="tplX" aria-label="Show every hit again" title="Show every hit again">&times;</button></div>
+          <div class="idx" id="idx" hidden><span id="idxT"></span> <button type="button" class="lnk" id="idxCancel">Cancel</button><div class="bar"><i id="idxB"></i></div></div>
+          <div id="histoWrap" hidden><div class="histo" id="histo" title="Click to jump"><canvas id="hcv"></canvas><i class="hwin" id="hwin"></i><i class="hcur" id="hcur" hidden></i></div><div class="hcap">Density across the whole file. Click to jump.</div></div>
           <div id="hitList" role="listbox" tabindex="0" aria-label="Hits in this file"></div>
         </aside>
         <div class="split" id="split" role="separator" aria-orientation="vertical" aria-label="Resize the matches panel" tabindex="0" title="Drag to resize. Double-click to hide or show."></div>
@@ -89,6 +95,7 @@
     <span class="k"><kbd>Ctrl</kbd>+<kbd>G</kbd></span><span>Go to line</span>
     <span class="k"><kbd>/</kbd></span><span>Filter the match list</span>
     <span class="k"><kbd>+</kbd> <kbd>-</kbd></span><span>Larger / smaller text</span>
+    <span class="k"><kbd>W</kbd></span><span>Wrap long lines (text and code files)</span>
     <span class="k"><kbd>[</kbd></span><span>Hide or show the matches panel</span>
     <span class="k">Line number</span><span>Click to select the line and copy a link to it. Shift-click for a range.</span>
     <span class="k">Filter chip</span><span>Click to switch it. Alt-click to show only that filter.</span>

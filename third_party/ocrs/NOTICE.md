@@ -1,6 +1,7 @@
 # Vendored `ocrs`
 
 Upstream: <https://github.com/robertknight/ocrs>, version 0.12.2, license `MIT OR Apache-2.0` (Robert Knight).
+Its MIT license text is in `LICENSE-MIT` here and, for releases, `licenses/ocrs-LICENSE-MIT.txt`.
 Taken from the crates.io release so the build stays offline and the recognition output can be extended.
 
 Changes against upstream 0.12.2 (everything else is the upstream source):

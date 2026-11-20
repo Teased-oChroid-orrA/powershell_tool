@@ -12,9 +12,11 @@
   var root = document.documentElement;
   var N = EMB ? EMB.lines.length : (CFG.total || 0);
   var NF = 6, FILT = (CFG.filters || []).slice(0, 12);
+  var SD = CFG.structure || null;   // the Office structure of the file, when it has one
+  var ST = { on: false, el: null, inner: null, units: [], starts: [], shown: 0, key: '', sls: null, dirty: false, ref: new Map(), boxEl: null };
 
   /* ---------- preferences (localStorage may be refused on file:// pages) ---------- */
-  var pref = { on: [true, true, true, true, true, true], railw: 272, collapsed: false, fs: 1, mo: false, theme: '' };
+  var pref = { on: [true, true, true, true, true, true], railw: 272, collapsed: false, fs: 1, mo: false, wrap: false, str: true, theme: '' };
   try {
     var sv = JSON.parse(localStorage.getItem('toolbench-viewer') || 'null');
     if (sv && typeof sv === 'object') Object.keys(pref).forEach(function (k) { if (k in sv && typeof sv[k] === typeof pref[k]) pref[k] = sv[k]; });
@@ -135,16 +137,28 @@
     return '<span class="no" title="Click to select this line and copy a link to it">' + fmt(n) + '</span><span>' + more + renderText(t, d.sp) + '</span>';
   }
 
-  /* ---------- virtual scrolling: only the rows on screen exist; a list taller than the browser allows is mapped onto a shorter scrollbar ---------- */
-  function vgeom(el, total, rh) {
-    var vh = el.clientHeight, nat = total * rh, H = Math.min(nat, MAXH), scaled = nat > MAXH;
+  /* ---------- virtual scrolling: only the rows on screen exist; a list taller than the browser allows is mapped onto a shorter scrollbar.
+     Rows are one height (rh), or, with P (prefix sums of the row heights, used by wrap), each their own; P is never scaled. ---------- */
+  function pfx(P, y) {   // the fractional row at offset y
+    var n = P.length - 1; if (y <= 0) return 0; if (y >= P[n]) return n;
+    var lo = 0, hi = n - 1; while (lo < hi) { var m = (lo + hi + 1) >> 1; if (P[m] <= y) lo = m; else hi = m - 1; }
+    return lo + (y - P[lo]) / (P[lo + 1] - P[lo] || 1);
+  }
+  function vgeom(el, total, rh, P) {
+    var vh = el.clientHeight;
+    if (P) { var st = el.scrollTop, k = pfx(P, st); return { vh: vh, rh: rh, total: total, H: Math.max(P[total], vh), scaled: false, P: P, vis: Math.max(1, pfx(P, st + vh) - k), kTop: k }; }
+    var nat = total * rh, H = Math.min(nat, MAXH), scaled = nat > MAXH;
     return { vh: vh, rh: rh, total: total, H: Math.max(H, vh), scaled: scaled, vis: vh / rh, kTop: scaled ? el.scrollTop / Math.max(1, H - vh) * Math.max(0, total - vh / rh) : el.scrollTop / rh };
   }
   function vscroll(el, g, want) {
+    if (g.P) {
+      var n = g.total, w = Math.max(0, Math.min(want, n)), i = Math.min(Math.floor(w), n), j = Math.min(i + 1, n);
+      el.scrollTop = Math.max(0, Math.min(g.P[i] + (w - i) * (g.P[j] - g.P[i]), Math.max(0, g.H - g.vh))); return;
+    }
     var maxK = Math.max(0, g.total - g.vis); want = Math.max(0, Math.min(want, maxK));
     el.scrollTop = g.scaled ? (maxK ? want / maxK * (g.H - g.vh) : 0) : want * g.rh;
   }
-  function vlayer(sp, vr, el, total, rh) { sp.style.height = Math.max(Math.min(total * rh, MAXH), el.clientHeight) + 'px'; vr.style.height = el.clientHeight + 'px'; return vgeom(el, total, rh); }
+  function vlayer(sp, vr, el, total, rh, P) { sp.style.height = Math.max(P ? P[total] : Math.min(total * rh, MAXH), el.clientHeight) + 'px'; vr.style.height = el.clientHeight + 'px'; return vgeom(el, total, rh, P); }
 
   /* ---------- text pane: rows are all lines, or only the hit lines with context and folded gaps ---------- */
   var box = null, sp = null, vr = null, nodes = new Map(), RGEN = 0, curLine = 0, sel = null, charW = 7.5;
@@ -183,22 +197,88 @@
     var e = MO.ex[u] || 0;
     return MO.pref[u] + (2 * e >= g || top <= e ? top - 1 : e + 1 + (e - bot));
   }
-  var topLine = function () { var d = rowAt(Math.max(0, Math.min(rowCount() - 1, Math.floor(vgeom(box, rowCount(), LH).kTop)))); return d.n || (MO.GS[d.fold] || 1); };
+  var bgeom = function () { return vgeom(box, rowCount(), LH, wrapP()); };
+  var topLine = function () {
+    if (ST.on) return strTop();
+    var d = rowAt(Math.max(0, Math.min(rowCount() - 1, Math.floor(bgeom().kTop)))); return d.n || (MO.GS[d.fold] || 1);
+  };
+  /* the first and last line in view */
+  function viewLines() {
+    if (ST.on) { var r = ST.el.getBoundingClientRect(), a = strTop(), b = 0; for (var y = r.bottom - 12, k = 0; !b && k < 8; k++, y -= 14) b = strAt(y); return [a, Math.max(a, b || a)]; }
+    if (!box) return [1, 1];
+    var g = bgeom(), a2 = topLine(); return [a2, Math.min(N, a2 + Math.ceil(g.vis) - 1)];
+  }
+
+  /* the line a view change (wrap, text size, matches only, structured) keeps in place: the selected line while it is on screen, else the first line in view */
+  function anchorLine() { var vl = viewLines(); return curLine >= vl[0] && curLine <= vl[1] ? curLine : vl[0]; }
+
+  /* ---------- wrap: rows of different heights (embedded text only). A row's height is its estimate (lines of the monospace width) until it has been drawn and measured. ---------- */
+  var WR = { on: false, P: null, key: '', mh: null, cpl: 80, v: 0, fix: 0 };
+  var canWrap = function () { return !!EMB && !PDF && N > 0 && !ST.on; };
+  var wrapOn = function () { return WR.on && canWrap(); };
+  var cplNow = function () { return Math.max(8, Math.floor((box.clientWidth - 76 - 16) / charW)); };
+  function wrapReset() { WR.mh = new Float32Array(N + 2); WR.cpl = cplNow(); WR.P = null; WR.v++; }
+  function rowH(r) {
+    var d = rowAt(r); if (d.fold !== undefined) return LH;
+    var m = WR.mh[d.n]; if (m) return m;
+    return Math.max(1, Math.ceil(Math.min(EMB.lines[d.n - 1].length, LCAP) / WR.cpl)) * LH;
+  }
+  function wrapP() {
+    if (!box || !wrapOn()) return null;
+    var R = rowCount(), key = [R, MO.on, MO.gen, LH, WR.cpl, WR.v].join(':');
+    if (WR.P && WR.key === key) return WR.P;
+    var P = new Float64Array(R + 1); for (var r = 0; r < R; r++) P[r + 1] = P[r] + rowH(r);
+    WR.P = P; WR.key = key; return P;
+  }
+  function wrapTooTall() { var P = wrapP(); return !!P && P[P.length - 1] > MAXH; }
+  function wrapRefuse() { WR.on = false; if (box) box.classList.remove('wrapon'); toast('This file is too long to wrap'); syncTools(); }
+  /* after drawing: correct the estimates with the real heights, keeping the row at the top of the window where it is */
+  function wrapMeasure() {
+    if (!wrapOn() || WR.fix) return;
+    var changed = false;
+    nodes.forEach(function (nd, r) {
+      var d = rowAt(r); if (d.fold !== undefined || !nd._k || nd.classList.contains('skel')) return;
+      var h = nd.offsetHeight; if (h && Math.abs(h - rowH(r)) > 0.5) { WR.mh[d.n] = h; changed = true; }
+    });
+    if (!changed) return;
+    var k = pfx(WR.P, box.scrollTop), r0 = Math.floor(k), fr = k - r0;
+    WR.v++; var P = wrapP();
+    if (P[P.length - 1] > MAXH) { wrapRefuse(); paint(); return; }
+    box.scrollTop = P[r0] + fr * (P[Math.min(r0 + 1, P.length - 1)] - P[r0]);
+    WR.fix = requestAnimationFrame(function () { WR.fix = 0; paint(); afterScroll(); });
+  }
+  function wrapResize() {   // the width changed: lines wrap differently, so every measured height is stale
+    if (!wrapOn() || !box || cplNow() === WR.cpl) return;
+    var at = anchorLine(); wrapReset(); RGEN++; revealRow(rowOfLine(at), true); paint();
+  }
+  function setWrap(v) {
+    if (v && !canWrap()) return;
+    var at = box ? anchorLine() : 1;
+    WR.on = v; pref.wrap = v; save();
+    if (box) {
+      box.classList.toggle('wrapon', wrapOn()); if (wrapOn()) wrapReset();
+      if (wrapOn() && wrapTooTall()) { wrapRefuse(); setWidth(); return; }
+      setWidth(); RGEN++; revealRow(rowOfLine(at), true); paint(); afterScroll();
+    }
+    syncTools();
+  }
+
 
   function measureChar() {
     var s = document.createElement('span'); s.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font:inherit'; s.textContent = new Array(101).join('M');
     box.appendChild(s); charW = s.getBoundingClientRect().width / 100 || 7.5; s.remove();
   }
-  function setWidth() { if (sp) sp.style.minWidth = Math.ceil(76 + 24 + maxLen * charW + (maxLen >= LCAP ? 110 : 0)) + 'px'; }
+  function setWidth() { if (sp) sp.style.minWidth = wrapOn() ? '0' : Math.ceil(76 + 24 + maxLen * charW + (maxLen >= LCAP ? 110 : 0)) + 'px'; }
 
   var paintQ = 0;
-  function schedPaint() { if (!paintQ) paintQ = requestAnimationFrame(function () { paintQ = 0; paint(); afterScroll(); }); }
+  function schedPaint() { if (!paintQ) paintQ = requestAnimationFrame(function () { paintQ = 0; if (ST.on) strMore(); else paint(); afterScroll(); }); }
   function rowKey(d, ready) {
     return d.fold !== undefined ? 'f' + d.fold + ':' + d.hidden : 'n' + d.n + ':' + (ready ? 1 : 0) + ':' + (d.n === curLine ? 1 : 0) + ':' + (inSel(d.n) ? 1 : 0) + ':' + (isHit(d.n) ? 1 : 0) + ':' + RGEN + ':' + MO.gen;
   }
   function paint() {
+    if (ST.on) { strPaint(); return; }
     if (!box) return;
-    var R = rowCount(), g = vlayer(sp, vr, box, R, LH);
+    var R = rowCount(), g = vlayer(sp, vr, box, R, LH, wrapP());
     var first = Math.max(0, Math.floor(g.kTop) - 2), last = Math.min(R - 1, Math.ceil(g.kTop + g.vis) + 2), want = new Set(), seen = new Set();
     nodes.forEach(function (nd, r) { if (r < first || r > last) { nd.remove(); nodes.delete(r); } });
     for (var r = first; r <= last; r++) {
@@ -216,8 +296,9 @@
           else { nd.className = 'ln skel'; nd.innerHTML = '<span class="no">' + fmt(d.n) + '</span><span><i class="skb" style="width:' + (28 + (d.n * 37) % 55) + '%"></i></span>'; }
         }
       }
-      nd.style.transform = 'translateY(' + ((r - g.kTop) * LH) + 'px)';
+      nd.style.transform = 'translateY(' + (g.P ? g.P[r] - box.scrollTop : (r - g.kTop) * LH) + 'px)';
     }
+    if (g.P) wrapMeasure();
     if (RD) {
       seen.forEach(function (b) { var blk = blocks.get(b); if (blk) { blocks.delete(b); blocks.set(b, blk); } });   // keep what is on screen newest
       var pf = Math.ceil(g.vis);   // one screen either side, so a short scroll finds the rows loaded
@@ -250,13 +331,13 @@
 
   /* ---------- navigation ---------- */
   function revealRow(r, force) {
-    var g = vgeom(box, rowCount(), LH);
+    var g = bgeom();
     if (!force && r >= g.kTop && r + 1 <= g.kTop + g.vis) return;
     vscroll(box, g, r - g.vis / 3);
   }
   function goLine(n) {
     n = Math.max(1, Math.min(N || 1, n)); curLine = n;
-    if (PDF) { pdfSearch(n); } else if (box) { revealRow(rowOfLine(n)); RGEN++; paint(); }
+    if (PDF) { pdfSearch(n); } else if (ST.on) { strGo(n); } else if (box) { revealRow(rowOfLine(n)); RGEN++; paint(); }
     listReveal(n); listPaint(); updateCount(); afterScroll();
   }
   var neighborIdx = function (d) {
@@ -293,9 +374,9 @@
       return '<div class="ln ' + (hit ? 'hit' : 'ctx') + '"><i>' + fmt(r[0]) + '</i><span>' + (hit ? renderText(line, r[3], true) : esc(line)) + '</span></div>';
     }).join('');
     var m = maskOf(n) & onMask, chips = FILT.filter(function (f) { return m >> f.slot & 1; }).map(function (f) { return '<span class="chipf"><i style="background:var(--c' + (f.slot + 1) + ')"></i>' + esc(f.name) + '</span>'; }).join('');
-    var g = box ? vgeom(box, rowCount(), LH) : null, a = topLine();
+    var vl = viewLines();
     return '<div class="peek-h"><b>line ' + fmt(n) + '</b><span>match ' + fmt(upper(LIST, n)) + ' of ' + fmt(LIST.length) + '</span></div><div class="code">' + rowsH + '</div>' +
-      '<div class="peek-f">' + chips + '<span class="sp"></span>' + heat(n / N, g ? [a / N, Math.min(N, a + g.vis) / N] : null) + '<small>' + Math.round(n / N * 100) + '% into the file. Click to jump</small></div>';
+      '<div class="peek-f">' + chips + '<span class="sp"></span>' + heat(n / N, [(vl[0] - 1) / N, vl[1] / N]) + '<small>' + Math.round(n / N * 100) + '% into the file. Click to jump</small></div>';
   }
   function showPeek(flag, n) {
     var tok = ++peekTok;
@@ -325,8 +406,18 @@
     g.appendChild(f); return f;
   }
   function paintFlags() {
-    var g = $('flagsDoc'); if (!box) return;
-    var R = rowCount(), vg = vgeom(box, R, LH), ch = g.clientHeight || vg.vh;
+    var g = $('flagsDoc'); if (!box && !ST.on) return;
+    if (ST.on) {   // the flags of the whole file (when there are few enough), and where the window is
+      var ch2 = g.clientHeight || 400, key2 = ['S', LV, curLine, ch2].join(':');
+      if (key2 !== flagKey) {
+        flagKey = key2; g.innerHTML = '<div class="view"></div>';
+        if (LIST.length <= 3000) for (var q = 0; q < LIST.length; q++) mkFlag(g, (LIST[q] - 0.5) / N * ch2, LIST[q], LIST[q] === curLine);
+        var f1 = g.querySelector('.f'); if (f1) f1.tabIndex = 0;
+      }
+      var v2 = g.firstChild, vl = viewLines(); if (v2) { v2.style.display = ''; v2.style.top = ((vl[0] - 1) / N * ch2) + 'px'; v2.style.height = Math.max(6, (vl[1] - vl[0] + 1) / N * ch2) + 'px'; }
+      return;
+    }
+    var R = rowCount(), vg = bgeom(), ch = g.clientHeight || vg.vh;
     // few hits: the rail is the whole file. Many hits: it is the window around the reading position, so the flags stay apart.
     var whole = LIST.length <= 3000 || R <= vg.vis * 12, w0 = 0, w1 = R;
     if (!whole) { w0 = Math.max(0, Math.floor(vg.kTop - 4 * vg.vis)); w1 = Math.min(R, Math.ceil(vg.kTop + 5 * vg.vis)); }
@@ -363,18 +454,37 @@
     }
   }
   function drawMark() {
-    if (!box) return;
-    var a = topLine() - 1, b = Math.min(N, a + Math.ceil(box.clientHeight / LH)), w = $('rwin'), mk = $('rmk');
-    w.style.top = (a / N * 100) + '%'; w.style.height = ((b - a) / N * 100) + '%';
+    if (!box && !ST.on) return;
+    var vl = viewLines(), w = $('rwin'), mk = $('rmk');
+    w.style.top = ((vl[0] - 1) / N * 100) + '%'; w.style.height = ((vl[1] - vl[0] + 1) / N * 100) + '%';
     mk.style.top = ((curLine - 1) / N * 100) + '%'; mk.hidden = !curLine;
+    if ($('histoWrap').hidden) return;
+    var hw = $('hwin'), hc = $('hcur');
+    hw.style.left = ((vl[0] - 1) / N * 100) + '%'; hw.style.width = ((vl[1] - vl[0] + 1) / N * 100) + '%';
+    hc.style.left = ((curLine - 1) / N * 100) + '%'; hc.hidden = !curLine;
+  }
+  /* the same hit density, as stacked bars across the left panel; click jumps */
+  function drawHisto() {
+    var cv = $('hcv'); if (!cv || $('histoWrap').hidden || !N || !cv.clientWidth) return;
+    var c = setupCanvas(cv), g = c.g, cs = getComputedStyle(root), nb = Math.max(12, Math.floor(c.w / 3)), cnt = [], i, k;
+    for (k = 0; k < NF; k++) cnt.push(new Uint32Array(nb));
+    LIST.forEach(function (n) { var b = Math.min(nb - 1, Math.floor((n - 1) / N * nb)), m = maskOf(n) & onMask; for (var s2 = 0; s2 < NF; s2++) if (m >> s2 & 1) cnt[s2][b]++; });
+    var mx = 1; for (i = 0; i < nb; i++) { var t = 0; for (k = 0; k < NF; k++) t += cnt[k][i]; if (t > mx) mx = t; }
+    var bw = c.w / nb; g.globalAlpha = 0.9;
+    for (i = 0; i < nb; i++) {
+      var y = c.h;
+      for (k = 0; k < NF; k++) { var hh = cnt[k][i] / mx * (c.h - 4); if (!hh) continue; g.fillStyle = cs.getPropertyValue('--c' + (k + 1)); g.fillRect(i * bw + 0.5, y - hh, Math.max(1, bw - 1), hh); y -= hh; }
+    }
   }
   function tipAt(e, a, b) {
     var hits = upper(LIST, b) - lower(LIST, a), t = $('tip');
     t.innerHTML = '<b>≈ line ' + fmt(Math.round((a + b) / 2)) + '</b> · ' + fmt(hits) + ' ' + (hits === 1 ? 'hit' : 'hits') + '<small>click to jump to the next hit here</small>';
     t.hidden = false; var w = t.offsetWidth; t.style.left = Math.max(8, Math.min(innerWidth - w - 8, e.clientX - w - 14)) + 'px'; t.style.top = Math.max(8, e.clientY - 20) + 'px';
   }
-  function rulerEvents() {
-    var el = $('ruler'), frac = function (e) { var r = el.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)); }, half = function () { return 2 / Math.max(1, el.clientHeight); };
+  /* the ruler (vertical) and the histogram (horizontal) both map a position to a line */
+  function overviewEvents(el, horiz) {
+    var frac = function (e) { var r = el.getBoundingClientRect(); return Math.max(0, Math.min(1, horiz ? (e.clientX - r.left) / r.width : (e.clientY - r.top) / r.height)); };
+    var half = function () { return 2 / Math.max(1, horiz ? el.clientWidth : el.clientHeight); };
     el.addEventListener('mousemove', function (e) { var f = frac(e); tipAt(e, Math.max(1, Math.floor((f - half()) * N)), Math.min(N, Math.ceil((f + half()) * N))); });
     el.addEventListener('mouseleave', function () { $('tip').hidden = true; });
     el.addEventListener('click', function (e) {
@@ -382,20 +492,23 @@
       if (n) goLine(n); else goLine(Math.max(1, Math.round(frac(e) * N)));
     });
   }
+  var rulerEvents = function () { overviewEvents($('ruler'), false); overviewEvents($('histo'), true); };
   function afterScroll() { paintFlags(); drawMark(); updateStatus(); }
-  function redrawRail() { flagKey = ''; drawRuler(); paintFlags(); drawMark(); }
+  function redrawRail() { flagKey = ''; drawRuler(); drawHisto(); paintFlags(); drawMark(); }
 
   /* ---------- match list (virtual, one row per hit) ---------- */
   var hitList = $('hitList'), lnodes = new Map();
+  /* the text around the first (switched on) match of a line, the match in bold */
+  function snipHtml(t, spans, before) {
+    var sps = spans || [], p = sps.find(function (x) { return on[x[2]]; }) || sps[0];
+    if (!p) return ws(t.slice(0, 110));
+    var a = Math.max(0, p[0] - (before === undefined ? 28 : before)), b = Math.min(t.length, p[1] + 110);
+    return (a && before !== 0 ? '…' : '') + ws(t.slice(a, p[0])) + '<b>' + ws(t.slice(p[0], p[1])) + '</b>' + ws(t.slice(p[1], b)) + (b < t.length ? '…' : '');
+  }
   function snipFor(n) {
     var s = snipCache.get(n); if (s !== undefined) return s;
     var d = lineData(n); if (!d) return undefined;
-    var sps = d.sp || [], p = sps.find(function (x) { return on[x[2]]; }) || sps[0], t = d.t;
-    if (!p) s = ws(t.slice(0, 110));
-    else {
-      var a = Math.max(0, p[0] - 28), b = Math.min(t.length, p[1] + 80);
-      s = (a ? '…' : '') + ws(t.slice(a, p[0])) + '<b>' + ws(t.slice(p[0], p[1])) + '</b>' + ws(t.slice(p[1], b)) + (b < t.length ? '…' : '');
-    }
+    s = snipHtml(d.t, d.sp);
     snipCache.set(n, s); if (snipCache.size > 2000) snipCache.delete(snipCache.keys().next().value);
     return s;
   }
@@ -418,8 +531,13 @@
   }
   function listPaint() {
     var L = hitList;
+    if (G.mode !== 'all') return;
     if (!LIST.length) {
       lnodes.clear();
+      if (RD && !HITS.length && FILT.length && !SC.done) {
+        L.innerHTML = SC.on ? '<div class="none">Scanning the file for the filters…</div>' : '<div class="gempty"><span>The search found no hit lines in this file, or did not list them. Scan it with the same filters to find them here.</span><button class="btn pri" type="button" id="scanGo">Scan the file for these filters</button></div>';
+        return;
+      }
       L.innerHTML = '<div class="none">' + (qHits ? 'No hit matches that.' : (HITS.length ? 'Every filter is off. Click a filter above to turn it on.' : 'No match lines to list.')) + '</div>'; return;
     }
     var spc = L.firstChild;
@@ -438,12 +556,18 @@
     }
   }
   function listReveal(n) {
+    if (G.mode !== 'all') return;
     var k = lower(LIST, n); if (LIST[k] !== n) return;
     var g = vgeom(hitList, LIST.length, RH); if (k >= g.kTop && k + 1 <= g.kTop + g.vis) return;
     vscroll(hitList, g, k - g.vis / 3);
   }
   hitList.addEventListener('scroll', function () { listPaint(); });
-  hitList.addEventListener('click', function (e) { var b = e.target.closest('.mrow'); if (b) goLine(+b.getAttribute('data-n')); });
+  hitList.addEventListener('click', function (e) {
+    var b = e.target.closest('.mrow'); if (b) { goLine(+b.getAttribute('data-n')); return; }
+    var g = e.target.closest('.grow');
+    if (g) { if (g.hasAttribute('data-t')) { G.tpl = +g.getAttribute('data-t'); setListMode('all'); } else goLine(+g.getAttribute('data-from')); return; }
+    if (e.target.closest('#scanGo')) startScan();
+  });
   hitList.addEventListener('keydown', function (e) {
     if (e.key === 'ArrowDown') { e.preventDefault(); step(1); } else if (e.key === 'ArrowUp') { e.preventDefault(); step(-1); }
     else if (e.key === 'Home') { e.preventDefault(); if (LIST.length) goLine(LIST[0]); } else if (e.key === 'End') { e.preventDefault(); if (LIST.length) goLine(LIST[LIST.length - 1]); }
@@ -454,11 +578,13 @@
   function refreshList() {
     var t = $('q').value.trim().toLowerCase(), tok = ++qTok;
     var finish = function (arr) {
-      qHits = arr; LIST = arr || ACT; LV++; lnodes.clear(); hitList.innerHTML = ''; hitList.scrollTop = 0; $('q').classList.remove('busy');
+      var L = arr;
+      if (G.tpl >= 0) L = (arr || ACT).filter(function (n) { return G.of.get(n) === G.tpl; });
+      qHits = L; LIST = L || ACT; LV++; lnodes.clear(); hitList.innerHTML = ''; hitList.scrollTop = 0; $('q').classList.remove('busy');
       if (MO.on) { moBuild(); if (curLine) revealRow(moRowOfLine(curLine), true); }
-      if (box) { RGEN++; paint(); }
+      if (box || ST.on) { RGEN++; paint(); }
       if (curLine) listReveal(curLine);
-      listPaint(); updateCount(); redrawRail(); updateStatus();
+      pillPaint(); listPaint(); updateCount(); redrawRail(); updateStatus(); groupsRefresh();
     };
     if (!t) { finish(null); return; }
     if (EMB) { finish(ACT.filter(function (n) { return String(n).indexOf(t) >= 0 || EMB.lines[n - 1].toLowerCase().indexOf(t) >= 0; })); return; }
@@ -484,7 +610,8 @@
     for (var i = 0; i < NF; i++) on[i] = next[i];
     save(); hidePeek(); snipCache.clear(); recomputeOn(); rebuildAct();
     if (curLine && !isHit(curLine) && ACT.length && !MO.on) { /* stay where the reader is */ }
-    refreshList(); chipsPaint();
+    G.ready = false; if (G.tpl >= 0 || G.mode === 'msg') buildTpl(refreshList); else refreshList();
+    chipsPaint();
     if (focusK !== undefined) { var again = $('chips').querySelector('[data-k="' + focusK + '"]'); if (again) again.focus(); }
   }
   function toggleFilter(k, solo) {
@@ -500,7 +627,7 @@
 
   /* ---------- matches only ---------- */
   function setMO(v) {
-    var at = curLine || (box ? topLine() : 1);
+    var at = box ? anchorLine() : 1;
     pref.mo = v; save(); syncTools(); if (!box) return;
     MO.on = v; if (v) moBuild(); else MO.gen++;
     flagKey = ''; RGEN++; paint(); revealRow(rowOfLine(at), true); paint(); afterScroll();
@@ -611,20 +738,29 @@
   /* ---------- toolbar, rail splitter, menu ---------- */
   function syncTools() {
     var text = !PDF && N > 0, vb = $('vbody');
-    $('moBtn').disabled = !text; $('moBtn').setAttribute('aria-pressed', String(!!pref.mo && text));
-    $('moBtn').title = text ? 'Show only the lines that match, with ' + CTX + ' lines of context. The gaps fold away.  (M)' : 'Matches only needs a text view';
+    $('moBtn').disabled = !text || ST.on; $('moBtn').setAttribute('aria-pressed', String(!!pref.mo && text && !ST.on));
+    $('moBtn').title = ST.on ? 'Matches only works in the text view' : text ? 'Show only the lines that match, with ' + CTX + ' lines of context. The gaps fold away.  (M)' : 'Matches only needs a text view';
+    var wb = $('wrapBtn'); wb.disabled = !canWrap(); wb.setAttribute('aria-pressed', String(wrapOn()));
+    wb.title = ST.on ? 'The structured view wraps by itself' : RD ? 'Windowed files keep one line per row; long lines are cut at 10,000 characters' : canWrap() ? 'Wrap long lines  ( W )' : 'Wrap applies to text and code';
+    $('viewSeg').hidden = !(SD && N > 0);
+    Array.prototype.forEach.call($('viewSeg').querySelectorAll('button'), function (b) { b.setAttribute('aria-pressed', String((b.getAttribute('data-v') === 'struct') === ST.on)); });
+    var lists = HITS.length > 0 && (!!RD || N >= 2000); $('listSeg').hidden = !lists; $('histoWrap').hidden = !lists;
+    if (lists) drawHisto();
     $('fsDown').disabled = $('fsUp').disabled = !text; $('findBtn').disabled = $('gotoBtn').disabled = !text;
     $('railBtn').setAttribute('aria-pressed', String(!pref.collapsed)); vb.classList.toggle('collapsed', !!pref.collapsed);
     $('app').style.setProperty('--fs', FS[pref.fs][0] + 'px'); $('app').style.setProperty('--lh', FS[pref.fs][1] + 'px');
   }
   function setFs(d) {
     var f = Math.max(0, Math.min(FS.length - 1, pref.fs + d)); if (f === pref.fs || PDF) return;
-    var at = curLine || topLine(); pref.fs = f; save(); LH = FS[f][1]; syncTools();
-    if (box) { measureChar(); setWidth(); RGEN++; revealRow(rowOfLine(at), true); paint(); redrawRail(); }
+    var at = anchorLine(); pref.fs = f; save(); LH = FS[f][1]; syncTools();
+    if (box) { measureChar(); if (wrapOn()) wrapReset(); setWidth(); RGEN++; revealRow(rowOfLine(at), true); paint(); redrawRail(); }
+    else if (ST.on) { redrawRail(); afterScroll(); }
   }
-  function toggleRail() { pref.collapsed = !pref.collapsed; save(); syncTools(); setTimeout(function () { listPaint(); paint(); redrawRail(); }, 0); }
+  function toggleRail() { pref.collapsed = !pref.collapsed; save(); syncTools(); setTimeout(function () { wrapResize(); listPaint(); paint(); redrawRail(); }, 0); }
   $('railBtn').addEventListener('click', toggleRail);
   $('moBtn').addEventListener('click', function () { setMO(!pref.mo); });
+  $('wrapBtn').addEventListener('click', function () { setWrap(!WR.on); });
+  $('viewSeg').addEventListener('click', function (e) { var b = e.target.closest('button'); if (b && SD) setStruct(b.getAttribute('data-v') === 'struct'); });
   $('fsDown').addEventListener('click', function () { setFs(-1); });
   $('fsUp').addEventListener('click', function () { setFs(1); });
   (function () {
@@ -633,14 +769,17 @@
     apply(pref.railw);
     spl.addEventListener('pointerdown', function (e) { if (pref.collapsed) return; drag = true; spl.setPointerCapture(e.pointerId); spl.classList.add('drag'); });
     spl.addEventListener('pointermove', function (e) { if (drag) apply(e.clientX - vb.getBoundingClientRect().left); });
-    var end = function () { if (!drag) return; drag = false; spl.classList.remove('drag'); save(); listPaint(); paint(); redrawRail(); };
+    var end = function () { if (!drag) return; drag = false; spl.classList.remove('drag'); save(); wrapResize(); listPaint(); paint(); redrawRail(); };
     spl.addEventListener('pointerup', end); spl.addEventListener('pointercancel', end);
     spl.addEventListener('dblclick', toggleRail);
     spl.addEventListener('keydown', function (e) { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); apply(pref.railw + (e.key === 'ArrowRight' ? 16 : -16)); save(); } });
   })();
 
   var menu = $('menu'), menuBtn = $('menuBtn');
-  function syncMenu() { $('mCopySel').disabled = !sel; $('mExport').disabled = !HITS.length; }
+  function syncMenu() {
+    $('mCopySel').disabled = !sel; $('mExport').disabled = !HITS.length;
+    $('mScan').hidden = !RD; $('mScan').disabled = SC.on || SC.done || (HITS.length > 0 && SC.from <= 1);
+  }
   var closeMenu = function () { if (!menu.hidden) { menu.hidden = true; menuBtn.setAttribute('aria-expanded', 'false'); } };
   menuBtn.addEventListener('click', function (e) { e.stopPropagation(); syncMenu(); menu.hidden = !menu.hidden; menuBtn.setAttribute('aria-expanded', String(!menu.hidden)); if (!menu.hidden) menu.querySelector('button:not(:disabled)').focus(); });
   document.addEventListener('click', function (e) { if (!menu.contains(e.target) && e.target !== menuBtn) closeMenu(); });
@@ -686,11 +825,12 @@
     })();
   }
   $('mExport').addEventListener('click', exportHits);
+  $('mScan').addEventListener('click', function () { startScan(); });
 
   /* ---------- status bar ---------- */
   function updateStatus() {
     var pos = '';
-    if (box && N) { var a = topLine(); pos = 'Ln ' + fmt(a) + ' of ' + fmt(N) + ' · ' + Math.round(a / N * 100) + '%'; }
+    if ((box || ST.on) && N) { var a = topLine(); pos = 'Ln ' + fmt(a) + ' of ' + fmt(N) + ' · ' + Math.round(a / N * 100) + '%'; }
     if (sel) pos += (pos ? ' · ' : '') + fmt(sel.b - sel.a + 1) + ' selected';
     $('stPos').textContent = pos; $('stEnc').textContent = CFG.enc || '';
   }
@@ -720,6 +860,7 @@
     else if (k === 'p') { e.preventDefault(); step(-1); }
     else if (k >= '1' && k <= '6') toggleFilter(+k - 1, false);
     else if (k === 'm' || k === 'M') { if (!$('moBtn').disabled) setMO(!pref.mo); }
+    else if (k === 'w' || k === 'W') { if (!$('wrapBtn').disabled) setWrap(!WR.on); }
     else if (k === '+' || k === '=') setFs(1);
     else if (k === '-') setFs(-1);
     else if (k === '[') toggleRail();
@@ -727,7 +868,312 @@
   });
   $('prev').addEventListener('click', function () { step(-1); });
   $('next').addEventListener('click', function () { step(1); });
-  window.addEventListener('resize', function () { if (box) { paint(); redrawRail(); } listPaint(); });
+  window.addEventListener('resize', function () { if (box) { wrapResize(); paint(); redrawRail(); } else if (ST.on) { redrawRail(); afterScroll(); } listPaint(); });
+
+  /* ---------- list groups: all hits, by message (lines that differ only in digits and spacing), by range of lines ---------- */
+  var GCAP = 100000;
+  var G = { mode: 'all', tpl: -1, ids: new Map(), names: [], ex: [], rep: [], exOk: [], of: new Map(), tok: 0, ready: false, busy: false };
+  var idxCancelFn = null;
+  function idxShow(text, frac, cancel) {
+    $('idx').hidden = false; $('idxT').textContent = text; $('idxB').style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%'; idxCancelFn = cancel || null; $('idxCancel').hidden = !cancel;
+  }
+  var idxHide = function () { $('idx').hidden = true; idxCancelFn = null; };
+  $('idxCancel').addEventListener('click', function () { if (idxCancelFn) idxCancelFn(); });
+  var tplKey = function (t) { return t.slice(0, 400).replace(/\d+/g, '').replace(/\s+/g, ' ').trim(); };
+  /* read the text of every active hit once (the page has them; the reader sends them 400 at a time) and give each its message id */
+  function buildTpl(done) {
+    var tok = ++G.tok, todo = ACT.slice(0, GCAP).filter(function (n) { return !G.of.has(n); }), i = 0;
+    var absorb = function (n, t, sp) {
+      var k = tplKey(t), id = G.ids.get(k);
+      if (id === undefined) { id = G.names.length; G.ids.set(k, id); G.names.push(k); G.ex.push(snipHtml(t, sp, 0)); G.rep.push(n); G.exOk.push(EMB || !!sp); }
+      G.of.set(n, id);
+    };
+    /* the reader grouped on plain text (no match positions: much cheaper); the labels shown, the 300 biggest groups, get their match in bold from one request */
+    var end = function () {
+      var fin = function () { if (tok !== G.tok) return; G.busy = false; G.ready = true; idxHide(); done(); };
+      if (EMB) { fin(); return; }
+      var cnt = new Map(), id;
+      ACT.slice(0, GCAP).forEach(function (n) { id = G.of.get(n); if (id !== undefined && !G.exOk[id]) cnt.set(id, (cnt.get(id) || 0) + 1); });
+      var need = Array.from(cnt.entries()).sort(function (a, b) { return b[1] - a[1]; }).slice(0, 300).map(function (r) { return r[0]; });
+      if (!need.length) { fin(); return; }
+      rget('/lines?l=' + need.map(function (x) { return G.rep[x]; }).join(',')).then(function (d) {
+        if (tok !== G.tok) return;
+        var at = new Map(); need.forEach(function (x) { at.set(G.rep[x], x); });
+        d.l.forEach(function (r) { var x = at.get(r[0]); if (x !== undefined && r[3]) { G.ex[x] = snipHtml(r[1], r[3], 0); G.exOk[x] = true; } });
+        fin();
+      }).catch(function () { if (tok === G.tok) { G.busy = false; idxHide(); readerFailed(); } });
+    };
+    if (!todo.length) { end(); return; }
+    G.busy = true; G.ready = false;
+    (function next() {
+      if (tok !== G.tok) return;
+      if (i >= todo.length) { end(); return; }
+      idxShow('Grouping ' + fmt(todo.length) + ' hit lines…', i / todo.length, function () { G.tok++; G.busy = false; idxHide(); if (G.mode === 'msg') setListMode('all'); });
+      if (EMB) {
+        var t0 = performance.now();
+        while (i < todo.length && performance.now() - t0 < 12) { absorb(todo[i], EMB.lines[todo[i] - 1], SPANS.get(todo[i])); i++; }
+        setTimeout(next, 0);
+      } else {
+        var ids = todo.slice(i, i + 400); i += 400;
+        rget('/lines?l=' + ids.join(',') + '&spans=0').then(function (d) { if (tok !== G.tok) return; d.l.forEach(function (r) { absorb(r[0], r[1]); }); next(); })
+          .catch(function () { if (tok === G.tok) { G.busy = false; idxHide(); readerFailed(); } });
+      }
+    })();
+  }
+  function pillPaint() {
+    var on2 = G.tpl >= 0 && G.ex[G.tpl] !== undefined; $('tplPill').hidden = !on2;
+    if (on2) $('tplTxt').innerHTML = esc('Message: ') + G.ex[G.tpl];
+  }
+  function groupsRefresh() { if (G.mode !== 'all') paintGroups(); }
+  function rangeSize() { var sizes = [100, 1000, 10000, 100000, 1000000, 10000000], k = 0; while (k < sizes.length - 1 && Math.ceil(N / sizes[k]) > 60) k++; return sizes[k]; }
+  function paintGroups() {
+    var L = hitList, h = '';
+    lnodes.clear(); L.scrollTop = 0;
+    if (!ACT.length) { L.innerHTML = '<div class="none">' + (HITS.length ? 'Every filter is off. Click a filter above to turn it on.' : 'No match lines to group.') + '</div>'; return; }
+    if (G.mode === 'msg') {
+      if (!G.ready) { L.innerHTML = '<div class="gnote">Reading the hit lines…</div>'; return; }
+      var cnt = new Map(), seen = Math.min(ACT.length, GCAP), i, id;
+      for (i = 0; i < seen; i++) { id = G.of.get(ACT[i]); if (id !== undefined) cnt.set(id, (cnt.get(id) || 0) + 1); }
+      var rows = Array.from(cnt.entries()).sort(function (a, b) { return b[1] - a[1] || a[0] - b[0]; }), top = rows.slice(0, 300), mx = top.length ? top[0][1] : 1;
+      h = '<div class="gnote">' + fmt(rows.length) + (rows.length === 1 ? ' message' : ' different messages') + ' in ' + fmt(seen) + ' hits. Digits and spacing are ignored.' + (ACT.length > seen ? ' Grouped the first ' + fmt(GCAP) + ' hits.' : '') + (rows.length > top.length ? ' Showing the ' + top.length + ' most common.' : '') + '</div>';
+      top.forEach(function (r) { h += '<button type="button" class="grow" data-t="' + r[0] + '" title="Show only these hits"><span class="gt">' + G.ex[r[0]] + '</span><span class="gc">' + fmt(r[1]) + '</span><i class="gbar" style="width:' + Math.max(2, r[1] / mx * 100) + '%"></i></button>'; });
+    } else {
+      var size = rangeSize(), buckets = [], mx2 = 1;
+      for (var from = 1; from <= N; from += size) {
+        var a = lower(ACT, from), b = upper(ACT, Math.min(N, from + size - 1));
+        if (b > a) { buckets.push([from, Math.min(N, from + size - 1), b - a, ACT[a]]); if (b - a > mx2) mx2 = b - a; }
+      }
+      h = '<div class="gnote">Hits per block of ' + fmt(size) + ' lines. Click a block to go to its first hit.</div>';
+      buckets.forEach(function (x) { h += '<button type="button" class="grow" data-from="' + x[3] + '"><span class="gt">lines ' + fmt(x[0]) + ' – ' + fmt(x[1]) + '</span><span class="gc">' + fmt(x[2]) + '</span><i class="gbar" style="width:' + Math.max(2, x[2] / mx2 * 100) + '%"></i></button>'; });
+    }
+    L.innerHTML = h;
+  }
+  function setListMode(m) {
+    G.mode = m;
+    Array.prototype.forEach.call($('listSeg').querySelectorAll('button'), function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-m') === m)); });
+    if (m === 'all') { if (G.tpl >= 0 && !G.ready) buildTpl(refreshList); else refreshList(); return; }
+    if (m === 'msg' && !G.ready) { buildTpl(paintGroups); }
+    paintGroups();
+  }
+  $('listSeg').addEventListener('click', function (e) { var b = e.target.closest('button'); if (b) setListMode(b.getAttribute('data-m')); });
+  $('tplX').addEventListener('click', function () { G.tpl = -1; refreshList(); });
+
+  /* ---------- reader: scan the file for the search's filters (when the search listed no hits, or only some) ---------- */
+  var SC = { on: false, tok: 0, done: false, from: 1, t: 0 };
+  function absorbScan(h) {
+    for (var i = 0; i < h.length; i += 2) {
+      var n = h[i], m = h[i + 1], at = lower(HITS, n), old = 0;
+      if (HITS[at] === n) { old = HMASK[at]; HMASK[at] = old | m; } else { HITS.splice(at, 0, n); HMASK.splice(at, 0, m); }
+      FILT.forEach(function (f) { if ((m >> f.slot & 1) && !(old >> f.slot & 1)) f.count++; });
+      blocks.delete(Math.floor((n - 1) / BS)); snipCache.delete(n);
+    }
+  }
+  function scanUpdate(final) {
+    var now = performance.now(); if (!final && now - SC.t < 300) return; SC.t = now;
+    rebuildAct(); G.ready = false; chipsPaint(); syncTools(); syncMenu();
+    if (qHits) { if (final) refreshList(); return; }
+    LIST = ACT; LV++; listPaint(); groupsRefresh(); updateCount(); paint(); redrawRail();
+    if (G.mode === 'msg') buildTpl(paintGroups);
+  }
+  function startScan() {
+    if (!RD || SC.on || SC.done) return;
+    var tok = ++SC.tok; SC.on = true; syncMenu(); listPaint();
+    var stop = function () { SC.tok++; SC.on = false; idxHide(); scanUpdate(true); listPaint(); };
+    (function next() {
+      if (tok !== SC.tok) return;
+      idxShow('Scanning the file for the filters… ' + Math.round(Math.min(1, SC.from / N) * 100) + '%', SC.from / N, stop);
+      rget('/scan?from=' + SC.from).then(function (d) {
+        if (tok !== SC.tok) return;
+        if (d.err) { SC.on = false; idxHide(); toast(d.err); syncMenu(); listPaint(); return; }
+        absorbScan(d.h);
+        if (d.next) { SC.from = d.next; scanUpdate(false); next(); return; }
+        SC.on = false; SC.done = true; idxHide(); scanUpdate(true); listPaint(); toast('Scan finished: ' + fmt(ACT.length) + ' matching lines');
+      }).catch(function () { if (tok === SC.tok) { SC.on = false; idxHide(); readerFailed(); syncMenu(); listPaint(); } });
+    })();
+  }
+
+  /* ---------- structured view of Office files: the same lines, drawn as pages, slides and grids ---------- */
+  var lt = function (n) { var t = EMB.lines[n - 1]; return t.length > LCAP ? t.slice(0, LCAP) : t; };
+  var txt = function (n) { return renderText(lt(n), SPANS.get(n)); };
+  function slAttr(n, cls) { return 'class="sl' + (cls ? ' ' + cls : '') + (isHit(n) ? ' hit' : '') + (n === curLine ? ' cur' : '') + (inSel(n) ? ' sel' : '') + '" data-n="' + n + '"'; }
+  function renderSub(t, sp, off, len) {
+    var shifted = sp ? sp.filter(function (x) { return x[1] > off && x[0] < off + len; }).map(function (x) { return [Math.max(0, x[0] - off), Math.min(len, x[1] - off), x[2]]; }) : null;
+    return renderText(t.slice(off, off + len), shifted);
+  }
+  function figs(n) {
+    var r = ST.ref.get(n), h = ''; if (!r) return '';
+    r.forEach(function (ix) { if (SD.imgs[ix]) h += '<div class="fig"><img alt="" src="' + SD.imgs[ix] + '"></div>'; }); return h;
+  }
+  var metaOf = function (n) { return (SD.meta && SD.meta[n - 1]) || ''; };
+  var cellOf = function (n) { var m = /^c(\d+)\.(\d+)\.(\d+)$/.exec(metaOf(n)); return m ? [+m[1], +m[2], +m[3]] : null; };
+  function tableHtml(a, e) {
+    var rows = [], row = null, lastKey = '', n;
+    for (n = a; n <= e; n++) {
+      var c = cellOf(n), key = c[1] + ':' + c[2];
+      if (!row || c[1] !== row.r) { row = { r: c[1], cells: [] }; rows.push(row); lastKey = ''; }
+      if (key !== lastKey) { row.cells.push({ lines: [] }); lastKey = key; }
+      row.cells[row.cells.length - 1].lines.push(n);
+    }
+    var h = '<table class="tbl">';
+    rows.forEach(function (r, ri) {
+      var tag = ri === 0 && rows.length > 1 ? 'th' : 'td';
+      h += '<tr>' + r.cells.map(function (cell) {
+        return '<' + tag + '>' + cell.lines.map(function (ln) { return '<div ' + slAttr(ln, lt(ln).trim() ? '' : 'blank') + '>' + txt(ln) + '</div>' + figs(ln); }).join('') + '</' + tag + '>';
+      }).join('') + '</tr>';
+    });
+    return h + '</table>';
+  }
+  function blockHtml(n) {
+    var m = metaOf(n), t = lt(n), cls = /^(h[1-9]|title)$/.test(m) ? 'h ' + m : m === 'li' ? 'li' : t.trim() ? '' : 'blank';
+    return '<' + (cls.charAt(0) === 'h' ? 'div' : 'p') + ' ' + slAttr(n, cls) + '>' + txt(n) + '</' + (cls.charAt(0) === 'h' ? 'div' : 'p') + '>' + figs(n);
+  }
+  function pageHtml(u) {
+    var h = '<section class="page" data-s="' + u.a + '"><div class="pn"><span>Page ' + u.num + '</span><span>lines ' + fmt(u.a) + ' – ' + fmt(u.b) + '</span></div>';
+    for (var n = u.a; n <= u.b;) {
+      var c = cellOf(n);
+      if (c) { var e = n; while (e < u.b && cellOf(e + 1) && cellOf(e + 1)[0] === c[0]) e++; h += tableHtml(n, e); n = e + 1; } else { h += blockHtml(n); n++; }
+    }
+    return h + '</section>';
+  }
+  function slideHtml(u) {
+    var b0 = u.a + 1, b1 = u.notes ? u.notes - 1 : u.b, first = 0, n, h = '<div class="slide" data-s="' + u.a + '"><div ' + slAttr(u.a, 'sn') + '>' + (isHit(u.a) ? esc(lt(u.a)) : 'Slide ' + u.num) + '</div>';
+    for (n = b0; n <= b1; n++) if (lt(n).trim()) { first = n; break; }
+    if (first) h += '<h4 ' + slAttr(first, 'st') + '>' + txt(first) + '</h4>';
+    h += figs(u.a);
+    for (n = b0; n <= b1; n++) if (n !== first && lt(n).trim()) h += '<div ' + slAttr(n, 'sb') + '>' + txt(n) + '</div>';
+    if (u.notes) {
+      h += '<div class="snotes"><b ' + slAttr(u.notes) + '>Notes</b>';
+      for (n = u.notes + 1; n <= u.b; n++) if (lt(n).trim()) h += '<div ' + slAttr(n, 'sb notes') + '>' + txt(n) + '</div>';
+      h += '</div>';
+    }
+    return h + '</div>';
+  }
+  function diagramHtml(u) {
+    var h = '<div class="slide" data-s="' + u.a + '"><h4 ' + slAttr(u.a, 'st') + '>' + (isHit(u.a) ? esc(lt(u.a)) : 'SmartArt diagram ' + u.num) + '</h4>';
+    for (var n = u.a + 1; n <= u.b; n++) if (lt(n).trim()) h += '<div ' + slAttr(n, 'sb') + '>' + txt(n) + '</div>';
+    return h + '</div>';
+  }
+  function sheetHtml(u) {
+    var h = '<div data-s="' + u.a + '">';
+    if (u.head) h += '<div class="sh"><span ' + slAttr(u.a) + '>' + (isHit(u.a) ? esc(lt(u.a)) : 'Sheet ' + u.num) + '</span><small>' + (u.rows ? fmt(u.rows) + ' rows' : 'empty') + '</small></div>';
+    if (u.to >= u.from) {
+      h += '<div class="grid-wrap"><table class="grid"><thead><tr><th class="rn">Line</th>';
+      for (var c = 1; c <= u.cols; c++) h += '<th>' + c + '</th>';
+      h += '</tr></thead><tbody>';
+      for (var n = u.from; n <= u.to; n++) {
+        var t = lt(n), sp = SPANS.get(n), off = 0, parts = t.split('\t');
+        h += '<tr ' + slAttr(n) + '><th class="rn">' + fmt(n) + '</th>';
+        for (c = 0; c < u.cols; c++) {
+          var p = parts[c];
+          if (p === undefined) { h += '<td></td>'; continue; }
+          h += '<td' + (/^-?\d[\d,.]*%?$/.test(p.trim()) ? ' class="num"' : '') + '>' + renderSub(t, sp, off, p.length) + '</td>'; off += p.length + 1;
+        }
+        h += '</tr>';
+      }
+      h += '</tbody></table></div>';
+    }
+    return h + '</div>';
+  }
+  var strUnitHtml = function (u) { return u.kind === 'slide' ? slideHtml(u) : u.kind === 'diagram' ? diagramHtml(u) : u.kind === 'sheet' ? sheetHtml(u) : pageHtml(u); };
+  function pageUnits(units, a, b) {   // plain pages of about 40 lines; a table is never split
+    var i = a, num = units.filter(function (u) { return u.kind === 'page'; }).length;
+    while (i <= b) {
+      var s0 = i, cnt = 0;
+      do { i++; cnt++; } while (i <= b && (cnt < 40 || (cellOf(i) && cellOf(i - 1) && cellOf(i)[0] === cellOf(i - 1)[0])));
+      units.push({ kind: 'page', a: s0, b: i - 1, num: ++num });
+    }
+  }
+  function strUnits() {
+    var units = [], cur = null, m, n, t;
+    if (SD.kind === 'docx') { pageUnits(units, 1, N); return units; }
+    var plainFrom = 0, flush = function (to) { if (plainFrom) { pageUnits(units, plainFrom, to); plainFrom = 0; } };
+    for (n = 1; n <= N; n++) {
+      t = EMB.lines[n - 1];
+      if (SD.kind === 'pptx' && (m = /^--- Slide (\d+) ---$/.exec(t))) { flush(n - 1); cur = { kind: 'slide', a: n, b: n, num: +m[1], notes: 0 }; units.push(cur); }
+      else if (SD.kind === 'pptx' && cur && cur.kind === 'slide' && /^--- Slide \d+ notes ---$/.test(t)) { cur.notes = n; cur.b = n; }
+      else if (SD.kind === 'pptx' && (m = /^--- SmartArt diagram (\d+) ---$/.exec(t))) { flush(n - 1); cur = { kind: 'diagram', a: n, b: n, num: +m[1] }; units.push(cur); }
+      else if (SD.kind === 'xlsx' && (m = /^--- Sheet (\d+) ---$/.exec(t))) { flush(n - 1); cur = { kind: 'sheet', a: n, b: n, num: +m[1], rows: 0, cols: 1 }; units.push(cur); }
+      else if (cur && cur.kind !== 'page') { cur.b = n; if (cur.kind === 'sheet') { cur.rows++; cur.cols = Math.max(cur.cols, t.split('\t').length); } }
+      else if (!plainFrom) plainFrom = n;
+    }
+    flush(N);
+    if (SD.kind !== 'xlsx') return units;
+    var out = [];   // a sheet is drawn in chunks of 200 rows
+    units.forEach(function (u) {
+      if (u.kind !== 'sheet') { out.push(u); return; }
+      var from = u.a + 1;
+      do {
+        var to = Math.min(u.b, from + 199);
+        out.push({ kind: 'sheet', a: from === u.a + 1 ? u.a : from, b: to < u.b ? to : u.b, num: u.num, rows: u.rows, cols: u.cols, head: from === u.a + 1, from: from, to: to });
+        from = to + 1;
+      } while (from <= u.b);
+    });
+    return out;
+  }
+  var unitIdx = function (n) { return Math.max(0, upper(ST.starts, n) - 1); };
+  var strList = function () { return ST.sls || (ST.sls = ST.inner.querySelectorAll('.sl')); };
+  function strAt(y) {   // the line of the last element that starts at or above screen position y
+    var L = strList(), lo = 0, hi = L.length - 1, best = -1;
+    while (lo <= hi) { var m = (lo + hi) >> 1; if (L[m].getBoundingClientRect().top <= y) { best = m; lo = m + 1; } else hi = m - 1; }
+    return best < 0 ? 0 : +L[best].getAttribute('data-n');
+  }
+  function strTop() { var L = strList(); return strAt(ST.el.getBoundingClientRect().top + 1) || (L.length ? +L[0].getAttribute('data-n') : 1); }
+  function strMore() {
+    var el = ST.el, k = 0;
+    while (ST.shown < ST.units.length && k++ < 12 && el.scrollHeight - el.scrollTop - el.clientHeight < el.clientHeight * 2) { ST.inner.insertAdjacentHTML('beforeend', strUnitHtml(ST.units[ST.shown++])); ST.sls = null; }
+  }
+  function strMark() {
+    Array.prototype.forEach.call(strList(), function (el) {
+      var n = +el.getAttribute('data-n'); el.classList.toggle('hit', isHit(n)); el.classList.toggle('cur', n === curLine); el.classList.toggle('sel', inSel(n));
+    });
+  }
+  function strRender() {
+    var top = ST.el.scrollTop, h = ''; for (var i = 0; i < ST.shown; i++) h += strUnitHtml(ST.units[i]);
+    ST.inner.innerHTML = h; ST.sls = null; ST.el.scrollTop = top;
+  }
+  function strPaint() {
+    if (!ST.el) return;
+    var key = fre ? fre.source + '/' + fre.flags : '';
+    if (key !== ST.key || ST.dirty) { ST.key = key; ST.dirty = false; strRender(); } else strMark();
+    strMore();
+  }
+  function strGo(n) {
+    var ui = unitIdx(n);
+    while (ST.shown <= ui && ST.shown < ST.units.length) { ST.inner.insertAdjacentHTML('beforeend', strUnitHtml(ST.units[ST.shown++])); ST.sls = null; }
+    strMark();
+    var el = ST.inner.querySelector('.sl[data-n="' + n + '"]');
+    for (var k = n - 1; !el && k >= ST.units[ui].a && n - k < 60; k--) el = ST.inner.querySelector('.sl[data-n="' + k + '"]');
+    if (!el) el = ST.inner.querySelector('[data-s="' + ST.units[ui].a + '"]');
+    if (el) { var r = el.getBoundingClientRect(), c = ST.el.getBoundingClientRect(); if (r.top < c.top + 8 || r.bottom > c.bottom - 8) ST.el.scrollTop += r.top - c.top - c.height / 3; }
+    strMore();
+  }
+  function strInit() {
+    if (!N || N > 60000) { SD = null; return; }
+    (SD.refs || []).forEach(function (r) { var a = ST.ref.get(r[0]); if (!a) ST.ref.set(r[0], a = []); a.push(r[1]); });
+    ST.units = strUnits(); ST.starts = ST.units.map(function (u) { return u.a; });
+    $('doc').insertAdjacentHTML('beforeend', '<div class="sview" id="sview" tabindex="0" aria-label="Structured view" hidden><div class="inner"></div></div>');
+    ST.el = $('sview'); ST.inner = ST.el.firstChild; ST.boxEl = box;
+    ST.el.addEventListener('scroll', schedPaint);
+    ST.el.addEventListener('click', function (e) {
+      if (String(window.getSelection()).length) return;
+      var s = e.target.closest('.sl'); if (s) pickLine(+s.getAttribute('data-n'), e.shiftKey);
+    });
+    if (pref.str) setStruct(true);
+  }
+  function setStruct(v) {
+    if (!SD || !ST.el || v === ST.on) return;
+    var at = anchorLine();
+    pref.str = v; save(); ST.on = v;
+    if (v) {
+      box = null; ST.boxEl.hidden = true; ST.el.hidden = false; ST.dirty = true; ST.shown = 0; ST.inner.innerHTML = ''; ST.sls = null;
+      strPaint(); strGo(at);
+    } else {
+      box = ST.boxEl; ST.el.hidden = true; box.hidden = false;
+      box.classList.toggle('wrapon', wrapOn()); if (wrapOn()) { measureChar(); wrapReset(); }
+      setWidth(); RGEN++; revealRow(rowOfLine(at), true); paint();
+    }
+    syncTools(); redrawRail(); afterScroll();
+  }
 
   /* ---------- start ---------- */
   function applyHash() {
@@ -753,14 +1199,18 @@
     $('doc').innerHTML = '<div class="logsrc" id="logsrc" tabindex="0" aria-label="File text"><div class="mo"><div class="mosp"><div class="movr"></div></div></div></div>';
     box = $('logsrc'); sp = box.querySelector('.mosp'); vr = box.querySelector('.movr');
     if (EMB) { for (var i = 0; i < N; i++) { var l = EMB.lines[i].length; if (l > maxLen) maxLen = l; } maxLen = Math.min(maxLen, LCAP); }
-    measureChar(); setWidth();
+    measureChar();
+    WR.on = !!pref.wrap && canWrap();
+    if (WR.on) { box.classList.add('wrapon'); wrapReset(); if (wrapTooTall()) wrapRefuse(); }
+    setWidth();
     box.addEventListener('scroll', schedPaint); box.addEventListener('click', onBoxClick);
     rulerEvents();
     if (pref.mo) { MO.on = true; moBuild(); }
     var first = LIST[0] || 0;
     if (first) { curLine = first; revealRow(rowOfLine(first), true); }
     paint(); redrawRail(); updateCount(); updateStatus(); listReveal(curLine); listPaint();
-    applyHash();
+    if (SD) strInit();
+    syncTools(); syncMenu(); applyHash();
   }
 
   if (pref.theme) root.dataset.theme = pref.theme;

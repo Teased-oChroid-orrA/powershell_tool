@@ -573,8 +573,10 @@ const METRIC: [(&str, f64, f64, f64, f64, f64); 10] = [
 ];
 
 /// `(name, tap, nominal, close, loose)` in inches: unified coarse threads, with the tap drill and the close and free clearance
-/// drills of the Machinery's Handbook tables as commonly published. Transcribed, not computed: check an entry against the
-/// current handbook before relying on it for a release.
+/// drills of the Machinery's Handbook tables as commonly published. Transcribed, not computed. Checked on 2026-11-20 against two
+/// published charts (Fractory "Imperial Clearance Hole Sizes", Optimas "Unified Threads Recommended Tapping Size and Clearance
+/// Holes"): every entry agrees, the tap drill being the 75 % thread engagement one. The handbook itself was not read, and
+/// editions differ on which drill is called "close" and which "free" for some sizes, so an edition-exact claim needs its table 5.
 const INCH: [(&str, f64, f64, f64, f64); 8] = [
     ("#4-40", 0.0890, 0.1120, 0.1160, 0.1285),
     ("#6-32", 0.1065, 0.1380, 0.1440, 0.1495),
@@ -844,8 +846,8 @@ fn face_triangles(outer: &[V3], holes: &[Vec<V3>], u: V3, v: V3) -> Option<(Vec<
     Some((triangulate(&flat(outer))?, holes.iter().map(|h| triangulate(&flat(h))).collect::<Option<Vec<_>>>()?))
 }
 
-/// Planar faces of different bodies with opposite normals, no more than the tolerance apart along them, and positive common
-/// area. Returns the interfaces and the face pairs that passed the geometric screen but whose common area could not be
+/// Planar faces of different bodies with opposite normals, no more than the tolerance apart along them, and a common area of
+/// more than a strip one tolerance wide along the longer face diagonal. Returns the interfaces and the face pairs that passed the geometric screen but whose common area could not be
 /// computed (a boundary that is not a simple polygon): those are reported, not dropped.
 ///
 /// Only contact within the tolerance is an interface: a real gap (a washer, a shim, a clearance) is not detected here.
@@ -896,7 +898,10 @@ pub fn find_interfaces(models: &[AnalyticModel], faces: &[ClassifiedFace]) -> (V
                     take(1.0, overlap_of(x, y));
                 }
             }
-            if m[0] <= tol * tol {
+            // A strip no wider than the tolerance along a shared edge is not a contact: its area is at most `tol` times the
+            // length of the edge, which is at most `length`. (`tol * tol` is below the rounding noise of a placed body: an edge
+            // contact of two rotated bodies read 6e-14 mm2 against 1e-14.)
+            if m[0] <= tol * length {
                 continue;
             }
             let centroid = add(add(mul(u, m[1] / m[0]), mul(v, m[2] / m[0])), mul(*na, *oa));
@@ -927,4 +932,22 @@ pub fn detect(models: &[AnalyticModel]) -> Result<Features, Error> {
     let sites = find_sites(models, &holes);
     let (interfaces, unresolved) = find_interfaces(models, &faces);
     Ok(Features { faces, holes, sites, interfaces, unresolved })
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::{INCH, METRIC};
+
+    /// Within one size the bores grow tap < nominal < close <= loose (inch) and tap < nominal < close <= normal <= loose (metric),
+    /// and the sizes grow: a transcription slip that swaps two columns or two rows breaks this.
+    #[test]
+    fn the_size_tables_are_monotone_in_every_row_and_down_the_sizes() {
+        for (name, tap, nominal, close, loose) in INCH {
+            assert!(tap < nominal && nominal < close && close <= loose, "{name}");
+        }
+        for (name, tap, nominal, close, normal, loose) in METRIC {
+            assert!(tap < nominal && nominal < close && close <= normal && normal <= loose, "{name}");
+        }
+        assert!(INCH.windows(2).all(|w| w[0].2 < w[1].2) && METRIC.windows(2).all(|w| w[0].2 < w[1].2));
+    }
 }

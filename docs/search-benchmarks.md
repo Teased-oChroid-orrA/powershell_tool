@@ -824,7 +824,7 @@ That is 15% to 17% faster with identical vectors, so no `retrieval_eval` run and
 
 What remains: inference itself is the cost, and nothing else in the loop is worth changing (database writes are 0.5%). Not tried: a different inference runtime or a newer `rten` (would need the bit comparison above, and the five-set run if any vector changes), the other callers of `search_ml::embed_batch` (`alerts.rs`, `neural_search.rs`, `relevance.rs` send lines; the 80 and 200 character columns say their batching is already the right way round), Windows.
 
-## 2026-11-17: first hosted Windows rows (, `search-bench-windows.yml`, PR #305)
+## 2026-11-17: first hosted Windows rows (`search-bench-windows.yml`, PR #305)
 
 Host: AMD EPYC 9V74 (hosted runner, `windows-latest`), release, one run. Evidence for that host only.
 
@@ -941,3 +941,57 @@ nDCG@10 (Recall@100 moved by at most 0.006 on every set):
 Result: `lighte` loses SciFact and MS MARCO (mean +0.0003). Porter2 wins four sets (+0.0042 to +0.0080) and loses MS MARCO (-0.0044); mean +0.0037. It also costs about 2 ms more per query (22.4 to 24.7 ms SciFact, 24.0 to 27.8 ms TREC-COVID; not isolated from background load). The owner rule adopts only what loses on none of the five sets, so neither is adopted. Porter2's gain is real on the scientific and biomedical sets and its loss is on the short, everyday-language queries, which fits an over-conflating stemmer; it was not tuned further (no per-length or per-suffix variants), since each variant would be fit to the same five sets.
 
 Not measured: engineering folders (no labelled set), non-English text, and lemmatization with a dictionary (irregular forms such as `broke` / `broken`); `rust-stemmers` is English-only. The shipped stemmer stays.
+
+### Addendum: nlprule lemmatization and the engineering sets
+
+Question: does dictionary lemmatization (`nlprule` 0.6.4, English tagger) beat Snowball Porter2 (`rust-stemmers` English) and the shipped stemmer? `rust-bert` was excluded: it has no stemmer or lemmatizer and needs libtorch or ONNX, which breaks the clean-Windows, nothing-pre-installed rule.
+
+Method: as above, one process per mode, same indexes, hybrid `default` variant, release build, one rerun of all four modes for a like-for-like table. Temporary switch in `lexical::stem` (not committed): `light` (shipped), `porter2`, `nlp` (first tagger lemma of an all-ASCII-letter word, else the word unchanged), `nlpfb` (same, but untagged words go through the shipped stemmer). Two engineering sets added as tiebreakers, not part of the gate: AeroEngQA and the ViDoRe industrial shard 0.
+
+nDCG@10:
+
+| Set | light (shipped) | porter2 | nlp | nlpfb |
+|---|---|---|---|---|
+| SciFact | 0.7518 | 0.7572 | 0.7420 | 0.7437 |
+| NFCorpus | 0.3844 | 0.3886 | 0.3829 | 0.3830 |
+| Cranfield | 0.3988 | 0.4041 | 0.4024 | 0.4024 |
+| MS MARCO | 0.6674 | 0.6630 | 0.6691 | 0.6677 |
+| TREC-COVID | 0.4121 | 0.4201 | 0.3983 | 0.4006 |
+| gate mean (5) | 0.5229 | 0.5266 (+0.0037) | 0.5189 (-0.0035) | 0.5195 (-0.0029) |
+| AeroEngQA | 0.9462 | 0.9537 | 0.9462 | 0.9462 |
+| ViDoRe industrial | 0.4023 | 0.3992 | 0.3996 | 0.4005 |
+| mean (7) | 0.5661 | 0.5694 (+0.0033) | 0.5629 (-0.0032) | 0.5634 (-0.0027) |
+
+ViDoRe Recall@100: light 0.7822, porter2 0.7975, nlp 0.7826, nlpfb 0.7822. MRR@10: 0.4948, 0.4981, 0.4966, 0.5017.
+
+Result: nothing is adopted; the shipped stemmer stays. Under the five-set rule Porter2 loses MS MARCO (-0.0044), `nlp` loses SciFact (-0.0098), NFCorpus (-0.0015) and TREC-COVID (-0.0138), and `nlpfb` loses the same three (-0.0081, -0.0014, -0.0115). Lemmatization wins only Cranfield and MS MARCO, by small margins, and the first-lemma simplification (ambiguous words such as `leaves` have several lemmas) is a likely reason it trails on the scientific and biomedical sets; the shipped-stemmer fallback recovers only about 0.0006 of the gate mean.
+
+Ranking of the three: Porter2 (`rust-stemmers`) is best on retrieval (highest mean on both the five and seven sets, wins four gate sets and AeroEngQA, loses MS MARCO and ViDoRe nDCG); the shipped stemmer is second and is the only one with no data or dependency cost; `nlprule` is last. `nlprule` also needs an 11.6 MB tokenizer file whose language data is LGPL 2.1 (LanguageTool-derived), which the project avoided by retiring OpenCascade (ADR-023); the latest release is 0.6.4 and its maintenance is unconfirmed. Adopting it would have been an owner decision even if it had won.
+
+Latency: not comparable. The reruns ran while other builds and tests loaded the machine (shipped stemmer SciFact 108.8 ms/query here against 22.4 ms in the first run), so no per-query cost is claimed for any mode. `nlprule` also loads the tokenizer once per process.
+
+Not measured: engineering folders with real relevance labels beyond the two sets above, non-English text, and a lemma chooser that uses part of speech instead of the first tag.
+
+## 2026-11-20: term clusters for the "Related from hits" chips
+
+Question: the Find suggestion popover offers terms mined from the hits (`neural_search::corpus_term_candidates`) ranked by similarity to the query. Near-duplicates (`outer diameter`, `outside diameter`) fill the three slots. Can the neural embeddings that already rank them also group them by meaning?
+
+Built: `neural_search::rank_and_group` embeds the context and candidates once (`rank_suggestions` is now a wrapper) and groups the candidates by greedy average-link clustering in input order (`group_by_similarity`, threshold `GROUP_SIMILARITY` = 0.60). The Find popover folds a mined term that is grouped with one already shown into that chip ("Related from hits: outer diameter (also outside diameter)"), so a slot goes to a different idea. Display only: exact search, results, ranking and the order of the chips are unchanged; only mined terms fold (synonyms and corrections never do); clicking a chip adds only the term it names.
+
+Measurement: `search-core/examples/term_cluster_eval.rs` on `search-core/examples/data/term_clusters.tsv` (65 terms: 13 ideas of 3 or 4 terms and 10 singleton distractors, 81 true pairs), 20 shuffled input orders per threshold, pairwise precision and recall against the labels:
+
+| Threshold | Precision | Recall | False merges per run | Groups per run |
+|---|---|---|---|---|
+| 0.50 | 0.853 | 0.376 | 5.2 | 42.8 |
+| 0.55 | 0.921 | 0.361 | 2.5 | 44.8 |
+| 0.60 | 0.983 | 0.326 | 0.4 | 47.4 |
+| 0.65 | 0.975 | 0.286 | 0.6 | - |
+| 0.70 | 0.964 | 0.180 | - | - |
+| 0.75 | 1.000 | 0.074 | - | - |
+
+0.60 is the lowest threshold with precision of at least 0.95: a wrong merge hides a distinct chip, while a missed merge only leaves a duplicate. Result: about a third of the true pairs merge, with about 98% of merges correct.
+
+Limits: the 65 terms were written by the assistant and not reviewed by a person; the threshold was tuned on the same set (in-sample); English engineering phrases only; MiniLM-L6 on short phrases; no evaluation on real folders. Recall is low by design. Reproduce: `cargo run --release -p search-core --features neural-search --example term_cluster_eval`. No five-set retrieval gate applies because ranking and results do not change.
+
+Found on the way: `SearchSession::corpus_term_suggestions` (n-gram mining over up to 40 hit lines) ran on every call of `query_suggestions`, which the Find popover makes several times per redraw. Measured in release with 40 hit lines of about 190 characters: 3.0 ms per call, so roughly 10 ms per frame while the popover is open with results. It is now cached on the query and the exact hit lines it was mined from (`corpus_term_cache`, same pattern as the typo cache); test `corpus_terms_are_mined_once_per_query_and_hits`. The after-cache per-frame cost was not re-timed (one equality check over 40 lines and a clone of at most 24 strings).
+

@@ -515,9 +515,13 @@ fn neural_autocomplete_ranks_corpus_phrases_without_changing_exact_results() {
     let expected =
         search_core::neural_search::rank_suggestions(&context, &inputs).unwrap()[0].index;
     let choices = &view::document(&s).inputs[1].choices;
-    assert_eq!(
-        choices[0].label,
-        format!("Related from hits: {}", candidates[expected])
+    // Terms the neural grouping finds related fold into the chip as " (also ...)".
+    assert!(
+        choices[0]
+            .label
+            .starts_with(&format!("Related from hits: {}", candidates[expected])),
+        "unexpected first chip {:?}",
+        choices[0].label
     );
     assert_eq!(
         s.st.run
@@ -2618,4 +2622,40 @@ fn a_result_offers_the_viewer_tab_and_the_default_app_as_separate_opens() {
         .collect();
     let at = |name: &str| labels.iter().position(|l| l == name).unwrap_or_else(|| panic!("no {name:?} in {labels:?}"));
     assert!(at("Open") < at("Open in default app"), "{labels:?}");
+}
+
+#[cfg(feature = "neural-search")]
+#[test]
+fn corpus_terms_are_mined_once_per_query_and_hits() {
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = "/w".into();
+    s.st.config.filters_text = "diameter".into();
+    let mut r = result("/w/a.txt", 40, 1);
+    for h in r.hits.iter_mut() {
+        *h = hit(
+            1,
+            "The outer diameter of the titanium bushing shall not exceed the maximum allowable edge distance under fatigue loading of the lug",
+            "diameter",
+        );
+    }
+    s.st.run.results.push(r);
+    let first = s.corpus_term_suggestions();
+    assert!(!first.is_empty());
+    // A repeat call is the cached list; planting a sentinel proves it was not mined again.
+    s.corpus_term_cache.borrow_mut().as_mut().unwrap().2 = vec!["sentinel".into()];
+    assert_eq!(s.corpus_term_suggestions(), ["sentinel"]);
+    // New hit text or a new query is mined afresh.
+    s.st.run.results[0].hits[0].match_line = "completely different words about rivet shear".into();
+    let lines: Vec<String> = s.st.run.results[0]
+        .hits
+        .iter()
+        .map(|h| h.match_line.clone())
+        .collect();
+    assert_eq!(
+        s.corpus_term_suggestions(),
+        search_core::neural_search::corpus_term_candidates("diameter", &lines, 24)
+    );
+    s.corpus_term_cache.borrow_mut().as_mut().unwrap().2 = vec!["sentinel".into()];
+    s.st.config.filters_text = "rivet".into();
+    assert_ne!(s.corpus_term_suggestions(), ["sentinel"]);
 }
