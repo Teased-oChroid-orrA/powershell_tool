@@ -160,6 +160,15 @@ impl FaceSignature {
     }
 }
 
+/// A boundary sample at which the face's surface has a normal. The first sample of a cone face can be the apex (a drill tip, the
+/// point of a countersink) and a torus or spindle sample can lie on the axis; there the normal is undefined, so the first sample
+/// that has one is the probe. A plane or spline surface needs no normal to be signed and takes the first sample as it is.
+fn probe_point(surface: &Surface, mut points: impl Iterator<Item = V3>) -> Option<V3> {
+    match surface {
+        Surface::Plane(_) | Surface::Param(_) => points.next(),
+        _ => points.find(|p| surface.normal_at_world(*p).is_some()),
+    }
+}
 /// Make an axis direction unique up to sign: the first non-negligible component positive.
 fn canonical_axis(a: V3) -> V3 {
     let flip = a.iter().find(|x| x.abs() > 1e-9).is_some_and(|x| *x < 0.);
@@ -228,12 +237,16 @@ impl AnalyticModel {
                 }
             }
             neighbours.sort();
-            let probe = f
-                .bounds
-                .iter()
-                .flat_map(|b| &b.edges)
-                .find_map(|u| self.edge_points(u.edge).and_then(|p| p.first().copied()))
-                .ok_or_else(|| fail("a face without edges"))?;
+            let probe = probe_point(
+                surface,
+                f.bounds
+                    .iter()
+                    .flat_map(|b| &b.edges)
+                    .filter_map(|u| self.edge_points(u.edge))
+                    .flatten()
+                    .copied(),
+            )
+            .ok_or_else(|| fail("a face without edges"))?;
             let (kind, direction, anchor, size, size2, convex) = match surface {
                 Surface::Param(_) => (Kind::Spline, [0.; 3], [0.; 3], 0., 0., true),
                 Surface::Plane(fr) => {
@@ -602,4 +615,28 @@ pub fn associate(
     result.moved.sort_by_key(|m| (m.0, m.1));
     result.lost.sort();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analytic_step::Frame;
+
+    fn frame() -> Frame {
+        Frame { origin: [0.; 3], x: [1., 0., 0.], y: [0., 1., 0.], z: [0., 0., 1.] }
+    }
+
+    /// A drill point: the cone's boundary starts at its apex, where the normal is undefined. The probe must skip it, or every
+    /// model with such a face fails to sign (9 of the 33 NIST files did).
+    #[test]
+    fn a_cone_probe_skips_the_apex_and_a_plane_takes_the_first_sample() {
+        let cone = Surface::Cone { frame: frame(), radius: 0., semi_angle: 0.5, centre: 0. };
+        let rim = [3., 0., 5.];
+        let probe = probe_point(&cone, [[0., 0., 0.], rim].into_iter()).unwrap();
+        assert_eq!(probe, rim);
+        assert!(cone.normal_at_world(probe).is_some());
+        assert!(probe_point(&cone, [[0., 0., 0.]].into_iter()).is_none());
+        let plane = Surface::Plane(frame());
+        assert_eq!(probe_point(&plane, [[0., 0., 0.], rim].into_iter()), Some([0.; 3]));
+    }
 }
