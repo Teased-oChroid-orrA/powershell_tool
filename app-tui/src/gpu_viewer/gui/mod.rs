@@ -330,7 +330,6 @@ impl Gui {
     pub(crate) fn card_open(&self, id: &str) -> Option<bool> {
         self.card_open.get(id).copied()
     }
-    #[cfg(test)]
     /// Opens a workbench pane as a drawer (narrow windows; snapshots).
     #[cfg(test)]
     pub(crate) fn open_drawer(&mut self, results: bool) {
