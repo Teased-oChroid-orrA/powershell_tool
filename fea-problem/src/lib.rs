@@ -1,6 +1,7 @@
 //! Problem definition layer over `fea-core`. See `Cargo.toml`.
 pub mod advice;
 pub mod assembly_advice;
+pub mod assembly_mesh;
 pub mod benchmark;
 pub mod build;
 pub mod cases;

@@ -4,9 +4,7 @@
 //! a reason string with the measured numbers. Nothing here edits a `Problem`: a `Problem` still holds one body, so there is nothing
 //! to apply a tie or a fastener to until the multi-body representation (and the solver exposure of epic Phase C) exists. Body numbers
 //! in the text are 1-based (the order of the STEP product structure); `FaceKey::body` is the 0-based index.
-use solid_kernel::analytic_step::{AnalyticModel, Options};
 use solid_kernel::features::{detect, FaceKey, FastenerSite, FitClass, Features, Interface, SizeMatch};
-use solid_kernel::step::{inventory, Limits};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AssemblyAdvice {
@@ -114,9 +112,5 @@ pub fn recommend(f: &Features) -> Vec<AssemblyAdvice> {
 /// Read every body of a STEP assembly the way the solid editor does (strict, then the tolerant foreign-CAD read), detect its
 /// features and recommend.
 pub fn recommend_step(step: &str) -> Result<Vec<AssemblyAdvice>, String> {
-    let data = inventory(step, Limits::default()).map_err(|e| e.to_string())?;
-    let models = AnalyticModel::read_all(&data, Options::default())
-        .or_else(|first| AnalyticModel::read_all(&data, Options::foreign_cad(0.05)).map_err(|second| format!("{first}; tolerant read: {second}")))
-        .map_err(|e| e.to_string())?;
-    Ok(recommend(&detect(&models).map_err(|e| e.to_string())?))
+    crate::assembly_mesh::with_bodies(step, crate::assembly_mesh::DEFAULT_CHORD, |models, _| Ok(recommend(&detect(models).map_err(|e| e.to_string())?)))
 }
