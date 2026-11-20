@@ -941,3 +941,33 @@ nDCG@10 (Recall@100 moved by at most 0.006 on every set):
 Result: `lighte` loses SciFact and MS MARCO (mean +0.0003). Porter2 wins four sets (+0.0042 to +0.0080) and loses MS MARCO (-0.0044); mean +0.0037. It also costs about 2 ms more per query (22.4 to 24.7 ms SciFact, 24.0 to 27.8 ms TREC-COVID; not isolated from background load). The owner rule adopts only what loses on none of the five sets, so neither is adopted. Porter2's gain is real on the scientific and biomedical sets and its loss is on the short, everyday-language queries, which fits an over-conflating stemmer; it was not tuned further (no per-length or per-suffix variants), since each variant would be fit to the same five sets.
 
 Not measured: engineering folders (no labelled set), non-English text, and lemmatization with a dictionary (irregular forms such as `broke` / `broken`); `rust-stemmers` is English-only. The shipped stemmer stays.
+
+### Addendum: nlprule lemmatization and the engineering sets
+
+Question: does dictionary lemmatization (`nlprule` 0.6.4, English tagger) beat Snowball Porter2 (`rust-stemmers` English) and the shipped stemmer? `rust-bert` was excluded: it has no stemmer or lemmatizer and needs libtorch or ONNX, which breaks the clean-Windows, nothing-pre-installed rule.
+
+Method: as above, one process per mode, same indexes, hybrid `default` variant, release build, one rerun of all four modes for a like-for-like table. Temporary switch in `lexical::stem` (not committed): `light` (shipped), `porter2`, `nlp` (first tagger lemma of an all-ASCII-letter word, else the word unchanged), `nlpfb` (same, but untagged words go through the shipped stemmer). Two engineering sets added as tiebreakers, not part of the gate: AeroEngQA and the ViDoRe industrial shard 0.
+
+nDCG@10:
+
+| Set | light (shipped) | porter2 | nlp | nlpfb |
+|---|---|---|---|---|
+| SciFact | 0.7518 | 0.7572 | 0.7420 | 0.7437 |
+| NFCorpus | 0.3844 | 0.3886 | 0.3829 | 0.3830 |
+| Cranfield | 0.3988 | 0.4041 | 0.4024 | 0.4024 |
+| MS MARCO | 0.6674 | 0.6630 | 0.6691 | 0.6677 |
+| TREC-COVID | 0.4121 | 0.4201 | 0.3983 | 0.4006 |
+| gate mean (5) | 0.5229 | 0.5266 (+0.0037) | 0.5189 (-0.0035) | 0.5195 (-0.0029) |
+| AeroEngQA | 0.9462 | 0.9537 | 0.9462 | 0.9462 |
+| ViDoRe industrial | 0.4023 | 0.3992 | 0.3996 | 0.4005 |
+| mean (7) | 0.5661 | 0.5694 (+0.0033) | 0.5629 (-0.0032) | 0.5634 (-0.0027) |
+
+ViDoRe Recall@100: light 0.7822, porter2 0.7975, nlp 0.7826, nlpfb 0.7822. MRR@10: 0.4948, 0.4981, 0.4966, 0.5017.
+
+Result: nothing is adopted; the shipped stemmer stays. Under the five-set rule Porter2 loses MS MARCO (-0.0044), `nlp` loses SciFact (-0.0098), NFCorpus (-0.0015) and TREC-COVID (-0.0138), and `nlpfb` loses the same three (-0.0081, -0.0014, -0.0115). Lemmatization wins only Cranfield and MS MARCO, by small margins, and the first-lemma simplification (ambiguous words such as `leaves` have several lemmas) is a likely reason it trails on the scientific and biomedical sets; the shipped-stemmer fallback recovers only about 0.0006 of the gate mean.
+
+Ranking of the three: Porter2 (`rust-stemmers`) is best on retrieval (highest mean on both the five and seven sets, wins four gate sets and AeroEngQA, loses MS MARCO and ViDoRe nDCG); the shipped stemmer is second and is the only one with no data or dependency cost; `nlprule` is last. `nlprule` also needs an 11.6 MB tokenizer file whose language data is LGPL 2.1 (LanguageTool-derived), which the project avoided by retiring OpenCascade (ADR-023); the latest release is 0.6.4 and its maintenance is unconfirmed. Adopting it would have been an owner decision even if it had won.
+
+Latency: not comparable. The reruns ran while other builds and tests loaded the machine (shipped stemmer SciFact 108.8 ms/query here against 22.4 ms in the first run), so no per-query cost is claimed for any mode. `nlprule` also loads the tokenizer once per process.
+
+Not measured: engineering folders with real relevance labels beyond the two sets above, non-English text, and a lemma chooser that uses part of speech instead of the first tag.
