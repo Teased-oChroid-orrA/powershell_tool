@@ -11,7 +11,7 @@ pub enum AssemblyAdvice {
     /// Two planar faces of different bodies that touch: bond (tie) them, or model contact between them.
     Tie { a: FaceKey, b: FaceKey, gap: f64, overlap_area: f64, reason: String },
     /// Coaxial bores of different bodies: one fastener passes through them.
-    Fastener { bodies: Vec<usize>, faces: Vec<FaceKey>, size: Option<&'static str>, mismatch: bool, reason: String },
+    Fastener { bodies: Vec<usize>, faces: Vec<FaceKey>, size: Option<&'static str>, mismatch: bool, diameters: Vec<f64>, span: f64, reason: String },
     /// Faces that looked like an interface but whose common area could not be computed: check them by hand.
     Unresolved { a: FaceKey, b: FaceKey, reason: String },
 }
@@ -28,6 +28,20 @@ impl AssemblyAdvice {
                 }
             }
             AssemblyAdvice::Unresolved { a, b, .. } => format!("Check body {} face {} against body {} face {}", a.body + 1, a.face, b.body + 1, b.face),
+        }
+    }
+    /// The measured numbers in one short line (the advice list shows it under the label).
+    pub fn detail(&self) -> String {
+        match self {
+            AssemblyAdvice::Tie { gap, overlap_area, .. } => {
+                let gap = if gap.abs() < 5e-7 { "no gap".to_string() } else if *gap > 0.0 { format!("{gap:.3} mm gap") } else { format!("{:.3} mm interpenetration", -gap) };
+                format!("{gap} \u{b7} {overlap_area:.0} mm\u{b2}")
+            }
+            AssemblyAdvice::Fastener { diameters, span, .. } => {
+                let d = diameters.iter().map(|d| format!("\u{d8}{d:.3}")).collect::<Vec<_>>().join(", ");
+                format!("{d} mm \u{b7} {span:.2} mm")
+            }
+            AssemblyAdvice::Unresolved { .. } => "common area not computed".to_string(),
         }
     }
     pub fn reason(&self) -> &str {
@@ -96,7 +110,8 @@ fn fastener(f: &Features, s: &FastenerSite) -> AssemblyAdvice {
     if s.diameter_mismatch {
         reason.push_str(" The bore diameters differ (a clearance hole in one part and a tapped or smaller hole in another is normal for a bolted joint; a mismatch with no common size is not).");
     }
-    AssemblyAdvice::Fastener { bodies: s.bodies.clone(), faces, size: s.fastener, mismatch: s.diameter_mismatch, reason }
+    let diameters = s.bores.iter().map(|b| b.diameter).collect();
+    AssemblyAdvice::Fastener { bodies: s.bodies.clone(), faces, size: s.fastener, mismatch: s.diameter_mismatch, diameters, span: s.span[1] - s.span[0], reason }
 }
 
 /// The advice for detected features, in the detector's order: interfaces, fastener sites, then unresolved pairs.
@@ -109,8 +124,13 @@ pub fn recommend(f: &Features) -> Vec<AssemblyAdvice> {
     f.interfaces.iter().map(tie).chain(f.sites.iter().map(|s| fastener(f, s))).chain(unresolved).collect()
 }
 
-/// Read every body of a STEP assembly the way the solid editor does (strict, then the tolerant foreign-CAD read), detect its
-/// features and recommend.
+/// Read every body of a STEP assembly the way the solid editor does (strict, then the tolerant foreign-CAD read) and detect its
+/// features.
+pub fn detect_step(step: &str) -> Result<Features, String> {
+    crate::assembly_mesh::with_bodies(step, crate::assembly_mesh::DEFAULT_CHORD, |models, _| detect(models).map_err(|e| e.to_string()))
+}
+
+/// [`detect_step`] and [`recommend`].
 pub fn recommend_step(step: &str) -> Result<Vec<AssemblyAdvice>, String> {
-    crate::assembly_mesh::with_bodies(step, crate::assembly_mesh::DEFAULT_CHORD, |models, _| Ok(recommend(&detect(models).map_err(|e| e.to_string())?)))
+    Ok(recommend(&detect_step(step)?))
 }

@@ -38,10 +38,13 @@ fn two_stacked_plates_with_one_bolt_hole_give_a_tie_and_a_fastener_with_the_meas
     let expected = 1200. - std::f64::consts::PI * 3.3 * 3.3;
     assert!((overlap_area - expected).abs() < 1.0, "{overlap_area} vs {expected}");
     assert!(reason.contains("no gap") && reason.contains("Body 1") && reason.contains("body 2"), "{reason}");
-    let AssemblyAdvice::Fastener { bodies, faces, size, mismatch, reason } = &items[1] else { panic!("{items:?}") };
+    let AssemblyAdvice::Fastener { bodies, faces, size, mismatch, diameters, span, reason } = &items[1] else { panic!("{items:?}") };
     assert_eq!(bodies, &vec![0, 1]);
     assert_eq!(*size, Some("M6"));
     assert!(*mismatch);
+    assert!((diameters[0] - 5.0).abs() < 1e-9 && (diameters[1] - 6.6).abs() < 1e-9 && (span - 20.0).abs() < 1e-9, "{diameters:?} {span}");
+    assert_eq!(items[1].detail(), "\u{d8}5.000, \u{d8}6.600 mm \u{b7} 20.00 mm");
+    assert_eq!(items[0].detail(), format!("no gap \u{b7} {:.0} mm\u{b2}", overlap_area));
     assert_eq!(faces.iter().map(|f| f.body).collect::<std::collections::BTreeSet<_>>().len(), 2);
     assert!(reason.contains("\u{d8}5.000 mm (") && reason.contains("M6 tap drill") && reason.contains("\u{d8}6.600 mm (M6 normal clearance)"), "{reason}");
     assert!(reason.contains("Every bore fits M6") && reason.contains("20.00 mm of axis"), "{reason}");
