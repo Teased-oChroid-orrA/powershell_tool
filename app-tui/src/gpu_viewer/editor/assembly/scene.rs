@@ -4,8 +4,7 @@
 //! Vertices are shared inside one face and never across faces, so a highlighted face carries its colour to its own outline only and
 //! `Scene::feature_edges` draws face outlines and real creases, not the tessellation.
 use crate::gpu_viewer::Scene;
-use fea_problem::assembly_mesh::AssemblyMesh;
-use solid_kernel::features::FaceKey;
+use fea_problem::assembly_mesh::{AssemblyMesh, FaceKey};
 use std::collections::HashMap;
 
 /// State code of a selected face (the colour key's fourth colour).

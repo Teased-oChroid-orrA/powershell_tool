@@ -22,8 +22,7 @@ use crate::gpu_viewer::{
     Scene,
 };
 use fea_problem::assembly_advice::{detect_step, recommend, AssemblyAdvice};
-use fea_problem::assembly_mesh::{assembly_mesh, AssemblyMesh, DEFAULT_CHORD};
-use solid_kernel::features::FaceKey;
+use fea_problem::assembly_mesh::{assembly_mesh, AssemblyMesh, FaceKey, DEFAULT_CHORD};
 use std::path::{Path, PathBuf};
 
 /// What is highlighted on the model.

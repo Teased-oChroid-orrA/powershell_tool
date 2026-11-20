@@ -7,7 +7,8 @@
 //! persisted and nothing feeds a solve: the face ids are valid for this file only.
 use solid_kernel::analytic_step::{AnalyticModel, Options};
 use solid_kernel::cylindrical_step::ChartPolicy;
-use solid_kernel::features::FaceKey;
+/// Re-exported so a front end names faces without a direct `solid-kernel` dependency.
+pub use solid_kernel::features::FaceKey;
 use solid_kernel::native_surface::Limits;
 use solid_kernel::step::{inventory, Limits as StepLimits};
 
