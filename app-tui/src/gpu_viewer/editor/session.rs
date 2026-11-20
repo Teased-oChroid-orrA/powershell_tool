@@ -85,6 +85,8 @@ pub enum EditorAction {
     Eccentric(super::eccentric::EccentricAct),
     /// The Fastener Hole workbench (see `fastener`).
     Fastener(super::fastener::FastenerAct),
+    /// The Assembly Joints window (see `assembly`).
+    Assembly(super::assembly::AssemblyAct),
     /// The Search workbench (see `search`).
     Search(super::search::SearchAct),
     /// The Material Lookup workbench (see `materials`).
@@ -349,7 +351,7 @@ impl Session {
             EditorAction::ToggleSupports => self.state.show_supports = !self.state.show_supports,
             EditorAction::ToggleLoads => self.state.show_loads = !self.state.show_loads,
             // A member session never receives solid actions (its UI does not offer them).
-            EditorAction::Solid(_) | EditorAction::Bushing(_) | EditorAction::Eccentric(_) | EditorAction::Fastener(_) | EditorAction::Search(_) | EditorAction::Materials(_) | EditorAction::Vessel(_) | EditorAction::Preload(_) | EditorAction::Lug(_) | EditorAction::Stackup(_) => {}
+            EditorAction::Solid(_) | EditorAction::Bushing(_) | EditorAction::Eccentric(_) | EditorAction::Fastener(_) | EditorAction::Assembly(_) | EditorAction::Search(_) | EditorAction::Materials(_) | EditorAction::Vessel(_) | EditorAction::Preload(_) | EditorAction::Lug(_) | EditorAction::Stackup(_) => {}
         }
         self.touch();
     }

@@ -2609,6 +2609,68 @@ mod snapshot_tests {
         });
     }
 
+    /// The Assembly Joints window on `solid-kernel/tests/data/assembly-stacked-plates.step` (exploded with the fastener site
+    /// selected, joined with the interface selected, light), as raw RGBA dumps:
+    /// `FEA_SNAPSHOT_ASSEMBLY_OUT=/dir cargo test ... assembly_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_ASSEMBLY_OUT"]
+    fn assembly_snapshot() {
+        use crate::gpu_viewer::editor::assembly::{AssemblyAct, AssemblySession, Sel};
+        use crate::gpu_viewer::editor::session::EditorAction;
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_ASSEMBLY_OUT") else {
+            return;
+        };
+        let _guard = headless_guard();
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../solid-kernel/tests/data/assembly-stacked-plates.step");
+        let mut session = AssemblySession::open(&file).unwrap();
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let (w, h) = (1360u32, 860u32);
+            let scene = session.scene().unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                .await
+                .unwrap();
+            let shoot = |r: &mut Renderer, session: &mut AssemblySession, name: &str, dark: bool| {
+                let scene = session.scene().unwrap();
+                r.set_scene(&scene).unwrap();
+                let texture = target(r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
+                let mut view = ViewState::new(&scene);
+                if dark {
+                    view.style = crate::gpu_viewer::display::DisplayStyle::ShadedEdges;
+                }
+                let (yaw, pitch) = session.initial_view().map_or((0.0, 0.0), |v| v.angles());
+                let scenes = [scene];
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
+                gui.select_tab_named(&input, "Assembly");
+                draw(r, &mut gui, &texture, &input, [yaw, pitch], session.default_mesh_lines());
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(r, &texture)).unwrap();
+            };
+            shoot(&mut r, &mut session, "assembly-none", true);
+            session.act(EditorAction::Assembly(AssemblyAct::Select(Sel::Item(1))));
+            shoot(&mut r, &mut session, "assembly-fastener", true);
+            session.act(EditorAction::Assembly(AssemblyAct::Select(Sel::Item(0))));
+            shoot(&mut r, &mut session, "assembly-interface", true);
+            session.act(EditorAction::Assembly(AssemblyAct::ToggleExploded));
+            shoot(&mut r, &mut session, "assembly-interface-joined", true);
+            shoot(&mut r, &mut session, "assembly-interface-joined-light", false);
+        });
+    }
+
     /// The Pressure Vessel workbench (the inputs with the hoop contour, the checks, the material picker; dark, light, a
     /// narrow window), as raw RGBA dumps: `FEA_SNAPSHOT_VESSEL_OUT=/dir cargo test ... vessel_snapshot -- --ignored`.
     #[test]

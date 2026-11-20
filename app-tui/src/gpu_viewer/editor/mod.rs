@@ -16,6 +16,7 @@ pub mod adapt;
 pub mod bushing;
 pub mod eccentric;
 pub mod fastener;
+pub mod assembly;
 pub mod handoff;
 pub mod materials;
 pub mod search;

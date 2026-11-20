@@ -54,6 +54,8 @@ pub enum EditorKind {
     Eccentric,
     /// The Fastener Hole workbench (`editor::fastener::file::FastenerFile`).
     FastenerHole,
+    /// The Assembly Joints window (`editor::assembly`); its argument is an optional STEP assembly, it writes nothing.
+    Assembly,
     /// The Search workbench (`editor::search`); its argument is an optional folder to search, its settings are the
     /// Search toolbox's own (`settings-tui.json`).
     Search,
@@ -76,6 +78,7 @@ impl EditorKind {
             EditorKind::BushingStackup => "--gpu-bushing-stackup",
             EditorKind::Eccentric => "--gpu-eccentric",
             EditorKind::FastenerHole => "--gpu-fastener",
+            EditorKind::Assembly => "--gpu-assembly",
             EditorKind::Search => "--gpu-search",
             EditorKind::Materials => "--gpu-materials",
             EditorKind::PressureVessel => "--gpu-pressure-vessel",
@@ -84,7 +87,7 @@ impl EditorKind {
         }
     }
     pub fn from_flag(flag: &str) -> Option<Self> {
-        [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug].into_iter().find(|k| k.flag() == flag)
+        [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Assembly, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug].into_iter().find(|k| k.flag() == flag)
     }
     pub fn title(self) -> &'static str {
         match self {
@@ -94,6 +97,7 @@ impl EditorKind {
             EditorKind::BushingStackup => "Bushing stackup",
             EditorKind::Eccentric => "Eccentric bushing workbench",
             EditorKind::FastenerHole => "Fastener hole workbench",
+            EditorKind::Assembly => "Assembly joints workbench",
             EditorKind::Search => "Search workbench",
             EditorKind::Materials => "Material Lookup",
             EditorKind::PressureVessel => "Pressure vessel workbench",
@@ -113,7 +117,7 @@ impl EditorKind {
             EditorKind::PressureVessel => "pressure-vessel-case.json",
             EditorKind::Preload => "preload-case.json",
             EditorKind::Lug => "lug-case.json",
-            EditorKind::Search | EditorKind::Materials => "",
+            EditorKind::Assembly | EditorKind::Search | EditorKind::Materials => "",
         }
     }
 }
@@ -137,6 +141,7 @@ pub fn run_native_editor(kind: EditorKind, path: &std::path::Path) -> Result<(),
             EditorKind::BushingStackup => window::run_stackup(editor::stackup::StackupSession::open(path)?),
             EditorKind::Eccentric => window::run_eccentric(editor::eccentric::EccentricSession::open(path)?),
             EditorKind::FastenerHole => window::run_fastener(editor::fastener::FastenerSession::open(path)?),
+            EditorKind::Assembly => window::run_assembly(editor::assembly::AssemblySession::open(path)?),
             EditorKind::Search => window::run_search(editor::search::SearchSession::open(Some(path))?),
             EditorKind::Materials => window::run_page(Box::new(editor::materials::MaterialsSession::open(Some(path))?), "materials"),
             EditorKind::PressureVessel => window::run_vessel(editor::vessel::VesselSession::open(path)?),
@@ -174,7 +179,7 @@ mod tests {
 
     #[test]
     fn editor_flags_round_trip_and_unknown_flags_are_not_editors() {
-        for k in [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug] {
+        for k in [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Assembly, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug] {
             assert_eq!(EditorKind::from_flag(k.flag()), Some(k));
         }
         assert_eq!(EditorKind::from_flag("--gpu-viewer"), None);
