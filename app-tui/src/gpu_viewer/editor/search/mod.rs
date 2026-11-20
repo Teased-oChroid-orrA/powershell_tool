@@ -210,6 +210,9 @@ fn toggle<T: Ord>(set: &mut std::collections::BTreeSet<T>, value: T) {
     }
 }
 
+/// A query and the typo corrections computed for it.
+type TypoCache = (String, std::rc::Rc<Vec<search_core::synonyms::TypoCorrection>>);
+
 pub struct SearchSession {
     st: SearchToolState,
     rows_cache: RefCell<Option<view::RowsCache>>,
@@ -226,6 +229,8 @@ pub struct SearchSession {
     rx: mpsc::UnboundedReceiver<AppEvent>,
     status: String,
     completed_search_query: Option<String>,
+    /// Typo corrections for the query they were computed for, so a redraw does not redo them.
+    typo_cache: RefCell<Option<TypoCache>>,
     step: &'static str,
     /// The results filter (file name or folder text, case-insensitive).
     filter: String,
@@ -878,6 +883,7 @@ impl SearchSession {
                 }
             },
             completed_search_query: None,
+            typo_cache: RefCell::new(None),
             step: "Search",
             filter: String::new(),
             sort: (SortKey::Found, false),
@@ -1333,6 +1339,22 @@ impl SearchSession {
         self.last_alert_changes = None;
         self.alert_status = None;
         self.status = "Deleted saved alert.".into();
+    }
+
+    /// One-token corrections for `query`, computed once per distinct query.
+    pub(super) fn typo_corrections(
+        &self,
+        query: &str,
+    ) -> std::rc::Rc<Vec<search_core::synonyms::TypoCorrection>> {
+        let mut cache = self.typo_cache.borrow_mut();
+        match cache.as_ref() {
+            Some((cached, found)) if cached == query => found.clone(),
+            _ => {
+                let found = std::rc::Rc::new(search_core::synonyms::typo_corrections(query));
+                *cache = Some((query.to_string(), found.clone()));
+                found
+            }
+        }
     }
 
     pub(super) fn can_widen_proximity(&self) -> bool {
@@ -2702,8 +2724,8 @@ impl SearchSession {
                     && self.st.run.results.is_empty()
                     && self.completed_search_query.as_deref() == Some(query)
                 {
-                    if let Some(correction) = search_core::synonyms::typo_corrections(query).get(i)
-                    {
+                    let corrections = self.typo_corrections(query);
+                    if let Some(correction) = corrections.get(i) {
                         self.st.config.filters_text = correction.query.clone();
                         self.status =
                             "Correction applied; press Enter to run the exact search.".into();

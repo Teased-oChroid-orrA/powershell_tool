@@ -387,12 +387,9 @@ fn query_suggestions(s: &SearchSession) -> Vec<QuerySuggestion> {
             && s.st.run.results.is_empty()
             && *query == s.st.config.filters_text
     }) {
-        for (i, correction) in search_core::synonyms::typo_corrections(query)
-            .into_iter()
-            .enumerate()
-        {
+        for (i, correction) in s.typo_corrections(query).iter().enumerate() {
             suggestions.push(QuerySuggestion {
-                term: correction.query,
+                term: correction.query.clone(),
                 label: format!(
                     "Try '{}' instead of '{}'",
                     correction.replacement, correction.original

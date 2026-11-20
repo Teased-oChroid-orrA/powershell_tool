@@ -151,6 +151,10 @@ name = "retrieval_eval"
 required-features = ["semantic-search"]
 
 [[example]]
+name = "folder_acceptance"
+required-features = ["semantic-search"]
+
+[[example]]
 name = "idf_pooling_eval"
 required-features = ["semantic-search"]
 
