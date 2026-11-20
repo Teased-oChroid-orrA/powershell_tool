@@ -153,14 +153,14 @@ fn write_report_to_sink(sink: &mut ReportSink, settings: &SearchSettings, run: &
 const COLOR_SLOTS: usize = 6;
 
 /// The colour slot of each filter, so a filter has the same colour in its chip, its bar and its highlights.
-struct FilterColors(Vec<String>);
+pub(crate) struct FilterColors(Vec<String>);
 
 impl FilterColors {
-    fn new(settings: &SearchSettings) -> Self {
+    pub(crate) fn new(settings: &SearchSettings) -> Self {
         Self(settings.all_filters().map(|f| f.to_lowercase()).collect())
     }
 
-    fn slot(&self, filter: &str) -> usize {
+    pub(crate) fn slot(&self, filter: &str) -> usize {
         let lower = filter.to_lowercase();
         self.0.iter().position(|f| *f == lower).unwrap_or(0) % COLOR_SLOTS
     }
@@ -656,7 +656,7 @@ fn type_color(ext: &str) -> &'static str {
     }
 }
 
-fn human_size(bytes: i64) -> String {
+pub(crate) fn human_size(bytes: i64) -> String {
     let b = bytes.max(0) as f64;
     if b < 1024.0 {
         format!("{} B", b as i64)
@@ -691,7 +691,36 @@ fn highlight_matches(line: &str, matched_filters: &[String], settings: &SearchSe
     if line.is_empty() {
         return html_escape(line);
     }
+    let merged = highlight_ranges(line, matched_filters, settings, colors);
+    if merged.is_empty() {
+        return html_escape(line);
+    }
 
+    let mut out = String::new();
+    let mut pos = 0usize;
+    for (start, end, slot) in merged {
+        if start > pos {
+            out.push_str(&html_escape(&line[pos..start]));
+        }
+        if slot == 0 {
+            out.push_str("<mark>");
+        } else {
+            out.push_str(&format!("<mark class=\"m{}\">", slot + 1));
+        }
+        out.push_str(&html_escape(&line[start..end]));
+        out.push_str("</mark>");
+        pos = end;
+    }
+    if pos < line.len() {
+        out.push_str(&html_escape(&line[pos..]));
+    }
+    out
+}
+
+/// The byte ranges `(start, end, colour slot)` of every match of `matched_filters` in `line`, sorted and with
+/// overlapping ranges from different filters merged (the earlier range keeps its slot). The report's highlighting and
+/// the viewer tab's both draw exactly these ranges.
+pub(crate) fn highlight_ranges(line: &str, matched_filters: &[String], settings: &SearchSettings, colors: &FilterColors) -> Vec<(usize, usize, usize)> {
     let mut ranges: Vec<(usize, usize, usize)> = Vec::new();
     for filter in matched_filters {
         let slot = colors.slot(filter);
@@ -722,10 +751,6 @@ fn highlight_matches(line: &str, matched_filters: &[String], settings: &SearchSe
         }
     }
 
-    if ranges.is_empty() {
-        return html_escape(line);
-    }
-
     ranges.sort_by_key(|r| r.0);
     let mut merged: Vec<(usize, usize, usize)> = Vec::new();
     for r in ranges {
@@ -739,26 +764,7 @@ fn highlight_matches(line: &str, matched_filters: &[String], settings: &SearchSe
         }
         merged.push(r);
     }
-
-    let mut out = String::new();
-    let mut pos = 0usize;
-    for (start, end, slot) in merged {
-        if start > pos {
-            out.push_str(&html_escape(&line[pos..start]));
-        }
-        if slot == 0 {
-            out.push_str("<mark>");
-        } else {
-            out.push_str(&format!("<mark class=\"m{}\">", slot + 1));
-        }
-        out.push_str(&html_escape(&line[start..end]));
-        out.push_str("</mark>");
-        pos = end;
-    }
-    if pos < line.len() {
-        out.push_str(&html_escape(&line[pos..]));
-    }
-    out
+    merged
 }
 
 fn html_escape(text: &str) -> String {
@@ -780,7 +786,7 @@ fn file_name_of(full_name: &str) -> String {
 /// percent-encoding of each path segment). Not byte-identical to .NET's
 /// output in every edge case, but every consumer only needs a valid,
 /// openable `file://` link.
-fn file_uri(path: &str) -> String {
+pub(crate) fn file_uri(path: &str) -> String {
     let normalized = path.replace('\\', "/");
     let segments: Vec<String> = normalized.split('/').map(|s| urlencoding::encode(s).into_owned()).collect();
     let joined = segments.join("/");

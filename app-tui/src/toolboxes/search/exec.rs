@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app::{AppEvent, Effect};
 
-use super::{extension_picker, indexing, persistence, runner, SearchToolState};
+use super::{extension_picker, indexing, persistence, runner, viewer, SearchToolState};
 
 /// Execute `effect` when it is a Search effect; any other effect is handed back for the caller to carry out.
 pub fn execute(tx: &mpsc::UnboundedSender<AppEvent>, search: &mut SearchToolState, effect: Effect) -> Option<Effect> {
@@ -26,6 +26,9 @@ pub fn execute(tx: &mpsc::UnboundedSender<AppEvent>, search: &mut SearchToolStat
             tokio::task::spawn_blocking(move || {
                 let _ = open::that(path);
             });
+        }
+        Effect::OpenViewer { result, settings } => {
+            tokio::task::spawn_blocking(move || viewer::open(&result, &settings));
         }
         Effect::CopyToClipboard(text) => {
             tokio::task::spawn_blocking(move || {

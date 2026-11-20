@@ -139,6 +139,9 @@ pub enum Effect {
     /// gated purely at the UI layer in both existing heads too).
     WriteReport { settings: SearchSettings, run_result: SearchRunResult, write_html: bool },
     OpenPath(String),
+    /// Open the file's viewer tab (`search_core::viewer`: the text with the search's highlighting, a match list and
+    /// find) in the browser; binaries and files with no viewer fall back to the default app, as `OpenPath` does.
+    OpenViewer { result: Box<search_core::models::FileSearchResult>, settings: Box<SearchSettings> },
     CopyToClipboard(String),
     /// Writes `contents` to `path`, creating the parent directory if
     /// needed, then opens it - used by the "export this file's hits"

@@ -2604,3 +2604,18 @@ fn the_selected_file_moves_to_the_first_shown_when_narrowing_hides_it() {
     act_on(&mut s, SearchAct::NarrowType(txt));
     assert_eq!(s.current(), Some(1));
 }
+
+#[test]
+fn a_result_offers_the_viewer_tab_and_the_default_app_as_separate_opens() {
+    let mut s = with_results();
+    s.selected = Some(1);
+    let labels: Vec<String> = view::context_menu(&s)
+        .into_iter()
+        .filter_map(|i| match i {
+            Item::Entry(e) => Some(e.label.clone()),
+            _ => None,
+        })
+        .collect();
+    let at = |name: &str| labels.iter().position(|l| l == name).unwrap_or_else(|| panic!("no {name:?} in {labels:?}"));
+    assert!(at("Open") < at("Open in default app"), "{labels:?}");
+}

@@ -55,9 +55,12 @@ pub enum SearchAct {
     Select(usize),
     PreviousMatch,
     NextMatch,
-    /// Open result `.0` with the system's default program.
+    /// Open result `.0` in the viewer tab.
     Open(usize),
+    /// Open the selected result in the viewer tab (the text with the search's highlighting, in the browser).
     OpenSelected,
+    /// Open the selected result's file itself with the system's default program.
+    OpenInDefaultApp,
     /// Open related file `.0` of the preview's "Related files" list with the system's default program.
     OpenRelatedFile(usize),
     Reveal,
@@ -2472,8 +2475,12 @@ impl SearchSession {
             }
             SearchAct::PreviousMatch => self.move_match(-1),
             SearchAct::NextMatch => self.move_match(1),
-            SearchAct::OpenSelected => {
-                self.with_current(|r, _| Effect::OpenPath(r.full_name.clone()), "Opened")
+            SearchAct::OpenSelected => self.with_current(
+                |r, config| Effect::OpenViewer { result: Box::new(r.clone()), settings: Box::new(model::build_settings(config)) },
+                "Opened",
+            ),
+            SearchAct::OpenInDefaultApp => {
+                self.with_current(|r, _| Effect::OpenPath(r.full_name.clone()), "Opened in the default app")
             }
             SearchAct::FindProjects => self.find_projects(),
             SearchAct::FindGaps => self.find_gaps(),

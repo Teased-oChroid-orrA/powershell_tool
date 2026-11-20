@@ -181,6 +181,7 @@ fn result_entries(s: &SearchSession) -> Vec<Entry> {
     let ok = selected_rule(s);
     vec![
         e("Open", "Enter", SearchAct::OpenSelected).when(ok.clone()),
+        e("Open in default app", "", SearchAct::OpenInDefaultApp).when(ok.clone()),
         e("Show in folder", "", SearchAct::Reveal).when(ok.clone()),
         e("Copy path", "Ctrl+C", SearchAct::CopyPath).when(ok.clone()),
         e("Export matches", "Ctrl+E", SearchAct::ExportHits).when(ok),

@@ -208,6 +208,7 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
         Effect::StartSearch { .. }
         | Effect::WriteReport { .. }
         | Effect::OpenPath(_)
+        | Effect::OpenViewer { .. }
         | Effect::CopyToClipboard(_)
         | Effect::WriteTextFileAndOpen { .. }
         | Effect::PersistSearchSettings
