@@ -919,3 +919,25 @@ Limits. Replicated rows (each chunk repeated 16 to 19 times, so the keyword post
 
 Not changed, and why: an index over 250,000 chunks is hours of embedding at 20 chunks per second (earlier entry), so this is a limit for large corpora, not a common case. Making the streaming path fast (a vector-only pass with the keyword side from a postings table, or a larger or quantised snapshot) changes the exact-equality contract between the two paths and the memory budget on an 8 GB machine (see the int8 entries above), which is a product decision about index size, not a defect fix. The measurement is the input to that decision.
 
+
+
+## 2026-11-20: a better stemmer than `lexical::stem` (Porter2, silent-e fix): not adopted
+
+Question: `lexical::stem` is a light suffix stripper (`blended`, `blending`, `blends` meet at `blend`). It misses silent-e pairs (`cause` / `causing` / `caused`) and derivational and irregular forms. Does a stronger stemmer help the hybrid lexical side?
+
+Method: `retrieval_eval <set> --variants default` (200 queries, 50 for TREC-COVID), one process per stemmer, same indexes, hybrid `default` variant, release build. Temporary switch in `lexical::stem` (not committed): `light` (shipped), `lighte` (shipped stemmer, then a trailing `e` dropped from roots of 4+ letters), `porter2` (Snowball English via `rust-stemmers` 1.2, already in `Cargo.lock`). Exact search does not use these stemmers and was not touched.
+
+nDCG@10 (Recall@100 moved by at most 0.006 on every set):
+
+| Set | light (shipped) | lighte | porter2 |
+|---|---|---|---|
+| SciFact | 0.7518 | 0.7493 | 0.7572 |
+| NFCorpus | 0.3844 | 0.3854 | 0.3886 |
+| Cranfield | 0.3988 | 0.3994 | 0.4041 |
+| MS MARCO | 0.6674 | 0.6658 | 0.6630 |
+| TREC-COVID | 0.4121 | 0.4160 | 0.4201 |
+| mean | 0.5229 | 0.5232 | 0.5266 |
+
+Result: `lighte` loses SciFact and MS MARCO (mean +0.0003). Porter2 wins four sets (+0.0042 to +0.0080) and loses MS MARCO (-0.0044); mean +0.0037. It also costs about 2 ms more per query (22.4 to 24.7 ms SciFact, 24.0 to 27.8 ms TREC-COVID; not isolated from background load). The owner rule adopts only what loses on none of the five sets, so neither is adopted. Porter2's gain is real on the scientific and biomedical sets and its loss is on the short, everyday-language queries, which fits an over-conflating stemmer; it was not tuned further (no per-length or per-suffix variants), since each variant would be fit to the same five sets.
+
+Not measured: engineering folders (no labelled set), non-English text, and lemmatization with a dictionary (irregular forms such as `broke` / `broken`); `rust-stemmers` is English-only. The shipped stemmer stays.
