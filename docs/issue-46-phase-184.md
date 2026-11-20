@@ -49,3 +49,5 @@ A counter in `faces_near` showed 17 million queries about only 1.12 million dist
 - `Bvh::nearest` uses a stack array instead of a heap `Vec` per query.
 
 Measured: same-time A/B, `ctc_01 rd`, `MESH_TETS=3000`, main (memoised states) 117.9 s, this change 52.3 s (2.25x); output identical (14,015 tets, volume 14809467.610, min scaled Jacobian 0.025, 83 under the gate). Against the unmemoised main of the previous addendum (382.3 s in its own side-by-side run) the case is 52 s; the runs were on different days of load, so only the within-pair ratios are claims.
+
+Negative result: replacing the `BTreeMap` that `boundary_faces` builds (and the snapshot maps) with a sorted `Vec` and binary search, which the profile above suggested (about 24 percent of busy time in `boundary_faces` and its map), gave no speed-up: same-time A/B on `ctc_01 rd`, `MESH_TETS=3000`, 103.2 s (main) against 106.7 s (sorted `Vec`), identical output. Reverted. Not retried: the cost is probably the sort and lookups rather than the allocations, but that was not measured.
