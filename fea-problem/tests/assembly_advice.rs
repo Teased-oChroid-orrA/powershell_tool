@@ -69,3 +69,70 @@ fn a_step_assembly_reads_every_body_and_a_single_part_gives_no_advice() {
     assert!(recommend_step(&single).unwrap().is_empty());
     assert!(recommend_step("not a step file").is_err());
 }
+
+fn unmated(items: &[AssemblyAdvice]) -> Vec<&AssemblyAdvice> {
+    items.iter().filter(|i| matches!(i, AssemblyAdvice::Unmated { .. })).collect()
+}
+
+#[test]
+fn a_bolt_sized_hole_with_no_mating_bore_is_advice_with_its_measured_numbers() {
+    // lower plate: a 5.0 mm hole (M6 tap drill); upper plate: no hole, so nothing mates it
+    let items = advice(&[plate([0., 0., 0.], [40., 30., 10.], &[([20., 15.], 2.5)]), plate([0., 0., 10.], [40., 30., 20.], &[])]);
+    let found = unmated(&items);
+    assert_eq!(found.len(), 1, "{items:?}");
+    let AssemblyAdvice::Unmated { body, faces, diameter, closure, size, reason } = found[0] else { unreachable!() };
+    assert_eq!(*body, 0);
+    assert!(!faces.is_empty() && faces.iter().all(|f| f.body == 0));
+    assert!((diameter - 5.0).abs() < 1e-9, "{diameter}");
+    // 5.0 mm is the M5 nominal, the M6 tap drill and the #10-24 close clearance: the label says so rather than pick one
+    assert_eq!(size, "M5 or M6 or #10-24");
+    // the lower plate's hole is closed by the upper plate's face in the model, but the hole itself is open at both ends
+    assert_eq!(*closure, fea_problem::assembly_advice::Closure::Through);
+    assert!(reason.contains("Body 1") && reason.contains("\u{d8}5.000 mm") && reason.contains("10.00 mm deep") && reason.contains("M5 nominal (press / locating)") && reason.contains("M6 tap drill") && reason.contains("#10-24 close clearance"), "{reason}");
+    assert_eq!(found[0].detail(), "\u{d8}5.000 mm \u{b7} through");
+    assert_eq!(found[0].label(), "Body 1 hole \u{d8}5.000 mm (M5 or M6 or #10-24) has no mate");
+    assert_eq!(found[0].faces().len(), faces.len());
+    // the order is the detector's: the tie first, the unmated hole after it
+    assert!(matches!(items.as_slice(), [AssemblyAdvice::Tie { .. }, AssemblyAdvice::Unmated { .. }]), "{items:?}");
+}
+
+#[test]
+fn holes_that_are_not_a_standard_size_or_that_have_a_mate_or_stand_alone_are_not_unmated() {
+    // 7.3 mm matches no table entry (M6 loose is 7.0, M8 tap is 6.8): noise, not advice
+    let odd = advice(&[plate([0., 0., 0.], [40., 30., 10.], &[([20., 15.], 3.65)]), plate([0., 0., 10.], [40., 30., 20.], &[])]);
+    assert!(unmated(&odd).is_empty(), "{odd:?}");
+    // a mated pair is a fastener site, not two unmated holes
+    let mated = advice(&[plate([0., 0., 0.], [40., 30., 10.], &[([20., 15.], 2.5)]), plate([0., 0., 10.], [40., 30., 20.], &[([20., 15.], 3.3)])]);
+    assert!(unmated(&mated).is_empty(), "{mated:?}");
+    // one body has nothing to mate with: a standalone part's holes are not advice
+    assert!(advice(&[plate([0., 0., 0.], [40., 30., 10.], &[([20., 15.], 2.5)])]).is_empty());
+    // a hole whose neighbour is displaced sideways is not mated by it: both are reported
+    let apart = advice(&[plate([0., 0., 0.], [40., 30., 10.], &[([10., 15.], 2.5)]), plate([0., 0., 10.], [40., 30., 20.], &[([30., 15.], 3.3)])]);
+    let found = unmated(&apart);
+    assert_eq!(found.iter().map(|i| match i { AssemblyAdvice::Unmated { body, .. } => *body, _ => unreachable!() }).collect::<Vec<_>>(), vec![0, 1], "{apart:?}");
+}
+
+#[test]
+fn a_counterbore_over_a_mated_bore_is_part_of_the_site_not_an_unmated_hole() {
+    // upper plate: a 7.0 mm (M6 loose clearance) counterbore 3 mm deep over a 6.0 mm (M6 nominal) through hole; lower plate: 5.0 mm
+    // (M6 tap drill). The counterbore matches a standard size by itself, so only the stepped-bore rule keeps it out of the advice.
+    // (Radii stay at or below 3.5 mm: `NativeBrep::face_holds` is false at the centre of a pocket floor of radius 4 mm or more.)
+    let mut upper = NativeBrep::box_from_corners([0., 0., 10.], [40., 30., 20.]).unwrap();
+    let top = upper.planar_faces_through([0., 0., 20.], [0., 0., 1.])[0];
+    upper = upper.drill(top, [20., 15., 20.], 3.5, Some(3.0)).unwrap();
+    let floor = upper.planar_faces_through([20., 15., 17.], [0., 0., 1.])[0];
+    upper = upper.drill(floor, [20., 15., 17.], 3.0, None).unwrap();
+    let lower = plate([0., 0., 0.], [40., 30., 10.], &[([20., 15.], 2.5)]);
+    let items = advice(&[lower.clone(), upper.clone()]);
+    assert!(unmated(&items).is_empty(), "{items:?}");
+    let AssemblyAdvice::Fastener { size, diameters, .. } = items.iter().find(|i| matches!(i, AssemblyAdvice::Fastener { .. })).expect("a site") else { unreachable!() };
+    assert_eq!(*size, Some("M6"));
+    assert_eq!(diameters.len(), 2, "the counterbore section is not a bore of the site: {diameters:?}");
+    // the same counterbored plate with nothing under it: both sections are reported, the bore and the counterbore
+    let alone = advice(&[upper, plate([0., 0., -10.], [40., 30., 0.], &[])]);
+    let found = unmated(&alone);
+    let mut ds: Vec<f64> = found.iter().map(|i| match i { AssemblyAdvice::Unmated { diameter, .. } => *diameter, _ => unreachable!() }).collect();
+    ds.sort_by(f64::total_cmp);
+    assert_eq!(ds.len(), 2, "{alone:?}");
+    assert!((ds[0] - 6.0).abs() < 1e-9 && (ds[1] - 7.0).abs() < 1e-9, "{ds:?}");
+}

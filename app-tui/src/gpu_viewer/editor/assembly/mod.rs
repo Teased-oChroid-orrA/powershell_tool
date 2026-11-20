@@ -21,8 +21,9 @@ use crate::gpu_viewer::{
     ui::{DockItem, RibbonTab, TreeNode},
     Scene,
 };
-use fea_problem::assembly_advice::{detect_step, recommend, AssemblyAdvice};
-use fea_problem::assembly_mesh::{assembly_mesh, AssemblyMesh, FaceKey, DEFAULT_CHORD};
+use fea_problem::assembly_advice::{recommend, AssemblyAdvice};
+use fea_problem::assembly_mesh::{read_assembly, AssemblyMesh, AssemblyRead, FaceKey, DEFAULT_CHORD};
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 /// What is highlighted on the model.
@@ -52,6 +53,8 @@ pub struct Loaded {
     pub holes_per_body: Vec<usize>,
     pub sites: usize,
     pub interfaces: usize,
+    /// Bolt-sized holes with no mate on another body (the `Unmated` advice items).
+    pub unmated: usize,
     pub unresolved: usize,
     /// Seconds to read, detect and mesh.
     pub seconds: f64,
@@ -72,16 +75,18 @@ pub struct AssemblySession {
 pub fn load(path: &Path) -> Result<Loaded, String> {
     let started = std::time::Instant::now();
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let features = detect_step(&text)?;
-    let mesh = assembly_mesh(&text, DEFAULT_CHORD)?;
+    // one parse and one read of the bodies serve both the detection and the picture
+    let AssemblyRead { features, mesh } = read_assembly(&text, DEFAULT_CHORD)?;
     let mut holes_per_body = vec![0; mesh.bodies()];
     for h in &features.holes {
         if let Some(n) = holes_per_body.get_mut(h.body) {
             *n += 1;
         }
     }
+    let advice = recommend(&features);
     Ok(Loaded {
-        advice: recommend(&features),
+        unmated: advice.iter().filter(|a| matches!(a, AssemblyAdvice::Unmated { .. })).count(),
+        advice,
         holes: features.holes.len(),
         holes_per_body,
         sites: features.sites.len(),
@@ -132,11 +137,8 @@ impl AssemblySession {
         let Some(l) = &self.loaded else { return Vec::new() };
         match self.selected {
             Some(Sel::Item(i)) => l.advice.get(i).map(|a| a.faces()).unwrap_or_default(),
-            Some(Sel::Body(b)) => {
-                let mut v: Vec<FaceKey> = l.mesh.face.iter().filter(|k| k.body == b).copied().collect();
-                v.dedup();
-                v
-            }
+            // each face once, in key order (`dedup` only drops neighbours, and nothing orders the triangles by face)
+            Some(Sel::Body(b)) => l.mesh.face.iter().filter(|k| k.body == b).copied().collect::<BTreeSet<_>>().into_iter().collect(),
             None => Vec::new(),
         }
     }
@@ -226,7 +228,7 @@ impl Authoring for AssemblySession {
     fn scene(&mut self) -> Result<Scene, String> {
         self.drawn = true;
         let Some(l) = &self.loaded else { return Ok(crate::gpu_viewer::editor::drawing::empty("assembly".into(), [0.0, 3.0])) };
-        let faces = self.selected_faces();
+        let faces: HashSet<FaceKey> = self.selected_faces().into_iter().collect();
         let label = format!("{} | {} bodies: blue odd, teal even, red selected{}", self.name, l.mesh.bodies(), if self.exploded { " | exploded" } else { "" });
         scene::scene(&l.mesh, self.exploded, |k| faces.contains(&k), label)
     }

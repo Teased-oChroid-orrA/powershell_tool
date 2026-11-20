@@ -4,7 +4,9 @@
 //! a reason string with the measured numbers. Nothing here edits a `Problem`: a `Problem` still holds one body, so there is nothing
 //! to apply a tie or a fastener to until the multi-body representation (and the solver exposure of epic Phase C) exists. Body numbers
 //! in the text are 1-based (the order of the STEP product structure); `FaceKey::body` is the 0-based index.
-use solid_kernel::features::{detect, FaceKey, FastenerSite, FitClass, Features, Interface, SizeMatch};
+use solid_kernel::features::{size_matches, FaceKey, FastenerSite, FitClass, Features, Hole, Interface, SizeMatch};
+/// Re-exported so a front end names a hole's closure without a direct `solid-kernel` dependency.
+pub use solid_kernel::features::Closure;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AssemblyAdvice {
@@ -12,6 +14,10 @@ pub enum AssemblyAdvice {
     Tie { a: FaceKey, b: FaceKey, gap: f64, overlap_area: f64, reason: String },
     /// Coaxial bores of different bodies: one fastener passes through them.
     Fastener { bodies: Vec<usize>, faces: Vec<FaceKey>, size: Option<&'static str>, mismatch: bool, diameters: Vec<f64>, span: f64, reason: String },
+    /// A bolt-sized hole (its diameter is a standard fastener size) with no mating bore on another body: a place for a support or a
+    /// load. `size` names the standard sizes the diameter matches, "M5 or M6" when more than one does (5.0 mm is the M5 nominal and the M6 tap drill; the reason gives each match with its fit); `closure` is never
+    /// `Enclosed` (an internal cavity is not a hole to bolt through).
+    Unmated { body: usize, faces: Vec<FaceKey>, diameter: f64, closure: Closure, size: String, reason: String },
     /// Faces that looked like an interface but whose common area could not be computed: check them by hand.
     Unresolved { a: FaceKey, b: FaceKey, reason: String },
 }
@@ -27,6 +33,7 @@ impl AssemblyAdvice {
                     None => format!("Treat the coaxial holes of bodies {list} as one fastener"),
                 }
             }
+            AssemblyAdvice::Unmated { body, diameter, size, .. } => format!("Body {} hole \u{d8}{diameter:.3} mm ({size}) has no mate", body + 1),
             AssemblyAdvice::Unresolved { a, b, .. } => format!("Check body {} face {} against body {} face {}", a.body + 1, a.face, b.body + 1, b.face),
         }
     }
@@ -41,19 +48,20 @@ impl AssemblyAdvice {
                 let d = diameters.iter().map(|d| format!("\u{d8}{d:.3}")).collect::<Vec<_>>().join(", ");
                 format!("{d} mm \u{b7} {span:.2} mm")
             }
+            AssemblyAdvice::Unmated { diameter, closure, .. } => format!("\u{d8}{diameter:.3} mm \u{b7} {}", closure_word(*closure)),
             AssemblyAdvice::Unresolved { .. } => "common area not computed".to_string(),
         }
     }
     pub fn reason(&self) -> &str {
         match self {
-            AssemblyAdvice::Tie { reason, .. } | AssemblyAdvice::Fastener { reason, .. } | AssemblyAdvice::Unresolved { reason, .. } => reason,
+            AssemblyAdvice::Tie { reason, .. } | AssemblyAdvice::Fastener { reason, .. } | AssemblyAdvice::Unmated { reason, .. } | AssemblyAdvice::Unresolved { reason, .. } => reason,
         }
     }
     /// The faces to highlight when the item is selected.
     pub fn faces(&self) -> Vec<FaceKey> {
         match self {
             AssemblyAdvice::Tie { a, b, .. } | AssemblyAdvice::Unresolved { a, b, .. } => vec![*a, *b],
-            AssemblyAdvice::Fastener { faces, .. } => faces.clone(),
+            AssemblyAdvice::Fastener { faces, .. } | AssemblyAdvice::Unmated { faces, .. } => faces.clone(),
         }
     }
 }
@@ -65,6 +73,14 @@ fn fit_word(f: FitClass) -> &'static str {
         FitClass::Close => "close clearance",
         FitClass::Normal => "normal clearance",
         FitClass::Loose => "loose clearance",
+    }
+}
+
+fn closure_word(c: Closure) -> &'static str {
+    match c {
+        Closure::Through => "through",
+        Closure::Blind => "blind",
+        Closure::Enclosed => "enclosed",
     }
 }
 
@@ -114,20 +130,94 @@ fn fastener(f: &Features, s: &FastenerSite) -> AssemblyAdvice {
     AssemblyAdvice::Fastener { bodies: s.bodies.clone(), faces, size: s.fastener, mismatch: s.diameter_mismatch, diameters, span: s.span[1] - s.span[0], reason }
 }
 
-/// The advice for detected features, in the detector's order: interfaces, fastener sites, then unresolved pairs.
+/// Two holes of one body are one stepped bore (a counterbore) when they share an axis and their axial ranges touch; the distances
+/// are the strict read's geometry tolerance (`DEFAULT_CHORD / 10`, `Options::default`), since `Features` does not carry the models'.
+const LINK_TOL_MM: f64 = crate::assembly_mesh::DEFAULT_CHORD / 10.0;
+
+fn stepped(a: &Hole, b: &Hole) -> bool {
+    let dot = |p: [f64; 3], q: [f64; 3]| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    let cross = |p: [f64; 3], q: [f64; 3]| [p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]];
+    let sub = |p: [f64; 3], q: [f64; 3]| [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    let length = a.depth().max(b.depth()).max(a.radius).max(b.radius);
+    let c = cross(a.axis, b.axis);
+    if dot(c, c).sqrt() > LINK_TOL_MM / length.max(LINK_TOL_MM) {
+        return false;
+    }
+    let d = sub(b.axis_point, a.axis_point);
+    let along = dot(d, a.axis);
+    let perp = sub(d, [a.axis[0] * along, a.axis[1] * along, a.axis[2] * along]);
+    if dot(perp, perp).sqrt() > LINK_TOL_MM {
+        return false;
+    }
+    let k = dot(b.axis, a.axis);
+    let (e0, e1) = (along + b.range[0] * k, along + b.range[1] * k);
+    a.range[0].max(e0.min(e1)) - a.range[1].min(e0.max(e1)) <= LINK_TOL_MM
+}
+
+/// The holes that belong to no fastener site and match a standard size, on bodies that have another body to mate with: a hole in a
+/// site, or a section of a stepped bore (counterbore) one of whose sections is in a site, is mated. Enclosed cavities are skipped.
+fn unmated(f: &Features) -> Vec<AssemblyAdvice> {
+    let bodies = f.faces.iter().map(|c| c.key.body + 1).max().unwrap_or(0);
+    if bodies < 2 {
+        return Vec::new();
+    }
+    let mut mated = vec![false; f.holes.len()];
+    for b in f.sites.iter().flat_map(|s| &s.bores) {
+        mated[b.hole] = true;
+    }
+    // a stepped bore is mated as a whole: spread along touching coaxial sections of the same body until nothing changes
+    loop {
+        let mut changed = false;
+        for i in 0..f.holes.len() {
+            if !mated[i] && (0..f.holes.len()).any(|j| mated[j] && f.holes[j].body == f.holes[i].body && stepped(&f.holes[i], &f.holes[j])) {
+                mated[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    f.holes
+        .iter()
+        .zip(&mated)
+        .filter(|(h, m)| !**m && h.closure() != Closure::Enclosed)
+        .filter_map(|(h, _)| {
+            let matches = size_matches(h.diameter());
+            let mut sizes: Vec<&str> = matches.iter().map(|m| m.size).collect();
+            sizes.dedup();
+            if sizes.is_empty() {
+                return None;
+            }
+            let size = sizes.join(" or ");
+            let closure = h.closure();
+            let reason = format!(
+                "Body {} has a \u{d8}{:.3} mm {} hole {:.2} mm deep ({}) with no coaxial bore on another body: it is not a fastener site, so it is a place for a support or a load.",
+                h.body + 1,
+                h.diameter(),
+                closure_word(closure),
+                h.depth(),
+                matches_text(&matches)
+            );
+            Some(AssemblyAdvice::Unmated { body: h.body, faces: h.faces.iter().map(|&face| FaceKey { body: h.body, face }).collect(), diameter: h.diameter(), closure, size, reason })
+        })
+        .collect()
+}
+
+/// The advice for detected features, in the detector's order: interfaces, fastener sites, holes without a mate, then unresolved pairs.
 pub fn recommend(f: &Features) -> Vec<AssemblyAdvice> {
     let unresolved = f.unresolved.iter().map(|(a, b)| AssemblyAdvice::Unresolved {
         a: *a,
         b: *b,
         reason: format!("Body {} face {} and body {} face {} look like a contact (anti-parallel, within the gap tolerance) but the area they share could not be computed.", a.body + 1, a.face, b.body + 1, b.face),
     });
-    f.interfaces.iter().map(tie).chain(f.sites.iter().map(|s| fastener(f, s))).chain(unresolved).collect()
+    f.interfaces.iter().map(tie).chain(f.sites.iter().map(|s| fastener(f, s))).chain(unmated(f)).chain(unresolved).collect()
 }
 
 /// Read every body of a STEP assembly the way the solid editor does (strict, then the tolerant foreign-CAD read) and detect its
 /// features.
 pub fn detect_step(step: &str) -> Result<Features, String> {
-    crate::assembly_mesh::with_bodies(step, crate::assembly_mesh::DEFAULT_CHORD, |models, _| detect(models).map_err(|e| e.to_string()))
+    crate::assembly_mesh::with_bodies(step, crate::assembly_mesh::DEFAULT_CHORD, |models, _| solid_kernel::features::detect(models).map_err(|e| e.to_string()))
 }
 
 /// [`detect_step`] and [`recommend`].

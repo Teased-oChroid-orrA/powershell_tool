@@ -63,3 +63,20 @@ fn one_body_and_bad_text_behave() {
     assert!((body(&m, 0).0 - 12000.0).abs() < 1e-6);
     assert!(assembly_mesh("not a step file", 0.05).is_err());
 }
+
+#[test]
+fn one_shared_read_gives_exactly_what_the_two_separate_reads_give() {
+    use fea_problem::assembly_advice::detect_step;
+    use fea_problem::assembly_mesh::{read_assembly, DEFAULT_CHORD};
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../solid-kernel/tests/data/");
+    for name in ["assembly-two-instances.step", "assembly-stacked-plates.step", "assembly-mapped-items.step", "placed-single-part.step"] {
+        let text = std::fs::read_to_string(format!("{dir}{name}")).unwrap();
+        let both = read_assembly(&text, DEFAULT_CHORD).unwrap();
+        assert_eq!(both.features, detect_step(&text).unwrap(), "{name}: features");
+        assert_eq!(both.mesh, assembly_mesh(&text, DEFAULT_CHORD).unwrap(), "{name}: mesh");
+    }
+    // a non-positive chord means the default, as for assembly_mesh
+    let text = fixture();
+    assert_eq!(read_assembly(&text, -1.0).unwrap().mesh.chord_mm, DEFAULT_CHORD);
+    assert!(read_assembly("not a step file", DEFAULT_CHORD).is_err());
+}

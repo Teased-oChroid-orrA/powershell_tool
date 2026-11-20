@@ -9,14 +9,15 @@ Does not own: detection (`solid-kernel/src/features.rs`), the advice items and t
 ## Code Map
 | Looking for... | Go to |
 |---|---|
-| Session, `AssemblyAct`, `Sel`, `load`, `Authoring` impl, keys, File > Open | `mod.rs` |
+| Session, `AssemblyAct`, `Sel`, `load` (one `fea_problem::assembly_mesh::read_assembly` for detection and mesh), `Authoring` impl, keys, File > Open | `mod.rs` |
 | Tree, "Assembly advice" / "Why" / Summary cards, ribbon, menus, status summary | `cards.rs` |
 | Scene: shared vertices per face, body parity colour codes, selected code 3, `explode_offsets` | `scene.rs` |
 | Unit tests (fixture `solid-kernel/tests/data/assembly-stacked-plates.step`) | `tests.rs` |
-| GPU snapshots (none / fastener / interface exploded / joined / light) | `gpu_viewer/render.rs` `assembly_snapshot` (`FEA_SNAPSHOT_ASSEMBLY_OUT=dir`, ignored) |
+| GPU snapshots (none / fastener / interface exploded / joined / light / slid plates with an unmated hole) | `gpu_viewer/render.rs` `assembly_snapshot` (`FEA_SNAPSHOT_ASSEMBLY_OUT=dir`, ignored) |
 
 ## Contracts
 - **Read-only.** No `Problem`, no file written, `dirty()` is always false. A `Problem` holds one body; applying a tie or fastener waits for the multi-body representation (epic Phase C).
+- The inspector groups are Fastener sites, Interfaces, Holes without a mate (`AssemblyAdvice::Unmated`: a bolt-sized hole with no mating bore, a place for a support or a load) and, only when a pair is unresolved, Check. `Loaded::unmated` counts the third group for the status bar, the Summary card and the Detected tree node.
 - Advice rows are `label()` plus a dim `detail()`; the Why card is `reason()` split at sentence ends. Do not re-derive or reformat the numbers here.
 - `FaceKey { body, face }` is valid for the file as read; the selection is cleared when another file is opened. Body numbers shown to the person are 1-based, `FaceKey::body` 0-based.
 - Vertices are shared inside one face and never across faces, so the window's feature edges are face outlines and creases (not the tessellation) and a highlighted face colours only itself.
@@ -25,5 +26,7 @@ Does not own: detection (`solid-kernel/src/features.rs`), the advice items and t
 - A file that cannot be read or is not STEP never errors out of `open`: the window starts empty and says why in the status bar.
 
 ## Pitfalls
+- Tree node ids come in blocks (`cards.rs`: fixed nodes below 1000, bodies from 1000, advice from 1000000): the expand state is keyed by the id, so an assembly with 90 or more bodies used to collide with the fixed nodes.
+- `selected_faces` for a body is a sorted set, not a `dedup`: nothing orders the mesh triangles by face.
 - A Tie between faces that touch is internal when the bodies are joined: it shows nothing in a shaded view. Explode (default) or Wireframe.
 - The inspector's cards are rebuilt every frame: keep `cards.rs` free of detection or meshing; everything it shows is in `Loaded`.

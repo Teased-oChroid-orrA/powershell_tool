@@ -13,6 +13,10 @@ use crate::gpu_viewer::{
 use fea_problem::assembly_advice::AssemblyAdvice;
 
 const STEP: &str = "Assembly";
+/// Tree node ids: the fixed nodes are below 1000, then one block for the bodies and one for the advice items, so an assembly of
+/// any size never gives two nodes one id.
+const BODY_ID: u32 = 1_000;
+const ADVICE_ID: u32 = 1_000_000;
 
 fn act(a: AssemblyAct) -> UiAction {
     UiAction::Editor(EditorAction::Assembly(a))
@@ -29,12 +33,14 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 enum Group {
     Sites,
     Interfaces,
+    Unmated,
     Check,
 }
 fn group(a: &AssemblyAdvice) -> Group {
     match a {
         AssemblyAdvice::Fastener { .. } => Group::Sites,
         AssemblyAdvice::Tie { .. } => Group::Interfaces,
+        AssemblyAdvice::Unmated { .. } => Group::Unmated,
         AssemblyAdvice::Unresolved { .. } => Group::Check,
     }
 }
@@ -43,13 +49,16 @@ impl AssemblySession {
     /// One line for the status bar.
     pub(super) fn summary(&self) -> String {
         match &self.loaded {
-            Some(l) => format!(
-                "{}, {}, {}, detected in {:.2} s",
-                plural(l.mesh.bodies(), "body", "bodies"),
-                plural(l.sites, "fastener site", "fastener sites"),
-                plural(l.interfaces, "interface", "interfaces"),
-                l.seconds
-            ),
+            Some(l) => {
+                let unmated = if l.unmated > 0 { format!(", {}", plural(l.unmated, "hole without a mate", "holes without a mate")) } else { String::new() };
+                format!(
+                    "{}, {}, {}{unmated}, detected in {:.2} s",
+                    plural(l.mesh.bodies(), "body", "bodies"),
+                    plural(l.sites, "fastener site", "fastener sites"),
+                    plural(l.interfaces, "interface", "interfaces"),
+                    l.seconds
+                )
+            }
             None => "Open a STEP assembly: File > Open".to_string(),
         }
     }
@@ -61,7 +70,7 @@ impl AssemblySession {
             return vec![Card::new("assembly-empty", "Assembly advice", Relevance::Primary, vec![DockItem::text("No assembly is open. File > Open reads a STEP file with more than one body.", Tone::Dim)]).for_steps(&[STEP])];
         };
         let mut items = Vec::new();
-        for (g, title) in [(Group::Sites, "Fastener sites"), (Group::Interfaces, "Interfaces"), (Group::Check, "Check")] {
+        for (g, title) in [(Group::Sites, "Fastener sites"), (Group::Interfaces, "Interfaces"), (Group::Unmated, "Holes without a mate"), (Group::Check, "Check")] {
             let rows: Vec<(usize, &AssemblyAdvice)> = l.advice.iter().enumerate().filter(|(_, a)| group(a) == g).collect();
             if rows.is_empty() {
                 continue;
@@ -75,7 +84,7 @@ impl AssemblySession {
             }
         }
         if items.is_empty() {
-            items.push(DockItem::text("No fastener site or contact interface was found between the bodies.", Tone::Dim));
+            items.push(DockItem::text("No fastener site, contact interface or bolt-sized hole without a mate was found.", Tone::Dim));
         }
         let mut cards = vec![Card::new("assembly-advice", "Assembly advice", Relevance::Primary, items).for_steps(&[STEP])];
         cards.push(self.why_card(l));
@@ -103,6 +112,9 @@ impl AssemblySession {
             DockItem::field("Fastener sites", l.sites.to_string(), Tone::Normal, None, false),
             DockItem::field("Interfaces", l.interfaces.to_string(), Tone::Normal, None, false),
         ];
+        if l.unmated > 0 {
+            items.push(DockItem::field("Holes without a mate", l.unmated.to_string(), Tone::Normal, None, false));
+        }
         if l.unresolved > 0 {
             items.push(DockItem::field("To check", l.unresolved.to_string(), Tone::Warn, None, false));
         }
@@ -121,10 +133,10 @@ impl AssemblySession {
         let mut out = vec![TreeNode::new(1, 0, 'A', format!("Assembly: {}", self.name)).on_click(clear.clone())];
         out.push(TreeNode::new(2, 1, '+', format!("Bodies ({})", l.mesh.bodies())).folder().on_click(clear.clone()));
         for b in 0..l.mesh.bodies() {
-            out.push(TreeNode::new(10 + b as u32, 2, 'B', format!("Body {}", b + 1)).selected(self.selected == Some(Sel::Body(b))).on_click(sel(Sel::Body(b))));
+            out.push(TreeNode::new(BODY_ID + b as u32, 2, 'B', format!("Body {}", b + 1)).selected(self.selected == Some(Sel::Body(b))).on_click(sel(Sel::Body(b))));
         }
         out.push(TreeNode::new(3, 1, '+', "Detected").folder().on_click(clear.clone()));
-        for (k, (glyph, text)) in [('o', format!("Holes ({})", l.holes)), ('H', format!("Fastener sites ({})", l.sites)), ('=', format!("Interfaces ({})", l.interfaces))].into_iter().enumerate() {
+        for (k, (glyph, text)) in [('o', format!("Holes ({})", l.holes)), ('H', format!("Fastener sites ({})", l.sites)), ('=', format!("Interfaces ({})", l.interfaces)), ('o', format!("Holes without a mate ({})", l.unmated))].into_iter().enumerate() {
             out.push(TreeNode::new(100 + k as u32, 2, glyph, text).on_click(clear.clone()));
         }
         out.push(TreeNode::new(4, 1, '+', format!("Advice ({})", l.advice.len())).folder().on_click(clear));
@@ -132,9 +144,10 @@ impl AssemblySession {
             let (glyph, tone) = match group(a) {
                 Group::Sites => ('H', Tone::Normal),
                 Group::Interfaces => ('=', Tone::Normal),
+                Group::Unmated => ('o', Tone::Normal),
                 Group::Check => ('!', Tone::Warn),
             };
-            out.push(TreeNode::new(200 + i as u32, 2, glyph, a.label()).tone(tone).selected(self.selected == Some(Sel::Item(i))).on_click(sel(Sel::Item(i))));
+            out.push(TreeNode::new(ADVICE_ID + i as u32, 2, glyph, a.label()).tone(tone).selected(self.selected == Some(Sel::Item(i))).on_click(sel(Sel::Item(i))));
         }
         out
     }
