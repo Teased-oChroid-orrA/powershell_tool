@@ -32,3 +32,9 @@ Timing (measured): same-time A/B, two single-thread runs side by side on one mac
 ## Proof
 
 `cargo test --workspace --release --offline --locked --no-fail-fast -j4`: 3,574 passed, 0 failed, 131 ignored (`.audit/p184-tests.log`).
+
+## Addendum: memoised boundary face states
+
+`Work::boundary_face_state` (`fea-core/src/meshing/boundary_repair.rs`) is a pure function of the face's corner and apex coordinates and `h`, yet every candidate operation re-measured each kept face in its `before` and `after` snapshots (four `signed_distance` plus `faces_near` samples each). It is now memoised by those exact coordinates (bit patterns), cleared at 2^20 entries; `measure_boundary_face` is the unchanged computation.
+
+Measured: same-time A/B, two single-thread runs side by side, `ctc_01 rd`, `MESH_TETS=3000`: main 382.3 s, memoised 117.4 s (3.3x faster; absolute times are lower than the 652/506 s above because nothing else was loading the machine). Output identical (14,015 tets, volume 14809467.610, min scaled Jacobian 0.025, 83 under the gate). Proof: `cargo test --release -p fea-core -p fea-problem -p solid-kernel` (see PR).

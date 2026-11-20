@@ -227,6 +227,9 @@ struct Work<'a> {
     ctx: &'a RepairContext<'a>,
     rep: RepairReport,
     target: f64,
+    /// [`Self::boundary_face_state`] by its exact inputs (corner and apex coordinates, `h`): the state is a pure function of them,
+    /// and a face that an operation keeps is measured again for every candidate that has it in its region.
+    memo: std::cell::RefCell<std::collections::HashMap<[u64; 13], BoundaryFaceState>>,
 }
 
 /// The mesh and every per-vertex and per-element table of a [`Work`] between rounds (no transaction open).
@@ -531,6 +534,19 @@ impl<'a> Work<'a> {
         out
     }
     fn boundary_face_state(&self, f: [usize; 3], apex: usize, h: f64) -> BoundaryFaceState {
+        let mut key = [0u64; 13];
+        for (i, v) in [f[0], f[1], f[2], apex].into_iter().enumerate() {
+            for k in 0..3 { key[3 * i + k] = self.p[v][k].to_bits(); }
+        }
+        key[12] = h.to_bits();
+        if let Some(s) = self.memo.borrow().get(&key) { return *s; }
+        let state = self.measure_boundary_face(f, apex, h);
+        let mut memo = self.memo.borrow_mut();
+        if memo.len() >= 1 << 20 { memo.clear(); }
+        memo.insert(key, state);
+        state
+    }
+    fn measure_boundary_face(&self, f: [usize; 3], apex: usize, h: f64) -> BoundaryFaceState {
         let x = f.map(|v| self.p[v]);
         let c = scale(add(add(x[0], x[1]), x[2]), 1.0 / 3.0);
         let area = 0.5 * norm(cross(sub(x[1], x[0]), sub(x[2], x[0])));
@@ -2562,7 +2578,7 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         relax_enabled: false,
         reasons: std::collections::BTreeMap::new(),
         ctx,
-        rep: RepairReport::default(),
+        rep: RepairReport::default(), memo: Default::default(),
         target: opts.target,
     };
     {
@@ -2856,7 +2872,7 @@ mod tests {
             bnd: vec![true; 4], state: vec![0; 4], hv: vec![1.0; 4], live: 1, max_live: 1,
             log: Vec::new(), ver: vec![0; 4], clock: 0, failed: Default::default(), depth: 0,
             trace: false, verbose: false, relax_enabled: false, reasons: Default::default(),
-            ctx, rep: RepairReport::default(), target: 0.12,
+            ctx, rep: RepairReport::default(), memo: Default::default(), target: 0.12,
         }
     }
 
@@ -2887,7 +2903,7 @@ mod tests {
             p, alive: vec![true; live], tets, vt, state: outer.iter().map(|&o| if o { 2 } else { 0 }).collect(), bnd: outer,
             hv: vec![1.0; m], live, max_live: 2 * live, log: Vec::new(), ver: vec![0; m], clock: 0, failed: Default::default(),
             depth: 0, trace: false, verbose: false, relax_enabled: false, reasons: Default::default(), ctx,
-            rep: RepairReport::default(), target: 0.12,
+            rep: RepairReport::default(), memo: Default::default(), target: 0.12,
         }
     }
 
@@ -3060,7 +3076,7 @@ mod tests {
             p, tets, alive: vec![true; 4], vt, bnd: vec![true; 6], state: vec![0; 6], hv: vec![1.0; 6],
             live: 4, max_live: 8, log: Vec::new(), ver: vec![0; 6], clock: 0, failed: Default::default(), depth: 0,
             trace: true, verbose: false, relax_enabled: false, reasons: Default::default(),
-            ctx, rep: RepairReport::default(), target: 0.12,
+            ctx, rep: RepairReport::default(), memo: Default::default(), target: 0.12,
         }
     }
 
@@ -3629,7 +3645,7 @@ mod tests {
             bnd: vec![true; 5], state: vec![0; 5], hv: vec![1.0; 5], live: 3, max_live: 3,
             log: Vec::new(), ver: vec![0; 5], clock: 0, failed: Default::default(), depth: 0,
             trace: false, verbose: false, relax_enabled: false, reasons: Default::default(),
-            ctx: &ctx, rep: RepairReport::default(), target: 0.12,
+            ctx: &ctx, rep: RepairReport::default(), memo: Default::default(), target: 0.12,
         };
         let star = [0, 1, 2];
         let before = w.boundary_snapshot(&star, 1.0);
@@ -3648,7 +3664,7 @@ mod tests {
             p: vec![], tets: vec![], alive: vec![], vt: vec![], bnd: vec![], state: vec![], hv: vec![],
             live: 0, max_live: 0, log: vec![], ver: vec![], clock: 0, failed: Default::default(),
             depth: 0, trace: false, verbose: false, relax_enabled: false, reasons: Default::default(),
-            ctx: &ctx, rep: RepairReport::default(), target: 0.12,
+            ctx: &ctx, rep: RepairReport::default(), memo: Default::default(), target: 0.12,
         };
         let gate = QualityThresholds::default().min_scaled_jacobian;
         assert!(w.gains(gate - 0.004, gate + 0.002));
@@ -3706,7 +3722,7 @@ mod tests {
             p, tets, alive: vec![true; 4], vt, bnd: vec![true, true, true, true, false], state: vec![0; 5],
             hv: vec![1.0; 5], live: 4, max_live: 8, log: Vec::new(), ver: vec![0; 5], clock: 0,
             failed: Default::default(), depth: 0, trace: false, verbose: false, relax_enabled: false,
-            reasons: Default::default(), ctx: &ctx, rep: RepairReport::default(), target: 0.12,
+            reasons: Default::default(), ctx: &ctx, rep: RepairReport::default(), memo: Default::default(), target: 0.12,
         };
         let before = (w.p.clone(), w.tets.clone(), w.alive.clone(), w.vt.clone(), w.bnd.clone(), w.rep.clone());
         assert!(w.trace_retry(1), "the diagnostic must exercise a successful repair");
