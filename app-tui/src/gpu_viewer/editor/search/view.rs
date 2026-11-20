@@ -420,6 +420,147 @@ pub(super) fn neural_suggestion_inputs(s: &SearchSession) -> (String, Vec<String
     (context, candidates)
 }
 
+/// The first `limit` suggestions in `order`, one per group of related-from-hits terms: a term that the neural
+/// grouping puts with one already shown is folded into that chip's label ("also ...") instead of taking a slot.
+/// Only terms mined from the hits are folded; synonyms and corrections always stand alone. Clicking a chip adds
+/// only the term it names.
+#[cfg(feature = "neural-search")]
+fn collapse_similar(
+    candidates: &[QuerySuggestion],
+    order: &[usize],
+    groups: &[Vec<usize>],
+    limit: usize,
+) -> Vec<Entry> {
+    let is_term = |i: usize| {
+        candidates
+            .get(i)
+            .is_some_and(|c| matches!(c.action, SearchAct::AddCorpusTerm(_)))
+    };
+    let mut folded = std::collections::HashSet::new();
+    let mut chips = Vec::new();
+    for &i in order {
+        let Some(candidate) = candidates.get(i) else {
+            continue;
+        };
+        if folded.contains(&i) {
+            continue;
+        }
+        let mut label = candidate.label.clone();
+        if is_term(i) {
+            let related: Vec<usize> = groups
+                .iter()
+                .find(|group| group.contains(&i))
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&other| other != i && is_term(other) && !folded.contains(&other))
+                .collect();
+            if !related.is_empty() {
+                let names: Vec<&str> = related
+                    .iter()
+                    .take(2)
+                    .map(|&other| candidates[other].term.as_str())
+                    .collect();
+                let more = related.len().saturating_sub(2);
+                label = format!(
+                    "{label} (also {}{})",
+                    names.join(", "),
+                    if more > 0 {
+                        format!(", +{more}")
+                    } else {
+                        String::new()
+                    }
+                );
+                folded.extend(related);
+            }
+        }
+        chips.push(e(&label, "", candidate.action));
+        if chips.len() == limit {
+            break;
+        }
+    }
+    chips
+}
+
+#[cfg(all(test, feature = "neural-search"))]
+mod collapse_tests {
+    use super::*;
+
+    fn term(name: &str, i: usize) -> QuerySuggestion {
+        QuerySuggestion {
+            term: name.into(),
+            label: format!("Related from hits: {name}"),
+            action: SearchAct::AddCorpusTerm(i),
+        }
+    }
+
+    fn synonym(name: &str, i: usize) -> QuerySuggestion {
+        QuerySuggestion {
+            term: name.into(),
+            label: format!("Expand with {name}"),
+            action: SearchAct::AddSynonym(i),
+        }
+    }
+
+    fn labels(chips: &[Entry]) -> Vec<String> {
+        chips.iter().map(|c| c.label.to_string()).collect()
+    }
+
+    #[test]
+    fn related_terms_fold_into_the_first_chip_and_free_a_slot() {
+        let c = [term("a", 0), term("b", 1), term("c", 2), term("d", 3)];
+        let chips = collapse_similar(&c, &[0, 1, 2, 3], &[vec![0, 1], vec![2], vec![3]], 3);
+        assert_eq!(
+            labels(&chips),
+            [
+                "Related from hits: a (also b)",
+                "Related from hits: c",
+                "Related from hits: d"
+            ]
+        );
+    }
+
+    #[test]
+    fn more_than_two_related_terms_show_a_count() {
+        let c = [term("a", 0), term("b", 1), term("c", 2), term("d", 3)];
+        let chips = collapse_similar(&c, &[0, 1, 2, 3], &[vec![0, 1, 2, 3]], 3);
+        assert_eq!(labels(&chips), ["Related from hits: a (also b, c, +1)"]);
+    }
+
+    #[test]
+    fn the_chip_still_adds_only_the_term_it_names() {
+        let c = [term("a", 0), term("b", 1)];
+        let chips = collapse_similar(&c, &[0, 1], &[vec![0, 1]], 3);
+        assert_eq!(chips.len(), 1);
+        assert_eq!(chips[0].action, act(SearchAct::AddCorpusTerm(0)));
+    }
+
+    #[test]
+    fn synonyms_and_corrections_are_never_folded() {
+        let c = [synonym("a", 0), term("b", 1), term("c", 2)];
+        let chips = collapse_similar(&c, &[0, 1, 2], &[vec![0, 1, 2]], 3);
+        assert_eq!(
+            labels(&chips),
+            ["Expand with a", "Related from hits: b (also c)"]
+        );
+    }
+
+    #[test]
+    fn the_limit_counts_chips_not_candidates() {
+        let c = [term("a", 0), term("b", 1), term("c", 2), term("d", 3)];
+        let chips = collapse_similar(&c, &[0, 1, 2, 3], &[vec![0], vec![1], vec![2], vec![3]], 2);
+        assert_eq!(chips.len(), 2);
+        assert_eq!(chips[1].label.to_string(), "Related from hits: b");
+    }
+
+    #[test]
+    fn out_of_range_indices_are_skipped() {
+        let c = [term("a", 0)];
+        let chips = collapse_similar(&c, &[5, 0], &[vec![0, 7]], 3);
+        assert_eq!(labels(&chips), ["Related from hits: a"]);
+    }
+}
+
 fn find_suggestions(s: &SearchSession) -> Vec<Entry> {
     let mut suggestions: Vec<Entry> = recent_filter_suggestions(s).into_iter().take(2).collect();
     let candidates = query_suggestions(s);
@@ -428,13 +569,14 @@ fn find_suggestions(s: &SearchSession) -> Vec<Entry> {
         if !candidates.is_empty() {
             let (context, embedding_candidates) = neural_suggestion_inputs(s);
             let key = format!("{context}\0{}", embedding_candidates.join("\0"));
-            if let Some((ranked_key, order)) = &s.neural_order {
-                if ranked_key == &key && order.len() == embedding_candidates.len() {
-                    suggestions.extend(order.iter().take(3).filter_map(|&i| {
-                        query_suggestions(s)
-                            .get(i)
-                            .map(|candidate| e(&candidate.label, "", candidate.action))
-                    }));
+            if let Some((ranked_key, ranked)) = &s.neural_order {
+                if ranked_key == &key && ranked.order.len() == embedding_candidates.len() {
+                    suggestions.extend(collapse_similar(
+                        &candidates,
+                        &ranked.order,
+                        &ranked.groups,
+                        3,
+                    ));
                     return suggestions;
                 }
             }

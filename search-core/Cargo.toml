@@ -171,6 +171,10 @@ name = "entity_rank_probe"
 required-features = ["neural-search"]
 
 [[example]]
+name = "term_cluster_eval"
+required-features = ["neural-search"]
+
+[[example]]
 name = "splade_eval"
 required-features = ["semantic-search"]
 

@@ -971,3 +971,27 @@ Ranking of the three: Porter2 (`rust-stemmers`) is best on retrieval (highest me
 Latency: not comparable. The reruns ran while other builds and tests loaded the machine (shipped stemmer SciFact 108.8 ms/query here against 22.4 ms in the first run), so no per-query cost is claimed for any mode. `nlprule` also loads the tokenizer once per process.
 
 Not measured: engineering folders with real relevance labels beyond the two sets above, non-English text, and a lemma chooser that uses part of speech instead of the first tag.
+
+## 2026-11-20: term clusters for the "Related from hits" chips
+
+Question: the Find suggestion popover offers terms mined from the hits (`neural_search::corpus_term_candidates`) ranked by similarity to the query. Near-duplicates (`outer diameter`, `outside diameter`) fill the three slots. Can the neural embeddings that already rank them also group them by meaning?
+
+Built: `neural_search::rank_and_group` embeds the context and candidates once (`rank_suggestions` is now a wrapper) and groups the candidates by greedy average-link clustering in input order (`group_by_similarity`, threshold `GROUP_SIMILARITY` = 0.60). The Find popover folds a mined term that is grouped with one already shown into that chip ("Related from hits: outer diameter (also outside diameter)"), so a slot goes to a different idea. Display only: exact search, results, ranking and the order of the chips are unchanged; only mined terms fold (synonyms and corrections never do); clicking a chip adds only the term it names.
+
+Measurement: `search-core/examples/term_cluster_eval.rs` on `search-core/examples/data/term_clusters.tsv` (65 terms: 13 ideas of 3 or 4 terms and 10 singleton distractors, 81 true pairs), 20 shuffled input orders per threshold, pairwise precision and recall against the labels:
+
+| Threshold | Precision | Recall | False merges per run | Groups per run |
+|---|---|---|---|---|
+| 0.50 | 0.853 | 0.376 | 5.2 | 42.8 |
+| 0.55 | 0.921 | 0.361 | 2.5 | 44.8 |
+| 0.60 | 0.983 | 0.326 | 0.4 | 47.4 |
+| 0.65 | 0.975 | 0.286 | 0.6 | - |
+| 0.70 | 0.964 | 0.180 | - | - |
+| 0.75 | 1.000 | 0.074 | - | - |
+
+0.60 is the lowest threshold with precision of at least 0.95: a wrong merge hides a distinct chip, while a missed merge only leaves a duplicate. Result: about a third of the true pairs merge, with about 98% of merges correct.
+
+Limits: the 65 terms were written by the assistant and not reviewed by a person; the threshold was tuned on the same set (in-sample); English engineering phrases only; MiniLM-L6 on short phrases; no evaluation on real folders. Recall is low by design. Reproduce: `cargo run --release -p search-core --features neural-search --example term_cluster_eval`. No five-set retrieval gate applies because ranking and results do not change.
+
+Found on the way: `SearchSession::corpus_term_suggestions` (n-gram mining over up to 40 hit lines) ran on every call of `query_suggestions`, which the Find popover makes several times per redraw. Measured in release with 40 hit lines of about 190 characters: 3.0 ms per call, so roughly 10 ms per frame while the popover is open with results. It is now cached on the query and the exact hit lines it was mined from (`corpus_term_cache`, same pattern as the typo cache); test `corpus_terms_are_mined_once_per_query_and_hits`. The after-cache per-frame cost was not re-timed (one equality check over 40 lines and a clone of at most 24 strings).
+

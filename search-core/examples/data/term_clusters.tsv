@@ -1,0 +1,66 @@
+# group<TAB>term. Terms in one group name one engineering idea; terms in different groups do not. Singleton groups are distractors.
+diameter	outer diameter
+diameter	outside diameter
+diameter	bolt diameter
+strength	yield strength
+strength	yield stress
+strength	proof stress
+strength	ultimate tensile strength
+fatigue	fatigue strength
+fatigue	fatigue life
+fatigue	fatigue limit
+fatigue	cyclic loading
+corrosion	corrosion resistance
+corrosion	galvanic corrosion
+corrosion	corrosion protection
+corrosion	salt spray
+thread	thread pitch
+thread	threads per inch
+thread	thread engagement
+thread	thread length
+bushing	press fit
+bushing	interference fit
+bushing	bushing installation
+bushing	shrink fit
+thickness	plate thickness
+thickness	wall thickness
+thickness	sheet thickness
+thickness	material thickness
+heat	heat treatment
+heat	annealing
+heat	quenching
+heat	tempering
+torque	tightening torque
+torque	preload torque
+torque	torque value
+torque	torque wrench
+inspection	visual inspection
+inspection	nondestructive testing
+inspection	eddy current
+inspection	dye penetrant
+fastener	titanium fastener
+fastener	hex bolt
+fastener	lock nut
+fastener	rivet
+alloy	aluminum alloy
+alloy	titanium alloy
+alloy	steel alloy
+alloy	nickel alloy
+seal	o-ring
+seal	gasket
+seal	sealant
+seal	seal groove
+tolerance	dimensional tolerance
+tolerance	geometric tolerance
+tolerance	fit class
+tolerance	surface finish
+s1	maintenance schedule
+s2	flight manual
+s3	revision history
+s4	approved vendor
+s5	test report
+s6	contact information
+s7	hydraulic pressure
+s8	landing gear
+s9	wing spar
+s10	fuel line
