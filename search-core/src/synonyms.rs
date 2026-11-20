@@ -55,6 +55,8 @@ const GROUPS: &[(&[&str], Relation)] = &[
     (&["threads per inch", "TPI"], Relation::Abbreviation),
 ];
 const MAX_TYPO_TOKEN_CHARS: usize = 32;
+/// Only the first tokens of a query are checked, so a pasted block cannot stall a redraw.
+const MAX_TYPO_TOKENS: usize = 64;
 
 /// Return equivalent engineering terms explicitly present in the local vocabulary.
 /// Matching uses whole tokens, so `OD` does not match inside `node`.
@@ -94,27 +96,9 @@ pub fn suggestions(query: &str) -> Vec<Suggestion> {
 /// Suggest one-token corrections from the bounded local engineering vocabulary.
 /// Callers show these only after a completed zero-result search and require a click.
 pub fn typo_corrections(query: &str) -> Vec<TypoCorrection> {
-    let vocabulary = GROUPS
-        .iter()
-        .flat_map(|(terms, _)| terms.iter())
-        .flat_map(|term| term.split_whitespace())
-        .filter(|word| word.chars().count() >= 4)
-        .map(str::to_lowercase)
-        .collect::<std::collections::HashSet<_>>();
-    let mut cursor = 0;
-    let words = query
-        .split_whitespace()
-        .map(|word| {
-            let start = cursor
-                + query[cursor..]
-                    .find(word)
-                    .expect("split token follows prior token");
-            cursor = start + word.len();
-            (word, start, cursor)
-        })
-        .collect::<Vec<_>>();
+    let vocabulary = typo_vocabulary();
     let mut corrections = Vec::new();
-    for (word, start, end) in &words {
+    for (word, start, end) in token_spans(query).take(MAX_TYPO_TOKENS) {
         let token_len = word.chars().count();
         if !word.chars().all(char::is_alphabetic)
             || !(4..=MAX_TYPO_TOKEN_CHARS).contains(&token_len)
@@ -126,8 +110,11 @@ pub fn typo_corrections(query: &str) -> Vec<TypoCorrection> {
             continue;
         }
         let max_distance = if lower.chars().count() > 7 { 2 } else { 1 };
+        let lower_len = lower.chars().count();
         let mut nearest = vocabulary
             .iter()
+            // Edit distance is at least the length difference: skip the table for far lengths.
+            .filter(|candidate| candidate.chars().count().abs_diff(lower_len) <= max_distance)
             .filter_map(|candidate| {
                 let distance = edit_distance(&lower, candidate);
                 (distance <= max_distance).then_some((candidate, distance))
@@ -150,9 +137,9 @@ pub fn typo_corrections(query: &str) -> Vec<TypoCorrection> {
         } else {
             candidate.clone()
         };
-        let corrected_query = format!("{}{}{}", &query[..*start], replacement, &query[*end..]);
+        let corrected_query = format!("{}{}{}", &query[..start], replacement, &query[end..]);
         corrections.push(TypoCorrection {
-            original: (*word).to_string(),
+            original: word.to_string(),
             replacement,
             query: corrected_query,
         });
@@ -161,6 +148,45 @@ pub fn typo_corrections(query: &str) -> Vec<TypoCorrection> {
         }
     }
     corrections
+}
+
+/// Lowercase words of four or more letters from the engineering vocabulary, built once.
+fn typo_vocabulary() -> &'static [String] {
+    static VOCABULARY: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    VOCABULARY.get_or_init(|| {
+        let mut words = GROUPS
+            .iter()
+            .flat_map(|(terms, _)| terms.iter())
+            .flat_map(|term| term.split_whitespace())
+            .filter(|word| word.chars().count() >= 4)
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>();
+        words.sort();
+        words.dedup();
+        words
+    })
+}
+
+/// Whitespace-separated tokens with their byte range in `query`, in one pass.
+fn token_spans(query: &str) -> impl Iterator<Item = (&str, usize, usize)> {
+    let mut start = None;
+    let mut chars = query.char_indices();
+    std::iter::from_fn(move || loop {
+        match chars.next() {
+            Some((i, ch)) if ch.is_whitespace() => {
+                if let Some(from) = start.take() {
+                    return Some((&query[from..i], from, i));
+                }
+            }
+            Some((i, _)) => {
+                start.get_or_insert(i);
+            }
+            None => {
+                let from = start.take()?;
+                return Some((&query[from..], from, query.len()));
+            }
+        }
+    })
 }
 
 fn edit_distance(left: &str, right: &str) -> usize {
@@ -220,5 +246,33 @@ mod tests {
         );
         assert!(typo_corrections("ordinary words").is_empty());
         assert!(typo_corrections(&"a".repeat(MAX_TYPO_TOKEN_CHARS + 1)).is_empty());
+    }
+
+    #[test]
+    fn token_spans_give_byte_ranges_for_any_whitespace_and_unicode() {
+        let query = " \u{e9}t\u{e9}  strenght\tmax\u{3000}";
+        let spans = token_spans(query).collect::<Vec<_>>();
+        assert_eq!(spans.len(), 3);
+        for (word, start, end) in spans {
+            assert_eq!(&query[start..end], word);
+        }
+        assert_eq!(token_spans("").count(), 0);
+        assert_eq!(token_spans("   ").count(), 0);
+    }
+
+    #[test]
+    fn typo_scan_is_bounded_to_the_first_tokens_of_a_query() {
+        let filler = "xx ".repeat(MAX_TYPO_TOKENS);
+        assert!(typo_corrections(&format!("{filler}strenght")).is_empty());
+        let filler = "xx ".repeat(MAX_TYPO_TOKENS - 1);
+        assert_eq!(typo_corrections(&format!("{filler}strenght")).len(), 1);
+    }
+
+    #[test]
+    fn typo_corrections_keep_case_and_position_in_a_long_query() {
+        let found = typo_corrections("alpha STRENGHT beta thicknes");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].query, "alpha STRENGTH beta thicknes");
+        assert_eq!(found[1].query, "alpha STRENGHT beta thickness");
     }
 }
