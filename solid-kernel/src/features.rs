@@ -573,8 +573,10 @@ const METRIC: [(&str, f64, f64, f64, f64, f64); 10] = [
 ];
 
 /// `(name, tap, nominal, close, loose)` in inches: unified coarse threads, with the tap drill and the close and free clearance
-/// drills of the Machinery's Handbook tables as commonly published. Transcribed, not computed: check an entry against the
-/// current handbook before relying on it for a release.
+/// drills of the Machinery's Handbook tables as commonly published. Transcribed, not computed. Checked on 2026-11-20 against two
+/// published charts (Fractory "Imperial Clearance Hole Sizes", Optimas "Unified Threads Recommended Tapping Size and Clearance
+/// Holes"): every entry agrees, the tap drill being the 75 % thread engagement one. The handbook itself was not read, and
+/// editions differ on which drill is called "close" and which "free" for some sizes, so an edition-exact claim needs its table 5.
 const INCH: [(&str, f64, f64, f64, f64); 8] = [
     ("#4-40", 0.0890, 0.1120, 0.1160, 0.1285),
     ("#6-32", 0.1065, 0.1380, 0.1440, 0.1495),
@@ -927,4 +929,22 @@ pub fn detect(models: &[AnalyticModel]) -> Result<Features, Error> {
     let sites = find_sites(models, &holes);
     let (interfaces, unresolved) = find_interfaces(models, &faces);
     Ok(Features { faces, holes, sites, interfaces, unresolved })
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::{INCH, METRIC};
+
+    /// Within one size the bores grow tap < nominal < close <= loose (inch) and tap < nominal < close <= normal <= loose (metric),
+    /// and the sizes grow: a transcription slip that swaps two columns or two rows breaks this.
+    #[test]
+    fn the_size_tables_are_monotone_in_every_row_and_down_the_sizes() {
+        for (name, tap, nominal, close, loose) in INCH {
+            assert!(tap < nominal && nominal < close && close <= loose, "{name}");
+        }
+        for (name, tap, nominal, close, normal, loose) in METRIC {
+            assert!(tap < nominal && nominal < close && close <= normal && normal <= loose, "{name}");
+        }
+        assert!(INCH.windows(2).all(|w| w[0].2 < w[1].2) && METRIC.windows(2).all(|w| w[0].2 < w[1].2));
+    }
 }
