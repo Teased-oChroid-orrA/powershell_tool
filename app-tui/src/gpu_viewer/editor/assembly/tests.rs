@@ -145,7 +145,7 @@ fn an_assembly_without_joints_says_so_and_the_empty_window_offers_open() {
     let two = AssemblySession::open(&data("assembly-two-instances.step")).unwrap();
     assert_eq!(two.loaded().unwrap().mesh.bodies(), 2);
     assert!(two.loaded().unwrap().advice.is_empty());
-    assert!(texts(&two.inspector()).contains("No fastener site or contact interface"));
+    assert!(texts(&two.inspector()).contains("No fastener site, contact interface or bolt-sized hole without a mate"));
     assert!(two.start_options().is_empty());
 
     let mut empty = AssemblySession::open(Path::new("")).unwrap();
@@ -193,4 +193,106 @@ fn the_ribbon_and_menus_toggle_the_explosion_and_clear_the_selection() {
     assert_eq!(s.step_state("Assembly"), Some(StepState::Done));
     assert_eq!(s.focus_step(), Some("Assembly"));
     assert!(!s.dirty() && !s.solving() && !s.prompting());
+}
+
+/// The plates with one unmated hole added to the advice (the fixture's two holes are mated, so none is detected in it).
+fn plates_with_an_unmated_hole() -> AssemblySession {
+    use fea_problem::assembly_advice::Closure;
+    let mut s = plates();
+    let key = s.loaded().unwrap().mesh.face[0];
+    let l = s.loaded.as_mut().unwrap();
+    l.advice.push(AssemblyAdvice::Unmated {
+        body: 0,
+        faces: vec![key],
+        diameter: 5.0,
+        closure: Closure::Through,
+        size: "M5 or M6".into(),
+        reason: "Body 1 has a \u{d8}5.000 mm through hole 10.00 mm deep with no coaxial bore on another body. It is a place for a support or a load.".into(),
+    });
+    l.unmated = 1;
+    s
+}
+
+#[test]
+fn holes_without_a_mate_are_a_third_group_in_the_inspector_the_tree_the_summary_and_the_status() {
+    let mut s = plates_with_an_unmated_hole();
+    let all = texts(&s.inspector());
+    let group_titles: Vec<&str> = ["Fastener sites", "Interfaces", "Holes without a mate"].into_iter().filter(|t| all.contains(t)).collect();
+    assert_eq!(group_titles.len(), 3, "{all}");
+    let (fs, is, um) = (all.find("Fastener sites").unwrap(), all.find("Interfaces").unwrap(), all.find("Holes without a mate").unwrap());
+    assert!(fs < is && is < um, "group order: {all}");
+    let hole = s.loaded().unwrap().advice[2].clone();
+    assert!(all.contains(hole.label().as_str()) && all.contains(hole.detail().as_str()), "{all}");
+    assert!(all.contains("Holes without a mate") && s.status().contains("1 hole without a mate"), "{}", s.status());
+    // the tree lists the item and the Detected count, and selecting it highlights only its faces
+    let labels: Vec<String> = s.tree().iter().map(|n| n.label.clone()).collect();
+    assert!(labels.iter().any(|l| l == "Holes without a mate (1)") && labels.iter().any(|l| *l == hole.label()), "{labels:?}");
+    act(&mut s, AssemblyAct::Select(Sel::Item(2)));
+    assert_eq!(s.selected_faces(), hole.faces());
+    let why = s.inspector().into_iter().find(|c| c.id == "assembly-why").unwrap();
+    assert_eq!(why.items.len(), 2, "one line per sentence");
+    // the plates alone have none
+    assert!(!texts(&plates().inspector()).contains("Holes without a mate"));
+    assert!(!plates().status().contains("without a mate"));
+}
+
+/// The stacked plates with the upper one slid 15 mm along x: the holes no longer share an axis, so each is a hole without a mate.
+#[test]
+fn plates_slid_apart_report_both_holes_as_unmated_from_the_step_file() {
+    let text = std::fs::read_to_string(data("assembly-stacked-plates.step")).unwrap();
+    let shifted = text.replace("#944 = CARTESIAN_POINT('',(0.,0.,10.));", "#944 = CARTESIAN_POINT('',(15.,0.,10.));");
+    assert_ne!(shifted, text, "the fixture's placement line changed");
+    let file = std::env::temp_dir().join(format!("assembly-slid-plates-{}.step", std::process::id()));
+    std::fs::write(&file, shifted).unwrap();
+    let mut s = AssemblySession::open(&file).unwrap();
+    let _ = std::fs::remove_file(&file);
+    let l = s.loaded().expect("loaded");
+    assert_eq!((l.sites, l.unmated, l.holes), (0, 2, 2), "{:?}", l.advice);
+    let holes: Vec<&AssemblyAdvice> = l.advice.iter().filter(|a| matches!(a, AssemblyAdvice::Unmated { .. })).collect();
+    let bodies: Vec<usize> = holes.iter().map(|a| match a { AssemblyAdvice::Unmated { body, .. } => *body, _ => unreachable!() }).collect();
+    assert_eq!(bodies, vec![0, 1]);
+    assert!(s.status().starts_with("2 bodies, 0 fastener sites, 1 interface, 2 holes without a mate, detected in "), "{}", s.status());
+    // selecting one lights only that body's faces
+    let first = l.advice.iter().position(|a| matches!(a, AssemblyAdvice::Unmated { .. })).unwrap();
+    act(&mut s, AssemblyAct::Select(Sel::Item(first)));
+    let faces = s.selected_faces();
+    assert!(!faces.is_empty() && faces.iter().all(|f| f.body == 0), "{faces:?}");
+    assert!(s.scene().is_ok());
+}
+
+#[test]
+fn selecting_a_body_lists_each_of_its_faces_once_in_key_order() {
+    let mut s = plates();
+    act(&mut s, AssemblyAct::Select(Sel::Body(0)));
+    let faces = s.selected_faces();
+    let mut sorted = faces.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(faces, sorted);
+    // every face of the body, not just the neighbours-distinct ones
+    let all: std::collections::BTreeSet<FaceKey> = s.loaded().unwrap().mesh.face.iter().filter(|k| k.body == 0).copied().collect();
+    assert_eq!(faces.len(), all.len());
+}
+
+#[test]
+fn tree_node_ids_stay_unique_for_a_large_assembly() {
+    let mut s = plates();
+    let l = s.loaded.as_mut().unwrap();
+    // 300 bodies and 300 advice items: ids `10 + body` and `200 + item` used to run into the fixed nodes and each other
+    l.mesh.body_triangles.resize(300, 0);
+    let more: Vec<AssemblyAdvice> = std::iter::repeat(l.advice[0].clone()).take(300).collect();
+    l.advice.extend(more);
+    let ids: Vec<u32> = s.tree().iter().map(|n| n.id).collect();
+    let unique: std::collections::BTreeSet<u32> = ids.iter().copied().collect();
+    assert_eq!(ids.len(), unique.len(), "duplicate node ids");
+}
+
+#[test]
+fn a_step_with_no_bodies_is_a_status_not_a_blank_window_or_a_panic() {
+    let empty = std::env::temp_dir().join(format!("assembly-no-bodies-{}.step", std::process::id()));
+    std::fs::write(&empty, "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('x'),'2;1');\nFILE_NAME('x','',(''),(''),'','','');\nFILE_SCHEMA(('AUTOMOTIVE_DESIGN'));\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n").unwrap();
+    let mut s = AssemblySession::open(&empty).unwrap();
+    let _ = std::fs::remove_file(&empty);
+    assert!(s.loaded().is_none() && s.status().starts_with("Cannot open "), "{}", s.status());
+    assert!(s.scene().is_ok(), "the empty window still draws");
 }

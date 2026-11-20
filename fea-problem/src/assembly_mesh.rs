@@ -9,6 +9,7 @@ use solid_kernel::analytic_step::{AnalyticModel, Options};
 use solid_kernel::cylindrical_step::ChartPolicy;
 /// Re-exported so a front end names faces without a direct `solid-kernel` dependency.
 pub use solid_kernel::features::FaceKey;
+use solid_kernel::features::{detect, Features};
 use solid_kernel::native_surface::Limits;
 use solid_kernel::step::{inventory, Limits as StepLimits};
 
@@ -47,27 +48,52 @@ impl AssemblyMesh {
     }
     /// The triangle indices of the faces named by `keys` (an advice item's `faces()`), for highlighting.
     pub fn triangles_of(&self, keys: &[FaceKey]) -> Vec<usize> {
+        let keys: std::collections::HashSet<&FaceKey> = keys.iter().collect();
         self.face.iter().enumerate().filter(|(_, k)| keys.contains(k)).map(|(t, _)| t).collect()
     }
 }
 
+fn sample_models(models: &[AnalyticModel], policy: ChartPolicy, chord: f64) -> Result<AssemblyMesh, String> {
+    let mut out = AssemblyMesh { chord_mm: chord, ..AssemblyMesh::default() };
+    for (body, model) in models.iter().enumerate() {
+        let limits = Limits { chart_policy: policy, ..Limits::default() };
+        let s = model.sampled_surface(limits, |_| true).map_err(|e| format!("body {}: {e}", body + 1))?;
+        let base = out.vertices.len();
+        out.vertices.extend(s.mesh.vertices.iter().copied());
+        out.triangles.extend(s.mesh.triangles.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+        for &tag in &s.mesh.face {
+            let face = *s.source_faces.get(tag).ok_or_else(|| format!("body {}: triangle tagged with face {tag} of {}", body + 1, s.source_faces.len()))?;
+            out.face.push(FaceKey { body, face });
+        }
+        out.body_triangles.push(s.mesh.triangles.len());
+    }
+    Ok(out)
+}
+
+fn chord_or_default(chord: f64) -> f64 {
+    if chord.is_finite() && chord > 0.0 { chord } else { DEFAULT_CHORD }
+}
+
 /// Sample every body of the STEP assembly `step` at `chord` mm (a non-positive or non-finite value means [`DEFAULT_CHORD`]).
 pub fn assembly_mesh(step: &str, chord: f64) -> Result<AssemblyMesh, String> {
-    let chord = if chord.is_finite() && chord > 0.0 { chord } else { DEFAULT_CHORD };
+    let chord = chord_or_default(chord);
+    with_bodies(step, chord, |models, policy| sample_models(models, policy, chord))
+}
+
+/// The features of an assembly and its viewer mesh, from one read of the bodies.
+#[derive(Clone, Debug)]
+pub struct AssemblyRead {
+    pub features: Features,
+    pub mesh: AssemblyMesh,
+}
+
+/// [`detect_step`](crate::assembly_advice::detect_step) and [`assembly_mesh`] over one parse and one `read_all`: the features and
+/// the mesh come from the same read (strict, else the tolerant one), so they cannot disagree about the bodies. A read that detects
+/// but cannot be sampled (or the reverse) falls to the tolerant read for both.
+pub fn read_assembly(step: &str, chord: f64) -> Result<AssemblyRead, String> {
+    let chord = chord_or_default(chord);
     with_bodies(step, chord, |models, policy| {
-        let mut out = AssemblyMesh { chord_mm: chord, ..AssemblyMesh::default() };
-        for (body, model) in models.iter().enumerate() {
-            let limits = Limits { chart_policy: policy, ..Limits::default() };
-            let s = model.sampled_surface(limits, |_| true).map_err(|e| format!("body {}: {e}", body + 1))?;
-            let base = out.vertices.len();
-            out.vertices.extend(s.mesh.vertices.iter().copied());
-            out.triangles.extend(s.mesh.triangles.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
-            for &tag in &s.mesh.face {
-                let face = *s.source_faces.get(tag).ok_or_else(|| format!("body {}: triangle tagged with face {tag} of {}", body + 1, s.source_faces.len()))?;
-                out.face.push(FaceKey { body, face });
-            }
-            out.body_triangles.push(s.mesh.triangles.len());
-        }
-        Ok(out)
+        let features = detect(models).map_err(|e| e.to_string())?;
+        Ok(AssemblyRead { features, mesh: sample_models(models, policy, chord)? })
     })
 }

@@ -2610,7 +2610,7 @@ mod snapshot_tests {
     }
 
     /// The Assembly Joints window on `solid-kernel/tests/data/assembly-stacked-plates.step` (exploded with the fastener site
-    /// selected, joined with the interface selected, light), as raw RGBA dumps:
+    /// selected, joined with the interface selected, light; the upper plate slid sideways with an unmated hole selected), as raw RGBA dumps:
     /// `FEA_SNAPSHOT_ASSEMBLY_OUT=/dir cargo test ... assembly_snapshot -- --ignored`.
     #[test]
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_ASSEMBLY_OUT"]
@@ -2668,6 +2668,14 @@ mod snapshot_tests {
             session.act(EditorAction::Assembly(AssemblyAct::ToggleExploded));
             shoot(&mut r, &mut session, "assembly-interface-joined", true);
             shoot(&mut r, &mut session, "assembly-interface-joined-light", false);
+            // the upper plate slid 15 mm along x: no shared axis, so both holes are "Holes without a mate"
+            let text = std::fs::read_to_string(&file).unwrap();
+            let slid = std::path::Path::new(&dir).join("assembly-slid-plates.step");
+            std::fs::write(&slid, text.replace("#944 = CARTESIAN_POINT('',(0.,0.,10.));", "#944 = CARTESIAN_POINT('',(15.,0.,10.));")).unwrap();
+            let mut session = AssemblySession::open(&slid).unwrap();
+            let first = session.loaded().unwrap().advice.iter().position(|a| matches!(a, fea_problem::assembly_advice::AssemblyAdvice::Unmated { .. })).unwrap();
+            session.act(EditorAction::Assembly(AssemblyAct::Select(Sel::Item(first))));
+            shoot(&mut r, &mut session, "assembly-unmated", true);
         });
     }
 
