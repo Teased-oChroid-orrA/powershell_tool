@@ -523,9 +523,15 @@ impl<'a> Work<'a> {
         for &t in ts {
             let c = self.tets[t];
             for x in c {
-                let mut f: Vec<usize> = c.iter().copied().filter(|&y| y != x).collect();
-                f.sort_unstable();
-                let key = [f[0], f[1], f[2]];
+                let mut key = [0usize; 3];
+                let mut n = 0;
+                for y in c {
+                    if y != x {
+                        key[n] = y;
+                        n += 1;
+                    }
+                }
+                key.sort_unstable();
                 if self.is_bface(key[0], key[1], key[2]) {
                     out.insert(key, x);
                 }
@@ -2534,6 +2540,31 @@ fn round_key(bad: &[(f64, usize)], gate: f64) -> (usize, usize) {
 /// Repair the tetrahedra `tets` (positively oriented) over the points `p` in place; returns the compacted vertex map (old to
 /// new, `usize::MAX` for a removed vertex) and a report. Vertices of the input that stay keep their relative order.
 pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, opts: RepairOptions) -> (Vec<usize>, RepairReport) {
+    // The surface queries are pure functions of the point and the candidate operations of a round measure the same points
+    // again and again (a 70k-element CAD mesh asked 17 million `face_dists` queries about 1.1 million distinct points), so each
+    // point is answered by the surface once.
+    const QUERY_CACHE: usize = 1 << 20;
+    let key = |x: V3| [x[0].to_bits(), x[1].to_bits(), x[2].to_bits()];
+    let sdf_memo = std::cell::RefCell::new(std::collections::HashMap::<[u64; 3], f64>::new());
+    let sdf = |x: V3| {
+        if let Some(d) = sdf_memo.borrow().get(&key(x)) { return *d; }
+        let d = (ctx.sdf)(x);
+        let mut m = sdf_memo.borrow_mut();
+        if m.len() >= QUERY_CACHE { m.clear(); }
+        m.insert(key(x), d);
+        d
+    };
+    let hits_memo = std::cell::RefCell::new(std::collections::HashMap::<[u64; 3], Vec<FaceHit>>::new());
+    let face_dists = |x: V3| {
+        let fd = ctx.face_dists.expect("only called when present");
+        if let Some(h) = hits_memo.borrow().get(&key(x)) { return h.clone(); }
+        let h = fd(x);
+        let mut m = hits_memo.borrow_mut();
+        if m.len() >= QUERY_CACHE { m.clear(); }
+        m.insert(key(x), h.clone());
+        h
+    };
+    let ctx = &RepairContext { sdf: &sdf, face_dists: ctx.face_dists.map(|_| &face_dists as &dyn Fn(V3) -> Vec<FaceHit>), triangle_face: ctx.triangle_face };
     let gate = QualityThresholds::default().min_scaled_jacobian;
     let t_start = std::time::Instant::now();
     let n0 = tets.len();

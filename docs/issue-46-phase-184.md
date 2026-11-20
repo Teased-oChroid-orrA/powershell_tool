@@ -38,3 +38,14 @@ Timing (measured): same-time A/B, two single-thread runs side by side on one mac
 `Work::boundary_face_state` (`fea-core/src/meshing/boundary_repair.rs`) is a pure function of the face's corner and apex coordinates and `h`, yet every candidate operation re-measured each kept face in its `before` and `after` snapshots (four `signed_distance` plus `faces_near` samples each). It is now memoised by those exact coordinates (bit patterns), cleared at 2^20 entries; `measure_boundary_face` is the unchanged computation.
 
 Measured: same-time A/B, two single-thread runs side by side, `ctc_01 rd`, `MESH_TETS=3000`: main 382.3 s, memoised 117.4 s (3.3x faster; absolute times are lower than the 652/506 s above because nothing else was loading the machine). Output identical (14,015 tets, volume 14809467.610, min scaled Jacobian 0.025, 83 under the gate). Proof: `cargo test --release -p fea-core -p fea-problem -p solid-kernel` (see PR).
+
+## Addendum 2: profile of the remaining mesher time, query cache, allocations
+
+`sample` of `ctc_01 rd` on main after the face-state memo (all in `boundary_repair::repair`, single thread): `closest_on_triangle` 22 percent, `Bvh::within` 19 percent, malloc/free 26 percent (all callers), `scaled_jacobian` 5 percent, `Bvh::nearest` 5 percent, `boundary_faces` 4.5 percent.
+
+A counter in `faces_near` showed 17 million queries about only 1.12 million distinct points (cells of the query radius: 831): candidate operations in a round measure the same points repeatedly, and neighbouring faces share edge midpoints. Changes, all behaviour-preserving:
+- `repair()` wraps `ctx.sdf` and `ctx.face_dists` in per-run exact-point caches (bit patterns of the point; both are pure; cleared at 2^20 entries each). No call site changed.
+- `boundary_faces` builds each face key as a fixed `[usize; 3]` instead of a `Vec` per tetrahedron face.
+- `Bvh::nearest` uses a stack array instead of a heap `Vec` per query.
+
+Measured: same-time A/B, `ctc_01 rd`, `MESH_TETS=3000`, main (memoised states) 117.9 s, this change 52.3 s (2.25x); output identical (14,015 tets, volume 14809467.610, min scaled Jacobian 0.025, 83 under the gate). Against the unmemoised main of the previous addendum (382.3 s in its own side-by-side run) the case is 52 s; the runs were on different days of load, so only the within-pair ratios are claims.
