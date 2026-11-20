@@ -1121,6 +1121,12 @@ pub fn run_fastener(mut session: super::editor::fastener::FastenerSession) -> Re
     launch(ViewerProject::single(scene), Some(Box::new(session)))
 }
 
+/// Open the Assembly Joints window on `session`.
+pub fn run_assembly(mut session: super::editor::assembly::AssemblySession) -> Result<(), String> {
+    let scene = super::editor::authoring::Authoring::scene(&mut session)?;
+    launch(ViewerProject::single(scene), Some(Box::new(session)))
+}
+
 /// Open the Pressure Vessel workbench on `session`.
 pub fn run_vessel(mut session: super::editor::vessel::VesselSession) -> Result<(), String> {
     let scene = super::editor::authoring::Authoring::scene(&mut session)?;

@@ -31,6 +31,8 @@ Phase 170 added two more (no downloaded file), tested by `tests/curved_step.rs`:
 
 ## Assembly and edit fixtures
 
+`assembly-stacked-plates.step` is `edit-plate.step` (a 40 x 30 x 10 plate, one hole) placed twice by the `assembly-two-instances.step` product structure (`#900`..`#953`), the second 10 mm up, so two plates touch over a coaxial hole: one interface and one fastener site (`app-tui` Assembly window tests).
+
 `assembly-mapped-items.step` is the box of `assembly-two-instances.step` instanced by two `MAPPED_ITEM`s of one `REPRESENTATION_MAP`
 (`examples/assembly-probe.rs -- mapped write`). The `edit-plate*.step` files are a 40 x 30 x 10 plate with a 4 mm hole at (12, 15)
 and four edits of it (`examples/write-shapes.rs`): the hole moved to x = 14, a second 3 mm hole at x = 30, the plate 12 thick, the

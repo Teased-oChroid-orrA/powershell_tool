@@ -1618,7 +1618,8 @@ impl Gui {
                         let r = ui.add(
                             egui::Button::selectable(*focused, RichText::new(text).color(color))
                                 .wrap()
-                                .frame_when_inactive(false)
+                                // `selectable` frames the selected row only; forcing `frame_when_inactive(false)` hid the selection.
+                                .frame_when_inactive(*focused)
                                 .min_size(Vec2::new(ui.available_width(), 0.0)),
                         );
                         self.targets.push((text.clone(), r.rect));
