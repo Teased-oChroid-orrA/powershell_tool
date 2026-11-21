@@ -2678,6 +2678,7 @@ fn corpus_terms_are_mined_once_per_query_and_hits() {
 
 /// Down picks the first suggestion pill, Enter chooses it instead of running the search; without a pick Enter still
 /// searches, and Up goes back off the first pill.
+#[cfg(feature = "gpu-viewer")]
 #[test]
 fn arrow_keys_pick_a_suggestion_pill_and_enter_chooses_it_instead_of_searching() {
     use crate::gpu_viewer::{controller::ViewState, gui::Gui, menu::Outcome, results::GuiInput, Scene};
