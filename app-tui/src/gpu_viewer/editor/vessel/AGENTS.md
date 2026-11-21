@@ -16,8 +16,8 @@ Does not own: any stress, margin, buckling or thickness formula (`pressure-vesse
 | The picture: revolved wall, end and cut faces, five stress fields (the mesh builder is `editor/drawing.rs`) | `drawing.rs` |
 | The saved case (JSON: numbers by name, end condition, material by name, a custom material's properties) | `file.rs` |
 | Session tests | `tests.rs` |
-| Input-level test (click Wall Thickness, type, open the picker) | `gpu_viewer/window.rs` `the_pressure_vessel_workbench_*` |
-| GPU snapshots (inputs / results dark and light, narrow, picker) | `gpu_viewer/render.rs` `vessel_snapshot` (`FEA_SNAPSHOT_VESSEL_OUT=dir`, ignored) |
+| Input-level test (click Wall Thickness, type, open the picker) | `gpu_viewer/window/tests/workbenches.rs` `the_pressure_vessel_workbench_*` |
+| GPU snapshots (inputs / results dark and light, narrow, picker) | `gpu_viewer/render/snapshot_tests/analysis_workbenches.rs` `vessel_snapshot` (`FEA_SNAPSHOT_VESSEL_OUT=dir`, ignored) |
 
 ## Contracts
 - **The window is the only head** (the terminal toolbox was removed 2026-11-03). It wraps `PressureVesselModel` directly. Never re-implement a row, a check or a formula here.

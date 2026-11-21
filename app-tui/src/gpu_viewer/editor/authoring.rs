@@ -1,5 +1,5 @@
 //! What the native window needs from an interactive model editor, independent of the model kind
-//! (frame/truss members, meshed solids). `window.rs` and `chrome.rs` only talk to this trait; each
+//! (frame/truss members, meshed solids). `window/` and `chrome.rs` only talk to this trait; each
 //! session type supplies its own tree, property manager, ribbon and menus so availability rules stay
 //! with the model that owns them.
 use super::{

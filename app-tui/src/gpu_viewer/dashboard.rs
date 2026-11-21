@@ -1,5 +1,5 @@
 //! The Toolbench dashboard: every workbench in one list, how each one opens, and what was opened last. Pure data;
-//! `gui/dashboard.rs` draws it and `window.rs` carries out a launch.
+//! `gui/dashboard.rs` draws it and `window/` carries out a launch.
 //!
 //! Process model (ADR-014): every workbench is its own native-window `app-tui` process (`--gpu-solid [file]`, ...).
 //! The dashboard window stays open as the launcher and only records what it started (`Recents`).

@@ -1,5 +1,5 @@
 //! One editing session: state + background solve + file path + numeric prompt, driven by
-//! window-independent key and click events. `window.rs` translates winit events into these calls
+//! window-independent key and click events. `window/` translates winit events into these calls
 //! and draws what `scene()` / `panel()` return, so the whole interaction is testable headless.
 use super::{
     camera::{Camera, Frame, Hit},
