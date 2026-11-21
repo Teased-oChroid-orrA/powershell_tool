@@ -1044,6 +1044,12 @@ impl SearchSession {
         &self.st
     }
 
+    /// Whether the neural ordering of the Find chips has arrived (the chip snapshot waits for it).
+    #[cfg(all(test, feature = "neural-search"))]
+    pub(crate) fn neural_order_ready_for_snapshot(&self) -> bool {
+        self.neural_order.is_some()
+    }
+
     /// Put the session in the middle of a run (for the snapshot of the progress card): a quarter done, three files
     /// being read, one of them slow.
     #[cfg(test)]
