@@ -3347,9 +3347,12 @@ mod snapshot_tests {
         session.poll();
         eprintln!("CHIPS: {:#?}", chips(&session));
         session.act(EditorAction::Search(SearchAct::Select(0)));
-        for (name, dark) in [("search-clusters-dark", true), ("search-clusters-light", false)] {
+        for (name, dark, (w, h)) in [
+            ("search-clusters-dark", true, (1440, 900)),
+            ("search-clusters-light", false, (1440, 900)),
+            ("search-clusters-narrow", true, (580, 760)),
+        ] {
             pollster::block_on(async {
-                let (w, h) = (1440, 900);
                 let adapter = test_adapter().await.expect("adapter required");
                 let scene = Scene {
                     label: "s".into(),
