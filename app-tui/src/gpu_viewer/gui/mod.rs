@@ -7,6 +7,7 @@
 //! `menus::bar`) and reports clicks as `Outcome`s; availability rules stay with the model that owns them.
 mod dashboard;
 mod document;
+mod nav_bar;
 #[cfg(test)]
 mod frame_cost;
 mod page;
@@ -128,6 +129,9 @@ pub struct Gui {
     search_menu_open: Option<String>,
     /// Scroll and selection memory of a bench's page (`Authoring::document`).
     doc: document::DocState,
+    /// The dashboard window's nav strip (ADR-024), set before each frame; `None` when there is none to draw.
+    nav: Option<crate::gpu_viewer::nav::NavStrip>,
+    switcher: Option<nav_bar::SwitcherState>,
 }
 
 impl Default for Gui {
@@ -180,7 +184,33 @@ impl Gui {
             search_sidebar_visible: true,
             search_menu_open: None,
             doc: document::DocState::default(),
+            nav: None,
+            switcher: None,
         }
+    }
+
+    /// Forget the transient state of the page that was shown (tab, popups, drawers, page scroll) when another
+    /// workbench or the dashboard takes the window. What was learned about the layout stays.
+    pub fn reset_page(&mut self) {
+        self.confirm_close = false;
+        self.tab = 0;
+        self.collapsed.clear();
+        self.palette = None;
+        self.floating = None;
+        self.bg_picker = false;
+        self.menu_at = None;
+        self.card_key = None;
+        self.drawer = None;
+        self.inspector_dismissed = None;
+        self.tree_user = None;
+        self.pending_tree_menu = None;
+        self.prev_steps.clear();
+        self.done_at.clear();
+        self.nudge = None;
+        self.last_focus_step = None;
+        self.search_menu_open = None;
+        self.doc = document::DocState::default();
+        self.switcher = None;
     }
 
     /// Keep what the layout learns between sessions (`<app data>/fea-editor/layout`).
@@ -257,15 +287,16 @@ impl Gui {
     /// Close whatever floats (palette, context list); true when something was open.
     pub fn close_floating(&mut self) -> bool {
         self.palette.take().is_some()
+            | self.switcher.take().is_some()
             | self.floating.take().is_some()
             | self.doc.open.take().is_some()
     }
     pub fn floating_open(&self) -> bool {
-        self.palette.is_some() || self.floating.is_some()
+        self.palette.is_some() || self.switcher.is_some() || self.floating.is_some()
     }
     /// A text field owns the keyboard (the palette's query).
     pub fn wants_keyboard(&self) -> bool {
-        self.palette.is_some() || self.ctx.egui_wants_keyboard_input()
+        self.palette.is_some() || self.switcher.is_some() || self.ctx.egui_wants_keyboard_input()
     }
     pub fn wants_pointer(&self) -> bool {
         self.ctx.egui_wants_pointer_input()
@@ -431,6 +462,7 @@ impl Gui {
         self.now = ui.ctx().input(|i| i.time);
         self.pill_rect = None;
         self.chip_rect = None;
+        out.extend(self.nav_ui(ui, &p).into_iter().map(|a| Outcome::Action(UiAction::Nav(a))));
         let mctx = MenuContext {
             view: input.view,
             scene: input.scene(),
@@ -479,7 +511,7 @@ impl Gui {
         let is_search_page = document.as_ref().is_some_and(|d| d.sidebar.is_some());
         let sidebar = document.as_ref().and_then(|d| d.sidebar.as_ref());
         if is_search_page {
-            ui.painter().rect_filled(ui.max_rect(), 0.0, p.bg);
+            ui.painter().rect_filled(ui.available_rect_before_wrap(), 0.0, p.bg);
             if self.search_sidebar_visible {
                 if let Some(sidebar) = sidebar {
                     self.search_sidebar(ui, sidebar, &p, out, hint);

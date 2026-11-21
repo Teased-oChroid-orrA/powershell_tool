@@ -1,15 +1,22 @@
 //! The dashboard screen: a search box, one tile per workbench (how it opens, what was opened last), the recent files.
 //! It fills the window; the window it lives in has no model, so nothing else is drawn.
 use super::{theme, Gui};
-use crate::gpu_viewer::dashboard::{ago, unix_now, Dashboard, Workbench};
+use crate::gpu_viewer::{
+    dashboard::{ago, unix_now, Dashboard, Workbench},
+    nav::NavAct,
+};
 use egui::{CornerRadius, FontId, RichText, Sense, Stroke, Vec2};
 use std::path::PathBuf;
 
 /// What the person asked the dashboard for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DashEvent {
-    /// Open workbench `.0`, on `.1` when it is a recent file.
+    /// Open workbench `.0` in this window, on `.1` when it is a recent file.
     Open(&'static str, Option<PathBuf>),
+    /// As `Open`, in a window of its own (Shift-click).
+    NewWindow(&'static str, Option<PathBuf>),
+    /// The nav strip was used.
+    Nav(NavAct),
 }
 
 const TILE_MIN: f32 = 250.0;
@@ -28,6 +35,7 @@ impl Gui {
         theme::tick(ui.ctx());
         let p = theme::current(ui.ctx());
         let now = unix_now();
+        events.extend(self.nav_ui(ui, &p).into_iter().map(DashEvent::Nav));
         egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg)).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let pad = 28.0;
@@ -87,10 +95,16 @@ impl Gui {
         let body = painter.layout(w.summary.to_string(), FontId::proportional(12.5), p.dim, inner.width());
         painter.galley(inner.min + Vec2::new(0.0, name.size().y + 6.0), body, p.dim);
         let last = dash.recents.last(w.id).map_or_else(|| "not opened yet".to_string(), |r| format!("{}, {}", r.path.as_deref().map(file_name).unwrap_or("last session"), ago(now, r.opened)));
-        let foot = painter.layout_no_wrap(format!("last: {last}"), FontId::monospace(11.0), p.dim);
+        let open = self.nav.as_ref().and_then(|n| n.tabs.iter().find(|t| t.id == w.id));
+        let last = match open {
+            Some(t) if t.dirty => "open now, unsaved edits".to_string(),
+            Some(_) => "open now".to_string(),
+            None => format!("last: {last}"),
+        };
+        let foot = painter.layout_no_wrap(last, FontId::monospace(11.0), if open.is_some() { p.accent } else { p.dim });
         painter.galley(egui::pos2(inner.left(), inner.bottom() - foot.size().y), foot, p.dim);
-        let resp = resp.on_hover_text("Opens in its own window");
-        resp.clicked().then(|| DashEvent::Open(w.id, None))
+        let resp = resp.on_hover_text("Opens here. Shift-click opens a window of its own.");
+        resp.clicked().then(|| if ui.input(|i| i.modifiers.shift) { DashEvent::NewWindow(w.id, None) } else { DashEvent::Open(w.id, None) })
     }
 
     fn recent_list(&mut self, ui: &mut egui::Ui, p: &theme::Palette, dash: &Dashboard, events: &mut Vec<DashEvent>, now: u64) {
@@ -112,7 +126,8 @@ impl Gui {
                     ui.label(RichText::new(file_name(&path)).monospace());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(RichText::new(ago(now, r.opened)).color(p.dim)));
                     if b.on_hover_text(&path).clicked() {
-                        events.push(DashEvent::Open(w.id, Some(PathBuf::from(&path))));
+                        let file = Some(PathBuf::from(&path));
+                        events.push(if ui.input(|i| i.modifiers.shift) { DashEvent::NewWindow(w.id, file) } else { DashEvent::Open(w.id, file) });
                     }
                 });
             }
@@ -159,6 +174,23 @@ mod tests {
         }
         let at = centre(&gui, "FEA Workbench");
         assert_eq!(frames(&mut gui, &mut dash, click(at)), [DashEvent::Open("fea", None)]);
+    }
+
+    #[test]
+    fn shift_click_asks_for_a_window_of_its_own_and_a_tab_marks_an_open_workbench() {
+        use crate::gpu_viewer::nav::{NavStrip, NavTab};
+        let (mut gui, mut dash) = (Gui::new(), Dashboard::new(Recents::default(), None));
+        frames(&mut gui, &mut dash, Vec::new());
+        let at = centre(&gui, "Lug Analysis");
+        let mut with_shift = vec![egui::Event::ModifiersChanged(egui::Modifiers::SHIFT)];
+        with_shift.extend(click(at));
+        assert_eq!(frames(&mut gui, &mut dash, with_shift), [DashEvent::NewWindow("lug", None)]);
+        frames(&mut gui, &mut dash, vec![egui::Event::ModifiersChanged(egui::Modifiers::NONE)]);
+        gui.set_nav(Some(NavStrip { tabs: vec![NavTab { id: "lug", name: "Lug Analysis", dirty: true, busy: false }], active: None, ask_close: None }));
+        frames(&mut gui, &mut dash, Vec::new());
+        assert!(gui.targets.iter().any(|(l, _)| l == "Toolbench home"), "the strip shows once a workbench is open");
+        let home = centre(&gui, "Toolbench home");
+        assert_eq!(frames(&mut gui, &mut dash, click(home)), [DashEvent::Nav(NavAct::Home)]);
     }
 
     #[test]

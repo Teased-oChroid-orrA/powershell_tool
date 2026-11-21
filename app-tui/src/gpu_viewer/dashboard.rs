@@ -1,8 +1,9 @@
 //! The Toolbench dashboard: every workbench in one list, how each one opens, and what was opened last. Pure data;
 //! `gui/dashboard.rs` draws it and `window/` carries out a launch.
 //!
-//! Process model (ADR-014): every workbench is its own native-window `app-tui` process (`--gpu-solid [file]`, ...).
-//! The dashboard window stays open as the launcher and only records what it started (`Recents`).
+//! Process model (ADR-014, amended by ADR-024): a workbench is its own native-window `app-tui` process
+//! (`--gpu-solid [file]`, ...). The dashboard window opens workbenches in itself (`nav`, `window/nav.rs`) and
+//! starts a separate process only for Shift-click and "New window" (`Dashboard::launch`); it records both (`Recents`).
 use super::EditorKind;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -136,27 +137,41 @@ impl Dashboard {
     pub fn visible(&self) -> Vec<&'static Workbench> {
         WORKBENCHES.iter().filter(|w| w.matches(&self.query)).collect()
     }
-    /// Start `workbench` (on `file` when given, else its default), record it, and keep the list on disk.
-    pub fn launch(&mut self, id: &str, file: Option<PathBuf>) {
+    /// Start `workbench` in its own window (on `file` when given, else its default), record it, and keep the list on
+    /// disk. `false` when nothing started (`message` says why).
+    pub fn launch(&mut self, id: &str, file: Option<PathBuf>) -> bool {
         let Some(w) = Workbench::find(id) else {
             self.message = Some(format!("No workbench called {id}."));
-            return;
+            return false;
         };
         let file = file.or_else(|| w.default_file());
         if w.kind == EditorKind::BushingStackup {
-            if let Some(path)=&file {if let Err(e)=super::editor::stackup::WindowLease::acquire(path){self.message=Some(e);return;}}
+            if let Some(path) = &file {
+                if let Err(e) = super::editor::stackup::WindowLease::acquire(path) {
+                    self.message = Some(e);
+                    return false;
+                }
+            }
         }
         match spawn(w, file.as_deref()) {
             Ok(()) => {
-                self.message = Some(format!("Opened {}.", w.name));
-                self.recents.record(w.id, file.map(|f| f.to_string_lossy().into_owned()), unix_now());
-                if let Some(p) = &self.file {
-                    if let Err(e) = self.recents.save_to(p) {
-                        self.message = Some(format!("Opened {}, but the recent list could not be saved: {e}", w.name));
-                    }
-                }
+                self.note_opened(w, file);
+                true
             }
-            Err(e) => self.message = Some(format!("Could not open {}: {e}", w.name)),
+            Err(e) => {
+                self.message = Some(format!("Could not open {}: {e}", w.name));
+                false
+            }
+        }
+    }
+    /// Record that `w` was opened (in its own window or in this one) on `file`, and keep the list on disk.
+    pub fn note_opened(&mut self, w: &Workbench, file: Option<PathBuf>) {
+        self.message = Some(format!("Opened {}.", w.name));
+        self.recents.record(w.id, file.map(|f| f.to_string_lossy().into_owned()), unix_now());
+        if let Some(p) = &self.file {
+            if let Err(e) = self.recents.save_to(p) {
+                self.message = Some(format!("Opened {}, but the recent list could not be saved: {e}", w.name));
+            }
         }
     }
 }
@@ -203,6 +218,20 @@ mod tests {
         let lug = Workbench::find("lug").unwrap();
         assert!(lug.default_file().unwrap().ends_with("lug-case.json"));
         assert_eq!(lug.args(None), ["--gpu-lug"]);
+    }
+
+    #[test]
+    fn opening_a_workbench_in_the_window_is_recorded_like_a_launch() {
+        let dir = std::env::temp_dir().join(format!("dashboard-note-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("recent.json");
+        let mut d = Dashboard::new(Recents::default(), Some(file.clone()));
+        let fea = Workbench::find("fea").unwrap();
+        d.note_opened(fea, Some(PathBuf::from("/x/a.json")));
+        assert_eq!(d.message.as_deref(), Some("Opened FEA Workbench."));
+        assert_eq!(d.recents.last("fea").unwrap().path.as_deref(), Some("/x/a.json"));
+        assert_eq!(Recents::load_from(&file), d.recents, "kept on disk");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
