@@ -89,6 +89,25 @@ fn the_order_of_the_two_placements_and_of_the_two_representations_does_not_chang
     }
 }
 
+/// The CAx-IF AS1 model written by Open CASCADE lists the part's origin placement (`#11` here) as an item of the assembly's
+/// representation as well as the part's own, for every usage. Exactly one end of each pair is then a placement of the
+/// assembly, so the usage is still decided, and it places the part where the plain file does.
+#[test]
+fn a_part_origin_that_the_assembly_representation_also_lists_does_not_change_the_placements() {
+    let reference = placed(SOURCE);
+    let shared = SOURCE.replace(
+        "#904 = SHAPE_REPRESENTATION('',(#905,#931,#941)",
+        "#904 = SHAPE_REPRESENTATION('',(#905,#11,#931,#941)",
+    );
+    assert_ne!(shared, SOURCE);
+    let parts = placed(&shared);
+    assert_eq!(parts.len(), reference.len());
+    for (r, s) in reference.iter().zip(&parts) {
+        assert_eq!(r.0, s.0);
+        assert!(near(r.1 .0, s.1 .0) && near(r.1 .1, s.1 .1), "{:?} vs {:?}", r.1, s.1);
+    }
+}
+
 #[test]
 fn ambiguous_unsupported_and_inconsistent_structure_is_refused_with_a_reason() {
     let refuse = |source: String, expect: &str| {
@@ -103,12 +122,17 @@ fn ambiguous_unsupported_and_inconsistent_structure_is_refused_with_a_reason() {
         SOURCE.replace("(#905,#931,#941)", "(#905,#941)"),
         "cannot tell",
     );
-    // A placement that is an item of both representations.
+    // Both ends of a placement pair are items of both representations: which way it maps is not guessed.
     refuse(
-        SOURCE.replace(
-            "#904 = SHAPE_REPRESENTATION('',(#905,#931,#941)",
-            "#904 = SHAPE_REPRESENTATION('',(#905,#931,#941,#11)",
-        ),
+        SOURCE
+            .replace(
+                "#904 = SHAPE_REPRESENTATION('',(#905,#931,#941)",
+                "#904 = SHAPE_REPRESENTATION('',(#905,#931,#941,#11)",
+            )
+            .replace(
+                "#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15)",
+                "#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15,#931)",
+            ),
         "cannot tell",
     );
     // A missing transformation.

@@ -144,11 +144,17 @@ fn placements_that_are_not_rigid_unambiguous_or_consistent_are_refused() {
         read(&sub(PLACED, "NEXT_ASSEMBLY_USAGE_OCCURRENCE('920','','',#902,#5,$)", "NEXT_ASSEMBLY_USAGE_OCCURRENCE('920','','',#5,#5,$)")),
         "0 root product definitions",
     );
-    // a placement that belongs to both representations: which way it maps is not guessed
+    // both placements belong to both representations: which way it maps is not guessed
     refused(
-        read(&sub(PLACED, "#904 = SHAPE_REPRESENTATION('',(#905,#931),#345);", "#904 = SHAPE_REPRESENTATION('',(#905,#931,#11),#345);")),
+        read(&sub(
+            &sub(PLACED, "#904 = SHAPE_REPRESENTATION('',(#905,#931),#345);", "#904 = SHAPE_REPRESENTATION('',(#905,#931,#11),#345);"),
+            "#10 = SHAPE_REPRESENTATION('',(#11),#345);",
+            "#10 = SHAPE_REPRESENTATION('',(#11,#931),#345);",
+        )),
         "cannot tell",
     );
+    // neither placement belongs to the component
+    refused(read(&sub(PLACED, "#10 = SHAPE_REPRESENTATION('',(#11),#345);", "#10 = SHAPE_REPRESENTATION('',(#905),#345);")), "cannot tell");
     // a mapped representation that maps itself (a cycle)
     refused(read_all(&sub(MAPPED, "#900 = REPRESENTATION_MAP(#11,#10);", "#900 = REPRESENTATION_MAP(#902,#901);")), "root representations");
     // a second solid that no instance places
@@ -158,6 +164,16 @@ fn placements_that_are_not_rigid_unambiguous_or_consistent_are_refused() {
         "#961 = SHAPE_REPRESENTATION_RELATIONSHIP('','',#10,#960);\n#980 = MANIFOLD_SOLID_BREP('',#16);\n#981 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#980),#345);",
     );
     refused(read_all(&stray), "solid #980 is not placed by the product structure");
+}
+
+#[test]
+fn a_placement_held_by_both_representations_is_decided_when_only_one_way_fits() {
+    // The part's origin placement #11 is also an item of the assembly (the CAx-IF AS1 model of Open CASCADE writes every usage so):
+    // #11 can only be the component's frame, #931 only the assembly's, so the model is placed exactly as without the shared item.
+    let shared = sub(PLACED, "#904 = SHAPE_REPRESENTATION('',(#905,#931),#345);", "#904 = SHAPE_REPRESENTATION('',(#905,#931,#11),#345);");
+    let (plain, with_shared) = (read(PLACED).unwrap(), read(&shared).unwrap());
+    let (a, b) = (extent(&plain), extent(&with_shared));
+    assert!(near(a.0, b.0) && near(a.1, b.1), "{a:?} vs {b:?}");
 }
 
 #[test]
