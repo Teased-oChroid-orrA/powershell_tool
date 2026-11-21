@@ -421,7 +421,9 @@ pub(super) fn neural_suggestion_inputs(s: &SearchSession) -> (String, Vec<String
 }
 
 /// The first `limit` suggestions in `order`, one per group of related-from-hits terms: a term that the neural
-/// grouping puts with one already shown is folded into that chip's label ("also ...") instead of taking a slot.
+/// grouping puts with one already shown is folded into that chip instead of taking a slot, and the chip names the
+/// first such term ("also ..., +N") unless it only repeats part of the shown phrase. The label stays short: the row
+/// of chips does not wrap.
 /// Only terms mined from the hits are folded; synonyms and corrections always stand alone. Clicking a chip adds
 /// only the term it names.
 #[cfg(feature = "neural-search")]
@@ -455,24 +457,29 @@ fn collapse_similar(
                 .copied()
                 .filter(|&other| other != i && is_term(other) && !folded.contains(&other))
                 .collect();
-            if !related.is_empty() {
-                let names: Vec<&str> = related
-                    .iter()
-                    .take(2)
-                    .map(|&other| candidates[other].term.as_str())
-                    .collect();
-                let more = related.len().saturating_sub(2);
+            // A related term that is a word-run of the shown one (or contains it) is the same phrase cut differently:
+            // fold it without naming it.
+            let nested = |other: usize| {
+                let (a, b) = (
+                    format!(" {} ", candidate.term.to_lowercase()),
+                    format!(" {} ", candidates[other].term.to_lowercase()),
+                );
+                a.contains(&b) || b.contains(&a)
+            };
+            let named: Vec<usize> = related.iter().copied().filter(|&o| !nested(o)).collect();
+            if let Some(&first) = named.first() {
+                let more = named.len() - 1;
                 label = format!(
                     "{label} (also {}{})",
-                    names.join(", "),
+                    candidates[first].term,
                     if more > 0 {
                         format!(", +{more}")
                     } else {
                         String::new()
                     }
                 );
-                folded.extend(related);
             }
+            folded.extend(related);
         }
         chips.push(e(&label, "", candidate.action));
         if chips.len() == limit {
@@ -524,7 +531,24 @@ mod collapse_tests {
     fn more_than_two_related_terms_show_a_count() {
         let c = [term("a", 0), term("b", 1), term("c", 2), term("d", 3)];
         let chips = collapse_similar(&c, &[0, 1, 2, 3], &[vec![0, 1, 2, 3]], 3);
-        assert_eq!(labels(&chips), ["Related from hits: a (also b, c, +1)"]);
+        assert_eq!(labels(&chips), ["Related from hits: a (also b, +2)"]);
+    }
+
+    #[test]
+    fn a_fragment_of_the_shown_phrase_folds_without_being_named() {
+        let c = [
+            term("lug fatigue limit", 0),
+            term("fatigue", 1),
+            term("lug fatigue", 2),
+            term("fatigue life", 3),
+        ];
+        let chips = collapse_similar(&c, &[0, 1, 2, 3], &[vec![0, 1, 2, 3]], 3);
+        assert_eq!(
+            labels(&chips),
+            ["Related from hits: lug fatigue limit (also fatigue life)"]
+        );
+        let chips = collapse_similar(&c[..3], &[0, 1, 2], &[vec![0, 1, 2]], 3);
+        assert_eq!(labels(&chips), ["Related from hits: lug fatigue limit"]);
     }
 
     #[test]

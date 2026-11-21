@@ -1330,9 +1330,13 @@ impl Gui {
         }
     }
 
-    /// One choice of a few, as a segmented control: the checked entry raised and tinted.
+    /// One choice of a few, as a segmented control: the checked entry raised and tinted. Entries that do not fit
+    /// `width` continue on further rows of the same control (the Find bar's suggestion chips under a narrow input),
+    /// so none is dropped or painted off the page; an entry wider than the control is clipped to it.
     pub(super) fn segmented(&mut self, ui: &mut egui::Ui, entries: &[Entry], width: f32, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 34.0), Sense::hover());
+        let widths: Vec<f32> = entries.iter().map(|e| segment_width(ui, &e.label, p)).collect();
+        let rows = segment_rows(&widths, width);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, rows.last().map_or(1, |r| r + 1) as f32 * 34.0), Sense::hover());
         ui.painter().rect(
             rect,
             CornerRadius::same(8),
@@ -1341,11 +1345,16 @@ impl Gui {
             egui::StrokeKind::Inside,
         );
         let mut x = rect.left() + 3.0;
-        for e in entries {
-            let w = segment_width(ui, &e.label, p);
+        let mut row = 0;
+        for (i, e) in entries.iter().enumerate() {
+            if rows[i] != row {
+                row = rows[i];
+                x = rect.left() + 3.0;
+            }
+            let w = widths[i].min(width - 6.0);
             let r = Rect::from_min_size(
-                Pos2::new(x, rect.top() + 3.0),
-                Vec2::new(w, rect.height() - 6.0),
+                Pos2::new(x, rect.top() + row as f32 * 34.0 + 3.0),
+                Vec2::new(w, 28.0),
             );
             let resp = ui.interact(r, Id::new(("doc-segment", &e.label)), Sense::click());
             self.targets.push((e.label.clone(), r));
@@ -1369,7 +1378,7 @@ impl Gui {
             } else {
                 p.dim
             };
-            ui.painter().text(
+            ui.painter().with_clip_rect(r).text(
                 r.center(),
                 Align2::CENTER_CENTER,
                 &e.label,
@@ -2711,6 +2720,22 @@ fn copy_document_selection(ctx: &egui::Context, selection_id: Id) -> bool {
     true
 }
 
+/// The row of each entry when entries of these widths fill rows of `width` (3 points of margin each side): an entry
+/// that would cross the right edge starts the next row. Entries that exactly fill the control stay on one row.
+fn segment_rows(widths: &[f32], width: f32) -> Vec<usize> {
+    let (mut row, mut x) = (0, 3.0);
+    widths
+        .iter()
+        .map(|&w| {
+            if x > 3.0 && x + w > width - 3.0 + 0.5 {
+                row += 1;
+                x = 3.0;
+            }
+            x += w;
+            row
+        })
+        .collect()
+}
 fn segment_width(ui: &egui::Ui, label: &str, p: &Palette) -> f32 {
     ui.painter()
         .layout_no_wrap(label.to_string(), FontId::proportional(13.0), p.text)
@@ -2924,5 +2949,32 @@ fn hit_block(ui: &mut egui::Ui, b: &DocBlock, p: &Palette) {
         .galley(Pos2::new(r.left() + GUTTER, r.top() + 2.0), galley, p.text);
     if let Some(t) = &b.after {
         line(ui, Some(b.number + 1), plain(t, p.dim));
+    }
+}
+
+#[cfg(test)]
+mod segment_rows_tests {
+    use super::segment_rows;
+
+    #[test]
+    fn entries_that_exactly_fill_the_control_stay_on_one_row() {
+        assert_eq!(segment_rows(&[100.0, 200.0], 306.0), [0, 0]);
+    }
+
+    #[test]
+    fn an_entry_that_would_cross_the_edge_starts_the_next_row() {
+        assert_eq!(segment_rows(&[170.0, 330.0, 360.0], 580.0), [0, 0, 1]);
+        assert_eq!(segment_rows(&[170.0, 200.0, 180.0], 580.0), [0, 0, 0]);
+        assert_eq!(segment_rows(&[400.0, 400.0, 100.0], 580.0), [0, 1, 1]);
+    }
+
+    #[test]
+    fn an_entry_wider_than_the_control_gets_a_row_of_its_own() {
+        assert_eq!(segment_rows(&[900.0, 100.0], 580.0), [0, 1]);
+    }
+
+    #[test]
+    fn no_entries_is_no_rows() {
+        assert!(segment_rows(&[], 580.0).is_empty());
     }
 }
