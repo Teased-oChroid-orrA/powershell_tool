@@ -219,6 +219,53 @@ pub struct BlockMatrix {
     pub vals: Vec<f64>,
 }
 
+/// Per-thread element buffers of the colour-parallel assemblies (about 150 KB).
+///
+/// `try_for_each_init` builds its state once per rayon task, and a colour class of a small model splits into many
+/// tasks, so zero-filling these buffers took 29 % of the samples of a 2D lug solve (`docs/performance-profile-2026-11.md`).
+/// They live in a `thread_local!` instead: one allocation per thread for its lifetime. No kernel reads a buffer before
+/// writing it (the per-task state was already reused across elements), so results do not depend on the history.
+pub(crate) struct Scratch {
+    pub work: Work,
+    pub xyz: Vec<[f64; 3]>,
+    /// Scalar element matrix of `assemble_scalar_identity`.
+    pub me: Vec<f64>,
+    /// Displacements and forces of one element (`assemble_nl`).
+    pub ue: Vec<f64>,
+    pub fe: Vec<f64>,
+    /// Element tangent of `assemble_nl` (`9 MAX_NODES^2`).
+    pub ke: Vec<f64>,
+    /// Element stiffness of the fast kernel (`10 MAX_NODES^2`).
+    pub kk: Vec<f64>,
+}
+
+impl Scratch {
+    fn new() -> Self {
+        Self {
+            work: Work::new(),
+            xyz: vec![[0.0; 3]; MAX_NODES],
+            me: vec![0.0; MAX_NODES * MAX_NODES],
+            ue: vec![0.0; 3 * MAX_NODES],
+            fe: vec![0.0; 3 * MAX_NODES],
+            ke: vec![0.0; 9 * MAX_NODES * MAX_NODES],
+            kk: vec![0.0; MAX_NODES * MAX_NODES * 10],
+        }
+    }
+}
+
+thread_local! {
+    static SCRATCH: std::cell::RefCell<Option<Scratch>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` with this thread's [`Scratch`]. A re-entrant call (an element callback that itself assembles, or a rayon
+/// thread that steals a task while blocked inside `f`) gets a fresh one instead of a second borrow.
+pub(crate) fn with_scratch<R>(f: impl FnOnce(&mut Scratch) -> R) -> R {
+    SCRATCH.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut slot) => f(slot.get_or_insert_with(Scratch::new)),
+        Err(_) => f(&mut Scratch::new()),
+    })
+}
+
 /// Raw pointer that may cross threads, for the colour-parallel scatter of the assemblies (this module and
 /// `nonlinear.rs`).
 ///
@@ -291,9 +338,8 @@ pub fn assemble_stiffness(mesh: &Mesh, pat: &Pattern) -> Result<BlockMatrix, Str
     for class in &pat.colors {
         class
             .par_iter()
-            .try_for_each_init(
-                || (Work::new(), vec![0.0f64; MAX_NODES * MAX_NODES * 10], vec![[0.0f64; 3]; MAX_NODES]),
-                |(work, ke, xyz), &(bi, e)| -> Result<(), ElementError> {
+            .try_for_each(|&(bi, e)| -> Result<(), ElementError> {
+                with_scratch(|Scratch { work, xyz, kk: ke, .. }| -> Result<(), ElementError> {
                     let blk = &mesh.blocks[bi as usize];
                     let nn = blk.kind.n_nodes();
                     let conn = blk.elem(e as usize);
@@ -321,8 +367,8 @@ pub fn assemble_stiffness(mesh: &Mesh, pat: &Pattern) -> Result<BlockMatrix, Str
                         }
                     }
                     Ok(())
-                },
-            )
+                })
+            })
             .map_err(|e| e.to_string())?;
     }
     Ok(mat)
@@ -344,9 +390,8 @@ where
     for class in &pat.colors {
         class
             .par_iter()
-            .try_for_each_init(
-                || (Work::new(), vec![0.0f64; MAX_NODES * MAX_NODES], vec![[0.0f64; 3]; MAX_NODES]),
-                |(work, me, xyz), &(bi, e)| -> Result<(), ElementError> {
+            .try_for_each(|&(bi, e)| -> Result<(), ElementError> {
+                with_scratch(|Scratch { work, xyz, me, .. }| -> Result<(), ElementError> {
                     let blk = &mesh.blocks[bi as usize];
                     let nn = blk.kind.n_nodes();
                     for (a, &nd) in blk.elem(e as usize).iter().enumerate() {
@@ -370,8 +415,8 @@ where
                         }
                     }
                     Ok(())
-                },
-            )
+                })
+            })
             .map_err(|e| e.to_string())?;
     }
     Ok(mat)

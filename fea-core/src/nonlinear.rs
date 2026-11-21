@@ -16,7 +16,7 @@
 #![allow(clippy::needless_range_loop)] // index-parallel numeric kernels read clearer as loops
 
 use crate::analysis::Model;
-use crate::assembly::{debug_assert_colouring, BlockMatrix, Pattern, Shared, NO_BLOCK};
+use crate::assembly::{debug_assert_colouring, with_scratch, BlockMatrix, Pattern, Scratch, Shared, NO_BLOCK};
 use crate::contact::{ContactSet, ContactSpec, ContactStats, CpState, ExtraOut, Master};
 use crate::element::MAX_NODES;
 use crate::kernel::{self, Work};
@@ -304,9 +304,8 @@ pub(crate) fn assemble_nl(mesh: &Mesh, pat: &Pattern, u: &[f64], old: &NlState, 
     let sptr: Vec<Shared<GpState>> = new.gp.iter_mut().map(|v| Shared(v.as_mut_ptr())).collect();
     let (kptr, fptr, sptr) = (&kptr, &fptr, &sptr);
     for class in &pat.colors {
-        class.par_iter().try_for_each_init(
-            || (Work::new(), vec![[0.0f64; 3]; MAX_NODES], vec![0.0f64; 3 * MAX_NODES], vec![0.0f64; 3 * MAX_NODES], vec![0.0f64; 9 * MAX_NODES * MAX_NODES], vec![0.0f64; MAX_NODES * MAX_NODES * 10]),
-            |(work, xyz, ue, fe, ke, kk), &(bi, e)| -> Result<(), String> {
+        class.par_iter().try_for_each(|&(bi, e)| -> Result<(), String> {
+            with_scratch(|Scratch { work, xyz, ue, fe, ke, kk, .. }| -> Result<(), String> {
                 let blk = &mesh.blocks[bi as usize];
                 let nn = blk.kind.n_nodes();
                 let nd = nn * d;
@@ -367,8 +366,8 @@ pub(crate) fn assemble_nl(mesh: &Mesh, pat: &Pattern, u: &[f64], old: &NlState, 
                     }
                 }
                 Ok(())
-            },
-        )?;
+            })
+        })?;
     }
     Ok((f, k))
 }
