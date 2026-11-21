@@ -89,6 +89,7 @@ impl Pattern {
             })
             .collect();
         pat.colors = colour_elements(mesh)?;
+        debug_assert_colouring(mesh, &pat);
         Ok(pat)
     }
 
@@ -105,6 +106,83 @@ impl Pattern {
     pub fn n_colors(&self) -> usize {
         self.colors.len()
     }
+
+    /// Proves, for `mesh`, what the unsafe parallel scatter relies on (see [`Shared`]):
+    /// * the pattern fits the mesh (node count, one scatter table and element count per block, nodes in range);
+    /// * every element is in exactly one colour class and no two elements of a class share a node;
+    /// * every scatter position is `NO_BLOCK` (strict upper triangle) or exactly the in-bounds block `find(ga, gb)` of
+    ///   the element's own node pair, so a write can only land in a block owned by one of the element's nodes.
+    ///
+    /// Linear in the element connectivity (times a binary search per scatter entry).
+    pub(crate) fn check_colouring(&self, mesh: &Mesh) -> Result<(), String> {
+        let n = mesh.nodes.len();
+        // `d` is only the block size (a scalar thermal pattern, `d = 1`, runs over a 2D / 3D mesh), so it is not compared.
+        if self.n_nodes != n {
+            return Err(format!("pattern is for {} nodes, the mesh has {n}", self.n_nodes));
+        }
+        if self.col_ptr.len() != n + 1 || self.col_ptr.last() != Some(&self.row_idx.len()) {
+            return Err("pattern col_ptr does not span row_idx".into());
+        }
+        if self.scatter.len() != mesh.blocks.len() {
+            return Err(format!("{} scatter tables for {} blocks", self.scatter.len(), mesh.blocks.len()));
+        }
+        let n_blocks = self.n_blocks();
+        for (bi, blk) in mesh.blocks.iter().enumerate() {
+            let nn = blk.kind.n_nodes();
+            if self.scatter[bi].len() != blk.n_elems() * nn * nn {
+                return Err(format!("block {bi}: scatter table has {} entries for {} elements", self.scatter[bi].len(), blk.n_elems()));
+            }
+            if let Some(&bad) = blk.conn.iter().find(|&&nd| nd >= n) {
+                return Err(format!("block {bi} refers to node {bad} of {n}"));
+            }
+            for (e, conn) in blk.conn.chunks_exact(nn).enumerate() {
+                let map = &self.scatter[bi][e * nn * nn..(e + 1) * nn * nn];
+                for (b, &gb) in conn.iter().enumerate() {
+                    for (a, &ga) in conn.iter().enumerate() {
+                        let pos = map[a * nn + b];
+                        if ga < gb {
+                            if pos != NO_BLOCK {
+                                return Err(format!("block {bi} element {e}: upper-triangle pair ({ga}, {gb}) has scatter position {pos}"));
+                            }
+                        } else if pos == NO_BLOCK || pos as usize >= n_blocks {
+                            return Err(format!("block {bi} element {e}: pair ({ga}, {gb}) has scatter position {pos}, out of the {n_blocks} blocks"));
+                        } else if self.find(ga, gb) != Some(pos as usize) {
+                            return Err(format!("block {bi} element {e}: pair ({ga}, {gb}) scatters to block {pos}, not its own"));
+                        }
+                    }
+                }
+            }
+        }
+        let mut seen: Vec<Vec<bool>> = mesh.blocks.iter().map(|b| vec![false; b.n_elems()]).collect();
+        // Which (colour, element ordinal in that colour) last claimed a node.
+        let mut owner = vec![(u32::MAX, 0u32); n];
+        for (c, class) in self.colors.iter().enumerate() {
+            for (k, &(bi, e)) in class.iter().enumerate() {
+                let (bi, e) = (bi as usize, e as usize);
+                let Some(was) = seen.get_mut(bi).and_then(|s| s.get_mut(e)) else {
+                    return Err(format!("colour {c} lists missing element {e} of block {bi}"));
+                };
+                if std::mem::replace(was, true) {
+                    return Err(format!("element {e} of block {bi} is in more than one colour slot"));
+                }
+                for &nd in mesh.blocks[bi].elem(e) {
+                    let prev = std::mem::replace(&mut owner[nd], (c as u32, k as u32));
+                    if prev.0 == c as u32 && prev.1 != k as u32 {
+                        return Err(format!("colour {c}: node {nd} is shared by two elements (block {bi} element {e} and slot {})", prev.1));
+                    }
+                }
+            }
+        }
+        match seen.iter().enumerate().find_map(|(bi, s)| s.iter().position(|&x| !x).map(|e| (bi, e))) {
+            Some((bi, e)) => Err(format!("element {e} of block {bi} is in no colour")),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Checks the colouring invariant under `debug_assert!`: panics (debug and test builds only) with the reason.
+pub(crate) fn debug_assert_colouring(mesh: &Mesh, pat: &Pattern) {
+    debug_assert!(pat.check_colouring(mesh).is_ok(), "broken element colouring: {}", pat.check_colouring(mesh).unwrap_err());
 }
 
 /// Greedy colouring: the smallest colour no element sharing a node already has.
@@ -141,10 +219,20 @@ pub struct BlockMatrix {
     pub vals: Vec<f64>,
 }
 
-/// Raw pointer that may cross threads: used only for colour-disjoint block writes.
-struct Shared(*mut f64);
-unsafe impl Send for Shared {}
-unsafe impl Sync for Shared {}
+/// Raw pointer that may cross threads, for the colour-parallel scatter of the assemblies (this module and
+/// `nonlinear.rs`).
+///
+/// **Contract** (what makes the `unsafe impl`s sound): the pointee outlives the parallel region, nothing else reads or
+/// writes it meanwhile, and every thread writes only through offsets no other thread of the same region touches. The
+/// assemblies get that from `Pattern::colors`: the elements of one colour class share no node, hence no node-pair
+/// block, force entry or Gauss-point state, and the classes run one after the other. `Pattern::check_colouring` proves
+/// it for a given mesh and runs under `debug_assert!` wherever a `Shared` is made. `T: Send` because the values behind
+/// the pointer are written from other threads.
+pub(crate) struct Shared<T>(pub(crate) *mut T);
+// SAFETY: see the contract on `Shared`.
+unsafe impl<T: Send> Send for Shared<T> {}
+// SAFETY: see the contract on `Shared`.
+unsafe impl<T: Send> Sync for Shared<T> {}
 
 impl BlockMatrix {
     pub fn zeros(pat: &Pattern) -> Self {
@@ -197,6 +285,7 @@ pub fn assemble_stiffness(mesh: &Mesh, pat: &Pattern) -> Result<BlockMatrix, Str
     let mut mat = BlockMatrix::zeros(pat);
     let d = pat.d;
     let dd = d * d;
+    debug_assert_colouring(mesh, pat);
     let shared = Shared(mat.vals.as_mut_ptr());
     let shared = &shared;
     for class in &pat.colors {
@@ -249,6 +338,7 @@ where
     let mut mat = BlockMatrix::zeros(pat);
     let d = pat.d;
     let dd = d * d;
+    debug_assert_colouring(mesh, pat);
     let shared = Shared(mat.vals.as_mut_ptr());
     let shared = &shared;
     for class in &pat.colors {
@@ -291,5 +381,142 @@ impl BlockMatrix {
     /// `self + alpha * other` (same pattern).
     pub fn axpy(&self, alpha: f64, other: &BlockMatrix) -> BlockMatrix {
         BlockMatrix { d: self.d, vals: self.vals.iter().zip(&other.vals).map(|(a, b)| a + alpha * b).collect() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::element::{ElementKind, ALL_KINDS};
+    use crate::mesh::{Elastic, Physics};
+
+    const POOL: usize = 60;
+    const ELEMS_PER_KIND: usize = 12;
+
+    /// Elements of every kind in `kinds` on a shared pool of nodes, each element a window of consecutive nodes starting
+    /// at a different place, so elements overlap heavily, within a block and across blocks. Pattern building never reads
+    /// coordinates, so the geometry is irrelevant.
+    fn overlapping_mesh(physics: Physics, kinds: &[ElementKind]) -> Mesh {
+        let mut mesh = Mesh::new(physics);
+        for i in 0..POOL {
+            mesh.add_node([i as f64, 0.0, 0.0]);
+        }
+        for (k, &kind) in kinds.iter().enumerate() {
+            let nn = kind.n_nodes();
+            let conn: Vec<usize> = (0..ELEMS_PER_KIND).flat_map(|e| (0..nn).map(move |a| (e * 2 + k * 3 + a) % POOL)).collect();
+            mesh.add_block(kind, conn, Elastic::new(1.0, 0.3), &format!("{kind:?}")).unwrap();
+        }
+        mesh
+    }
+
+    fn kinds_of_dim(dim: usize) -> Vec<ElementKind> {
+        ALL_KINDS.iter().copied().filter(|k| k.dim() == dim).collect()
+    }
+
+    #[test]
+    fn every_element_kind_has_a_valid_colouring() {
+        for kind in ALL_KINDS {
+            let physics = if kind.dim() == 3 { Physics::Solid } else { Physics::PlaneStress { thickness: 1.0 } };
+            let mesh = overlapping_mesh(physics, &[kind]);
+            let pat = Pattern::new(&mesh).unwrap();
+            assert!(pat.n_colors() > 1, "{kind:?}: the test mesh must make elements share nodes");
+            pat.check_colouring(&mesh).unwrap_or_else(|e| panic!("{kind:?}: {e}"));
+        }
+    }
+
+    #[test]
+    fn mixed_blocks_and_every_physics_have_a_valid_colouring() {
+        let planar = kinds_of_dim(2);
+        for physics in [Physics::PlaneStress { thickness: 1.0 }, Physics::PlaneStrain { thickness: 1.0 }, Physics::Axisymmetric] {
+            let mesh = overlapping_mesh(physics, &planar);
+            let pat = Pattern::new(&mesh).unwrap();
+            pat.check_colouring(&mesh).unwrap_or_else(|e| panic!("{physics:?}: {e}"));
+        }
+        let mesh = overlapping_mesh(Physics::Solid, &kinds_of_dim(3));
+        let pat = Pattern::new(&mesh).unwrap();
+        assert!(kinds_of_dim(3).contains(&ElementKind::Wedge6) && kinds_of_dim(3).contains(&ElementKind::Pyramid5));
+        pat.check_colouring(&mesh).unwrap();
+        // Extra coupled pairs add pattern blocks but never scatter targets: the check still holds.
+        let pat = Pattern::new_with_extra(&mesh, &[(0, 59), (3, 41)]).unwrap();
+        pat.check_colouring(&mesh).unwrap();
+    }
+
+    fn quad_pattern() -> (Mesh, Pattern) {
+        let mesh = overlapping_mesh(Physics::PlaneStress { thickness: 1.0 }, &[ElementKind::Quad4, ElementKind::Tri3]);
+        let pat = Pattern::new(&mesh).unwrap();
+        pat.check_colouring(&mesh).unwrap();
+        assert!(pat.n_colors() > 1);
+        (mesh, pat)
+    }
+
+    #[test]
+    fn a_bad_colouring_is_rejected() {
+        // Greedy colouring put every colour-1 element there because it shares a node with a colour-0 element:
+        // moving one into colour 0 makes a class whose elements share a node.
+        let (mesh, mut pat) = quad_pattern();
+        let moved = pat.colors[1].remove(0);
+        pat.colors[0].push(moved);
+        let err = pat.check_colouring(&mesh).unwrap_err();
+        assert!(err.contains("shared by two elements"), "{err}");
+
+        // An element listed twice.
+        let (mesh, mut pat) = quad_pattern();
+        let dup = pat.colors[0][0];
+        pat.colors[1].push(dup);
+        let err = pat.check_colouring(&mesh).unwrap_err();
+        assert!(err.contains("more than one colour slot"), "{err}");
+
+        // An element left out of every colour.
+        let (mesh, mut pat) = quad_pattern();
+        pat.colors[0].pop();
+        let err = pat.check_colouring(&mesh).unwrap_err();
+        assert!(err.contains("in no colour"), "{err}");
+
+        // An element that does not exist.
+        let (mesh, mut pat) = quad_pattern();
+        pat.colors[0].push((0, 10_000));
+        let err = pat.check_colouring(&mesh).unwrap_err();
+        assert!(err.contains("missing element"), "{err}");
+    }
+
+    #[test]
+    fn a_bad_scatter_map_is_rejected() {
+        // Position past the end of the value array.
+        let (mesh, mut pat) = quad_pattern();
+        let n = pat.n_blocks() as u32;
+        let i = pat.scatter[0].iter().position(|&p| p != NO_BLOCK).unwrap();
+        pat.scatter[0][i] = n;
+        let err = pat.check_colouring(&mesh).unwrap_err();
+        assert!(err.contains("out of the"), "{err}");
+
+        // In bounds but another node pair's block.
+        let (mesh, mut pat) = quad_pattern();
+        let i = pat.scatter[0].iter().position(|&p| p != NO_BLOCK).unwrap();
+        pat.scatter[0][i] = (pat.scatter[0][i] + 1) % n;
+        let err = pat.check_colouring(&mesh).unwrap_err();
+        assert!(err.contains("not its own"), "{err}");
+
+        // A write for a pair of the strict upper triangle.
+        let (mesh, mut pat) = quad_pattern();
+        let i = pat.scatter[0].iter().position(|&p| p == NO_BLOCK).unwrap();
+        pat.scatter[0][i] = 0;
+        let err = pat.check_colouring(&mesh).unwrap_err();
+        assert!(err.contains("upper-triangle"), "{err}");
+
+        // A pattern for another mesh.
+        let (mut mesh, pat) = quad_pattern();
+        mesh.add_node([0.0; 3]);
+        assert!(pat.check_colouring(&mesh).is_err());
+    }
+
+    /// The assemblies run the check under `debug_assert!`: a broken colouring stops a test build instead of racing.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "broken element colouring")]
+    fn assembling_with_a_bad_colouring_panics_in_debug_builds() {
+        let (mesh, mut pat) = quad_pattern();
+        let moved = pat.colors[1].remove(0);
+        pat.colors[0].push(moved);
+        let _ = assemble_stiffness(&mesh, &pat);
     }
 }

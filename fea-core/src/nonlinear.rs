@@ -16,7 +16,7 @@
 #![allow(clippy::needless_range_loop)] // index-parallel numeric kernels read clearer as loops
 
 use crate::analysis::Model;
-use crate::assembly::{BlockMatrix, Pattern, NO_BLOCK};
+use crate::assembly::{debug_assert_colouring, BlockMatrix, Pattern, Shared, NO_BLOCK};
 use crate::contact::{ContactSet, ContactSpec, ContactStats, CpState, ExtraOut, Master};
 use crate::element::MAX_NODES;
 use crate::kernel::{self, Work};
@@ -86,10 +86,6 @@ impl NlState {
         out
     }
 }
-
-struct Shared<T>(*mut T);
-unsafe impl<T> Send for Shared<T> {}
-unsafe impl<T> Sync for Shared<T> {}
 
 /// `K += w * sum_gp (dH/du_a)^T A (dH/du_b)` for any dimension (and the axisymmetric hoop entry): `A` is the
 /// 9 x 9 `dS/dH` tangent, `dH/du` a 9-vector per dof.
@@ -289,6 +285,18 @@ fn plastic_element(blk: &Block, physics: Physics, xyz: &[[f64; 3]], ue: &[f64], 
 pub(crate) fn assemble_nl(mesh: &Mesh, pat: &Pattern, u: &[f64], old: &NlState, new: &mut NlState, want_k: bool) -> Result<(Vec<f64>, Option<BlockMatrix>), String> {
     let d = pat.d;
     let dd = d * d;
+    // The force vector below is indexed with the pattern's block size.
+    if pat.d != mesh.dim() {
+        return Err(format!("pattern block size {} does not match the {}D mesh", pat.d, mesh.dim()));
+    }
+    // The element loop below writes `new.gp` through raw pointers: every plastic block's state must span its elements.
+    for (bi, blk) in mesh.blocks.iter().enumerate() {
+        let need = if blk.plasticity.is_some() { blk.n_elems() * blk.kind.table().ngp } else { 0 };
+        if new.gp.get(bi).map_or(0, Vec::len) < need || old.gp.get(bi).map_or(0, Vec::len) < need {
+            return Err(format!("block {bi}: Gauss-point state shorter than the {need} points of its elements"));
+        }
+    }
+    debug_assert_colouring(mesh, pat);
     let mut f = vec![0.0; mesh.n_dofs()];
     let mut k = want_k.then(|| BlockMatrix::zeros(pat));
     let kptr = Shared(k.as_mut().map_or(std::ptr::null_mut(), |m| m.vals.as_mut_ptr()));
@@ -1927,5 +1935,41 @@ mod plateau_tests {
         falling.extend((11..=14).map(|i| step(0.03 * i as f64, 10_000.0 - 400.0 * (i - 10) as f64)));
         assert!(load_flat(&falling, 0.012));
         assert!(load_fell(&falling, 0.1) && !load_fell(&falling, 0.2));
+    }
+}
+
+#[cfg(test)]
+mod scatter_guard_tests {
+    use super::*;
+    use crate::element::ElementKind;
+    use crate::mesh::Elastic;
+    use mechanics_core::hardening::Hardening;
+
+    /// `assemble_nl` writes the Gauss-point state through raw pointers: a state that does not span the plastic
+    /// elements must be refused, not written past its end.
+    #[test]
+    fn a_gauss_point_state_that_does_not_span_the_elements_is_refused() {
+        let mut mesh = Mesh::new(Physics::PlaneStress { thickness: 1.0 });
+        for x in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]] {
+            mesh.add_node(x);
+        }
+        mesh.add_block(ElementKind::Quad4, vec![0, 1, 2, 3], Elastic::new(1000.0, 0.3), "plate").unwrap();
+        mesh.set_plasticity(0, J2::small(Hardening::linear(1.0e30, 0.0, 1.0).unwrap())).unwrap();
+        let pat = Pattern::new(&mesh).unwrap();
+        let old = NlState::new(&mesh);
+        let u = vec![0.0; mesh.n_dofs()];
+
+        let mut new = old.clone();
+        let (f, k) = assemble_nl(&mesh, &pat, &u, &old, &mut new, true).unwrap();
+        assert_eq!(f.len(), mesh.n_dofs());
+        assert!(k.is_some());
+
+        let mut short = old.clone();
+        short.gp[0].pop();
+        let err = assemble_nl(&mesh, &pat, &u, &old, &mut short, false).unwrap_err();
+        assert!(err.contains("Gauss-point state shorter"), "{err}");
+        let mut none = old.clone();
+        none.gp[0].clear();
+        assert!(assemble_nl(&mesh, &pat, &u, &old, &mut none, false).is_err());
     }
 }
