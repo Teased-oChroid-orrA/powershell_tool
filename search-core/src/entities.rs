@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::OnceLock;
 
-use regex::{Match, Regex};
+use regex::Regex;
 use tokio_util::sync::CancellationToken;
 
 use search_ml::{cosine_similarity, embed_tokens_batch, token_count, Embedding, TokenEmbedding};
@@ -74,10 +74,15 @@ pub struct EntityExtraction {
     pub coverage: EntityCoverage,
 }
 
+/// A part-number cue ("P/N", "PN", "part number", "part number (P/N)"), without the token after it.
+const PART_CUE: &str = r"(?i)\b(?:P\s*/\s*Ns?|P\s*Ns?|PART\s+(?:NUMBERS?|NO\.?))\s*(?:\(\s*P\s*/\s*Ns?\s*\)\s*)?[:#]?";
+
 struct Rule {
     regex: Regex,
     capture: usize,
     kind: EntityKind,
+    /// The match must contain a digit: "work-hour" and the "is" of "part number is not installed" are not part numbers.
+    needs_digit: bool,
 }
 
 const ANCHORS: [(EntityKind, &str, &str); 18] = [
@@ -165,19 +170,20 @@ fn rules() -> &'static [Rule] {
     static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
     RULES.get_or_init(|| {
         [
-            (r"(?i)(?:P\s*/\s*N|P\s*N|PART\s+(?:NUMBER|NO\.?))\s*[:#]?\s*([A-Z0-9][A-Z0-9._/-]{0,127})", 1, EntityKind::PartNumber),
-            (r"(?i)\b[A-Z0-9]{1,12}(?:-[A-Z0-9]{1,12}){1,4}\b", 0, EntityKind::PartNumber),
-            (r"(?i)\b(?:7075|7050|2024|6061)-?T\d\b|\b(?:17-4(?:\s*PH)?|15-5(?:\s*PH)?|316L?|304L?|A286|Ti-6Al-4V|Inconel\s+718)\b|\b(?:aluminum|aluminium|titanium|stainless\s+steel|magnesium|carbon\s+steel)\b", 0, EntityKind::Material),
-            (r"(?i)\b(?:M\d+(?:\s*[x×]\s*\d+(?:\.\d+)?)?|\d+/\d+-\d+\s*(?:UNC|UNF|UNEF|UNS)|(?:NAS|MS)\d{3,5})\b", 0, EntityKind::FastenerCallout),
-            (r"(?i)\b(?:ASTM\s+[A-Z]?\s*\d+(?:-\d+)?|ASME\s+[A-Z]\d+(?:\.\d+)?|SAE\s+[A-Z]\s*\d+|AMS\s+\d+(?:-\d+)?|MIL-(?:DTL|STD|PRF)-[A-Z0-9-]+|NAS\d{3,5})\b", 0, EntityKind::Standard),
-            (r"(?i)([-+]?(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?))\s*(in[·-]lb|ft[·-]lb|lbf[·-]in|mm|millimeters?|millimetres?|cm|inches?|in|ft|psi|ksi|MPa|GPa|lbf|lb|N(?:·m|m)?|°\s*[CF])\b", 0, EntityKind::Dimension),
-            (r"(?i)([-+]?(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?))\s*(in[·-]lb|ft[·-]lb|lbf[·-]in|mm|millimeters?|millimetres?|cm|inches?|in|ft|psi|ksi|MPa|GPa|lbf|lb|N(?:·m|m)?|°\s*[CF])\b", 2, EntityKind::Unit),
+            (format!(r"{PART_CUE}\s*([A-Z0-9][A-Z0-9._/-]{{0,127}})").as_str(), 1, EntityKind::PartNumber, true),
+            (r"(?i)\b[A-Z0-9]{1,12}(?:-[A-Z0-9]{1,12}){1,4}\b", 0, EntityKind::PartNumber, true),
+            (r"(?i)\b(?:7075|7050|2024|6061)-?T\d\b|\b(?:17-4(?:\s*PH)?|15-5(?:\s*PH)?|316L?|304L?|A286|Ti-6Al-4V|Inconel\s+718)\b|\b(?:aluminum|aluminium|titanium|stainless\s+steel|magnesium|carbon\s+steel)\b", 0, EntityKind::Material, false),
+            (r"(?i)\b(?:M\d+(?:\s*[x×]\s*\d+(?:\.\d+)?)?|\d+/\d+-\d+\s*(?:UNC|UNF|UNEF|UNS)|(?:NAS|MS)\d{3,5})\b", 0, EntityKind::FastenerCallout, false),
+            (r"(?i)\b(?:ASTM\s+[A-Z]?\s*\d+(?:-\d+)?|ASME\s+[A-Z]\d+(?:\.\d+)?|SAE\s+[A-Z]\s*\d+|AMS\s+\d+(?:-\d+)?|MIL-(?:DTL|STD|PRF)-[A-Z0-9-]+|NAS\d{3,5})\b", 0, EntityKind::Standard, false),
+            (r"(?i)([-+]?(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?))\s*(in[·-]lb|ft[·-]lb|lbf[·-]in|mm|millimeters?|millimetres?|cm|inches?|in|ft|psi|ksi|MPa|GPa|lbf|lb|N(?:·m|m)?|°\s*[CF])\b", 0, EntityKind::Dimension, false),
+            (r"(?i)([-+]?(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?))\s*(in[·-]lb|ft[·-]lb|lbf[·-]in|mm|millimeters?|millimetres?|cm|inches?|in|ft|psi|ksi|MPa|GPa|lbf|lb|N(?:·m|m)?|°\s*[CF])\b", 2, EntityKind::Unit, false),
         ]
         .into_iter()
-        .map(|(pattern, capture, kind)| Rule {
+        .map(|(pattern, capture, kind, needs_digit)| Rule {
             regex: Regex::new(pattern).expect("static entity pattern is valid"),
             capture,
             kind,
+            needs_digit,
         })
         .collect()
     })
@@ -185,12 +191,12 @@ fn rules() -> &'static [Rule] {
 
 fn add_candidate(
     found: &mut BTreeMap<(usize, usize), (usize, Vec<EntityKind>)>,
-    matched: Match<'_>,
+    matched: Range<usize>,
     base: usize,
     line_number: usize,
     kind: EntityKind,
 ) -> bool {
-    let key = (base + matched.start(), base + matched.end());
+    let key = (base + matched.start, base + matched.end);
     if let Some((_, kinds)) = found.get_mut(&key) {
         if !kinds.contains(&kind) {
             kinds.push(kind);
@@ -205,6 +211,47 @@ fn add_candidate(
     }
 }
 
+/// The next item of a part-number list that starts at `from`: after a comma, "or", "and" or a combination, a token of
+/// at least four characters that contains a digit ("P/N 200181 or 704A34112012, 704A34112013"). Stops at the first
+/// thing that is not an item, so prose after the list ("or inspect") is never taken.
+/// A token without the sentence punctuation its character class swallowed ("P/N 200181." names "200181").
+fn trim_token(line: &str, range: Range<usize>) -> Range<usize> {
+    let kept = line[range.clone()].trim_end_matches(['.', '/', '-']).len();
+    range.start..range.start + kept
+}
+
+fn next_list_item(line: &str, from: usize) -> Option<Range<usize>> {
+    static ITEM: OnceLock<Regex> = OnceLock::new();
+    let item = ITEM.get_or_init(|| {
+        Regex::new(r"(?i)\A\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and/or|and|or)\s+)([A-Z0-9][A-Z0-9._/-]{3,127})")
+            .expect("static list pattern is valid")
+    });
+    let found = item.captures(line.get(from..)?)?.get(1)?;
+    found
+        .as_str()
+        .bytes()
+        .any(|byte| byte.is_ascii_digit())
+        .then(|| trim_token(line, from + found.start()..from + found.end()))
+}
+
+/// Part-number cue at the very end of a line, and the token that starts the next one: AD text wraps between "P/N" and
+/// its number, and the scan is per line.
+fn wrapped_part_number(previous_ends_in_cue: bool, line: &str) -> Option<Range<usize>> {
+    static START: OnceLock<Regex> = OnceLock::new();
+    if !previous_ends_in_cue {
+        return None;
+    }
+    let start = START.get_or_init(|| Regex::new(r"(?i)\A\s*([A-Z0-9][A-Z0-9._/-]{0,127})").expect("static pattern is valid"));
+    let token = start.captures(line)?.get(1)?;
+    token.as_str().bytes().any(|byte| byte.is_ascii_digit()).then(|| trim_token(line, token.range()))
+}
+
+fn ends_in_part_cue(line: &str) -> bool {
+    static END: OnceLock<Regex> = OnceLock::new();
+    END.get_or_init(|| Regex::new(&format!(r"{PART_CUE}\s*\z")).expect("static pattern is valid"))
+        .is_match(line)
+}
+
 pub fn extract_candidates(text: &str) -> EntityExtraction {
     let mut found = BTreeMap::new();
     let mut coverage = EntityCoverage {
@@ -213,24 +260,56 @@ pub fn extract_candidates(text: &str) -> EntityExtraction {
     };
     let mut offset = 0;
     let mut stopped = false;
+    let mut cue_ended_previous_line = false;
     for (line_index, line) in text.split_inclusive('\n').enumerate() {
         let remaining = MAX_SCAN_BYTES.saturating_sub(coverage.scanned_bytes);
         if line.len() > remaining {
             coverage.skipped_long_lines += 1;
             offset += line.len();
+            cue_ended_previous_line = false;
             continue;
         }
         coverage.scanned_bytes += line.len();
         coverage.scanned_lines += 1;
+        if let Some(range) = wrapped_part_number(cue_ended_previous_line, line) {
+            if add_candidate(&mut found, range, offset, line_index + 1, EntityKind::PartNumber) {
+                coverage.candidate_limit_reached = true;
+                break;
+            }
+        }
+        cue_ended_previous_line = ends_in_part_cue(line);
         for rule in rules() {
             for captures in rule.regex.captures_iter(line) {
                 let Some(matched) = captures.get(rule.capture) else {
                     continue;
                 };
-                if add_candidate(&mut found, matched, offset, line_index + 1, rule.kind) {
+                if rule.needs_digit && !matched.as_str().bytes().any(|byte| byte.is_ascii_digit()) {
+                    continue;
+                }
+                let range = if rule.capture == 1 && rule.kind == EntityKind::PartNumber {
+                    trim_token(line, matched.range())
+                } else {
+                    matched.range()
+                };
+                if add_candidate(&mut found, range, offset, line_index + 1, rule.kind) {
                     coverage.candidate_limit_reached = true;
                     stopped = true;
                     break;
+                }
+                // "P/N A or B, C" names every item of the list, not only the one after the cue.
+                if rule.capture == 1 && rule.kind == EntityKind::PartNumber {
+                    let mut end = matched.end();
+                    while let Some(item) = next_list_item(line, end) {
+                        end = item.end;
+                        if add_candidate(&mut found, item, offset, line_index + 1, rule.kind) {
+                            coverage.candidate_limit_reached = true;
+                            stopped = true;
+                            break;
+                        }
+                    }
+                    if stopped {
+                        break;
+                    }
                 }
             }
             if stopped {
@@ -486,6 +565,48 @@ mod tests {
         assert!(has("AMS 5643", EntityKind::Standard));
         assert!(has("95 in·lb", EntityKind::Dimension));
         assert!(has("in·lb", EntityKind::Unit));
+    }
+
+    fn part_numbers(text: &str) -> Vec<(usize, String)> {
+        extract_candidates(text)
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.shape_hints.contains(&EntityKind::PartNumber))
+            .map(|candidate| (candidate.line_number, text[candidate.bytes.clone()].to_string()))
+            .collect()
+    }
+
+    // Found by labelling FAA Airworthiness Directives (docs/knowledge-engine-audit.md, 2026-11-20): the cue was
+    // dropped after "(P/N)", a list named only its first part number, and the sentence period stayed in the span.
+    #[test]
+    fn part_number_cues_cover_a_parenthesised_pn_a_list_and_a_closing_period() {
+        let found = part_numbers("with a gearbox, part number (P/N) 200181 or 704A34112012, installed.");
+        assert_eq!(found.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(), ["200181", "704A34112012"]);
+        let found = part_numbers("Pall elements P/Ns CE01303F2, CE01303F2B, and CE01301F2B were omitted. Replace P/N 4639.");
+        let texts: Vec<_> = found.iter().map(|(_, t)| t.as_str()).collect();
+        for expected in ["CE01303F2", "CE01303F2B", "CE01301F2B", "4639"] {
+            assert!(texts.contains(&expected), "{expected} missing from {texts:?}");
+        }
+    }
+
+    #[test]
+    fn a_part_number_list_stops_at_prose_and_short_numbers() {
+        let found = part_numbers("Install P/N L671M5040205 or inspect the rod within 100 hours, 12 times, and 2 more.");
+        assert_eq!(found.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(), ["L671M5040205"]);
+    }
+
+    #[test]
+    fn a_part_number_may_start_the_line_after_its_cue() {
+        let found = part_numbers("remove coupling tube, P/N\n   C631A1002101, from service.");
+        assert_eq!(found, [(2, "C631A1002101".to_string())]);
+        assert!(part_numbers("see the P/N\nwork-hour table").is_empty());
+        assert!(part_numbers("this part number is not installed").is_empty());
+    }
+
+    #[test]
+    fn hyphenated_words_without_a_digit_are_not_part_numbers() {
+        let found = part_numbers("$85 per work-hour; time-in-service (TIS); AX-42-7 and 44307-480-1 stay.");
+        assert_eq!(found.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(), ["AX-42-7", "44307-480-1"]);
     }
 
     #[test]
