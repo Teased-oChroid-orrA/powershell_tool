@@ -1209,7 +1209,7 @@ impl SplineSurface {
         for (uv0, _) in first {
             let mut chart = vec![self.chart_of_param(uv0)];
             for p in &points[1..] {
-                let hint = *chart.last().unwrap();
+                let hint = chart[chart.len() - 1];
                 let mut found = self.candidates(*p)?;
                 // the continuation of the previous sample's own parameter is a candidate too
                 let hint_uv = self.param_of_chart(hint);
@@ -1319,7 +1319,7 @@ impl AnalyticModel {
             .faces
             .get(&face_id)
             .ok_or_else(|| fail(ErrorKind::Geometry, "unknown face"))?;
-        let surface = self.surface(face_id).unwrap();
+        let surface = self.surface(face_id).expect("every body face has a surface when the model is read");
         if !matches!(surface, Surface::Cone { .. } | Surface::Torus { .. }) {
             return Err(fail(ErrorKind::Geometry, "require a cone or torus"));
         }
@@ -1334,7 +1334,7 @@ impl AnalyticModel {
         let mut remaining = max_work;
         let mut raws: Vec<[f64; 2]> = Vec::new();
         for usage in &bound.edges {
-            let samples = self.edge_points(usage.edge).unwrap();
+            let samples = self.edge_points(usage.edge).expect("every body edge is sampled when the model is read");
             remaining = remaining
                 .checked_sub(samples.len() - 1)
                 .ok_or_else(|| fail(ErrorKind::Limit, "periodic trim expansion budget exceeded"))?;
@@ -1394,7 +1394,7 @@ impl AnalyticModel {
             if let (Some(before), Some(after)) = (before, after) {
                 let tolerance = 64. * f64::EPSILON * period;
                 let turns = (raws[after][0] - raws[before][0]).abs() > tolerance;
-                let winding = unwrap_period_tie(raws[0][0], raws.last().unwrap()[0], period, tie)? - raws[0][0];
+                let winding = unwrap_period_tie(raws[0][0], raws[raws.len() - 1][0], period, tie)? - raws[0][0];
                 if turns && winding.abs() > tolerance {
                     for r in &mut raws[last_apex..] {
                         r[0] -= winding;
@@ -1405,7 +1405,7 @@ impl AnalyticModel {
         for k in 0..2 {
             let Some(period) = periods[k] else { continue };
             let first = raws[0][k];
-            let closing = unwrap_period_tie(first, raws.last().unwrap()[k], period, tie)?;
+            let closing = unwrap_period_tie(first, raws[raws.len() - 1][k], period, tie)?;
             let roundoff = 64. * f64::EPSILON * period;
             if (closing - first).abs() > roundoff && (k != 0 || apex.is_empty()) {
                 return Err(fail(
@@ -1438,7 +1438,7 @@ impl AnalyticModel {
         }];
         classify(&mut loops, remaining)?;
         Ok(PeriodicTrims {
-            boundary: loops.into_iter().next().unwrap(),
+            boundary: { let [boundary] = loops; boundary },
             centre,
         })
     }

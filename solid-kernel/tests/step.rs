@@ -396,3 +396,16 @@ fn source_scoped_references_survive_reload_but_refuse_reused_ids() {
     };
     assert!(first.resolve_reference(forged).is_err());
 }
+
+/// Binding an id that is not an entity of the document is an error, never a panic (`Inventory::require_reference`): the
+/// STEP readers bind ids they read from entities (which always resolve) and ids of the body topology (which may one day be
+/// synthetic, like the generator seams of foreign-CAD bands).
+#[test]
+fn requiring_a_reference_to_a_missing_entity_is_a_dangling_reference_error() {
+    let data = inventory(&file("#1=A();"), Limits::default()).unwrap();
+    let reference = data.require_reference(1).unwrap();
+    assert_eq!(Some(reference), data.entity_reference(1));
+    let error = data.require_reference(2).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::DanglingReference);
+    assert!(error.detail.contains("missing entity #2"), "{}", error.detail);
+}

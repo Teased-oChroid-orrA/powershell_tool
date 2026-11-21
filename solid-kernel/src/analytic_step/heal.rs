@@ -235,7 +235,8 @@ impl AnalyticModel {
                 new[0] = *p;
             }
             if let Some(p) = healed_vertices.get(&raw.end) {
-                *new.last_mut().unwrap() = *p;
+                let last = new.len() - 1; // a copy of `old`, which holds at least two samples
+                new[last] = *p;
             }
             // each segment keeps its direction (no fold) and a positive length
             for i in 0..old.len() - 1 {

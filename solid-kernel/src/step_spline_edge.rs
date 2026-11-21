@@ -195,7 +195,7 @@ fn sample_declaration_interval(
         return Err(fail("declaration does not belong to this source edge"));
     }
     let vertex_ids = [topology.start, topology.end];
-    let vertices = vertex_ids.map(|id| data.entity_reference(id).unwrap());
+    let vertices = [data.require_reference(vertex_ids[0])?, data.require_reference(vertex_ids[1])?];
     let mut endpoints = [[0.; 3]; 2];
     let mut errors = [0.; 2];
     for i in 0..2 {
@@ -230,7 +230,7 @@ fn sample_declaration_interval(
         declaration,
         samples,
     };
-    if !progress(last.unwrap()) {
+    if !progress(last.expect("sampling reports progress at least once")) {
         return Err(cancelled());
     }
     Ok(result)

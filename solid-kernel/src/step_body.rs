@@ -71,7 +71,11 @@ impl BodyContext {
             .iter()
             .map(|part| {
                 if part.placement == Placement::IDENTITY {
-                    let body = bodies.iter().find(|b| b.id == part.solid).unwrap().clone();
+                    let body = bodies
+                        .iter()
+                        .find(|b| b.id == part.solid)
+                        .ok_or_else(|| fail(format!("part solid #{} is not a body of the document", part.solid)))?
+                        .clone();
                     return Self::bind(data, body, &contexts);
                 }
                 let p = part.placement;
@@ -80,7 +84,7 @@ impl BodyContext {
                     .raw_bodies()?
                     .into_iter()
                     .find(|b| b.id == part.solid)
-                    .unwrap();
+                    .ok_or_else(|| fail(format!("part solid #{} is not a body of the placed document", part.solid)))?;
                 let mut context = Self::bind(&placed, body, &contexts)?;
                 context.placement = p;
                 context.placed = Some(placed);
@@ -230,7 +234,7 @@ impl BodyContext {
             .faces
             .get(&face.entity)
             .ok_or_else(|| error(entity, "source reference is not a face of this body"))?;
-        Ok(data.entity_reference(face.surface).unwrap())
+        data.require_reference(face.surface)
     }
     /// Read an edge's terminal spline declaration using this body's source
     /// units. Wrapper traversal is bounded; p-curves, trims and edge agreement

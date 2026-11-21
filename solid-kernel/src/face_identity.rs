@@ -215,7 +215,7 @@ impl AnalyticModel {
         };
         let mut out = BTreeMap::new();
         for f in body.faces.values() {
-            let surface = self.surface(f.id).unwrap();
+            let surface = self.surface(f.id).expect("every body face has a surface when the model is read");
             let sense = if f.same_sense { 1. } else { -1. };
             let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
             let mut edges = 0;
@@ -223,7 +223,7 @@ impl AnalyticModel {
             for b in &f.bounds {
                 for u in &b.edges {
                     edges += 1;
-                    for p in self.edge_points(u.edge).unwrap() {
+                    for p in self.edge_points(u.edge).expect("every body edge is sampled when the model is read") {
                         for k in 0..3 {
                             lo[k] = lo[k].min(p[k]);
                             hi[k] = hi[k].max(p[k]);

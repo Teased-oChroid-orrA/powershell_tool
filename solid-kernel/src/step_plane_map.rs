@@ -54,7 +54,7 @@ impl PlaneParameterMap {
         let crate::step_frame::SourceFrame { origin, x, y, .. } = placement;
         Ok(Self {
             face,
-            surface: data.entity_reference(topology.surface).unwrap(),
+            surface: data.require_reference(topology.surface)?,
             context: context.length_context(),
             origin,
             x,

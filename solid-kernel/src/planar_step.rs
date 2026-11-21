@@ -203,7 +203,7 @@ impl AnalyticModel {
             .faces
             .get(&face_id)
             .ok_or_else(|| fail(ErrorKind::Geometry, "unknown face"))?;
-        let surface = self.surface(face_id).unwrap();
+        let surface = self.surface(face_id).expect("every body face has a surface when the model is read");
         if !matches!(surface, Surface::Plane(_) | Surface::Sphere { .. } | Surface::Spindle { .. } | Surface::Param(_)) {
             return Err(fail(
                 ErrorKind::Geometry,
@@ -216,7 +216,7 @@ impl AnalyticModel {
             let mut points = Vec::new();
             let mut world = Vec::new();
             for usage in chart_usages(surface, bound) {
-                let samples = self.edge_points(usage.edge).unwrap();
+                let samples = self.edge_points(usage.edge).expect("every body edge is sampled when the model is read");
                 remaining = remaining.checked_sub(samples.len() - 1).ok_or_else(|| {
                     fail(ErrorKind::Limit, "planar trim expansion budget exceeded")
                 })?;

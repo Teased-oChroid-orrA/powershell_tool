@@ -212,7 +212,7 @@ pub(crate) fn basis_surface(
 ) -> Result<EntityReference, Error> {
     let e = data.resolve_reference(reference)?;
     let (_, surface, _) = pcurve_header(e)?;
-    Ok(data.entity_reference(surface).unwrap())
+    data.require_reference(surface)
 }
 /// Preserve raw UV and knot values. Mapping to a plane/cylinder/spline surface
 /// must apply that surface's parameter semantics separately, never mm-scale UV.
@@ -261,10 +261,10 @@ pub fn read_pcurve(
     context(&data.entities()[&ctx])?;
     Ok(PcurveDeclaration {
         source: reference,
-        basis_surface: data.entity_reference(surface).unwrap(),
-        representation: data.entity_reference(rep).unwrap(),
-        parameter_context: data.entity_reference(ctx).unwrap(),
-        geometry_source: data.entity_reference(curve).unwrap(),
+        basis_surface: data.require_reference(surface)?,
+        representation: data.require_reference(rep)?,
+        parameter_context: data.require_reference(ctx)?,
+        geometry_source: data.require_reference(curve)?,
         declared_name: name.to_owned(),
         geometry: geometry(data, curve, limits)?,
     })
@@ -297,7 +297,7 @@ pub fn read_surface_curve(
         };
         let p = &data.entities()[id];
         args(p, "PCURVE")?;
-        let reference = data.entity_reference(*id).unwrap();
+        let reference = data.require_reference(*id)?;
         if pcurves.contains(&reference) {
             return Err(fail(e, "duplicate p-curve association"));
         }
@@ -317,7 +317,7 @@ pub fn read_surface_curve(
     Ok(SurfaceCurveDeclaration {
         source: reference,
         declared_name: name.clone(),
-        geometry_3d: data.entity_reference(*geometry).unwrap(),
+        geometry_3d: data.require_reference(*geometry)?,
         pcurves,
         declared_master,
         seam: c.name == "SEAM_CURVE",
@@ -406,7 +406,7 @@ pub(crate) fn associated_edge_pcurve_with_limits<'a>(
             break;
         }
         let wrapper =
-            crate::step_pcurve::read_surface_curve(data, data.entity_reference(current).unwrap())?;
+            crate::step_pcurve::read_surface_curve(data, data.require_reference(current)?)?;
         current = wrapper.geometry_3d.entity;
         if wrapper.pcurves.contains(&pcurve) {
             found = Some(wrapper);

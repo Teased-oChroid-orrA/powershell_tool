@@ -69,7 +69,7 @@ fn fail(kind: ErrorKind, s: impl Into<String>) -> Error {
 }
 fn edge_key(model: &AnalyticModel, edge: u64, index: usize) -> SampleKey {
     let e = &model.body().edges[&edge];
-    let n = model.edge_points(edge).unwrap().len();
+    let n = model.edge_points(edge).expect("every body edge is sampled when the model is read").len();
     if index == 0 {
         SampleKey::Vertex(e.start)
     } else if index == n - 1 {
@@ -105,7 +105,7 @@ fn regions(
     let mut pending = vec![outer];
     while let Some(a) = pending.pop() {
         for &(b, crossing) in &adjacent[a] {
-            let next = parity[a].unwrap() ^ crossing;
+            let next = parity[a].expect("a face is coloured before it is queued") ^ crossing;
             if let Some(previous) = parity[b] {
                 if previous != next {
                     return Err(fail(
@@ -724,9 +724,9 @@ impl AnalyticModel {
             let mut samples = Vec::new();
             // The edge segment from each sample to the next one of the bound, in traversal order.
             let mut outgoing = Vec::new();
-            let surface = self.surface(face_id).unwrap();
+            let surface = self.surface(face_id).expect("every body face has a surface when the model is read");
             for usage in crate::planar_step::chart_usages(surface, bound) {
-                let p = self.edge_points(usage.edge).unwrap();
+                let p = self.edge_points(usage.edge).expect("every body edge is sampled when the model is read");
                 if samples.len().saturating_add(p.len() - 1) > max_work {
                     return Err(fail(
                         ErrorKind::Limit,

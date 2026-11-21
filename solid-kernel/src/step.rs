@@ -68,6 +68,16 @@ impl Inventory {
                 entity,
             })
     }
+    /// Reference to an entity of this document, refusing an id that is not one. Every `#id` the parser reads from an entity
+    /// resolves (it refuses a dangling reference), so callers that bind such an id never see the error; it exists so a
+    /// synthetic or foreign id is an error rather than a panic.
+    pub fn require_reference(&self, entity: u64) -> Result<EntityReference, Error> {
+        self.entity_reference(entity).ok_or_else(|| Error {
+            offset: 0,
+            kind: ErrorKind::DanglingReference,
+            detail: format!("CAD association references missing entity #{entity}"),
+        })
+    }
     /// Refuse stale/cross-document IDs instead of silently rebinding them.
     pub fn resolve_reference(&self, reference: EntityReference) -> Result<&Entity, Error> {
         if reference.document != self.document {

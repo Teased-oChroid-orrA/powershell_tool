@@ -143,7 +143,7 @@ pub fn verify<'a>(
     let whole = enclose(request.interval, &mut state)?;
     publish(&mut progress, state)?;
     let ids = [edge.start, edge.end];
-    let source_vertices = ids.map(|id| data.entity_reference(id).unwrap());
+    let source_vertices = [data.require_reference(ids[0])?, data.require_reference(ids[1])?];
     let mut source_boxes = [whole; 2];
     let mut mapped_boxes = [whole; 2];
     let mut errors = [0.; 2];
