@@ -147,7 +147,7 @@ fn pinched_cell(cells: &BTreeSet<Cell>) -> Option<Cell> {
         }
     }
     let neighbours = |c: Cell| face_neighbours(c).iter().filter(|(q, _, _)| cells.contains(q)).count();
-    let weakest = |owners: &[(Cell, usize)]| owners.iter().map(|o| o.0).min_by_key(|&c| (neighbours(c), c)).unwrap();
+    let weakest = |owners: &[(Cell, usize)]| owners.iter().map(|o| o.0).min_by_key(|&c| (neighbours(c), c)).expect("an edge or vertex has at least one quad");
     for owners in edge_quads.values() {
         if owners.len() != 2 {
             return Some(weakest(owners));
@@ -167,7 +167,7 @@ fn pinched_cell(cells: &BTreeSet<Cell>) -> Option<Cell> {
         for (qi, &(c, f)) in owners.iter().enumerate() {
             let (_, axis, up) = face_neighbours(c)[f];
             let corners = face_corners(c, axis, up);
-            let at = corners.iter().position(|x| x == v).unwrap();
+            let at = corners.iter().position(|x| x == v).expect("a quad owning a vertex has it as a corner");
             for other in [corners[(at + 1) % 4], corners[(at + 3) % 4]] {
                 match by_edge.get(&other) {
                     Some(&first) => {

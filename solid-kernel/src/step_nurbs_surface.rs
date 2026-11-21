@@ -171,7 +171,7 @@ fn read_surface_with(
                 return Err(fail(e, "surface control must reference a Cartesian point"));
             };
             points.push(point(data, *id, scale_mm)?);
-            control_point_sources.push(data.entity_reference(*id).unwrap());
+            control_point_sources.push(data.require_reference(*id)?);
         }
     }
     let construct = if active_domain { NurbsSurface::new_active_domain } else { NurbsSurface::new_clamped };
@@ -182,7 +182,7 @@ fn read_surface_with(
         })?;
     Ok(StepSurfaceDeclaration {
         surface,
-        source: data.entity_reference(id).unwrap(),
+        source: data.require_reference(id)?,
         control_point_sources,
         declared_name: parts.name.into(),
         declared_form: enumeration(

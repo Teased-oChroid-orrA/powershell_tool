@@ -388,7 +388,7 @@ pub fn bodies(data: &Inventory, limits: TopologyLimits) -> Result<Vec<RawBody>, 
             adjacent.entry(faces[1]).or_default().push(faces[0]);
         }
         let mut seen = BTreeSet::new();
-        let mut pending = vec![*body.faces.keys().next().unwrap()];
+        let mut pending = vec![*body.faces.keys().next().expect("an empty shell is refused above")];
         while let Some(face) = pending.pop() {
             if seen.insert(face) {
                 if let Some(next) = adjacent.get(&face) {

@@ -139,7 +139,7 @@ impl CylinderParameterMap {
         }
         Ok(Self {
             face,
-            surface: data.entity_reference(surface.id).unwrap(),
+            surface: data.require_reference(surface.id)?,
             context: context.length_context(),
             angle_unit,
             frame: SourceFrame::read(data, placement, scale_mm)?,

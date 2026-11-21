@@ -88,7 +88,7 @@ impl AnalyticModel {
                 .body()
                 .edges
                 .keys()
-                .map(|e| model.edge_points(*e).unwrap().len())
+                .map(|e| model.edge_points(*e).expect("every body edge is sampled when the model is read").len())
                 .sum();
             for (edge, splits) in wanted {
                 let mut kept = Vec::new();
@@ -109,7 +109,7 @@ impl AnalyticModel {
                 .body()
                 .edges
                 .keys()
-                .map(|e| model.edge_points(*e).unwrap().len())
+                .map(|e| model.edge_points(*e).expect("every body edge is sampled when the model is read").len())
                 .sum();
             report.rounds += 1;
             report.samples_added += after - before;

@@ -267,9 +267,10 @@ pub fn select<'a>(
     let outer_side = match witness(outer_t, &mut enclosures) {
         // The unwrapped complement can leave the map's raw angular range; the
         // same arc is then witnessed one period lower.
-        Err(e) if outer.is_some() && e.kind == ErrorKind::Geometry => {
-            witness(outer_t - outer.unwrap(), &mut enclosures)?
-        }
+        Err(e) if e.kind == ErrorKind::Geometry => match outer {
+            Some(period) => witness(outer_t - period, &mut enclosures)?,
+            None => return Err(e),
+        },
         other => other?,
     };
     let arc = match (inner, outer_side) {

@@ -84,7 +84,7 @@ fn resolve_arc<'a>(
             progress(state)
         })?;
     Ok(FiniteArc {
-        face: data.entity_reference(face).unwrap(),
+        face: data.require_reference(face)?,
         edge,
         pcurve,
         resolved,
@@ -142,7 +142,7 @@ pub fn audit(
     let mut associations = BTreeSet::new();
     for face in context.body().faces.values() {
         let source = &data.entities()[&face.surface];
-        let reference = data.entity_reference(face.id).unwrap();
+        let reference = data.require_reference(face.id)?;
         let map = if source.components.iter().any(|c| c.name == "PLANE") {
             Map::Plane(PlaneParameterMap::read(context, data, reference)?)
         } else if source
@@ -189,7 +189,7 @@ pub fn audit(
                     ));
                 }
                 let wrapper =
-                    step_pcurve::read_surface_curve(data, data.entity_reference(current).unwrap())?;
+                    step_pcurve::read_surface_curve(data, data.require_reference(current)?)?;
                 current = wrapper.geometry_3d.entity;
                 for pc in wrapper.pcurves {
                     if step_pcurve::basis_surface(data, pc)?.entity != face.surface {
@@ -224,8 +224,8 @@ pub fn audit(
     let mut checks = Vec::with_capacity(associations.len());
     let mut finite_arcs = Vec::new();
     for (face, edge, pc) in associations {
-        let edge = data.entity_reference(edge).unwrap();
-        let pc = data.entity_reference(pc).unwrap();
+        let edge = data.require_reference(edge)?;
+        let pc = data.require_reference(pc)?;
         let mut limits = crate::nurbs::Limits::default();
         limits.control_points = limits
             .control_points
@@ -385,7 +385,7 @@ pub fn audit(
         publish(&mut progress, state)?;
     }
     Ok(Report {
-        source_body: data.entity_reference(context.body().id).unwrap(),
+        source_body: data.require_reference(context.body().id)?,
         edge_uses_seen: state.edge_uses_seen,
         spline_spans: state.spline_spans_done,
         curve_controls: state.curve_controls_done,

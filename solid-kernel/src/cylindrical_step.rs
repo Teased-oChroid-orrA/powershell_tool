@@ -100,7 +100,7 @@ impl AnalyticModel {
             .faces
             .get(&face_id)
             .ok_or_else(|| fail(ErrorKind::Geometry, "unknown face"))?;
-        let surface = self.surface(face_id).unwrap();
+        let surface = self.surface(face_id).expect("every body face has a surface when the model is read");
         let period = match surface {
             Surface::Cylinder { radius, .. } => radius * TAU,
             _ => return Err(fail(ErrorKind::Geometry, "require cylindrical surface")),
@@ -155,7 +155,7 @@ impl AnalyticModel {
             }
             let mut points: Vec<[f64; 2]> = Vec::new();
             for usage in &bound.edges {
-                let samples = self.edge_points(usage.edge).unwrap();
+                let samples = self.edge_points(usage.edge).expect("every body edge is sampled when the model is read");
                 remaining = remaining.checked_sub(samples.len() - 1).ok_or_else(|| {
                     fail(
                         ErrorKind::Limit,
@@ -241,7 +241,7 @@ impl AnalyticModel {
                 ));
             }
             let first = points[0][0];
-            let closing = unwrap_period(first, points.last().unwrap()[0], period)?;
+            let closing = unwrap_period(first, points[points.len() - 1][0], period)?;
             // Arithmetic-only closure bound, independent of the geometry chord
             // tolerance. No multi-turn or noncontractible loop is closed by fiat.
             // The unwrapped values are `raw + k * period`: their representation error scales with the largest magnitude
@@ -286,7 +286,7 @@ impl AnalyticModel {
         };
         let outer = (0..unwrapped.len())
             .max_by(|&i, &j| area(&unwrapped[i]).total_cmp(&area(&unwrapped[j])))
-            .unwrap();
+            .ok_or_else(|| fail(ErrorKind::Geometry, "a cylindrical face needs at least one bound"))?;
         if unwrapped.len() > 1 {
             let outer_loop = unwrapped[outer].clone();
             for (i, hole) in unwrapped.iter_mut().enumerate() {
@@ -336,7 +336,7 @@ impl AnalyticModel {
             })
             .collect();
         classify(&mut loops, remaining)?;
-        let boundary = loops.iter().find(|l| l.is_outer).unwrap().clone();
+        let boundary = loops.iter().find(|l| l.is_outer).expect("`classify` leaves exactly one outer loop").clone();
         Ok(CylindricalTrims {
             face_id,
             boundary,

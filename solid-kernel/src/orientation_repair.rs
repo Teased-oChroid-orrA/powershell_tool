@@ -107,7 +107,7 @@ pub(crate) fn repair(
             ));
         }
         for &(b, toggle) in &adjacency[a] {
-            let next = flips[a].unwrap() ^ toggle;
+            let next = flips[a].expect("a face is oriented before it is queued") ^ toggle;
             if let Some(old) = flips[b] {
                 if old != next {
                     return Err(fail(
@@ -182,7 +182,7 @@ pub(crate) fn repair(
     let global = volume < 0.;
     let mut changes = Vec::new();
     for (i, flip) in face_flips.into_iter().enumerate() {
-        if flip.unwrap() ^ global {
+        if flip.expect("every source face has a flip: checked above") ^ global {
             changes.push(FaceOrientationChange {
                 source_face: source_faces[i],
                 before_same_sense: senses[i],
@@ -198,7 +198,7 @@ pub(crate) fn repair(
     }
     // Commit only after all constraints and cancellation checks passed.
     for (i, t) in mesh.triangles.iter_mut().enumerate() {
-        if flips[i].unwrap() ^ global {
+        if flips[i].expect("every triangle has a flip: checked above") ^ global {
             t.swap(1, 2);
         }
     }

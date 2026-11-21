@@ -40,7 +40,7 @@ impl PlanarPatch {
                 "native spline faces require a two-by-two degree-one planar convex patch",
             ));
         }
-        let p: [V3; 4] = surface.control_points().try_into().unwrap();
+        let p: [V3; 4] = surface.control_points().try_into().expect("a two-by-two net has four control points");
         if fea_core::meshing::tet_topology::orientation(p[0], p[1], p[2], p[3])
             .map_err(|error| fail(e, &error.to_string()))?
             != Ordering::Equal
@@ -68,7 +68,7 @@ impl PlanarPatch {
         let normal = crate::cross(a, b);
         let drop = (0..3)
             .max_by(|&i, &j| normal[i].abs().total_cmp(&normal[j].abs()))
-            .unwrap();
+            .expect("a vector has three axes");
         let axes = match drop {
             0 => [1, 2],
             1 => [0, 2],

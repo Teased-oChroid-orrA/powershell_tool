@@ -502,7 +502,7 @@ impl FacetMesh {
                     let Some(&j) = across.get(&[y, x]) else {
                         continue;
                     };
-                    let q = *self.tris[j].iter().find(|v| **v != x && **v != y).unwrap();
+                    let q = *self.tris[j].iter().find(|v| **v != x && **v != y).expect("a triangle has a corner off any of its edges");
                     let uv = |v: usize| self.uv[&v];
                     if in_circle_2d(uv(x), uv(y), uv(p), uv(q)) != Ordering::Greater {
                         continue;
@@ -660,7 +660,7 @@ impl FacetMesh {
                     let Some(&j) = across.get(&[y, x]) else {
                         continue;
                     };
-                    let q = *self.tris[j].iter().find(|v| **v != x && **v != y).unwrap();
+                    let q = *self.tris[j].iter().find(|v| **v != x && **v != y).expect("a triangle has a corner off any of its edges");
                     let (a, b) = ([x, q, p], [q, y, p]);
                     let uv = |v: usize| self.uv[&v];
                     let convex = orientation_2d(uv(a[0]), uv(a[1]), uv(a[2])) == Ordering::Greater
@@ -1964,7 +1964,7 @@ fn coplanar_groups(vertices: &[V3], facets: &[[usize; 3]], frozen: Option<&[bool
             let big = *members
                 .iter()
                 .max_by(|&&x, &&y| norm2(normal(&facets[x])).total_cmp(&norm2(normal(&facets[y]))))
-                .unwrap();
+                .expect("a coplanar group has a member");
             let verts: BTreeSet<usize> = members.iter().flat_map(|&m| facets[m]).collect();
             let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
             for &v in &verts {
@@ -2507,14 +2507,16 @@ fn conform_attempt(
         Ok(()) => {}
         // A refusal after the sliver stage began, or a cancellation during it, returns to the last conforming state it kept:
         // the sliver stage is an improvement of a result that already conforms and ends early without losing it.
-        Err(e) if snapshot.is_some() => {
-            if std::env::var_os("STAGEDBG").is_some() {
-                eprintln!("rollback after {} quality points: {e}", state.quality_steiner);
+        Err(e) => match snapshot.take() {
+            Some(kept) => {
+                if std::env::var_os("STAGEDBG").is_some() {
+                    eprintln!("rollback after {} quality points: {e}", state.quality_steiner);
+                }
+                cancelled = e.kind == ErrorKind::Cancelled;
+                state = kept;
             }
-            cancelled = e.kind == ErrorKind::Cancelled;
-            state = snapshot.take().unwrap();
-        }
-        Err(e) => return Err(e),
+            None => return Err(e),
+        },
     }
     if !cancelled {
         publish(&state, Phase::Extraction, (0, 0), progress)?;
