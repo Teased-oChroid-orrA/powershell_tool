@@ -283,3 +283,127 @@ fn only_a_tie_advice_item_can_be_applied() {
     let want = 10.0 * 10.0 / p.material.e;
     assert!((s.summary.max_displacement.value / want - 1.0).abs() < 1e-6, "{} vs {want}", s.summary.max_displacement.value);
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Contact ties (Phase C, second slice)
+// ---------------------------------------------------------------------------------------------------------------------------
+/// [`stack`] with its joint a contact of friction `mu`, pushed at the tip (a compression the contact can carry) or pulled (which
+/// opens it).
+fn contact_stack(mu: f64, push: bool) -> Problem {
+    let mut p = stack([1.0, 1.0], 0.0, 0.0);
+    p.ties = vec![Tie { friction: Some(mu), ..tie([1.0, 1.0], 0.0, 0.0) }];
+    if push {
+        p.loads = vec![Load::Traction { edge: "face12".into(), tx: 0.0, ty: 0.0, tz: -PULL }];
+    }
+    p
+}
+
+/// The z displacement of the nodes at height `z`, as (smallest, largest).
+fn uz_at(s: &fea_problem::solve::Solved, z: f64) -> (f64, f64) {
+    let uz = s.model.mesh.nodes.iter().enumerate().filter(|(_, x)| (x[2] - z).abs() < 1e-9).map(|(i, _)| s.u[3 * i + 2]);
+    uz.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| (lo.min(v), hi.max(v)))
+}
+
+#[test]
+fn a_frictionless_contact_carries_a_push_by_the_closed_form_in_linear_and_quadratic_elements() {
+    for element in [ElementChoice::Tri3, ElementChoice::Tri6] {
+        let mut p = contact_stack(0.0, true);
+        p.mesh.element = element;
+        let s = solve(&p, None).unwrap();
+        // sigma L / E per bar: the joint closes with no overlap and transmits the whole push
+        let bar = PULL / p.material.e;
+        let (lo, hi) = uz_at(&s, 1.0);
+        assert!((lo + bar).abs() < 1e-5 * bar && (hi + bar).abs() < 1e-5 * bar, "{element:?}: both faces of the joint move one bar's shortening: {lo:e} {hi:e} vs {:e}", -bar);
+        let (lo, hi) = uz_at(&s, 2.0);
+        assert!((lo + 2.0 * bar).abs() < 1e-5 * bar && (hi + 2.0 * bar).abs() < 1e-5 * bar, "{element:?}: {lo:e} {hi:e}");
+        let c = &s.summary.contacts[0];
+        assert!((c.normal_force / PULL - 1.0).abs() < 1e-5 && c.contact_share > 0.999 && c.tangential_force == 0.0, "{c:?}");
+        assert!(s.summary.equilibrium_error < 1e-6, "{element:?}: {}", s.summary.equilibrium_error);
+    }
+}
+
+#[test]
+fn a_frictional_contact_under_a_push_carries_it_and_no_shear() {
+    // The overlap that engages a frictional contact from the start (`PairSetup::touch`, 1e-5 of a face) offsets the two faces
+    // by that much; a push that shortens the stack by 3.4e-3 reads it as 0.15 %.
+    let mut p = contact_stack(0.3, true);
+    let push = 5.0e4;
+    p.loads = vec![Load::Traction { edge: "face12".into(), tx: 0.0, ty: 0.0, tz: -push }];
+    let s = solve(&p, None).unwrap();
+    let want = 2.0 * push / p.material.e;
+    let (lo, hi) = uz_at(&s, 2.0);
+    assert!((lo + want).abs() < 5e-3 * want && (hi + want).abs() < 5e-3 * want, "{lo:e} {hi:e} vs {:e}", -want);
+    let c = &s.summary.contacts[0];
+    assert!((c.normal_force / push - 1.0).abs() < 1e-4 && c.contact_share > 0.999 && c.slip_share == 0.0, "{c:?}");
+    assert!(c.tangential_force < 1e-4 * push, "{c:?}");
+    assert!(s.summary.equilibrium_error < 1e-6, "{}", s.summary.equilibrium_error);
+}
+
+#[test]
+fn a_contact_that_starts_open_is_refused_not_solved_wrongly() {
+    // Body 2 starts 1e-3 above body 1 and is held only by the contact and the weak springs that keep a loose body from being a
+    // free body: loaded in steps it would have to travel far (load over spring stiffness) to find the contact, so the Newton
+    // iteration does not converge. The solve says so instead of returning a state with the gap still open.
+    let gap = 1.0e-3;
+    let mut p = stack([1.0, 1.0], 0.0, gap);
+    let mut t = tie([1.0, 1.0], 0.0, gap);
+    t.b.centroid[2] += gap;
+    t.friction = Some(0.0);
+    p.ties = vec![t];
+    p.loads = vec![Load::Traction { edge: "face12".into(), tx: 0.0, ty: 0.0, tz: -5.0e4 }];
+    assert!(p.validate().is_ok(), "{:?}", p.validate());
+    let err = solve(&p, None).unwrap_err();
+    assert!(err.contains("contact could not be solved"), "{err}");
+}
+
+#[test]
+fn a_pull_that_opens_the_contact_is_refused_with_the_reason() {
+    let err = solve(&contact_stack(0.0, false), None).unwrap_err();
+    assert!(err.contains("contact could not be solved") && err.contains("presses the bodies together"), "{err}");
+}
+
+#[test]
+fn contact_ties_are_validated_saved_and_kept_apart_from_bonded_ones() {
+    let mut p = contact_stack(0.3, true);
+    assert!(p.validate().is_ok(), "{:?}", p.validate());
+    let back: Problem = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    assert_eq!(back.ties, p.ties);
+    assert!(back.ties[0].is_contact());
+    // a bonded tie writes no `friction` key
+    assert!(!serde_json::to_string(&tie([1.0, 1.0], 0.0, 0.0)).unwrap().contains("friction"));
+    // friction is a coefficient in 0..2
+    for mu in [-0.1, 2.5, f64::NAN] {
+        p.ties[0].friction = Some(mu);
+        assert!(p.validate().unwrap_err().contains("friction must be in 0..2"), "{mu}");
+    }
+    // one joint of each kind cannot be solved together
+    p.ties[0].friction = Some(0.0);
+    p.ties.push(tie([1.0, 1.0], 0.0, 0.0));
+    assert!(p.validate().unwrap_err().contains("do not combine"), "{:?}", p.validate());
+    // the faces are named by what they are: a unit change keeps a contact a contact and still resolves
+    let mut q = contact_stack(0.3, true);
+    q.convert_units(UnitSystem::MmMpa).unwrap();
+    assert_eq!(q.ties[0].friction, Some(0.3));
+    assert!(q.validate().is_ok(), "{:?}", q.validate());
+}
+
+#[test]
+fn an_assembly_read_from_step_takes_a_contact_from_its_advice() {
+    let step = assembly(&[([0., 0., 0.], [20., 10., 5.]), ([0., 0., 5.], [20., 10., 10.])]);
+    let mut p = Problem::from_step("Stacked bars", &step).unwrap();
+    let advice = recommend_step(&step).unwrap().into_iter().find(|i| matches!(i, AssemblyAdvice::Tie { .. })).unwrap();
+    p.apply_contact(&advice, 0.0).unwrap();
+    p.apply_contact(&advice, 0.0).unwrap();
+    assert_eq!(p.ties.len(), 1);
+    assert_eq!(p.ties[0].friction, Some(0.0));
+    p.convert_units(UnitSystem::MmMpa).unwrap();
+    p.material.nu = 0.0;
+    p.mesh = MeshSpec { size: 2.5, ..MeshSpec::default() };
+    p.supports = vec![Support::fixed(&face_at(&p, 0, 0.0, -1.0))];
+    p.loads = vec![Load::Traction { edge: face_at(&p, 1, 10.0, 1.0), tx: 0.0, ty: 0.0, tz: -10.0 }];
+    let s = solve(&p, None).unwrap();
+    // 10 MPa through two bars of 5 mm
+    let want = 10.0 * 10.0 / p.material.e;
+    assert!((s.summary.max_displacement.value / want - 1.0).abs() < 1e-5, "{} vs {want}", s.summary.max_displacement.value);
+    assert!((s.summary.contacts[0].normal_force / 2000.0 - 1.0).abs() < 1e-5, "{:?}", s.summary.contacts);
+}

@@ -917,7 +917,7 @@ fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<PairSetup, Str
 fn pair_specs(setup: &PairSetup) -> Vec<fea_core::contact::ContactSpec> {
     let mut v = Vec::new();
     for (c, (name, a, b)) in setup.joints.iter().zip(&setup.pairs) {
-        v.extend(fea_core::contact::ContactSpec::two_pass(name, a.clone(), b.clone(), setup.eps_n).map(|s| s.with_friction(c.friction, fea_core::fit::EPS_T_RATIO * setup.eps_n).with_margin(setup.margin).with_overlap(setup.touch)));
+        v.extend(fea_core::contact::ContactSpec::two_pass(name, a.clone(), b.clone(), setup.eps_n).map(|s| s.with_friction(c.friction, fea_core::fit::EPS_T_RATIO * setup.eps_n).with_margin(setup.margin).with_overlap(if c.friction > 0.0 { setup.touch } else { 0.0 })));
     }
     v
 }
@@ -992,7 +992,8 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         }
         let sol = model.solve_nonlinear_contact(&full, &bc, specs(), &opts).map_err(|e| format!("the contact could not be solved: {e}"))?;
         if !sol.complete() {
-            return Err(format!("the contact could not be solved: {:?}", sol.stop));
+            let hint = if p.ties.iter().any(crate::ties::Tie::is_contact) { ": a contact between assembly bodies carries only a load that presses the bodies together, and a body that a pull leaves loose is not held" } else { "" };
+            return Err(format!("the contact could not be solved: {:?}{hint}", sol.stop));
         }
         sol
     } else {
