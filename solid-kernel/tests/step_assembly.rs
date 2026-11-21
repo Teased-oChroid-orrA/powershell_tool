@@ -103,12 +103,17 @@ fn ambiguous_unsupported_and_inconsistent_structure_is_refused_with_a_reason() {
         SOURCE.replace("(#905,#931,#941)", "(#905,#941)"),
         "cannot tell",
     );
-    // A placement that is an item of both representations.
+    // Both ends of a placement pair are items of both representations: which way it maps is not guessed.
     refuse(
-        SOURCE.replace(
-            "#904 = SHAPE_REPRESENTATION('',(#905,#931,#941)",
-            "#904 = SHAPE_REPRESENTATION('',(#905,#931,#941,#11)",
-        ),
+        SOURCE
+            .replace(
+                "#904 = SHAPE_REPRESENTATION('',(#905,#931,#941)",
+                "#904 = SHAPE_REPRESENTATION('',(#905,#931,#941,#11)",
+            )
+            .replace(
+                "#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15)",
+                "#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15,#931)",
+            ),
         "cannot tell",
     );
     // A missing transformation.

@@ -320,20 +320,14 @@ impl Product<'_> {
                         (self.items(child_rep)?, self.items(parent_rep)?);
                     let in_child = |i: u64| child_items.contains(&i);
                     let in_parent = |i: u64| parent_items.contains(&i);
-                    let (source, target) = if in_child(item1)
-                        && in_parent(item2)
-                        && !in_child(item2)
-                        && !in_parent(item1)
-                    {
-                        (item1, item2)
-                    } else if in_child(item2)
-                        && in_parent(item1)
-                        && !in_child(item1)
-                        && !in_parent(item2)
-                    {
-                        (item2, item1)
-                    } else {
-                        return Err(fail(format!("usage #{nauo}: cannot tell which placement belongs to the component and which to the assembly")));
+                    // An item may be held by both representations (a writer reuses the part's origin placement as an item of the
+                    // assembly too: the CAx-IF AS1 model of Open CASCADE does, for every usage). The pair is still decided when exactly
+                    // one assignment has its source in the component and its target in the assembly; when both or neither do, which
+                    // way it maps is not guessed.
+                    let (source, target) = match (in_child(item1) && in_parent(item2), in_child(item2) && in_parent(item1)) {
+                        (true, false) => (item1, item2),
+                        (false, true) => (item2, item1),
+                        _ => return Err(fail(format!("usage #{nauo}: cannot tell which placement belongs to the component and which to the assembly"))),
                     };
                     if (self.metres(child_rep)? - self.metres(parent_rep)?).abs()
                         > 1e-12 * self.metres(parent_rep)?.abs()
