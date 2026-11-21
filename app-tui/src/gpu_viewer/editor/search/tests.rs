@@ -2676,22 +2676,10 @@ fn corpus_terms_are_mined_once_per_query_and_hits() {
     assert_ne!(s.corpus_term_suggestions(), ["sentinel"]);
 }
 
-/// Down picks the first suggestion pill, Enter chooses it instead of running the search; without a pick Enter still
-/// searches, and Up goes back off the first pill.
+/// One headless frame of the page for `s` (no painting), with these input events; returns what was clicked.
 #[cfg(feature = "gpu-viewer")]
-#[test]
-fn arrow_keys_pick_a_suggestion_pill_and_enter_chooses_it_instead_of_searching() {
-    use crate::gpu_viewer::{controller::ViewState, gui::Gui, menu::Outcome, results::GuiInput, Scene};
-    use crate::gpu_viewer::controller::UiAction;
-    let mut s = SearchSession::in_memory();
-    s.st.config.filters_text = "ultimate tensile strenght".into();
-    s.st.run.started = Some(Instant::now());
-    s.st.run.is_running = false;
-    s.completed_search_query = Some(s.st.config.filters_text.clone());
-    assert!(view::document(&s).inputs[1]
-        .choices
-        .iter()
-        .any(|c| c.label.contains("instead of")));
+fn gui_frame(gui: &mut crate::gpu_viewer::gui::Gui, s: &SearchSession, events: Vec<egui::Event>) -> Vec<crate::gpu_viewer::menu::Outcome> {
+    use crate::gpu_viewer::{controller::ViewState, results::GuiInput, Scene};
     let scene = Scene {
         label: "s".into(),
         positions: vec![[0.0; 3]; 3],
@@ -2706,35 +2694,44 @@ fn arrow_keys_pick_a_suggestion_pill_and_enter_chooses_it_instead_of_searching()
     };
     let view = ViewState::new(&scene);
     let scenes = [scene];
+    let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(s as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+        events,
+        ..Default::default()
+    };
+    let (mut full, outcomes) = gui.run(raw, &input);
+    // Nothing paints here: egui (debug builds) panics when texture uploads are dropped unapplied.
+    full.textures_delta.clear();
+    outcomes
+}
+
+/// A finished search whose Find box offers one suggestion pill (the typo correction).
+#[cfg(feature = "gpu-viewer")]
+fn session_with_one_pill() -> SearchSession {
+    let mut s = SearchSession::in_memory();
+    s.st.config.filters_text = "ultimate tensile strenght".into();
+    s.st.run.started = Some(Instant::now());
+    s.st.run.is_running = false;
+    s.completed_search_query = Some(s.st.config.filters_text.clone());
+    assert!(view::document(&s).inputs[1].choices.iter().any(|c| c.label.contains("instead of")));
+    s
+}
+
+/// Down picks the first suggestion pill, Enter chooses it instead of running the search; without a pick Enter still
+/// searches, and Up goes back off the first pill.
+#[cfg(feature = "gpu-viewer")]
+#[test]
+fn arrow_keys_pick_a_suggestion_pill_and_enter_chooses_it_instead_of_searching() {
+    use crate::gpu_viewer::{controller::UiAction, gui::Gui, menu::Outcome};
+    let s = session_with_one_pill();
     let mut gui = Gui::new();
     let frame = |gui: &mut Gui, keys: &[egui::Key]| -> Vec<Outcome> {
-        let input = GuiInput {
-            view: &view,
-            scenes: &scenes,
-            selected: 0,
-            editor: Some(&s as &dyn Authoring),
-            error: None,
-            box_drag: None,
-            overlay: &[],
-        };
-        let raw = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
-            events: keys
-                .iter()
-                .map(|&key| egui::Event::Key {
-                    key,
-                    physical_key: Some(key),
-                    pressed: true,
-                    repeat: false,
-                    modifiers: Default::default(),
-                })
-                .collect(),
-            ..Default::default()
-        };
-        let (mut full, outcomes) = gui.run(raw, &input);
-        // Nothing paints here: egui (debug builds) panics when texture uploads are dropped unapplied.
-        full.textures_delta.clear();
-        outcomes
+        let events = keys
+            .iter()
+            .map(|&key| egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: Default::default() })
+            .collect();
+        gui_frame(gui, &s, events)
     };
     for _ in 0..3 {
         frame(&mut gui, &[]);
@@ -2797,4 +2794,28 @@ fn document_rebuild_cost() {
     }
     let uncached = t.elapsed() / n;
     eprintln!("document build: {cached:?} cached, {uncached:?} with the mined terms rebuilt");
+}
+
+/// The "N suggestions" badge at the right end of Find is a button: clicking it opens the pills (focus goes to Find),
+/// and they are not drawn before that.
+#[cfg(feature = "gpu-viewer")]
+#[test]
+fn clicking_the_suggestions_badge_opens_the_pills() {
+    use crate::gpu_viewer::gui::Gui;
+    let s = session_with_one_pill();
+    let mut gui = Gui::new();
+    for _ in 0..3 {
+        gui_frame(&mut gui, &s, Vec::new());
+    }
+    let pill = view::document(&s).inputs[1].choices[0].label.clone();
+    assert!(!gui.target_labels().contains(&pill), "pills drawn without focus");
+    let (x, y) = gui.find_target("Find suggestions").expect("the badge is drawn");
+    let at = egui::pos2(x as f32, y as f32);
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    gui_frame(&mut gui, &s, vec![egui::Event::PointerMoved(at), button(true)]);
+    gui_frame(&mut gui, &s, vec![button(false)]);
+    for _ in 0..3 {
+        gui_frame(&mut gui, &s, Vec::new());
+    }
+    assert!(gui.target_labels().contains(&pill), "the badge did not open the pills: {:?}", gui.target_labels());
 }
