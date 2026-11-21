@@ -10,7 +10,9 @@ use solid_kernel::cylindrical_step::ChartPolicy;
 /// Re-exported so a front end names faces without a direct `solid-kernel` dependency.
 pub use solid_kernel::features::FaceKey;
 use solid_kernel::features::{detect, Features};
-use solid_kernel::native_surface::Limits;
+use crate::solid::SolidCache;
+use solid_kernel::native_surface::{Limits, SampledSurface};
+use solid_kernel::SurfaceMesh;
 use solid_kernel::step::{inventory, Limits as StepLimits};
 
 /// The sampling chord used when the caller has none (millimetres), as in `native_solid`.
@@ -53,11 +55,17 @@ impl AssemblyMesh {
     }
 }
 
+/// Every body sampled on its own (face tags local to the body, `source_faces` the STEP face ids).
+fn sample_bodies(models: &[AnalyticModel], policy: ChartPolicy) -> Result<Vec<SampledSurface>, String> {
+    models.iter().enumerate().map(|(body, model)| {
+        let limits = Limits { chart_policy: policy, ..Limits::default() };
+        model.sampled_surface(limits, |_| true).map_err(|e| format!("body {}: {e}", body + 1))
+    }).collect()
+}
+
 fn sample_models(models: &[AnalyticModel], policy: ChartPolicy, chord: f64) -> Result<AssemblyMesh, String> {
     let mut out = AssemblyMesh { chord_mm: chord, ..AssemblyMesh::default() };
-    for (body, model) in models.iter().enumerate() {
-        let limits = Limits { chart_policy: policy, ..Limits::default() };
-        let s = model.sampled_surface(limits, |_| true).map_err(|e| format!("body {}: {e}", body + 1))?;
+    for (body, s) in sample_bodies(models, policy)?.into_iter().enumerate() {
         let base = out.vertices.len();
         out.vertices.extend(s.mesh.vertices.iter().copied());
         out.triangles.extend(s.mesh.triangles.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
@@ -68,6 +76,30 @@ fn sample_models(models: &[AnalyticModel], policy: ChartPolicy, chord: f64) -> R
         out.body_triangles.push(s.mesh.triangles.len());
     }
     Ok(out)
+}
+
+/// The cache of an assembly of two or more bodies at `chord` mm: the bodies' surfaces side by side in the root frame, face tags
+/// numbered on from one body to the next (`SolidCache::bodies` holds each body's count). A file with fewer than two bodies is not an
+/// assembly and is refused, so the single-body import keeps its own errors.
+pub(crate) fn assembly_cache(step: &str, chord: f64) -> Result<SolidCache, String> {
+    let chord = chord_or_default(chord);
+    with_bodies(step, chord, |models, policy| {
+        if models.len() < 2 {
+            return Err("the STEP file holds one body, not an assembly".into());
+        }
+        let mut mesh = SurfaceMesh { vertices: Vec::new(), triangles: Vec::new(), face: Vec::new() };
+        let mut bodies = Vec::new();
+        for s in sample_bodies(models, policy)? {
+            let (base, offset) = (mesh.vertices.len(), bodies.iter().sum::<usize>());
+            mesh.vertices.extend(s.mesh.vertices.iter().copied());
+            mesh.triangles.extend(s.mesh.triangles.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+            mesh.face.extend(s.mesh.face.iter().map(|f| f + offset));
+            bodies.push(s.source_faces.len());
+        }
+        let mut cache = SolidCache::new(step, mesh, chord);
+        cache.bodies = bodies;
+        Ok(cache)
+    })
 }
 
 fn chord_or_default(chord: f64) -> f64 {
