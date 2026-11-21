@@ -114,12 +114,11 @@ fn holes_that_are_not_a_standard_size_or_that_have_a_mate_or_stand_alone_are_not
 
 #[test]
 fn a_counterbore_over_a_mated_bore_is_part_of_the_site_not_an_unmated_hole() {
-    // upper plate: a 7.0 mm (M6 loose clearance) counterbore 3 mm deep over a 6.0 mm (M6 nominal) through hole; lower plate: 5.0 mm
+    // upper plate: an 8.0 mm (M8 nominal) counterbore 3 mm deep over a 6.0 mm (M6 nominal) through hole; lower plate: 5.0 mm
     // (M6 tap drill). The counterbore matches a standard size by itself, so only the stepped-bore rule keeps it out of the advice.
-    // (Radii stay at or below 3.5 mm: `NativeBrep::face_holds` is false at the centre of a pocket floor of radius 4 mm or more.)
     let mut upper = NativeBrep::box_from_corners([0., 0., 10.], [40., 30., 20.]).unwrap();
     let top = upper.planar_faces_through([0., 0., 20.], [0., 0., 1.])[0];
-    upper = upper.drill(top, [20., 15., 20.], 3.5, Some(3.0)).unwrap();
+    upper = upper.drill(top, [20., 15., 20.], 4.0, Some(3.0)).unwrap();
     let floor = upper.planar_faces_through([20., 15., 17.], [0., 0., 1.])[0];
     upper = upper.drill(floor, [20., 15., 17.], 3.0, None).unwrap();
     let lower = plate([0., 0., 0.], [40., 30., 10.], &[([20., 15.], 2.5)]);
@@ -134,5 +133,5 @@ fn a_counterbore_over_a_mated_bore_is_part_of_the_site_not_an_unmated_hole() {
     let mut ds: Vec<f64> = found.iter().map(|i| match i { AssemblyAdvice::Unmated { diameter, .. } => *diameter, _ => unreachable!() }).collect();
     ds.sort_by(f64::total_cmp);
     assert_eq!(ds.len(), 2, "{alone:?}");
-    assert!((ds[0] - 6.0).abs() < 1e-9 && (ds[1] - 7.0).abs() < 1e-9, "{ds:?}");
+    assert!((ds[0] - 6.0).abs() < 1e-9 && (ds[1] - 8.0).abs() < 1e-9, "{ds:?}");
 }

@@ -54,12 +54,18 @@ pub(crate) fn polyline(b: &NativeBrep, u: &Use) -> Vec<V3> {
                 sweep += TAU;
             }
             let n = 256;
-            (0..=n)
+            let mut pts: Vec<V3> = (0..=n)
                 .map(|i| {
                     let a = a0 + sweep * i as f64 / n as f64;
                     add(*centre, add(mul(*xdir, radius * a.cos()), mul(y, radius * a.sin())))
                 })
-                .collect()
+                .collect();
+            // The ends are the edge's vertices exactly: a full circle's last sample (cos/sin of 2 pi) is otherwise off its start by
+            // rounding, so the polygon of a one-edge loop is not closed and a ray through that vertex (the axis of a pocket floor)
+            // can miss the closing crossing.
+            pts[0] = p0;
+            pts[n] = p1;
+            pts
         }
     };
     if !u.forward {
