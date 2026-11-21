@@ -379,7 +379,7 @@ impl SurfaceSolid {
 
     /// Signed distance to the surface: negative inside.
     pub fn signed_distance(&self, p: V3) -> f64 {
-        let (d2, t, region, closest) = self.bvh.nearest(&self.vertices, &self.triangles, p);
+        let (d2, t, region, closest) = self.bvh.nearest(p);
         let n = self.pseudo_normal(t, region);
         let side = dot(sub(p, closest), n);
         let d = d2.sqrt();
@@ -391,7 +391,7 @@ impl SurfaceSolid {
     pub fn faces_near(&self, p: V3, radius: f64) -> Vec<FaceHit> {
         // the nearest triangle of each face within the radius (a handful of faces: a linear scan beats hashing)
         let mut best: Vec<(usize, f64, usize, V3)> = Vec::new();
-        self.bvh.within(&self.vertices, &self.triangles, p, radius, &mut |t, d2, closest| {
+        self.bvh.within(p, radius, &mut |t, d2, closest| {
             let f = self.face[t];
             match best.iter_mut().find(|e| e.0 == f) {
                 Some(e) => {
@@ -440,13 +440,13 @@ impl SurfaceSolid {
 
     /// Nearest model face to `p` (for naming a surface point).
     pub fn nearest_face(&self, p: V3) -> usize {
-        let (_, t, _, _) = self.bvh.nearest(&self.vertices, &self.triangles, p);
+        let (_, t, _, _) = self.bvh.nearest(p);
         self.face[t]
     }
 
     /// Closest point on the surface and the face it lies on.
     pub fn closest_point(&self, p: V3) -> (V3, usize) {
-        let (_, t, _, c) = self.bvh.nearest(&self.vertices, &self.triangles, p);
+        let (_, t, _, c) = self.bvh.nearest(p);
         (c, self.face[t])
     }
 }
