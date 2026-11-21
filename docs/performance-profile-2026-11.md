@@ -175,6 +175,47 @@ Every measured chrome frame costs 0.1 to 0.4 ms of CPU, about 2 % of a 60 Hz fra
 ### Follow-ups (with numbers above)
 
 1. `fea-core/src/assembly.rs` (lines 205, 257) and `nonlinear.rs` (line 299): build the element scratch once per thread, not once per rayon task (section 3, lug).
-2. `solid-kernel/src/bvh.rs`: `Bvh::nearest` and `closest_on_triangle` are the largest block left in meshing (section 2).
+2. `solid-kernel/src/bvh.rs`: `Bvh::nearest` and `closest_on_triangle` are the largest block left in meshing (section 2). Done, section 5: the NEMA17 mesh 28.3 -> 25.4 s, identical output.
 3. `fea_problem::solve` re-meshes a solid problem that the caller already meshed; a mesh cache needs an invalidation rule (section 2).
 4. Not measured here: the NIST corpus, Windows, the index build on real (mostly ASCII) corpora, a Search window with hits.
+
+## 5. Follow-up: BVH surface-distance queries (`solid-kernel/src/bvh.rs`)
+
+Follow-up 2 of the list above, done in a later session on the same machine (M1 Air, load 3 to 9 during the timed runs, read from `uptime` before each).
+
+### Workload
+
+A temporary hook in `SurfaceSolid` recorded every query of the NEMA17 mesh run: **about 19 million**, 12.2 M `signed_distance` (`Bvh::nearest`), 6.5 M `faces_near` (`Bvh::within`), 0.3 M `nearest_face`. The surface is small: 350 vertices, 740 triangles (the fixture `solid-kernel/tests/data/bvh-nema17-surface.txt` is that exact mesh), so the tree (369 nodes) lives in cache and the cost is arithmetic and branches, not memory. Per `nearest` call: about 41 nodes visited and 25 triangles tested, of which 5.2 improve the best distance; 66 % of the 25 tested triangles have a bounding box already farther than the best (so the closest-point test could not change the answer).
+
+### Changes (all answers bit-identical)
+
+- Triangle corners copied into leaf order (`corners`, `ids`): a leaf is read sequentially instead of `order` -> `triangles` -> three `vertices` loads. Nodes are 64 byte, `u32` indices. `nearest` / `within` no longer take `vertices` / `triangles`.
+- `nearest` carries each node's box distance on the stack (computed once, when the node is pushed) instead of recomputing it when the node is popped.
+- Per-triangle box skip: a leaf triangle whose box distance exceeds `(sqrt(best) + 1e-12 x magnitude)^2 x (1 + 1e-12)` cannot produce a computed squared distance below `best`, so its closest-point test is skipped. The margin covers the rounding of the computed closest point (absolute, scaled by the largest coordinate of mesh and query) and of the box distance (relative). A triangle that ties or nearly ties is never skipped, so the tie-break (first triangle met in the traversal) is untouched.
+- Traversal order, tree shape (`LEAF = 4`, median split on the longest axis), the `<` / `>=` comparisons and the order `within` reports in are unchanged: that is what fixes which of several equidistant triangles is returned.
+- `fea-core/src/tetmesh.rs`: the snap pass sorted `order` by `|sdf|` with `sort_by`, which asked the distance of both points on every comparison (about 2 n log n queries); it now uses `sort_by_cached_key` on the distance's bit pattern (n queries; same stable order).
+
+### Proof
+
+`bvh::tests` keep a verbatim copy of the old tree, traversal and `closest_on_triangle` (`reference`) and compare on bits (squared distance, triangle id, region, closest point; `within` also the order and values reported) on 47,831 query points per mesh: scattered inside and far around the part, on / beside the surface at offsets from 1e-12 to 0.3 of the part size, exactly on vertices, edge midpoints and centroids, one-ulp neighbours, and a lattice that lies on the planes of the box meshes (ties asserted: 1,200 to 1,900 tied queries per grid box). Meshes: the NEMA17 surface, two grid boxes, an icosphere, an icosahedron, a 12-triangle box, and the NEMA17 surface shifted to 1e6 / 1e9, scaled by 1e-6 and 1e4 (the margin scales with magnitude). `tetmesh::tests::cached_distance_sort_matches_the_comparator_sort_on_ties_and_special_values` does the same for the sort. End to end the mesh is identical: tets 206,101, dofs 959,811, and an FNV hash of the node coordinates' bits `d8c394c4d15c1c79` before and after every step.
+
+### Measured
+
+Micro-benchmark `bvh::tests::replay_recorded_queries` (ignored; 2.4 M recorded queries, old and new alternated in one process, seven rounds, medians): old 2.73 s; layout and stack only 2.38 s (0.87); with the box skip 1.90 s (**0.70**).
+
+NEMA17 mesh, alternating mesh-only runs of the old and new binary (`Problem::from_step` + `solid_mesh`; the full `native_step_benchmark` also solves for 80 s):
+
+| Build | mesh seconds | rounds |
+|---|---|---|
+| before | 28.34, 28.29, 28.36 | 3 |
+| layout + stack | 27.55, 27.12, 27.18 | 3 |
+| + triangle box skip | 25.81, 25.86, 25.84 | 3 |
+| + cached-key snap sort | 25.37, 25.35, 25.37 | 3 |
+
+Mesh median 28.3 s -> 25.4 s (-10.5 %); the BVH loop itself is 30 % faster, the rest of the mesher (about 60 % of the run) is unchanged.
+
+### Not done, and why
+
+- Visiting children in a different order, or seeding `best` from the previous query's triangle, would cut node visits (41 per query) but changes which of several equidistant triangles is returned when a box distance equals the best exactly (axis-aligned parts: every flat face). No proof of identical output exists, so it was not tried. A different leaf size or split rule changes the traversal the same way.
+- A plane-distance lower bound per triangle (stored normal): 35 % of tests skippable against 66 % for the box, and the box already leaves more than half of the remaining tests as ones that improve the best; no measurement taken, judged below the bar.
+- Not measured: the NIST corpus, Windows, a large surface mesh (cache behaviour of the new layout is untested at 100k+ triangles).
