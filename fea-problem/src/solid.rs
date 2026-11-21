@@ -147,6 +147,14 @@ fn merge_bodies(parts: Vec<(Mesh, usize)>) -> Mesh {
 /// zones are sketch-plane features and do not apply. Faces are named `face1`.. as `Problem::edge_names` lists them. The bodies of an
 /// assembly are meshed one by one (the size and volume checks run per body) and joined by `Problem::ties` at the solve.
 pub fn solid_mesh(p: &Problem) -> Result<(Mesh, MeshReport), String> {
+    let (mesh, report) = solid_mesh_of_geometry(p)?;
+    check_faces_resolved(p, &mesh)?;
+    Ok((mesh, report))
+}
+
+/// The volume mesh itself, which depends on the geometry, the mesh settings and the material but not on the supports and loads.
+/// A mesh made for a problem without them can be reused by [`check_faces_resolved`] against the real ones.
+fn solid_mesh_of_geometry(p: &Problem) -> Result<(Mesh, MeshReport), String> {
     let solids = solid_surfaces(p)?;
     let ranges = cache_of(p)?.body_faces();
     let h = p.mesh.size;
@@ -172,7 +180,14 @@ pub fn solid_mesh(p: &Problem) -> Result<(Mesh, MeshReport), String> {
     }
     let report = report.ok_or("the STEP solid has no body")?;
     let mesh = if parts.len() == 1 { parts.remove(0).0 } else { merge_bodies(parts) };
-    let unresolved = unresolved_faces(p, &mesh);
+    Ok((mesh, report))
+}
+
+/// Refuse a support or load (mechanical or thermal) on a STEP surface that the mesh does not resolve: a face smaller than the
+/// elements owns no boundary element, and a condition on it would be silently dropped.
+pub(crate) fn check_faces_resolved(p: &Problem, mesh: &Mesh) -> Result<(), String> {
+    let h = p.mesh.size;
+    let unresolved = unresolved_faces(p, mesh);
     let missing: Vec<_> = p.supports.iter().filter_map(Support::edge).chain(p.loads.iter().filter_map(Load::edge))
         .chain(p.thermal.supports.iter().filter_map(crate::thermal::HeatSupport::edge))
         .chain(p.thermal.loads.iter().filter_map(crate::thermal::HeatLoad::edge))
@@ -180,7 +195,7 @@ pub fn solid_mesh(p: &Problem) -> Result<(Mesh, MeshReport), String> {
     if !missing.is_empty() {
         return Err(format!("the mesh does not resolve STEP surfaces {}: reduce element size from {h:.4e}", missing.join(", ")));
     }
-    Ok((mesh, report))
+    Ok(())
 }
 
 /// CAD faces smaller than the volume mesh can remain visible in the body preview
