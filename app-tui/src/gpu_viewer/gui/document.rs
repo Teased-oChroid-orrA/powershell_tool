@@ -33,6 +33,9 @@ const RIBBON_H: f32 = 32.0;
 /// A page window shorter than this drops the header's eyebrow and subtitle so the cards keep the room.
 const SHORT_PAGE_H: f32 = 720.0;/// Below this width the bar's inputs stack.
 const BAR_STACK: f32 = 560.0;
+/// Width of the "N suggestions" badge in a Find-style input.
+const SUGGEST_BADGE_W: f32 = 122.0;
+
 /// A grip moved less than this is a click, not a move.
 const DRAG_LEAST: f32 = 24.0;
 
@@ -1377,16 +1380,38 @@ impl Gui {
         let ctx = ui.ctx().clone();
         let id = Id::new(("doc-input", input.id));
         let pressed = self.doc.suggest_rect.is_some_and(|r| ui.input(|i| i.pointer.interact_pos().is_some_and(|pos| r.contains(pos) && i.pointer.any_down())));
-        if !(ctx.memory(|m| m.has_focus(id)) || pressed) {
+        let open = ctx.memory(|m| m.has_focus(id)) || pressed;
+        // The badge at the input's right end says the suggestions are there and opens them (it also marks them open).
+        let n = input.choices.len();
+        let badge = Rect::from_min_size(Pos2::new(anchor.right() - 6.0 - SUGGEST_BADGE_W, anchor.center().y - 12.0), Vec2::new(SUGGEST_BADGE_W, 24.0));
+        let resp = ui.interact(badge, Id::new(("doc-suggest-badge", input.id)), Sense::click());
+        self.targets.push((format!("{} suggestions", input.label), badge));
+        let hot = resp.hovered() || open;
+        ui.painter().rect(
+            badge,
+            CornerRadius::same(12),
+            with_alpha(p.accent, if hot { 46 } else { 24 }),
+            Stroke::new(1.0, with_alpha(p.accent, if hot { 170 } else { 90 })),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().text(
+            Pos2::new(badge.left() + 11.0, badge.center().y),
+            Align2::LEFT_CENTER,
+            format!("{n} suggestion{}", if n == 1 { "" } else { "s" }),
+            FontId::proportional(11.5),
+            p.accent,
+        );
+        let c = Pos2::new(badge.right() - 12.0, badge.center().y);
+        let dy = if open { 2.0 } else { -2.0 };
+        ui.painter().add(Shape::line(
+            vec![c + Vec2::new(-3.5, dy), c + Vec2::new(0.0, -dy), c + Vec2::new(3.5, dy)],
+            Stroke::new(1.4, p.accent),
+        ));
+        if resp.on_hover_text("Words from your results and synonyms that could improve this search; click, or press Down in the box").clicked() {
+            ctx.memory_mut(|m| m.request_focus(id));
+        }
+        if !open {
             self.doc.suggest_rect = None;
-            let n = input.choices.len();
-            ui.painter().text(
-                Pos2::new(anchor.right() - 12.0, anchor.center().y),
-                Align2::RIGHT_CENTER,
-                format!("{n} suggestion{}", if n == 1 { "" } else { "s" }),
-                FontId::proportional(11.5),
-                p.dim.gamma_multiply(0.85),
-            );
             return;
         }
         let width = anchor.width();
@@ -1502,9 +1527,11 @@ impl Gui {
             .trailing
             .as_ref()
             .map_or(0.0, |e| e.label.len() as f32 * 7.0 + 22.0);
+        // The suggestions badge (drawn by `suggestion_pills`) takes the input's right end.
+        let badge_w = if input.suggest && !input.choices.is_empty() { SUGGEST_BADGE_W + 4.0 } else { 0.0 };
         let edit_rect = Rect::from_min_max(
             rect.min + Vec2::new(10.0, 0.0),
-            Pos2::new(rect.right() - 8.0 - trailing_w, rect.bottom()),
+            Pos2::new(rect.right() - 8.0 - trailing_w - badge_w, rect.bottom()),
         );
         let mut text = input.text.clone();
         let id = Id::new(("doc-input", input.id));
