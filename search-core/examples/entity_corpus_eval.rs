@@ -8,6 +8,8 @@
 //! first pattern hint, any pattern hint (the ceiling for the constrained ranker), raw MiniLM top-one, and MiniLM top-one
 //! restricted to the pattern hints (what the Search window shows). Candidates outside gold spans are not scored: both
 //! corpora label only some categories, so a candidate without a gold span is not a known false positive.
+#[path = "support/gliner.rs"]
+mod gliner;
 use search_core::entities::{extract_entities, EntityCandidate, EntityKind};
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -43,6 +45,10 @@ struct Tally {
     any_hint: usize,
     raw_top1: usize,
     constrained: usize,
+    /// GLiNER (`--gliner`): any span overlapping the gold, a span with the mapped label, and the exact gold span.
+    gl_any: usize,
+    gl_label: usize,
+    gl_exact: usize,
 }
 
 fn aerobert(dir: &Path) -> Vec<Sentence> {
@@ -156,7 +162,25 @@ fn overlap(a: &Range<usize>, b: &Range<usize>) -> usize {
     a.end.min(b.end).saturating_sub(a.start.max(b.start))
 }
 
-fn evaluate(name: &str, sentences: &[Sentence], misses: usize) {
+/// Zero-shot labels offered to GLiNER; `gliner_label` maps a scored kind to its index.
+const GLINER_LABELS: [&str; 5] = ["part number", "fastener callout", "standard", "material", "dimension"];
+
+fn gliner_label(kind: EntityKind) -> usize {
+    match kind {
+        EntityKind::Standard => 2,
+        EntityKind::Material => 3,
+        _ => 4,
+    }
+}
+
+struct GlinerRun<'a> {
+    model: &'a gliner::Gliner,
+    threshold: f32,
+    sentences: std::cell::Cell<usize>,
+    time: std::cell::Cell<std::time::Duration>,
+}
+
+fn evaluate(name: &str, sentences: &[Sentence], misses: usize, gl: Option<&GlinerRun>) {
     let cancel = CancellationToken::new();
     let mut tallies: BTreeMap<(&str, EntityKind), Tally> = BTreeMap::new();
     let mut shown = 0;
@@ -165,10 +189,23 @@ fn evaluate(name: &str, sentences: &[Sentence], misses: usize) {
             continue;
         }
         let extraction = extract_entities(&sentence.text, &cancel).expect("entity extraction");
+        let spans = gl.map(|g| {
+            let t = std::time::Instant::now();
+            let spans = g.model.extract(&sentence.text, &GLINER_LABELS, g.threshold);
+            g.time.set(g.time.get() + t.elapsed());
+            g.sentences.set(g.sentences.get() + 1);
+            spans
+        });
         for gold in &sentence.gold {
             let Some(&(_, label, kind)) = MAPPING.iter().find(|m| m.0 == name && m.1 == gold.label) else { continue };
             let tally = tallies.entry((label, kind)).or_default();
             tally.gold += 1;
+            if let Some(spans) = &spans {
+                let hits: Vec<_> = spans.iter().filter(|sp| overlap(&sp.bytes, &gold.bytes) > 0).collect();
+                tally.gl_any += usize::from(!hits.is_empty());
+                tally.gl_label += usize::from(hits.iter().any(|sp| sp.label == gliner_label(kind)));
+                tally.gl_exact += usize::from(hits.iter().any(|sp| sp.label == gliner_label(kind) && sp.bytes == gold.bytes));
+            }
             let best: Option<&EntityCandidate> = extraction
                 .candidates
                 .iter()
@@ -194,6 +231,9 @@ fn evaluate(name: &str, sentences: &[Sentence], misses: usize) {
             "{name:9} {label:9} as {kind:?}: gold={} found={} exact_span={} | of found: first_hint={} any_hint={} raw_minilm={} minilm_in_hints={}",
             t.gold, t.found, t.exact, t.first_hint, t.any_hint, t.raw_top1, t.constrained
         );
+        if gl.is_some() {
+            println!("{:30}GLiNER: found_any_label={} found_right_label={} exact_span_right_label={}", "", t.gl_any, t.gl_label, t.gl_exact);
+        }
     }
 }
 
@@ -211,6 +251,18 @@ fn main() {
     let aero = aerobert(Path::new(&args[0]));
     let fuel = sofc(Path::new(&args[1]));
     println!("aeroBERT sentences {}, SOFC-Exp flagged sentences {}", aero.len(), fuel.len());
-    evaluate("aeroBERT", &aero, misses);
-    evaluate("SOFC-Exp", &fuel, misses);
+    let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1));
+    let run = flag("--gliner").map(|dir| GlinerRun {
+        model: Box::leak(Box::new(gliner::Gliner::load(Path::new(dir)))),
+        threshold: flag("--threshold").and_then(|t| t.parse().ok()).unwrap_or(0.5),
+        sentences: Default::default(),
+        time: Default::default(),
+    });
+    for (name, sentences) in [("aeroBERT", &aero), ("SOFC-Exp", &fuel)] {
+        evaluate(name, sentences, misses, run.as_ref());
+        if let Some(g) = &run {
+            let n = g.sentences.take().max(1);
+            println!("{name}: GLiNER threshold {} over {n} sentences, {:.1} ms per sentence", g.threshold, g.time.take().as_secs_f64() * 1000.0 / n as f64);
+        }
+    }
 }

@@ -16,6 +16,8 @@
 //! * Precision proxy: of the extractor's PartNumber candidates, how many overlap gold. A candidate outside gold is
 //!   *unknown*, not wrong (an uncued part number is real). `--sample N` prints N random unknown candidates with their
 //!   context so a person can judge them; the reviewed counts are recorded in `docs/knowledge-engine-audit.md`.
+#[path = "support/gliner.rs"]
+mod gliner;
 use regex::Regex;
 use search_core::entities::{extract_candidates, EntityKind};
 use std::collections::BTreeMap;
@@ -106,6 +108,19 @@ fn main() {
     let joiner = Regex::new(JOINERS).unwrap();
     let tags = Regex::new(r"<[^>]*>").unwrap();
     let raw_mode = args.iter().any(|a| a == "--raw");
+    // `--gliner <model dir> [--threshold T] [--gliner-files N]`: run GLiNER with the label "part number" (and four others,
+    // as in entity_corpus_eval) on N evenly spaced files and score it next to the pattern extractor on the same files.
+    let gl_model = args.windows(2).find(|w| w[0] == "--gliner").map(|w| gliner::Gliner::load(Path::new(&w[1])));
+    let gl_threshold = args.windows(2).find(|w| w[0] == "--threshold").and_then(|w| w[1].parse::<f32>().ok()).unwrap_or(0.5);
+    let gl_files = flag("--gliner-files").unwrap_or(40) as usize;
+    let labels = ["part number", "fastener callout", "standard", "material", "dimension"];
+    // (gold first, found first, gold rest, found rest) for GLiNER and the pattern extractor on the GLiNER files.
+    let (mut gl_gold, mut gl_hit_first, mut gl_hit_rest, mut gl_gold_first, mut gl_gold_rest) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut pat_hit_first, mut pat_hit_rest) = (0usize, 0usize);
+    let (mut gl_cands, mut gl_cands_gold, mut gl_docs, mut gl_words) = (0usize, 0usize, 0usize, 0usize);
+    let mut gl_time = std::time::Duration::ZERO;
+    let mut gl_unknown: Vec<(String, String, f32)> = Vec::new();
+    let mut gl_by_label = [0usize; 5];
 
     let mut files: Vec<_> = std::fs::read_dir(Path::new(dir))
         .expect("faa-ad dir")
@@ -123,7 +138,7 @@ fn main() {
     let mut files_with_gold = 0usize;
     let mut capped_files = 0usize;
 
-    for path in &files {
+    for (file_index, path) in files.iter().enumerate() {
         let text = std::fs::read_to_string(path).expect("read");
         let text = if raw_mode { text } else { clean(&text, &tags) };
         let gold = gold_spans(&text, &cue, &token, &joiner);
@@ -133,6 +148,36 @@ fn main() {
         let extraction = extract_candidates(&text);
         if extraction.coverage.candidate_limit_reached {
             capped_files += 1;
+        }
+        if let Some(model) = gl_model.as_ref().filter(|_| file_index % (files.len() / gl_files.max(1)).max(1) == 0 && gl_docs < gl_files) {
+            gl_docs += 1;
+            gl_words += text.split_whitespace().count();
+            let t = std::time::Instant::now();
+            let spans = model.extract(&text, &labels, gl_threshold);
+            gl_time += t.elapsed();
+            let pattern: Vec<Range<usize>> = extraction.candidates.iter().filter(|c| c.shape_hints.contains(&EntityKind::PartNumber)).map(|c| c.bytes.clone()).collect();
+            let parts: Vec<&gliner::Span> = spans.iter().filter(|sp| sp.label == 0).collect();
+            for sp in &spans {
+                gl_by_label[sp.label] += 1;
+            }
+            for (g, first) in &gold {
+                gl_gold += 1;
+                let hit = parts.iter().any(|sp| overlaps(&sp.bytes, g));
+                let pat = pattern.iter().any(|c| overlaps(c, g));
+                if *first {
+                    (gl_gold_first, gl_hit_first, pat_hit_first) = (gl_gold_first + 1, gl_hit_first + usize::from(hit), pat_hit_first + usize::from(pat));
+                } else {
+                    (gl_gold_rest, gl_hit_rest, pat_hit_rest) = (gl_gold_rest + 1, gl_hit_rest + usize::from(hit), pat_hit_rest + usize::from(pat));
+                }
+            }
+            for sp in &parts {
+                gl_cands += 1;
+                if gold.iter().any(|(g, _)| overlaps(g, &sp.bytes)) {
+                    gl_cands_gold += 1;
+                } else {
+                    gl_unknown.push((path.file_name().unwrap().to_string_lossy().to_string(), context(&text, &sp.bytes), sp.score));
+                }
+            }
         }
         let part: Vec<Range<usize>> = extraction
             .candidates
@@ -199,6 +244,26 @@ fn main() {
         println!("  {n:4}  {t}");
     }
 
+    if gl_model.is_some() {
+        println!("\nGLiNER threshold {gl_threshold} on {gl_docs} evenly spaced files ({gl_words} words): {:.1} s total, {:.2} s per file, {:.2} ms per 100 words",
+            gl_time.as_secs_f64(), gl_time.as_secs_f64() / gl_docs.max(1) as f64, gl_time.as_secs_f64() * 1e5 / gl_words.max(1) as f64);
+        println!("  gold on these files {gl_gold}: token after cue {gl_gold_first}, later list tokens {gl_gold_rest}");
+        println!("  GLiNER 'part number' recall: after cue {gl_hit_first}/{gl_gold_first} ({:.1}%), later {gl_hit_rest}/{gl_gold_rest} ({:.1}%)", pct(gl_hit_first, gl_gold_first), pct(gl_hit_rest, gl_gold_rest));
+        println!("  pattern extractor, same files: after cue {pat_hit_first}/{gl_gold_first} ({:.1}%), later {pat_hit_rest}/{gl_gold_rest} ({:.1}%)", pct(pat_hit_first, gl_gold_first), pct(pat_hit_rest, gl_gold_rest));
+        println!("  GLiNER 'part number' spans {gl_cands}: overlap gold {gl_cands_gold} ({:.1}%), unknown {}", pct(gl_cands_gold, gl_cands), gl_cands - gl_cands_gold);
+        println!("  GLiNER spans by label {:?}: {:?}", labels, gl_by_label);
+        if sample > 0 && !gl_unknown.is_empty() {
+            println!("\nrandom GLiNER 'part number' spans outside gold (to read):");
+            let mut picked = std::collections::BTreeSet::new();
+            while picked.len() < sample.min(gl_unknown.len()) {
+                picked.insert((next(&mut rng) % gl_unknown.len() as u64) as usize);
+            }
+            for i in picked {
+                let (file, ctx, score) = &gl_unknown[i];
+                println!("#{i}\t{score:.2}\t{file}\t{ctx}");
+            }
+        }
+    }
     if misses > 0 {
         println!("\nmissed first tokens: {} (showing {})", missed_first.len(), misses.min(missed_first.len()));
         let step = (missed_first.len() / misses.max(1)).max(1);
