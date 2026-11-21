@@ -15,8 +15,8 @@ Does not own: any preload, torque, stiffness or stress formula (`fastened-joint-
 | The picture: member shells, cut faces, shank; four FE stress fields; part codes before the FE answers | `drawing.rs` |
 | The saved case (JSON: numbers by name, members, mode / tightening / bearing by label, switches) | `file.rs` |
 | Session tests | `tests.rs` |
-| Input-level test (click Applied Torque, type, open the bolt picker) | `gpu_viewer/window.rs` `the_preload_workbench_*` |
-| GPU snapshots (parts, inputs / results dark and light, narrow, picker) | `gpu_viewer/render.rs` `preload_snapshot` (`FEA_SNAPSHOT_PRELOAD_OUT=dir`, ignored) |
+| Input-level test (click Applied Torque, type, open the bolt picker) | `gpu_viewer/window/tests/workbenches.rs` `the_preload_workbench_*` |
+| GPU snapshots (parts, inputs / results dark and light, narrow, picker) | `gpu_viewer/render/snapshot_tests/analysis_workbenches.rs` `preload_snapshot` (`FEA_SNAPSHOT_PRELOAD_OUT=dir`, ignored) |
 
 ## Contracts
 - **The window is the only head** (the terminal toolbox was removed 2026-11-03). It wraps `PreloadModel` directly; never re-implement a row, a check or a formula here.

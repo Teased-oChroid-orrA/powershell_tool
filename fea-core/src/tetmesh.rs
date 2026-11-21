@@ -583,7 +583,7 @@ pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<
             // elements far smaller than `boundary_size`, a global reach would pull several vertices onto one feature point.
             let local: Vec<f64> = (0..p.len()).map(|v| neighbours[v].iter().map(|&u| norm(sub(p[u], p[v]))).fold(0.0, f64::max).min(opts.boundary_size)).collect();
             let mut order: Vec<usize> = (0..p.len()).filter(|&v| on_boundary[v]).collect();
-            order.sort_by(|&a, &b| (s.sdf)(p[a]).abs().total_cmp(&(s.sdf)(p[b]).abs()));
+            sort_by_surface_distance(&mut order, |v| (s.sdf)(p[v]).abs());
             for _pass in 0..SNAP_PASSES {
                 let mut moved_any = false;
                 for &v in &order {
@@ -1038,6 +1038,18 @@ fn face_of_triangle(s: &Solid, v: [V3; 3], size: f64) -> usize {
     (s.face_of)(centre)
 }
 
+/// Stable sort of `order` by a non-negative distance, evaluating the distance once per element. The key is the IEEE bit pattern of
+/// the distance, which for values with a clear sign bit orders exactly as `f64::total_cmp` does; the sort is stable, so equal
+/// distances keep their order. Same order as `sort_by(|a, b| d(a).total_cmp(&d(b)))`, with `n` distance queries instead of
+/// about `2 n log n` (a surface distance is a BVH walk).
+fn sort_by_surface_distance(order: &mut [usize], distance: impl Fn(usize) -> f64) {
+    order.sort_by_cached_key(|&v| {
+        let d = distance(v);
+        debug_assert!(!d.is_sign_negative());
+        d.to_bits()
+    });
+}
+
 #[cfg(test)]
 mod tests {
     fn concave_faces(x: V3) -> Vec<FaceHit> {
@@ -1412,6 +1424,40 @@ mod tests {
             assert_eq!(old.1, new.1, "{name}: tetrahedra");
             assert_eq!(old.2, new.2, "{name}: alive flags");
             assert!(new_calls * 2 < old_calls, "{name}: distance queries {old_calls} -> {new_calls}");
+        }
+    }
+
+    #[test]
+    fn cached_distance_sort_matches_the_comparator_sort_on_ties_and_special_values() {
+        // many exact ties, zeros, infinities and a NaN (all with a clear sign bit, as `abs()` leaves them)
+        let mut state = 0x2545F4914F6CDD1Du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for n in [0usize, 1, 2, 17, 500, 5000] {
+            let values: Vec<f64> = (0..n)
+                .map(|_| match next() % 9 {
+                    0 => 0.0,
+                    1 => f64::INFINITY,
+                    2 => f64::NAN,
+                    3 => f64::MIN_POSITIVE,
+                    4 => 1.0,
+                    _ => (next() % 40) as f64 * 0.125 + f64::from_bits(next() % 3),
+                })
+                .collect();
+            let mut by_comparator: Vec<usize> = (0..n).collect();
+            by_comparator.sort_by(|&a, &b| values[a].abs().total_cmp(&values[b].abs()));
+            let mut cached: Vec<usize> = (0..n).collect();
+            let calls = std::cell::Cell::new(0usize);
+            sort_by_surface_distance(&mut cached, |v| {
+                calls.set(calls.get() + 1);
+                values[v].abs()
+            });
+            assert_eq!(cached, by_comparator, "n = {n}");
+            assert_eq!(calls.get(), if n < 2 { 0 } else { n }, "one distance query per element (none to sort fewer than two)");
         }
     }
 }

@@ -13,7 +13,7 @@ Does not own: detection (`solid-kernel/src/features.rs`), the advice items and t
 | Tree, "Assembly advice" / "Why" / Summary cards, ribbon, menus, status summary | `cards.rs` |
 | Scene: shared vertices per face, body parity colour codes, selected code 3, `explode_offsets` | `scene.rs` |
 | Unit tests (fixture `solid-kernel/tests/data/assembly-stacked-plates.step`) | `tests.rs` |
-| GPU snapshots (none / fastener / interface exploded / joined / light / slid plates with an unmated hole) | `gpu_viewer/render.rs` `assembly_snapshot` (`FEA_SNAPSHOT_ASSEMBLY_OUT=dir`, ignored) |
+| GPU snapshots (none / fastener / interface exploded / joined / light / slid plates with an unmated hole) | `gpu_viewer/render/snapshot_tests/fit_workbenches.rs` `assembly_snapshot` (`FEA_SNAPSHOT_ASSEMBLY_OUT=dir`, ignored) |
 
 ## Contracts
 - **Read-only.** No `Problem`, no file written, `dirty()` is always false. A `Problem` holds one body; applying a tie or fastener waits for the multi-body representation (epic Phase C).
