@@ -660,6 +660,9 @@ pub struct DocInput {
     pub help: Option<DocHelp>,
     /// A segmented choice right of the input (how an exclusion applies); the checked entry is the current one.
     pub choices: Vec<Entry>,
+    /// `choices` are suggestions for what to type: drawn as pills in an overlay under the input while it has focus
+    /// (no page space of their own), not as a segmented control.
+    pub suggest: bool,
 }
 
 /// A banner over the table with its actions (the fast index is out of date: Update / Not now).

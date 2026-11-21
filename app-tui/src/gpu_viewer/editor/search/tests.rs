@@ -515,11 +515,9 @@ fn neural_autocomplete_ranks_corpus_phrases_without_changing_exact_results() {
     let expected =
         search_core::neural_search::rank_suggestions(&context, &inputs).unwrap()[0].index;
     let choices = &view::document(&s).inputs[1].choices;
-    // Terms the neural grouping finds related fold into the chip as " (also ...)".
+    // The first pill is the top-ranked term; related terms fold into it as " x<count>".
     assert!(
-        choices[0]
-            .label
-            .starts_with(&format!("Related from hits: {}", candidates[expected])),
+        choices[0].label.starts_with(candidates[expected].as_str()),
         "unexpected first chip {:?}",
         choices[0].label
     );

@@ -284,6 +284,7 @@ impl StackupSession {
             submit: Some(action(StackupAct::Recalculate)),
             commit_on_blur: true,
             grow: 1.0,
+            suggest: false,
             trailing: matches!(id, 26 | 27).then(|| Entry::new("Choose", "", action(StackupAct::OpenMaterial(id)))),
             help: None,
             choices: vec![],
