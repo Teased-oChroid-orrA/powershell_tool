@@ -493,3 +493,22 @@ Read: every sub-1 GB model loses by 18 to 44 points on the judge and recalls 2 t
 | Qwen3-4B Q4_K_M (NL-find reference) | not in tree | 2,497 MB |
 
 Totals if each were added to the binary as a separate file: today 156 MB; with MiniLM int8 about 89 MB (estimate); plus GLiNER `emb8` about 473 MB; plus one 1B LLM about 1.3 GB; plus the 4B judge about 2.7 GB. Every model that the evidence supports staying in (MiniLM, OCR) is far under 1 GB; the only candidate that clears the quality bar for NL-find (4B) is 2.5x the 1 GB cap, and the only one under the cap that is useful for entities (GLiNER) is not worth its speed. Reproduction notes: GLiNER ONNX patch and quantization were done with `onnx` and `onnxruntime` in a throwaway venv (no code in the repo); the eval changes are `search-core/examples/support/gliner.rs`, `gliner_probe.rs` and the `--gliner` flags in `entity_corpus_eval.rs`.
+
+## 2026-11-21: Dimension units on FAA Airworthiness Directives (90% of candidates were noise; list widened with evidence)
+
+The unit list in `entities.rs` had been left unwidened (2026-11-20) until its precision could be measured on real text. `examples/entity_faa_eval.rs --units` (new) tabulates the Dimension candidates of the 400 FAA ADs by unit word. There is no labelled gold for quantities, so this is a count plus a read of the contexts, not a recall figure.
+
+Before: **1,670 Dimension candidates, about 1,508 of them not quantities.** `2701 N Forum Drive` (an address, read as 2701 newtons) 1,356; `frame No. 9 in accordance` (the preposition) 152. The real ones were `mm` 112, `Nm` 18 (one `5-6 Nm` was captured with a minus sign), `ft` 7, `millimeter(s)` 11, `cm` 5, `lbf` 5, `ft-lb` 2, `inches` 1, `lb` 1. Quantities the ADs use and the list missed: `daN` and `daN.m` (12), `lbs` (6), `inch-pounds` (6), `Hz` (11), `degrees` (6), `rpm` (3), `feet` (1), and `1,500 ft` lost its thousands comma.
+
+Changes (all in `entities.rs`, `EXTRACTOR` is now `pattern-v5`):
+- `N` is a newton only attached to its number (`50N`), or spaced and followed by `/` or `·` (`12 N/mm`); not when hyphen-joined (`Room 6N-321`). `SA 365 N` and `2701 N Forum` read exactly like `50 N`, so a spaced `50 N` is no longer found; ADs write `daN`.
+- `in` after a space is the unit only when what follows is not a word, or is a dimension word (`x`, `by`, `thick`, `diameter`, ...). At a line end it is the preposition ("AD 2013-12-06 in" then "lieu of"), so `in` at a line end is not taken; a closing `)` or `.` after it is ("(1.477 in)").
+- A number glued to a letter or hyphenated into an identifier is not a quantity (`SA-365N`, `B672 mm`); a hyphen after a digit is a range, so `5-6 Nm` is `6 Nm`.
+- Units added: `daN`, `daN.m` / `daN·m`, `lbs`, `in-lb(s)`, `ft-lb(s)`, `inch-pounds`, `Hz`, `rpm`, `degree(s)`, `feet`. Time (hours, days, work-hours: about 2,400 number-word pairs in these ADs) is a compliance interval or a labour cost, not a dimension, and is left out. Not added for want of evidence in these files: `kN`, `kg`, `kPa`, `bar`, `%`.
+
+After: **249 Dimension candidates**, six of them noise (`SA 365N` model names, attached `N`), 38 `in` of which a rule check over the 400 files found 36 followed by `)`, `.` or `x`-type words, so inches. The remaining known misses: `sub-50 nm` (a prefix hyphen reads as an identifier), `%`, and a spaced `50 N`.
+
+Cost on the public corpora (`entity_corpus_eval`, found-gold, same mapping): aeroBERT VAL as Dimension 19 -> 58 of 659; SOFC-Exp VALUE as Dimension 494 -> 472 of 1,475. SOFC loses 22 (24 against the same widened list with the guard switched off, found by toggling it): 16 come from the `N` / `in` rules, where text such as "4 In the field of ..." (a citation number then the word "In", 73 occurrences) and "O2 in" matched as an inch dimension and overlapped some gold; 8 come from the glued-number and hyphen rules (`sub-50 nm`, `x-nm` forms). I did not read each of the 24, so "mostly prepositions" is the likely reading, not a verified one. The earlier Dimension columns of the 2026-11-20 and 2026-11-21 tables were therefore somewhat flattered by prepositions.
+
+Limits: ADs hold few quantities and few unit kinds; precision here is read from contexts by one person, and the guard is English-text tuned (the word list after `in`). A bill of materials with `5 in` lines at line ends would lose them.
+
