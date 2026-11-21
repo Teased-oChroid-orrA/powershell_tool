@@ -107,6 +107,24 @@ thread_local! {
 fn e(label: &str, shortcut: &str, a: SearchAct) -> Entry {
     Entry::new(label, shortcut, act(a))
 }
+/// A suggestion as a pill: a term mined from the hits shows as the bare term (`also` = how many other related terms
+/// it stands for, named in the hover text); everything else keeps its label.
+fn pill(candidate: &QuerySuggestion, also: &[&str]) -> Entry {
+    if !matches!(candidate.action, SearchAct::AddCorpusTerm(_)) {
+        return e(&candidate.label, "", candidate.action);
+    }
+    let label = if also.is_empty() {
+        candidate.term.clone()
+    } else {
+        format!("{} \u{d7}{}", candidate.term, also.len() + 1)
+    };
+    let detail = if also.is_empty() {
+        "related from hits".to_string()
+    } else {
+        format!("related from hits; adds only this one; same idea: {}", also.join(", "))
+    };
+    e(&label, &detail, candidate.action)
+}
 fn when(entry: Entry, ok: bool, why: &str) -> Entry {
     entry.when(if ok { Ok(()) } else { Err(why.to_string()) })
 }
@@ -421,9 +439,8 @@ pub(super) fn neural_suggestion_inputs(s: &SearchSession) -> (String, Vec<String
 }
 
 /// The first `limit` suggestions in `order`, one per group of related-from-hits terms: a term that the neural
-/// grouping puts with one already shown is folded into that chip instead of taking a slot, and the chip names the
-/// first such term ("also ..., +N") unless it only repeats part of the shown phrase. The label stays short: the row
-/// of chips does not wrap.
+/// grouping puts with one already shown is folded into that pill instead of taking a slot. The pill counts the folded
+/// terms ("term x3") and its hover text names them, unless a folded term only repeats part of the shown phrase.
 /// Only terms mined from the hits are folded; synonyms and corrections always stand alone. Clicking a chip adds
 /// only the term it names.
 #[cfg(feature = "neural-search")]
@@ -447,7 +464,6 @@ fn collapse_similar(
         if folded.contains(&i) {
             continue;
         }
-        let mut label = candidate.label.clone();
         if is_term(i) {
             let related: Vec<usize> = groups
                 .iter()
@@ -458,7 +474,7 @@ fn collapse_similar(
                 .filter(|&other| other != i && is_term(other) && !folded.contains(&other))
                 .collect();
             // A related term that is a word-run of the shown one (or contains it) is the same phrase cut differently:
-            // fold it without naming it.
+            // fold it without naming or counting it.
             let nested = |other: usize| {
                 let (a, b) = (
                     format!(" {} ", candidate.term.to_lowercase()),
@@ -466,22 +482,16 @@ fn collapse_similar(
                 );
                 a.contains(&b) || b.contains(&a)
             };
-            let named: Vec<usize> = related.iter().copied().filter(|&o| !nested(o)).collect();
-            if let Some(&first) = named.first() {
-                let more = named.len() - 1;
-                label = format!(
-                    "{label} (also {}{})",
-                    candidates[first].term,
-                    if more > 0 {
-                        format!(", +{more}")
-                    } else {
-                        String::new()
-                    }
-                );
-            }
+            let also: Vec<&str> = related
+                .iter()
+                .filter(|&&o| !nested(o))
+                .map(|&o| candidates[o].term.as_str())
+                .collect();
             folded.extend(related);
+            chips.push(pill(candidate, &also));
+        } else {
+            chips.push(pill(candidate, &[]));
         }
-        chips.push(e(&label, "", candidate.action));
         if chips.len() == limit {
             break;
         }
@@ -519,19 +529,20 @@ mod collapse_tests {
         let chips = collapse_similar(&c, &[0, 1, 2, 3], &[vec![0, 1], vec![2], vec![3]], 3);
         assert_eq!(
             labels(&chips),
-            [
-                "Related from hits: a (also b)",
-                "Related from hits: c",
-                "Related from hits: d"
-            ]
+            ["a \u{d7}2", "c", "d"]
         );
+        assert_eq!(
+            chips[0].shortcut,
+            "related from hits; adds only this one; same idea: b"
+        );
+        assert_eq!(chips[1].shortcut, "related from hits");
     }
 
     #[test]
     fn more_than_two_related_terms_show_a_count() {
         let c = [term("a", 0), term("b", 1), term("c", 2), term("d", 3)];
         let chips = collapse_similar(&c, &[0, 1, 2, 3], &[vec![0, 1, 2, 3]], 3);
-        assert_eq!(labels(&chips), ["Related from hits: a (also b, +2)"]);
+        assert_eq!(labels(&chips), ["a \u{d7}4"]);
     }
 
     #[test]
@@ -545,10 +556,10 @@ mod collapse_tests {
         let chips = collapse_similar(&c, &[0, 1, 2, 3], &[vec![0, 1, 2, 3]], 3);
         assert_eq!(
             labels(&chips),
-            ["Related from hits: lug fatigue limit (also fatigue life)"]
+            ["lug fatigue limit \u{d7}2"]
         );
         let chips = collapse_similar(&c[..3], &[0, 1, 2], &[vec![0, 1, 2]], 3);
-        assert_eq!(labels(&chips), ["Related from hits: lug fatigue limit"]);
+        assert_eq!(labels(&chips), ["lug fatigue limit"]);
     }
 
     #[test]
@@ -565,7 +576,7 @@ mod collapse_tests {
         let chips = collapse_similar(&c, &[0, 1, 2], &[vec![0, 1, 2]], 3);
         assert_eq!(
             labels(&chips),
-            ["Expand with a", "Related from hits: b (also c)"]
+            ["Expand with a", "b \u{d7}2"]
         );
     }
 
@@ -574,14 +585,14 @@ mod collapse_tests {
         let c = [term("a", 0), term("b", 1), term("c", 2), term("d", 3)];
         let chips = collapse_similar(&c, &[0, 1, 2, 3], &[vec![0], vec![1], vec![2], vec![3]], 2);
         assert_eq!(chips.len(), 2);
-        assert_eq!(chips[1].label.to_string(), "Related from hits: b");
+        assert_eq!(chips[1].label.to_string(), "b");
     }
 
     #[test]
     fn out_of_range_indices_are_skipped() {
         let c = [term("a", 0)];
         let chips = collapse_similar(&c, &[5, 0], &[vec![0, 7]], 3);
-        assert_eq!(labels(&chips), ["Related from hits: a"]);
+        assert_eq!(labels(&chips), ["a"]);
     }
 }
 
@@ -608,7 +619,7 @@ fn find_suggestions(s: &SearchSession) -> Vec<Entry> {
                 candidates
                     .iter()
                     .take(3)
-                    .map(|candidate| e(&candidate.label, "", candidate.action)),
+                    .map(|candidate| pill(candidate, &[])),
             );
         }
         suggestions
@@ -619,7 +630,7 @@ fn find_suggestions(s: &SearchSession) -> Vec<Entry> {
             candidates
                 .into_iter()
                 .take(3)
-                .map(|candidate| e(&candidate.label, "", candidate.action)),
+                .map(|candidate| pill(&candidate, &[])),
         );
         suggestions
     }
@@ -645,6 +656,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
             submit: Some(act(SearchAct::Run)),
             commit_on_blur: false,
             grow: 1.0,
+            suggest: false,
             trailing: Some(e("Browse", "", SearchAct::BrowseFolder)),
             help: None,
             choices: recent_folder_suggestions(s),
@@ -659,6 +671,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
             submit: Some(act(SearchAct::Run)),
             commit_on_blur: false,
             grow: 1.5,
+            suggest: true,
             trailing: None,
             help: Some(find_help()),
             choices: find_suggestions(s),
@@ -983,6 +996,7 @@ fn exclude_input(s: &SearchSession) -> DocInput {
         submit: Some(act(SearchAct::Run)),
         commit_on_blur: false,
         grow: 1.0,
+        suggest: false,
         trailing: None,
         help: Some(exclude_help()),
         choices: vec![
@@ -1049,6 +1063,7 @@ fn output_input(s: &SearchSession) -> DocInput {
         submit: None,
         commit_on_blur: false,
         grow: 1.0,
+        suggest: false,
         trailing: Some(e("Browse", "", SearchAct::BrowseOutput)),
         help: None,
         choices: Vec::new(),
@@ -1261,6 +1276,7 @@ fn table(s: &SearchSession) -> DocTable {
             submit: None,
             commit_on_blur: false,
             grow: 1.0,
+            suggest: false,
             trailing: None,
             help: None,
             choices: Vec::new(),
