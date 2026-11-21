@@ -389,6 +389,33 @@ Not covered, and no public labelled source was found for them: PartNumber, Faste
 
 Not done: widening the Dimension unit list. The gap is measured (above), but whether adding `kg`, `V`, `W`, `%`, `ft` and the rest helps retrieval or only adds noise candidates needs a precision check on a real corpus first; the proxy corpora cannot give one.
 
+## 2026-11-20: part numbers on FAA Airworthiness Directives (cue-labelled), and four extractor fixes
+
+Question: the previous section found no public labelled set for part numbers. The 400 FAA Airworthiness Directives in `../benchmarks/faa-ad/` (public domain, Federal Register HTML pages, 184 of them name part numbers) name them explicitly, so how does the PartNumber extractor do on them?
+
+Method (`search-core/examples/entity_faa_eval.rs`; `cargo run -p search-core --release --features neural-search --example entity_faa_eval -- <faa-ad dir> --sample 80 --seed 7 --misses 25`). The page wrapper is stripped first (text inside `<pre>`, tags removed; `--raw` keeps the file as downloaded, where the Cloudflare script tail alone added `cdn-cgi`, `email-protection`, `data-cfemail` as 2,264 / 1,864 / 1,863 candidates). Gold is *cue-labelled*: a token is gold when it sits in an explicit list after "P/N", "P/Ns", "PN", "part number", "part number (P/N)", joined by commas, "or", "and", "through". The labeller runs on the whole file (so it sees cues that wrap across lines) and shares no pattern with `entities.rs`, but it is one author's rule, not an annotator's judgement, and it labels only cued part numbers: 1,405 gold spans, 1,113 of them the token right after a cue and 292 later items of a list. Uncued part numbers (a table of numbers with no "P/N") are not in the gold, so a candidate outside gold is *unknown*, not wrong.
+
+| | Before | After |
+|---|---:|---:|
+| Recall, token right after the cue (overlap / exact span) | 79.7% / 70.9% | 97.7% / 92.3% |
+| Recall, later list items (overlap / exact span) | 67.1% / 59.9% | 81.2% / 72.9% |
+| Candidates with a PartNumber hint | 30,273 | 24,160 |
+| Of those, overlapping gold | 1,147 (3.8%) | 1,371 (5.7%) |
+
+What the misses and the unknown candidates showed, and the fix for each (all in `search-core/src/entities.rs`, each with a regression test):
+
+1. `part number (P/N) 200181` dropped the cue: the parenthesised "(P/N)" between "part number" and the token blocked the match, so only tokens that also had a hyphen were found. "P/Ns" was not a cue, and the cue had no word boundary (it matched inside "MP/N", "stoP N"). Cue now: `\b(P/N|P/Ns|PN|PNs|part number(s)|part no.)` with an optional "(P/N)" after it.
+2. A list named only its first part number ("P/N 200181 or 704A34112012", "P/Ns A, B, and C"). Items after a comma, "or", "and" or "and/or" are now candidates when they are at least four characters long and contain a digit; the first item that is not one ends the list, so "or inspect the rod within 100 hours, 12 times" is not taken.
+3. The sentence period stayed in the span ("P/N 4639." was `4639.`): trailing `.`, `/` and `-` are trimmed from cued tokens.
+4. A cue at the end of a line with the number on the next line (the Federal Register wraps at about 70 columns; the scan is per line) found nothing; the cue state now carries to the next line's first token. The 152 first-token misses of the first rerun were mostly this case.
+5. Letter-only hyphenated words were part numbers: `work-hour` (581), `time-in-service` (458), `technical-support`, `federal-register`, `MBB-BK`, and, after a cue, `is` in "part number is not installed". Every PartNumber token must now contain a digit (the labeller makes the same assumption, so the gold cannot show a letters-only part number; none was seen among the 80 unknown candidates read below). The `Rule.needs_digit` flag applies it to the shape rule and the cue rule; `catalog_entities::EXTRACTOR` is bumped to `pattern-v4` so stored entities are extracted again.
+
+Not fixed, with the evidence. Of 80 random candidates outside gold (seed 7, read by one person), none was a part number: they were phone numbers (`641-0000`, `222-5110`), AD / docket / amendment / EASA AD numbers (`2020-0069`, `FAA-2021-0496`, `39-21270`), service bulletins (`EC225-04A012`, `MBB-BK117-40A-115`), model names (`AS-365N2`, `SA-365N`), a room (`6N-321`), a billing code (`4910-13-P`) and a regulation RIN (`2120-AA64`). An uncued shape match is therefore nearly always noise on this corpus (zero of 80; the 95% upper bound on its precision here is about 4%). The shape rule is kept: this corpus cues every part number it names, while a bill of materials or a drawing note may list part numbers without a cue, and these ADs cannot say how the rule does there. A better filter is not possible by shape alone (`105-10113.05` and `44307-480-1` look like a phone number to a pattern); it needs a model or a context feature, which is the span-extraction question (a small GLiNER-style model) opened with the owner on 2026-11-20 and not started.
+
+Remaining recall misses (about 3% of first tokens, 19% of later items): list items split by a hyphen wrapped over a line (`6007- 2RS1MT47CA`), items glued to the next word (`L673M20A1011or`), and lists that continue on the next line after a comma. Not covered: the first run's gold counts 1,405 spans from 184 files of one manufacturer family (mostly Airbus Helicopters), so these recall numbers say nothing about other manufacturers' notation; the eval example itself has no unit test (the extractor changes do).
+
+Effect on the previous section's table (rerun after these fixes, same data): aeroBERT VAL as Dimension found 23 to 19, SOFC-Exp MATERIAL found 259 to 60, aeroBERT RES and SOFC VALUE found unchanged (243, 494), SOFC VALUE first pattern hint 467 to 473. "Found" there means any candidate overlaps the gold span, and the dropped overlaps were letter-only hyphenated PartNumber shapes (`Ni-YSZ`, `ceria-based`, `work-hour` style tokens) that were never the right kind, so the earlier "259 found" overstated discovery; the real finding (the extractor reaches few gold spans, and only 6 of the 60 found materials carry a Material hint) stands. `entity_rank_probe` is unchanged (neural 41/59, first hint 54/59, neural within hints 56/59); `cargo test -p search-core --release --features neural-search` passes (370 lib tests).
+
 ## 2026-11-21: do models under 1 GB improve Search? GLiNER for entity spans, small LLMs for NL-find (measured; nothing adopted)
 
 Question (owner, 2026-11-20): can the whole app stay "best of best but not crazy big" if every model is under 1 GB on disk after quantization? Two candidates, both measured on this machine (Apple M1, 8 GB, other sessions were running, load average 5 to 70, so every latency below is a best-of or upper bound and is marked).
@@ -411,7 +438,7 @@ Harness: `search-core/examples/support/gliner.rs` (GLiNER pre/post-processing: p
     cargo run -p search-core --release --features neural-search --example entity_corpus_eval -- \
         <aerobert-ner dir> <sofc-exp-corpus dir> --gliner <model dir> --threshold 0.3
 
-Found-gold on the two public corpora (same mapping and rule as the 2026-11-20 section: a gold span is found when a candidate overlaps it; "any label" is discovery, "right label" also requires the mapped label). Pattern columns are the extractor on the same sentences: `main` is the 2026-11-20 table, `fix` is the extractor with the uncommitted FAA-driven fixes from the `search-nlp` worktree (it changed Material and Dimension candidates, so both are shown).
+Found-gold on the two public corpora (same mapping and rule as the 2026-11-20 section: a gold span is found when a candidate overlaps it; "any label" is discovery, "right label" also requires the mapped label). Pattern columns are the extractor on the same sentences: `main` is the 2026-11-20 table, `fix` is the extractor after the FAA-driven fixes of PR #342 (they changed Material and Dimension candidates, so both are shown; the table was measured on that change before it merged).
 
 | Gold | n | Pattern main | Pattern fix | GLiNER emb8 t=0.5 any / right | t=0.3 any / right | t=0.2 any / right |
 |---|---:|---:|---:|---:|---:|---:|
@@ -424,7 +451,7 @@ Quantization check at t=0.5 (any label, RES / VAL / MATERIAL / VALUE): fp32 96 /
 
 Reading: at t=0.3 and below GLiNER finds more than the patterns everywhere except regulatory references (RES), and widens Material and unit-less quantities most (at t=0.5 it still loses on SOFC VALUE, 18% against 33%), but recall rises only as the threshold falls, and these corpora cannot give precision (neither labels all our kinds, so an extra span is not a known false positive). Precision was read on real text instead:
 
-FAA Airworthiness Directives, `entity_faa_eval` with the cue-labelled gold (`P/N ...` lists; the file `entity_faa_eval.rs` is uncommitted in `search-nlp`; the added `--gliner` flags are saved as `entity_faa_eval-gliner.patch` in the shared notes folder). 40 evenly spaced files, 101,144 words, 175 gold tokens (126 after the cue, 49 later in lists), `emb8`:
+FAA Airworthiness Directives, `entity_faa_eval` with the cue-labelled gold (`P/N ...` lists; `--gliner <dir> [--threshold T] [--gliner-files N]` added here, N evenly spaced files). 40 evenly spaced files, 101,144 words, 175 gold tokens (126 after the cue, 49 later in lists), `emb8`:
 
 | | After cue | Later list tokens | Spans labelled "part number" | Overlap gold | Real part numbers in a 60-span read sample |
 |---|---:|---:|---:|---:|---:|

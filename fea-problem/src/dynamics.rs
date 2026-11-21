@@ -61,6 +61,9 @@ fn prepare(p: &Problem, import_text: Option<&str>) -> Result<(Mesh, fea_core::Di
     if !p.bushings.is_empty() {
         return Err("natural frequencies and buckling are not available with interference-fit bushings (a contact problem)".into());
     }
+    if !p.ties.is_empty() {
+        return Err("natural frequencies and buckling are not available with ties: the dynamic solvers do not take the tie constraints".into());
+    }
     let mut mesh = match &p.geometry {
         Geometry::Sketch { .. } => sketch_mesh(p, None)?,
         Geometry::Imported { .. } => imported_mesh(p, import_text.ok_or("the mesh file has not been read")?)?,

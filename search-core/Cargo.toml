@@ -175,6 +175,10 @@ name = "entity_corpus_eval"
 required-features = ["neural-search"]
 
 [[example]]
+name = "entity_faa_eval"
+required-features = ["neural-search"]
+
+[[example]]
 name = "term_cluster_eval"
 required-features = ["neural-search"]
 

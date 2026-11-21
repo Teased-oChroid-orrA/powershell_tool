@@ -41,6 +41,34 @@ fn main() {
             }
         };
         let seconds = started.elapsed().as_secs_f64();
+        if std::env::var_os("PROBE_VERBOSE").is_some() {
+            let mut radii: std::collections::BTreeMap<(String, i64), usize> = std::collections::BTreeMap::new();
+            for x in &f.faces {
+                if let FaceGeometry::Cylinder { side, radius, .. } = &x.geometry {
+                    *radii.entry((format!("{side:?}"), (radius * 1000.0).round() as i64)).or_default() += 1;
+                }
+            }
+            for ((side, r), n) in &radii {
+                eprintln!("  cylinder faces {side} r={:.3} mm: {n}", *r as f64 / 1000.0);
+            }
+            if std::env::var_os("PROBE_FACES").is_some() {
+                for x in &f.faces {
+                    if let FaceGeometry::Cylinder { side, radius, range, axis_point, axis, arcs } = &x.geometry {
+                        eprintln!("FACE\t{}\t{side:?}\tr={radius:.3}\twrap={:.3}\trange=[{:.3},{:.3}]\taxis={axis:.3?}\tpt={axis_point:.2?}\tarcs={arcs:.3?}", x.key.face, x.geometry.wrap().unwrap(), range[0], range[1]);
+                    }
+                }
+            }
+            for h in &f.holes {
+                eprintln!("HOLE\t{name}\t{}\t{:.4}\t{:.4}\t{:?}", h.body, h.diameter(), h.depth(), h.closure());
+            }
+            for i in &f.interfaces {
+                eprintln!("INTERFACE\t{name}\t{}\t{}\t{:.4}\t{:.4}", i.a.body, i.b.body, i.overlap_area, i.gap);
+            }
+            for s in &f.sites {
+                let radii: Vec<String> = s.bores.iter().map(|b| format!("{:.2}", b.diameter / 2.0)).collect();
+                eprintln!("  site bodies={:?} bore r=[{}] fastener={:?} mismatch={}", s.bodies, radii.join(","), s.fastener, s.diameter_mismatch);
+            }
+        }
         let concave_cylinders = f.faces.iter().filter(|x| matches!(x.geometry, FaceGeometry::Cylinder { side: Side::Concave, .. })).count();
         let grouped: usize = f.holes.iter().map(|h| h.faces.len()).sum();
         let count = |c: Closure| f.holes.iter().filter(|h| h.closure() == c).count();

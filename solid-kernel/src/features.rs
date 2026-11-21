@@ -278,6 +278,29 @@ pub fn classify_faces(models: &[AnalyticModel]) -> Result<Vec<ClassifiedFace>, E
                     let (range, radius_at_ends) = axial_profile(&samples, sig.anchor, sig.direction);
                     FaceGeometry::Cone { axis_point: sig.anchor, axis: sig.direction, half_angle: sig.size, side, range, radius_at_ends }
                 }
+                // A rational B-spline (or swept) surface that is a right circular cylinder to within the model's tolerance is a
+                // cylinder: Open CASCADE writes every cylinder of AS1 as two rational cubic Bezier halves. The surface sense and the
+                // radial direction at a boundary sample give the side, as for an analytic cylinder.
+                Some(surface @ Surface::Param(spline)) => match spline.fit_cylinder(model.geometry_tolerance_mm()) {
+                    Some(fit) => {
+                        let axis = crate::face_identity::canonical_axis(fit.axis);
+                        let probe = samples.first().copied().filter(|p| surface.normal_at_world(*p).is_some());
+                        match probe.and_then(|p| surface.normal_at_world(p).map(|n| (p, n))) {
+                            Some((p, n)) => {
+                                let sense = if face.same_sense { 1.0 } else { -1.0 };
+                                let d = sub(p, fit.point);
+                                let radial = sub(d, mul(axis, dot(d, axis)));
+                                let side = if dot(mul(n, sense), radial) > 0.0 { Side::Convex } else { Side::Concave };
+                                let (range, _) = axial_profile(&samples, fit.point, axis);
+                                let edges: Vec<_> = face.bounds.iter().flat_map(|b| b.edges.iter().cloned()).collect();
+                                let arcs = arcs_of(model, &edges, fit.point, axis, model.geometry_tolerance_mm(), fit.radius);
+                                FaceGeometry::Cylinder { axis_point: fit.point, axis, radius: fit.radius, side, range, arcs }
+                            }
+                            None => FaceGeometry::Other(sig.kind),
+                        }
+                    }
+                    None => FaceGeometry::Other(sig.kind),
+                },
                 _ => FaceGeometry::Other(sig.kind),
             };
             out.push(ClassifiedFace { key: FaceKey { body, face: *id }, geometry, lo: sig.lo, hi: sig.hi });
