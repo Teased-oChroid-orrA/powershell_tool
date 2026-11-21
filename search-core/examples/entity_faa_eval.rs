@@ -108,6 +108,9 @@ fn main() {
     let joiner = Regex::new(JOINERS).unwrap();
     let tags = Regex::new(r"<[^>]*>").unwrap();
     let raw_mode = args.iter().any(|a| a == "--raw");
+    let units_mode = args.iter().any(|a| a == "--units");
+    // Dimension candidates by unit word: (count, first context).
+    let mut by_unit: BTreeMap<String, (usize, String)> = BTreeMap::new();
     // `--gliner <model dir> [--threshold T] [--gliner-files N]`: run GLiNER with the label "part number" (and four others,
     // as in entity_corpus_eval) on N evenly spaced files and score it next to the pattern extractor on the same files.
     let gl_model = args.windows(2).find(|w| w[0] == "--gliner").map(|w| gliner::Gliner::load(Path::new(&w[1])));
@@ -177,6 +180,16 @@ fn main() {
                 } else {
                     gl_unknown.push((path.file_name().unwrap().to_string_lossy().to_string(), context(&text, &sp.bytes), sp.score));
                 }
+            }
+        }
+        if units_mode {
+            for c in extraction.candidates.iter().filter(|c| c.shape_hints.contains(&EntityKind::Dimension)) {
+                let unit = text[c.bytes.clone()]
+                    .trim_start_matches(|ch: char| !ch.is_alphabetic() && ch != '°')
+                    .trim_start_matches(|ch: char| ch.is_ascii_digit() || ch == '.' || ch == '/' || ch == ' ')
+                    .to_lowercase();
+                let entry = by_unit.entry(unit).or_insert_with(|| (0, context(&text, &c.bytes)));
+                entry.0 += 1;
             }
         }
         let part: Vec<Range<usize>> = extraction
@@ -262,6 +275,14 @@ fn main() {
                 let (file, ctx, score) = &gl_unknown[i];
                 println!("#{i}\t{score:.2}\t{file}\t{ctx}");
             }
+        }
+    }
+    if units_mode {
+        let mut rows: Vec<_> = by_unit.iter().collect();
+        rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then(a.0.cmp(b.0)));
+        println!("\nDimension candidates by unit text ({} distinct):", rows.len());
+        for (unit, (n, ctx)) in rows.iter().take(40) {
+            println!("  {n:5}  {unit:12} {ctx}");
         }
     }
     if misses > 0 {

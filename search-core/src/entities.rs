@@ -166,6 +166,10 @@ const ANCHORS: [(EntityKind, &str, &str); 18] = [
     ),
 ];
 
+/// A number and a unit: group 1 is the number, group 2 the unit. Units the FAA directives actually use (`daN`, `lbs`,
+/// `inch-pounds`, `Hz`, `degrees`, ...) sit beside the common ones; time (hours, days) is not a dimension.
+const QUANTITY: &str = r"(?i)([-+]?(?:\d+\s+\d+/\d+|\d+/\d+|\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?))\s*(in[·-]lbs?|ft[·-]lbs?|lbf[·-]in|inch[·-]pounds?|daN(?:[·.-]?m)?|mm|millimeters?|millimetres?|cm|inches?|in|ft|feet|psi|ksi|MPa|GPa|Hz|rpm|degrees?|lbf|lbs?|N(?:·m|m)?|°\s*[CF])\b";
+
 fn rules() -> &'static [Rule] {
     static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
     RULES.get_or_init(|| {
@@ -175,8 +179,8 @@ fn rules() -> &'static [Rule] {
             (r"(?i)\b(?:7075|7050|2024|6061)-?T\d\b|\b(?:17-4(?:\s*PH)?|15-5(?:\s*PH)?|316L?|304L?|A286|Ti-6Al-4V|Inconel\s+718)\b|\b(?:aluminum|aluminium|titanium|stainless\s+steel|magnesium|carbon\s+steel)\b", 0, EntityKind::Material, false),
             (r"(?i)\b(?:M\d+(?:\s*[x×]\s*\d+(?:\.\d+)?)?|\d+/\d+-\d+\s*(?:UNC|UNF|UNEF|UNS)|(?:NAS|MS)\d{3,5})\b", 0, EntityKind::FastenerCallout, false),
             (r"(?i)\b(?:ASTM\s+[A-Z]?\s*\d+(?:-\d+)?|ASME\s+[A-Z]\d+(?:\.\d+)?|SAE\s+[A-Z]\s*\d+|AMS\s+\d+(?:-\d+)?|MIL-(?:DTL|STD|PRF)-[A-Z0-9-]+|NAS\d{3,5})\b", 0, EntityKind::Standard, false),
-            (r"(?i)([-+]?(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?))\s*(in[·-]lb|ft[·-]lb|lbf[·-]in|mm|millimeters?|millimetres?|cm|inches?|in|ft|psi|ksi|MPa|GPa|lbf|lb|N(?:·m|m)?|°\s*[CF])\b", 0, EntityKind::Dimension, false),
-            (r"(?i)([-+]?(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:\.\d+)?))\s*(in[·-]lb|ft[·-]lb|lbf[·-]in|mm|millimeters?|millimetres?|cm|inches?|in|ft|psi|ksi|MPa|GPa|lbf|lb|N(?:·m|m)?|°\s*[CF])\b", 2, EntityKind::Unit, false),
+            (QUANTITY, 0, EntityKind::Dimension, false),
+            (QUANTITY, 2, EntityKind::Unit, false),
         ]
         .into_iter()
         .map(|(pattern, capture, kind, needs_digit)| Rule {
@@ -252,6 +256,44 @@ fn ends_in_part_cue(line: &str) -> bool {
         .is_match(line)
 }
 
+/// Words that may follow "in" as a unit ("0.5 in thick", "0.25 in x 2 in"); any other word makes it the preposition.
+const IN_UNIT_FOLLOWERS: [&str; 18] = [
+    "x", "by", "thick", "thickness", "long", "length", "wide", "width", "deep", "depth", "high", "height", "diameter", "dia",
+    "radius", "max", "maximum", "minimum",
+];
+
+/// Where the quantity "number unit" starts, or `None` when it is not one. A bare `N` and `in` are also a
+/// compass letter or model suffix and a preposition, and a number glued to a letter or hyphenated into an identifier belongs to that
+/// identifier: on the FAA directives "2701 N Forum Drive", "frame No. 9 in accordance", "SA-365N" and "2013-12-06 in
+/// lieu" were 2,500 of the 1,700 Dimension candidates (docs/knowledge-engine-audit.md, 2026-11-21). A leading hyphen
+/// after a digit is a range ("5-6 Nm" is 6 Nm), not a minus sign.
+fn quantity_start(line: &str, number: Range<usize>, unit: Range<usize>) -> Option<usize> {
+    let mut start = number.start;
+    let before = line[..start].chars().next_back();
+    if line[number.clone()].starts_with('-') {
+        match before {
+            Some(c) if c.is_alphabetic() => return None,
+            Some(c) if c.is_ascii_digit() || c == '.' => start += 1,
+            _ => {}
+        }
+    } else if before.is_some_and(char::is_alphabetic) {
+        return None;
+    }
+    let spaced = number.end != unit.start;
+    let rest = line[unit.end..].trim_start();
+    let reads_as_unit = match line[unit.clone()].to_ascii_lowercase().as_str() {
+        // "SA 365 N" (a helicopter model) and "2701 N Forum" read the same as "50 N"; only "50N" and "12 N/mm" are newtons ("Room 6N-321" is not).
+        "n" => (spaced && rest.starts_with(['/', '·'])) || (!spaced && !line[unit.end..].starts_with('-')),
+        "in" if spaced => {
+            let word: String = rest.chars().take_while(|c| c.is_alphabetic()).collect::<String>().to_lowercase();
+            // At a line end the sentence usually goes on ("in\n lieu of"), so only a stop or a unit word counts.
+            !rest.is_empty() && (word.is_empty() || IN_UNIT_FOLLOWERS.contains(&word.as_str()))
+        }
+        _ => true,
+    };
+    reads_as_unit.then_some(start)
+}
+
 pub fn extract_candidates(text: &str) -> EntityExtraction {
     let mut found = BTreeMap::new();
     let mut coverage = EntityCoverage {
@@ -286,11 +328,21 @@ pub fn extract_candidates(text: &str) -> EntityExtraction {
                 if rule.needs_digit && !matched.as_str().bytes().any(|byte| byte.is_ascii_digit()) {
                     continue;
                 }
-                let range = if rule.capture == 1 && rule.kind == EntityKind::PartNumber {
+                let mut range = if rule.capture == 1 && rule.kind == EntityKind::PartNumber {
                     trim_token(line, matched.range())
                 } else {
                     matched.range()
                 };
+                if matches!(rule.kind, EntityKind::Dimension | EntityKind::Unit) {
+                    if let (Some(number), Some(unit)) = (captures.get(1), captures.get(2)) {
+                        let Some(start) = quantity_start(line, number.range(), unit.range()) else {
+                            continue;
+                        };
+                        if rule.kind == EntityKind::Dimension {
+                            range.start = start;
+                        }
+                    }
+                }
                 if add_candidate(&mut found, range, offset, line_index + 1, rule.kind) {
                     coverage.candidate_limit_reached = true;
                     stopped = true;
@@ -565,6 +617,36 @@ mod tests {
         assert!(has("AMS 5643", EntityKind::Standard));
         assert!(has("95 in·lb", EntityKind::Dimension));
         assert!(has("in·lb", EntityKind::Unit));
+    }
+
+    fn quantities(text: &str) -> Vec<String> {
+        extract_candidates(text)
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.shape_hints.contains(&EntityKind::Dimension))
+            .map(|candidate| text[candidate.bytes.clone()].to_string())
+            .collect()
+    }
+
+    // Found on the FAA directives: "2701 N Forum Drive" read as 2701 newtons, "No. 9 in accordance" as 9 inches.
+    #[test]
+    fn a_street_direction_and_the_word_in_are_not_units() {
+        assert!(quantities("contact Airbus Helicopters, Inc., 2701 N Forum Drive, Grand Prairie, TX; 2701 N. Forum").is_empty());
+        assert!(quantities("installed on the frame No. 9 in accordance with the bulletin, or 3 in the area").is_empty());
+        assert!(quantities("Room 6N-321, models SA 365 N, SA-365N, AS-365N2 and B672 mm; for AD 2013-12-06 in\n lieu of").is_empty());
+        assert_eq!(quantities("range 5-6 Nm and 1,500 ft"), ["6 Nm", "1,500 ft"]);
+        assert_eq!(quantities("a 50N load and 12 N/mm, 0.25 in diameter, 3 in x 4 in, 2 in."), ["50N", "12 N", "0.25 in", "3 in", "4 in", "2 in"]);
+    }
+
+    #[test]
+    fn units_the_directives_use_are_dimensions() {
+        let found = quantities(
+            "Apply 5.6 daN.m, 6.8 daN·m or 3 daN (24.7 lbs), 564 inch-pounds, 12 Hz, 10 degrees, 1,000 ft and 10 feet.",
+        );
+        for expected in ["5.6 daN.m", "6.8 daN·m", "3 daN", "24.7 lbs", "564 inch-pounds", "12 Hz", "10 degrees", "10 feet"] {
+            assert!(found.iter().any(|f| f == expected), "{expected} missing from {found:?}");
+        }
+        assert!(quantities("within 15 hours TIS or 7 days, 4 work-hours").is_empty());
     }
 
     fn part_numbers(text: &str) -> Vec<(usize, String)> {
