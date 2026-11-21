@@ -2706,7 +2706,7 @@ fn arrow_keys_pick_a_suggestion_pill_and_enter_chooses_it_instead_of_searching()
     let view = ViewState::new(&scene);
     let scenes = [scene];
     let mut gui = Gui::new();
-    let mut frame = |gui: &mut Gui, keys: &[egui::Key]| -> Vec<Outcome> {
+    let frame = |gui: &mut Gui, keys: &[egui::Key]| -> Vec<Outcome> {
         let input = GuiInput {
             view: &view,
             scenes: &scenes,
@@ -2730,7 +2730,10 @@ fn arrow_keys_pick_a_suggestion_pill_and_enter_chooses_it_instead_of_searching()
                 .collect(),
             ..Default::default()
         };
-        gui.run(raw, &input).1
+        let (mut full, outcomes) = gui.run(raw, &input);
+        // Nothing paints here: egui (debug builds) panics when texture uploads are dropped unapplied.
+        full.textures_delta.clear();
+        outcomes
     };
     for _ in 0..3 {
         frame(&mut gui, &[]);
