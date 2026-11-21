@@ -13,8 +13,8 @@ Does not own: any fit, countersink, area or tolerance formula (`toolboxes/fasten
 | Inspector cards (one per form section, results, drawing note), tree, ribbon, menus, status verdict | `cards.rs` |
 | The picture: revolved wall profile per part, plate size, colour codes and key labels (the mesh builder is `editor/drawing.rs`) | `drawing.rs` |
 | The saved case (JSON: choices by label, each dimension `[min, nominal, max]`) | `file.rs` |
-| Input-level test (click a dimension, type, switch hole type) | `gpu_viewer/window.rs` `the_fastener_hole_workbench_*` |
-| GPU snapshots (regular, countersink dark / light-wireframe, Report step) | `gpu_viewer/render.rs` `fastener_snapshot` (`FEA_SNAPSHOT_FASTENER_OUT=dir`, ignored) |
+| Input-level test (click a dimension, type, switch hole type) | `gpu_viewer/window/tests/workbenches.rs` `the_fastener_hole_workbench_*` |
+| GPU snapshots (regular, countersink dark / light-wireframe, Report step) | `gpu_viewer/render/snapshot_tests/fit_workbenches.rs` `fastener_snapshot` (`FEA_SNAPSHOT_FASTENER_OUT=dir`, ignored) |
 
 ## Contracts
 - **One model for both heads.** Rows come from `model::field_rows` (only input dimensions; the solved countersink dimension is never a row), choices cycle through `FastenerHoleState::toggle_selected`, numbers go through `FastenerHoleModel::commit_number`. Never re-implement a row, a cycle or a formula here. Every calculated value is shown `nominal -minus/+plus` (`model::format_*_band`), labelled with its origin (calculated / derived / transferred / preserved) as the terminal readout tags it.

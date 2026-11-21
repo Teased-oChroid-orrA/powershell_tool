@@ -82,7 +82,7 @@ Does not own: search/matching/extraction (`search-core`), the index engine (`nat
   menu. A result lists its fields with `Solved::fields()` / `default_field()`; never `Field::ALL`.
 - **The terminal Workbench is manual by default** (`u` mesh, `r` solve, `a` automatic mode). Tests of the automatic behaviour use
   `auto_state()`.
-- **Window tests drive real input**: `gpu_viewer/window.rs` tests click the viewport (`click`, `move_to`, `Input::Key`), including the
+- **Window tests drive real input**: `gpu_viewer/window/tests/` click the viewport (`click`, `move_to`, `Input::Key`), including the
   STEP hole workflow. Prefer them to calling session methods when the thing under test is a pointer or
   key path; `type_text` feeds egui text fields only, an editor prompt takes `Input::Key(Key::Character(..))`.
 - **Linker error = check `df -h` first.** `target/debug/incremental` alone reached 14 GB and the build then failed with "No space
@@ -165,8 +165,21 @@ ML are newly planned, not shipped: `docs/issue-12-phase-19.md`; current status/h
 
 One native window (`app-tui --gpu-viewer <scene> | --gpu-editor [file] | --gpu-solid [file]`) is the main frontend: an
 egui chrome (design B "Canvas" with a thin step strip, ADR-017) around a confined 3D viewport. Everything is a pure,
-unit-tested core; `window.rs` maps winit events to egui and to `Input`, runs the egui frame and draws the scene.
+unit-tested core; `gpu_viewer/window/` maps winit events to egui and to `Input`, runs the egui frame and draws the scene (code map below).
 
+- **Code map (`gpu_viewer/window/` and `gpu_viewer/render/`, split from the former 4,000-line `window.rs` / `render.rs`, behaviour-preserving)**:
+  `window/mod.rs` = `Input`, the `Viewer` struct and its accessors (`pub use launch::*`); `actions.rs` (`dispatch`, layout ops, bench
+  switching, menu outcomes), `pointer.rs` (model click, grab, box select, context menu, pan, zoom), `sync.rs` (editor scene sync, egui
+  frame, quit, display persistence), `input.rs` (`Viewer::input`, key presses), `frame.rs` (`init`, `redraw`), `handler.rs` (winit
+  `ApplicationHandler`), `launch.rs` (one `run_*` per window kind, `new_viewer`, `launch`); `tests/mod.rs` holds the shared helpers
+  (`click`, `key`, `frame`, `labels`, `drag`, ...) and the themed test files (`input`, `model`, `chrome`, `workbenches`, `interaction`,
+  `stackup`, `search_materials`). `render/mod.rs` = `Params`, `Renderer`, `DisplayOptions`; `setup.rs` (`Renderer::new`, pipelines),
+  `buffers.rs` (budget check, scene upload, depth), `draw.rs` (`draw` / `draw_display` passes), `egui_paint.rs` (egui texture upload
+  and paint); `#[cfg(test)]` `test_support.rs` (adapter, lock, `read_back`, `cube`), `headless_tests.rs`, `tests.rs`,
+  `performance_tests.rs` and `snapshot_tests/` (`chrome`, `fit_workbenches`, `analysis_workbenches`, `search`, `model_pages`).
+  Methods of `Viewer` / `Renderer` that another sibling file calls are `pub(super)`; `shader.wgsl` is included as `../shader.wgsl`
+  from `render/setup.rs`. A new test goes in the themed file nearest its subject; a helper two files need goes in `tests/mod.rs`
+  (window) or `snapshot_tests/mod.rs` / `test_support.rs` (render).
 - **Chrome (`gpu_viewer/gui/`, feature `gpu-viewer`)**: `Gui::run(RawInput, &GuiInput) -> (FullOutput, Vec<Outcome>)` builds a
   thin top bar (Menu button holding every menu, model title, the **step strip** = the editor's ribbon tabs with a
   done / to-do dot from `Authoring::step_state` and a ring on the step usually taken next, Search commands, theme), a floating
@@ -228,7 +241,7 @@ unit-tested core; `window.rs` maps winit events to egui and to `Input`, runs the
   `Verdict::Eligible` (>= 20 sessions, >= 100 held-out events, z >= 2 top-1 gain, no top-3 regression). The advisor may only
   reorder actions the rules allow; `FEA_EDITOR_ADVISOR=off` wins over everything; `FEA_EDITOR_MODEL` loads a bare model as a
   developer override. No default-on path without a measured real-data report; no real data exists yet.
-- **Testing without a window**: `window.rs` tests drive `Viewer::input(Input)` and queue egui events (`test_events`), running the
+- **Testing without a window**: `window/tests/` drive `Viewer::input(Input)` and queue egui events (`test_events`), running the
   chrome twice per frame (the second pass has the measured sizes) and clicking controls by label through
   `Gui::find_target` (step chips are "<name> tab"). They cover tool and step clicks, viewport clicks, right-click menu, the
   palette, typing, wheel, drag/orbit, box select, solid mesh -> solve -> results, benches, the start card. GPU tests
