@@ -174,7 +174,23 @@ Every measured chrome frame costs 0.1 to 0.4 ms of CPU, about 2 % of a 60 Hz fra
 
 ### Follow-ups (with numbers above)
 
-1. `fea-core/src/assembly.rs` (lines 205, 257) and `nonlinear.rs` (line 299): build the element scratch once per thread, not once per rayon task (section 3, lug).
+1. Done (see the update at the end): `fea-core` builds the element scratch once per thread, not once per rayon task (section 3, lug).
 2. `solid-kernel/src/bvh.rs`: `Bvh::nearest` and `closest_on_triangle` are the largest block left in meshing (section 2).
 3. `fea_problem::solve` re-meshes a solid problem that the caller already meshed; a mesh cache needs an invalidation rule (section 2).
 4. Not measured here: the NIST corpus, Windows, the index build on real (mostly ASCII) corpora, a Search window with hits.
+
+## Update: element scratch per thread (follow-up 1, done)
+
+`assembly.rs` (`assemble_stiffness`, `assemble_scalar_identity`) and `nonlinear.rs` (`assemble_nl`) took their element buffers (`Work`, element matrices, `xyz`; about 150 KB) from `try_for_each_init`, which builds them once per rayon task. They now come from one `thread_local!` (`assembly::with_scratch`, `Scratch`): allocated once per thread, a re-entrant call gets a fresh one. No kernel reads a buffer before writing it, and the per-task state was already reused across elements, so the results do not depend on which thread ran which element.
+
+Measured with the `lug-solver` `kernel_analysis` tests (`-- --nocapture --test-threads=1 matches`, release), old and new binaries run alternately five times each on a machine shared with other builds (load average 5 to 47, so wall times are noisy; the CPU split is the stable number):
+
+| | before | after |
+|---|---|---|
+| sys CPU of the whole test binary (page faults of the zero-fill) | 7.0 to 30.6 s | 4.1 to 5.0 s |
+| user CPU | 21.5 to 29.3 s | 16.7 to 24.9 s |
+| wall, two quiet runs | 11.2, 12.9 s | 10.9, 9.9 s |
+| best-of-five kernel ms: axial / bushed axial / collapse axial / collapse bushed / collapse oblique 30 / 60 | 158 / 972 / 346 / 519 / 1050 / 1792 | 127 / 884 / 297 / 447 / 995 / 1609 |
+| best-of-five kernel ms: elastic pin 0 / 0 (second case) / 45 / oblique frictional | 769 / 1366 / 1097 / 861 | 624 / 1144 / 888 / 601 |
+
+The printed physics (hoop, pressure, travel, arc, von Mises, verification residuals) is byte-identical before and after (same md5 over the output without the timings), and the `fea-core` tests give the same counts. The gain is mostly CPU time, not wall time: on an idle 8-core machine the lug tests are 5 to 30 % faster, on a busy one the saved CPU shows up as wall time as well. What remains of the zero-fill is one allocation per thread; the per-task cost is gone.
