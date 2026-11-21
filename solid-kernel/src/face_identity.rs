@@ -170,7 +170,7 @@ fn probe_point(surface: &Surface, mut points: impl Iterator<Item = V3>) -> Optio
     }
 }
 /// Make an axis direction unique up to sign: the first non-negligible component positive.
-fn canonical_axis(a: V3) -> V3 {
+pub(crate) fn canonical_axis(a: V3) -> V3 {
     let flip = a.iter().find(|x| x.abs() > 1e-9).is_some_and(|x| *x < 0.);
     if flip {
         mul(a, -1.)

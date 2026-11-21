@@ -355,3 +355,85 @@ fn a_bore_must_cover_the_full_circle_so_halves_make_a_hole_and_a_lone_half_or_a_
     assert!(with_arcs(&[vec![[0., 2. * pi - 10. * tol / 2.]]]).is_empty());
     assert_eq!(with_arcs(&[vec![[0., 2. * pi - 0.5 * tol / 2.]]]).len(), 1);
 }
+
+/// `edit-plate-centre-hole.step` with its bore's `CYLINDRICAL_SURFACE` replaced by the same cylinder as a closed rational quadratic
+/// B-spline surface (nine control points round, two rows, the weights of an exact circle) and the bore's edges stripped of their
+/// pcurves: the way Open CASCADE writes AS1's cylinders (there as two cubic halves; `curved_surface`'s unit tests cover that form).
+fn plate_with_a_spline_bore() -> String {
+    let text = include_str!("data/edit-plate-centre-hole.step");
+    let (r, cx, cy, z0, z1) = (4.0_f64, 20.0_f64, 15.0_f64, -1.0_f64, 10.0_f64);
+    let w = std::f64::consts::FRAC_1_SQRT_2;
+    let ring = [(r, 0.), (r, r), (0., r), (-r, r), (-r, 0.), (-r, -r), (0., -r), (r, -r), (r, 0.)];
+    let weights = [1., w, 1., w, 1., w, 1., w, 1.];
+    let mut points = String::new();
+    let mut columns = Vec::new();
+    for (i, (x, y)) in ring.iter().enumerate() {
+        let (a, b) = (900 + 2 * i, 901 + 2 * i);
+        points += &format!("#{a} = CARTESIAN_POINT('',({:.12},{:.12},{z0:.12}));\n#{b} = CARTESIAN_POINT('',({:.12},{:.12},{z1:.12}));\n", cx + x, cy + y, cx + x, cy + y);
+        columns.push(format!("(#{a},#{b})"));
+    }
+    let rows: Vec<String> = weights.iter().map(|w| format!("({w:.14},{w:.14})")).collect();
+    let spline = format!(
+        "#282 = ( BOUNDED_SURFACE() B_SPLINE_SURFACE(2,1,({}),.UNSPECIFIED.,.F.,.F.,.F.) B_SPLINE_SURFACE_WITH_KNOTS((3,2,2,2,3),(2,2),(0.,0.25,0.5,0.75,1.),(0.,1.),.UNSPECIFIED.) GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(({})) REPRESENTATION_ITEM('') SURFACE() );\n{points}",
+        columns.join(","),
+        rows.join(",")
+    );
+    let old = "#282 = CYLINDRICAL_SURFACE('',#283,4.);";
+    assert!(text.contains(old));
+    let mut out = text.replace(old, &spline);
+    // an edge curve that is a SURFACE_CURVE becomes its 3D curve: the pcurves are in the analytic cylinder's (angle, height)
+    let wrapped: Vec<(String, String)> = out
+        .lines()
+        .filter_map(|l| {
+            let (id, rest) = l.split_once(" = SURFACE_CURVE('',")?;
+            Some((id.to_string(), rest.split(',').next()?.to_string()))
+        })
+        .collect();
+    for (id, curve) in wrapped {
+        out = out.lines().map(|l| if l.contains("EDGE_CURVE(") { l.replace(&format!(",{id},"), &format!(",{curve},")) } else { l.to_string() }).collect::<Vec<_>>().join("\n") + "\n";
+    }
+    out
+}
+
+#[test]
+fn a_bore_written_as_a_rational_spline_cylinder_is_the_same_hole_as_the_analytic_one() {
+    let analytic = {
+        let data = inventory(include_str!("data/edit-plate-centre-hole.step"), Limits::default()).unwrap();
+        AnalyticModel::read(&data, Options::default()).unwrap()
+    };
+    let spline = {
+        let text = plate_with_a_spline_bore();
+        let data = inventory(&text, Limits::default()).unwrap();
+        AnalyticModel::read(&data, Options::default()).unwrap_or_else(|e| panic!("the spline bore did not read: {}", e.detail))
+    };
+    let cyl = |m: &AnalyticModel| {
+        let faces = classify_faces(std::slice::from_ref(m)).unwrap();
+        faces.into_iter().find(|f| matches!(f.geometry, FaceGeometry::Cylinder { .. })).expect("a cylinder face")
+    };
+    let (a, s) = (cyl(&analytic), cyl(&spline));
+    let (FaceGeometry::Cylinder { axis_point: pa, axis: xa, radius: ra, side: sa, range: ga, .. }, FaceGeometry::Cylinder { axis_point: ps, axis: xs, radius: rs, side: ss, range: gs, .. }) = (&a.geometry, &s.geometry) else { unreachable!() };
+    assert_eq!(sa, ss, "concave bore stays concave");
+    assert!((ra - rs).abs() < 1e-6 && (0..3).all(|k| (pa[k] - ps[k]).abs() < 1e-6 && (xa[k] - xs[k]).abs() < 1e-6), "{:?} vs {:?}", a.geometry, s.geometry);
+    assert!((ga[0] - gs[0]).abs() < 1e-6 && (ga[1] - gs[1]).abs() < 1e-6);
+    assert!((s.geometry.wrap().unwrap() - std::f64::consts::TAU).abs() < 1e-6, "a full ring: {:?}", s.geometry);
+    let holes = detect(&[spline]).unwrap().holes;
+    assert_eq!(holes.len(), 1);
+    assert_eq!(holes[0].closure(), Closure::Through);
+}
+
+#[test]
+fn a_spline_cylinder_whose_face_sense_is_reversed_is_a_convex_shank_and_never_a_hole() {
+    // the same surface with the face's sense flag flipped: material now lies inside the cylinder, which is a pin, not a bore
+    let text = plate_with_a_spline_bore();
+    let face = "ADVANCED_FACE('',(#403),#282,.F.);";
+    assert!(text.contains(face));
+    let data = inventory(&text.replace(face, "ADVANCED_FACE('',(#403),#282,.T.);"), Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::default()).unwrap();
+    let faces = classify_faces(std::slice::from_ref(&model)).unwrap();
+    let side = faces.iter().find_map(|f| match &f.geometry {
+        FaceGeometry::Cylinder { side, .. } => Some(*side),
+        _ => None,
+    });
+    assert_eq!(side, Some(Side::Convex));
+    assert!(detect(&[model]).unwrap().holes.is_empty());
+}

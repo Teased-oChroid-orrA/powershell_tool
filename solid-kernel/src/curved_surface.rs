@@ -701,6 +701,18 @@ impl Geometry {
     }
 }
 
+/// Uniform parameter steps per direction that [`SplineSurface::fit_cylinder`] samples.
+const CYLINDER_SAMPLES: usize = 16;
+
+/// A right circular cylinder found by [`SplineSurface::fit_cylinder`]: a point of the axis (in the plane through the origin
+/// across it), the unit axis (sign arbitrary), the radius.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CylinderFit {
+    pub point: V3,
+    pub axis: V3,
+    pub radius: f64,
+}
+
 /// A face on a parametric surface: a (rational) B-spline surface, a B-spline curve revolved about an axis, or one moved along
 /// a direction. The chart is the parameter rectangle scaled by the surface's mean metric (`X = su (u - u0)`,
 /// `Y = sv (v - v0)`), so chart lengths are roughly millimetres; it is not conformal. World points are located on the surface
@@ -759,6 +771,92 @@ impl SplineSurface {
     pub(crate) fn iso_curve(&self, fixed: usize, t: f64) -> Option<crate::nurbs::NurbsCurve> {
         let Geometry::Nurbs(s) = &self.surface else { return None };
         s.iso_curve(fixed, t, crate::nurbs_surface::Limits::default()).ok()
+    }
+    /// The right circular cylinder this surface is, if every sampled point lies within `tolerance` of one (`None` for any other
+    /// surface, or one whose sampled points are too few or too close to fit). Sampled, not proved: the parameter grid is
+    /// `CYLINDER_SAMPLES` uniform steps each way plus every distinct knot (a B-spline surface), so a surface that departs from the
+    /// cylinder by more than `tolerance` only between samples passes. The axis is the common perpendicular of the two most
+    /// different sampled normals; the circle is the least-squares fit of the points projected on the plane across that axis. A
+    /// rational quadratic or cubic arc extruded along a line (how Open CASCADE writes a cylinder) is exact, so its residual is
+    /// rounding; a flat patch has no two different normals and is refused.
+    pub(crate) fn fit_cylinder(&self, tolerance: f64) -> Option<CylinderFit> {
+        let mut grids: Vec<Vec<f64>> = Vec::new();
+        for k in 0..2 {
+            let [lo, hi] = self.domain[k];
+            let mut t: Vec<f64> = (0..=CYLINDER_SAMPLES).map(|i| lo + (hi - lo) * i as f64 / CYLINDER_SAMPLES as f64).collect();
+            if let Geometry::Nurbs(n) = &self.surface {
+                t.extend(if k == 0 { n.knots_u() } else { n.knots_v() }.iter().copied().filter(|x| *x >= lo && *x <= hi));
+            }
+            t.sort_by(f64::total_cmp);
+            t.dedup_by(|a, b| (*a - *b).abs() <= 1e-9 * (hi - lo));
+            grids.push(t);
+        }
+        let mut points = Vec::new();
+        let mut normals = Vec::new();
+        for &u in &grids[0] {
+            for &v in &grids[1] {
+                let (p, du, dv) = self.partials([u, v])?;
+                points.push(p);
+                let n = cross(du, dv);
+                let l = norm(n);
+                if l > 0. {
+                    normals.push(mul(n, 1. / l));
+                }
+            }
+        }
+        let n0 = *normals.first()?;
+        let (n1, sine) = normals.iter().map(|n| (*n, norm(cross(n0, *n)))).max_by(|a, b| a.1.total_cmp(&b.1))?;
+        // the two most different normals must differ by more than 0.1 of a radian: a flat or near-flat patch has no axis
+        if sine < 0.1 {
+            return None;
+        }
+        let axis = mul(cross(n0, n1), 1. / sine);
+        let helper = if axis[0].abs() < 0.9 { [1., 0., 0.] } else { [0., 1., 0.] };
+        let e1 = {
+            let t = sub(helper, mul(axis, dot(helper, axis)));
+            mul(t, 1. / norm(t))
+        };
+        let e2 = cross(axis, e1);
+        let flat: Vec<[f64; 2]> = points.iter().map(|p| [dot(*p, e1), dot(*p, e2)]).collect();
+        // x^2 + y^2 = 2 a x + 2 b y + c, least squares in (a, b, c)
+        let (mut m, mut r) = ([[0.0; 3]; 3], [0.0; 3]);
+        for q in &flat {
+            let row = [2. * q[0], 2. * q[1], 1.];
+            let rhs = q[0] * q[0] + q[1] * q[1];
+            for i in 0..3 {
+                for j in 0..3 {
+                    m[i][j] += row[i] * row[j];
+                }
+                r[i] += row[i] * rhs;
+            }
+        }
+        let det3 = |m: &[[f64; 3]; 3]| {
+            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+        };
+        let det = det3(&m);
+        let scale = (0..3).map(|i| m[i][i]).product::<f64>().abs().max(f64::MIN_POSITIVE);
+        if det.abs() < 1e-12 * scale {
+            return None;
+        }
+        let mut sol = [0.0; 3];
+        for (k, out) in sol.iter_mut().enumerate() {
+            let mut mk = m;
+            for i in 0..3 {
+                mk[i][k] = r[i];
+            }
+            *out = det3(&mk) / det;
+        }
+        let (a, b, c) = (sol[0], sol[1], sol[2]);
+        let radius2 = c + a * a + b * b;
+        if !(radius2 > tolerance * tolerance) {
+            return None;
+        }
+        let radius = radius2.sqrt();
+        if flat.iter().any(|q| (((q[0] - a).powi(2) + (q[1] - b).powi(2)).sqrt() - radius).abs() > tolerance) {
+            return None;
+        }
+        let point = add(mul(e1, a), mul(e2, b));
+        Some(CylinderFit { point, axis, radius })
     }
     /// The parameters of a point within `tolerance` of the surface, and the range of parameter `k`.
     pub(crate) fn parameters(&self, p: V3, tolerance: f64) -> Option<[f64; 2]> {
@@ -1643,5 +1741,80 @@ mod tests {
         assert!(s.localized_sphere(&[seamed], true).is_ok());
         // No loop at all: a full sphere.
         assert!(s.localized_sphere(&[], true).is_err());
+    }
+
+    /// A cubic rational Bezier half circle (weights 1, 1/3, 1/3, 1) of radius `r` about the z axis direction at `centre`,
+    /// extruded along z by `height`: the way Open CASCADE writes each half of a cylinder (NIST AS1). `squash` stretches the
+    /// control polygon along y to make an ellipse; `bulge` moves the two middle control points of the arc radially.
+    fn half_cylinder(centre: [f64; 3], r: f64, height: f64, squash: f64, bulge: f64) -> SplineSurface {
+        let arc = [[0., 0.], [0., 2. * r * squash + bulge], [2. * r, 2. * r * squash + bulge], [2. * r, 0.]];
+        let mut points = Vec::new();
+        for z in [0., height] {
+            for a in arc {
+                points.push([centre[0] - r + a[0], centre[1] + a[1], centre[2] + z]);
+            }
+        }
+        let third = 1. / 3.;
+        SplineSurface::new(
+            crate::nurbs_surface::NurbsSurface::new_clamped(
+                [3, 1],
+                [vec![0., 0., 0., 0., 1., 1., 1., 1.], vec![0., 0., 1., 1.]],
+                [4, 2],
+                points,
+                vec![1., third, third, 1., 1., third, third, 1.],
+                crate::nurbs_surface::Limits::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_rational_half_cylinder_is_fitted_with_its_axis_radius_and_a_point_on_the_axis() {
+        // AS1's own numbers: radius 5, centre (10, 7.5), height 3
+        let s = half_cylinder([10., 7.5, 0.], 5., 3., 1., 0.);
+        let fit = s.fit_cylinder(1e-6).expect("an exact cylinder");
+        assert!((fit.radius - 5.).abs() < 1e-9, "{fit:?}");
+        assert!(fit.axis[2].abs() > 1. - 1e-9, "{fit:?}");
+        // the point is the axis point nearest the origin: its z is 0 and it sits at the centre in x and y
+        assert!((fit.point[0] - 10.).abs() < 1e-9 && (fit.point[1] - 7.5).abs() < 1e-9 && fit.point[2].abs() < 1e-9, "{fit:?}");
+    }
+
+    #[test]
+    fn a_quarter_cylinder_a_flat_patch_an_ellipse_and_a_bulge_are_decided_by_the_tolerance() {
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let quarter = SplineSurface::new(
+            crate::nurbs_surface::NurbsSurface::new_clamped(
+                [2, 1],
+                [vec![0., 0., 0., 1., 1., 1.], vec![0., 0., 1., 1.]],
+                [3, 2],
+                vec![[1., 0., 0.], [1., 1., 0.], [0., 1., 0.], [1., 0., 3.], [1., 1., 3.], [0., 1., 3.]],
+                vec![1., w, 1., 1., w, 1.],
+                crate::nurbs_surface::Limits::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let fit = quarter.fit_cylinder(1e-6).expect("a quarter cylinder is a cylinder");
+        assert!((fit.radius - 1.).abs() < 1e-9 && fit.axis[2].abs() > 1. - 1e-9, "{fit:?}");
+        let flat = SplineSurface::new(
+            crate::nurbs_surface::NurbsSurface::new_clamped(
+                [1, 1],
+                [vec![0., 0., 1., 1.], vec![0., 0., 1., 1.]],
+                [2, 2],
+                vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.]],
+                vec![1.; 4],
+                crate::nurbs_surface::Limits::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(flat.fit_cylinder(1e-3).is_none(), "a plane has no axis");
+        // an ellipse (the circle's control polygon stretched 20 % along y) is off any circle by far more than 1e-3
+        assert!(half_cylinder([0., 0., 0.], 5., 3., 1.2, 0.).fit_cylinder(1e-3).is_none());
+        // a 0.2 mm bulge of the middle control points on a 5 mm radius is refused at 1e-3 and accepted at a loose 1 mm
+        let bulged = half_cylinder([0., 0., 0.], 5., 3., 1., 0.2);
+        assert!(bulged.fit_cylinder(1e-3).is_none());
+        assert!(bulged.fit_cylinder(1.).is_some());
     }
 }
