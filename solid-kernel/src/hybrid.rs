@@ -201,9 +201,9 @@ pub fn hex_pyramid_tet(
         }
         let keep: Vec<bool> = facets.iter().zip(&frozen).map(|(f, &fr)| !(fr && count[&key(f)] == 2)).collect();
         let mut it = keep.iter();
-        facets.retain(|_| *it.next().unwrap());
+        facets.retain(|_| *it.next().expect("one keep flag per facet"));
         let mut it = keep.iter();
-        frozen.retain(|_| *it.next().unwrap());
+        frozen.retain(|_| *it.next().expect("one keep flag per facet"));
     }
     let tets = conform_preserving(&vertices, &facets, &frozen, options.conform, |_| true)
         .map_err(|e| format!("tetrahedral region: {e}"))?;

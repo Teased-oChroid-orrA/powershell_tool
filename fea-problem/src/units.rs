@@ -218,6 +218,13 @@ impl Problem {
                 }
             }
         }
+        for t in &mut self.ties {
+            t.gap *= f;
+            for s in [&mut t.a, &mut t.b] {
+                s.centroid = s.centroid.map(|x| x * f);
+                s.area *= f * f;
+            }
+        }
         // Energy = force * length; temperatures are absolute, expansion uses differences.
         let offset = match (self.units, to) {
             (UnitSystem::InchPsi, _) => -32.0 * k.temperature,

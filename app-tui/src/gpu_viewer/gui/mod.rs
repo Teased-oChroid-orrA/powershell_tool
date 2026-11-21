@@ -7,6 +7,8 @@
 //! `menus::bar`) and reports clicks as `Outcome`s; availability rules stay with the model that owns them.
 mod dashboard;
 mod document;
+#[cfg(test)]
+mod frame_cost;
 mod page;
 mod page_layout;
 mod panels;

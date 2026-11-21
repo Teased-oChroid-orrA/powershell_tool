@@ -145,6 +145,11 @@ history if a discrepancy is ever suspected.
   together filled a disk. Watch usage on this workspace, especially before
   long training/build runs, and don't assume `cargo clean` is unnecessary
   just because a build "worked last time."
+- **Every worktree carries its own 5-7 GB `target/`; delete it when the session ends.** 2026-11-21: nine
+  worktrees held 24 GB beside a 43 GB `target/` and the disk stood at 90 %. When a session's branch is merged or
+  abandoned, `git worktree remove --force <path>` (copy any untracked work out first); for one still in use,
+  `rm -rf <worktree>/target` is safe, the next build recreates it. Check with `git worktree list` and
+  `du -sh .claude/worktrees/*/target`.
 - **Do not share one Cargo target between worktrees with divergent source.**
   A 2026-10-20 test of an uncommitted `fea-core` change resolved the library
   artifact from another worktree and reported missing symbols that were present

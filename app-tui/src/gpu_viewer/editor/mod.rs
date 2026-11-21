@@ -1,5 +1,5 @@
 //! Native member editor: pure state, picking, scene building and capability rules. The winit
-//! runner (`window.rs`) only forwards input here and draws the result.
+//! runner (`window/`) only forwards input here and draws the result.
 pub mod camera;
 pub mod scene;
 pub mod state;

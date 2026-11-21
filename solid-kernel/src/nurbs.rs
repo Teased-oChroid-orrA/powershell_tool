@@ -484,7 +484,7 @@ impl NurbsCurve {
         if self.basis.clamped && side == ParameterSide::LowerEndpoint {
             point = self.control_points[0];
         } else if self.basis.clamped && side == ParameterSide::UpperEndpoint {
-            point = *self.control_points.last().unwrap();
+            point = self.control_points[self.control_points.len() - 1];
         }
         Ok(CurveDifferential {
             point,
@@ -501,7 +501,7 @@ impl NurbsCurve {
             return Ok(self.control_points[0]);
         }
         if self.basis.clamped && t == hi {
-            return Ok(*self.control_points.last().unwrap());
+            return Ok(self.control_points[self.control_points.len() - 1]);
         }
         project(self.basis.homogeneous(span, t, |i| {
             Ok(homogeneous_control(self.control_points[i], self.weights[i]))

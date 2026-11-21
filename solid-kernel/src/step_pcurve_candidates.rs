@@ -171,12 +171,12 @@ pub fn discover<'a>(
             return Err(cancelled());
         }
         candidates[i] = Some(Candidate {
-            vertex: data.entity_reference(*id).unwrap(),
+            vertex: data.require_reference(*id)?,
             parameter: r.candidate_parameter,
             distance_bounds_mm: r.distance_bounds_mm,
         });
     }
-    let candidates = candidates.map(Option::unwrap);
+    let candidates = candidates.map(|c| c.expect("both vertices were searched above"));
     let [a, b] = candidates.map(|c| c.parameter);
     let proposal = if ids[0] == ids[1] || a == b {
         Proposal::Coincident

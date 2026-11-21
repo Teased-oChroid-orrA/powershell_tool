@@ -41,7 +41,7 @@ fn coplanar_segment(
     let normal = cross(sub(t[1], t[0]), sub(t[2], t[0]));
     let axis = (0..3)
         .max_by(|a, b| normal[*a].abs().total_cmp(&normal[*b].abs()))
-        .unwrap();
+        .expect("a vector has three axes");
     if normal[axis] == 0. {
         return Err(fail(
             ErrorKind::Geometry,

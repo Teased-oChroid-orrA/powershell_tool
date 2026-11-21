@@ -656,6 +656,10 @@ pub struct Problem {
     /// Frictional contact between surfaces of different bodies (plane analyses with several regions).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contacts: Vec<ContactPair>,
+    /// Bonded ties between the bodies of a STEP assembly (`Geometry::Solid` with several bodies), stored by face signature
+    /// (see `ties`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ties: Vec<crate::ties::Tie>,
     /// What a solve computes: stresses, a steady temperature field, or the thermal stress of that field.
     #[serde(default)]
     pub study: crate::thermal::Study,
@@ -812,6 +816,7 @@ impl Problem {
         self.loads.clear();
         self.bushings.clear();
         self.contacts.clear();
+        self.ties.clear();
     }
 
     /// Everything needed to mesh the problem (no supports or loads yet).
@@ -996,6 +1001,7 @@ impl Problem {
     pub fn validate(&self) -> Result<(), String> {
         self.validate_geometry()?;
         self.validate_contacts()?;
+        self.validate_ties()?;
         self.validate_plasticity()?;
         if self.study.is_thermal() {
             self.thermal.validate()?;

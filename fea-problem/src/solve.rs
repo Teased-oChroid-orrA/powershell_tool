@@ -589,6 +589,14 @@ fn solve_thermal_only(mesh: Mesh, setup: &crate::thermal::Setup) -> Result<Pass,
     Ok(Pass { model, u: vec![0.0; n * d], nodal: vec![[0.0; 6]; n], zz, reaction: [0.0; 3], applied: [0.0; 3], force_scale: 0.0, solve_ms, strain_energy: 0.0, interfaces: Vec::new(), contacts: Vec::new(), warnings: Vec::new(), heat: Some((heat.temperature, summary)), plastic: None })
 }
 
+/// What a linear static solve gives the checks and post-processing of `solve_mesh`, whichever solver made it.
+struct StaticSolve {
+    u: Vec<f64>,
+    reactions: Vec<f64>,
+    rel_residual: f64,
+    fallback: Option<String>,
+}
+
 fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     if p.study.is_thermal() && (!p.bushings.is_empty() || !p.contacts.is_empty()) {
         return Err("a thermal study does not support bushings or contact pairs".into());
@@ -599,7 +607,7 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     }
     let bc = apply_supports(&mesh, &p.supports)?;
     let mut loads = build_loads(&mut mesh, p)?;
-    if !p.bushings.is_empty() || !p.contacts.is_empty() {
+    if !p.bushings.is_empty() || !p.contacts.is_empty() || p.ties.iter().any(crate::ties::Tie::is_contact) {
         attach_plasticity(&mut mesh, p)?;
         return solve_mesh_contact(p, mesh, loads, bc);
     }
@@ -620,15 +628,25 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     };
     // The kernel's model check (inverted elements, loose nodes, rigid-body motion, non-finite loads, nothing applied):
     // an error stops the solve with its reason, a warning travels with the result.
+    // Ties join separate bodies, so the check that each connected piece is supported does not apply to a piece alone: a
+    // model that stays free as a whole is caught by the singular solve below.
+    let tied = if p.ties.is_empty() { None } else { Some(crate::ties::constraints(p, &model.mesh, &bc)?) };
     let issues = model.validate(&loads, &bc);
-    if let Some(first) = issues.iter().find(|i| i.severity == fea_core::Severity::Error) {
-        let all: Vec<&str> = issues.iter().filter(|i| i.severity == fea_core::Severity::Error).map(|i| i.message.as_str()).collect();
+    let blocking = |i: &&fea_core::Issue| i.severity == fea_core::Severity::Error && !(tied.is_some() && i.code == "rigid_body");
+    if let Some(first) = issues.iter().find(blocking) {
+        let all: Vec<&str> = issues.iter().filter(blocking).map(|i| i.message.as_str()).collect();
         return Err(if all.len() == 1 { first.message.clone() } else { all.join("; ") });
     }
-    let warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && i.code != "low_order_element").map(|i| i.message.clone()).collect();
+    let mut warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && i.code != "low_order_element").map(|i| i.message.clone()).collect();
+    warnings.extend(tied.iter().flat_map(|(_, notes)| notes.clone()));
     let t0 = std::time::Instant::now();
-    let solve = |model: &Model| {
-        model.solve_static(&loads, &bc).map_err(|e| {
+    // The constrained solve has no a-posteriori residual of its own: its result is held to the equilibrium check below.
+    let solve = |model: &Model| -> Result<StaticSolve, String> {
+        let solved = match &tied {
+            Some((cons, _)) => model.solve_static_constrained(&loads, &bc, cons, &[]).map(|s| StaticSolve { u: s.u, reactions: s.reactions, rel_residual: 0.0, fallback: None }),
+            None => model.solve_static(&loads, &bc).map(|s| StaticSolve { u: s.u, reactions: s.reactions, rel_residual: s.rel_residual, fallback: s.fallback }),
+        };
+        solved.map_err(|e| {
             if e.to_lowercase().contains("pivot") || e.to_lowercase().contains("positive") || e.to_lowercase().contains("singular") {
                 format!("the model is not fully constrained (rigid-body motion remains): add supports. Solver said: {e}")
             } else {
@@ -647,7 +665,6 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     // self-equilibrated one, has a net force of zero).
     let mut scale = force_scale(&f, &sol.reactions);
     let imbalance = |reaction: &[f64; 3], applied: &[f64; 3], scale: f64| balance_error(&model.mesh.physics, reaction, applied, scale);
-    let mut warnings = warnings;
     if let Some(why) = &sol.fallback {
         warnings.push(format!("The linear solve was repeated: {why}."));
     }
@@ -791,8 +808,24 @@ fn fit_specs(p: &Problem, mesh: &Mesh, setup: &FitSetup) -> Vec<fea_core::contac
     v
 }
 
+/// One contact pair of a solve: the two mesh surfaces, Coulomb friction, and how far apart the bodies start (a contact tie's gap).
+struct Joint {
+    a: String,
+    b: String,
+    friction: f64,
+    gap: f64,
+}
+
+/// The contact pairs of a problem: the 2D pairs between named surfaces of a sketch's regions, and the contact ties of an assembly.
+fn joints(p: &Problem) -> Result<Vec<Joint>, String> {
+    let pairs = p.contacts.iter().map(|c| Joint { a: c.a.clone(), b: c.b.clone(), friction: c.friction, gap: 0.0 });
+    let ties = crate::ties::contact_joints(p)?.into_iter().map(|t| Joint { a: t.a, b: t.b, friction: t.friction, gap: t.gap });
+    Ok(pairs.chain(ties).collect())
+}
+
 /// The contact pairs of a problem on `mesh`: their faces, the penalty and the weak springs that hold a body no support holds.
 struct PairSetup {
+    joints: Vec<Joint>,
     pairs: Vec<(String, Vec<Vec<usize>>, Vec<Vec<usize>>)>,
     eps_n: f64,
     margin: f64,
@@ -809,8 +842,8 @@ struct PairSetup {
 
 fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<PairSetup, String> {
     let d = mesh.dim();
-    let pairs: Vec<(String, Vec<Vec<usize>>, Vec<Vec<usize>>)> = p
-        .contacts
+    let joints = joints(p)?;
+    let pairs: Vec<(String, Vec<Vec<usize>>, Vec<Vec<usize>>)> = joints
         .iter()
         .enumerate()
         .map(|(i, c)| {
@@ -831,7 +864,7 @@ fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<PairSetup, Str
     };
     let face = pairs.iter().flat_map(|(_, a, b)| a.iter().chain(b.iter())).map(|f| span(std::slice::from_ref(f))).fold(0.0f64, f64::max);
     let extent = pairs.iter().map(|(_, a, b)| span(a).min(span(b))).fold(f64::INFINITY, f64::min);
-    let tune = if p.contacts.iter().any(|c| c.friction > 0.0) { Tuning { newton_tol: 1e-6, max_outer: 40, outer_tol: 5e-4, ..Tuning::friction() } } else { Tuning { newton_tol: 1e-6, ..Tuning::frictionless() } };
+    let tune = if joints.iter().any(|c| c.friction > 0.0) { Tuning { newton_tol: 1e-6, max_outer: 40, outer_tol: 5e-4, ..Tuning::friction() } } else { Tuning { newton_tol: 1e-6, ..Tuning::frictionless() } };
     let e_min = std::iter::once(p.material.e).chain(p.region_materials.iter().flatten().map(|m| m.e)).fold(f64::INFINITY, f64::min);
     let eps_n = tune.eps_n(e_min, (0.5 * extent).max(1e-12));
     // A body that no support holds is held only by contact and friction: weak springs keep a sliding or lifting-off body from
@@ -874,14 +907,17 @@ fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<PairSetup, Str
             ground.extend((0..d).map(|c| (node * d + c, k)));
         }
     }
-    Ok(PairSetup { pairs, eps_n, margin: 6.0 * face, touch: 1e-5 * face, ground, tune })
+    // A solid's matrix pattern grows with the faces within the margin (see `FIT_MARGIN_FACES_3D`); the bodies of an assembly may also
+    // start a gap apart, which the margin must span.
+    let margin = (if d == 3 { FIT_MARGIN_FACES_3D } else { FIT_MARGIN_FACES_2D }) * face + joints.iter().map(|j| j.gap.abs()).fold(0.0, f64::max);
+    Ok(PairSetup { joints, pairs, eps_n, margin, touch: 1e-5 * face, ground, tune })
 }
 
 /// The contact interfaces of the pairs (two passes each), after the bushing fits' ones.
-fn pair_specs(p: &Problem, setup: &PairSetup) -> Vec<fea_core::contact::ContactSpec> {
+fn pair_specs(setup: &PairSetup) -> Vec<fea_core::contact::ContactSpec> {
     let mut v = Vec::new();
-    for (c, (name, a, b)) in p.contacts.iter().zip(&setup.pairs) {
-        v.extend(fea_core::contact::ContactSpec::two_pass(name, a.clone(), b.clone(), setup.eps_n).map(|s| s.with_friction(c.friction, fea_core::fit::EPS_T_RATIO * setup.eps_n).with_margin(setup.margin).with_overlap(setup.touch)));
+    for (c, (name, a, b)) in setup.joints.iter().zip(&setup.pairs) {
+        v.extend(fea_core::contact::ContactSpec::two_pass(name, a.clone(), b.clone(), setup.eps_n).map(|s| s.with_friction(c.friction, fea_core::fit::EPS_T_RATIO * setup.eps_n).with_margin(setup.margin).with_overlap(if c.friction > 0.0 { setup.touch } else { 0.0 })));
     }
     v
 }
@@ -939,7 +975,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         return Err(blocking.join("; "));
     }
     let warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && !matches!(i.code, "low_order_element" | "no_load")).map(|i| i.message.clone()).collect();
-    let specs = || fit_specs(p, &model.mesh, &setup).into_iter().chain(pair_specs(p, &pairs)).collect::<Vec<_>>();
+    let specs = || fit_specs(p, &model.mesh, &setup).into_iter().chain(pair_specs(&pairs)).collect::<Vec<_>>();
     let t0 = std::time::Instant::now();
     let plastic = model.mesh.blocks.iter().any(|b| b.plasticity.is_some());
     let has_loads = !loads.nodal.is_empty() || !loads.faces.is_empty() || !loads.field_faces.is_empty() || loads.body.is_some() || loads.delta_t != 0.0;
@@ -956,7 +992,8 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         }
         let sol = model.solve_nonlinear_contact(&full, &bc, specs(), &opts).map_err(|e| format!("the contact could not be solved: {e}"))?;
         if !sol.complete() {
-            return Err(format!("the contact could not be solved: {:?}", sol.stop));
+            let hint = if p.ties.iter().any(crate::ties::Tie::is_contact) { ": a contact between assembly bodies carries only a load that presses the bodies together, and a body that a pull leaves loose is not held" } else { "" };
+            return Err(format!("the contact could not be solved: {:?}{hint}", sol.stop));
         }
         sol
     } else {
@@ -984,7 +1021,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         sol
     };
     let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
-    let contacts: Vec<ContactResult> = p.contacts.iter().zip(&pairs.pairs).enumerate().map(|(k, (c, _))| contact_result(&sol, 2 * p.bushings.len() + 2 * k, &c.a, &c.b, c.friction)).collect();
+    let contacts: Vec<ContactResult> = pairs.joints.iter().enumerate().map(|(k, c)| contact_result(&sol, 2 * p.bushings.len() + 2 * k, &c.a, &c.b, c.friction)).collect();
     if plastic {
         // the stress is that of the converged plastic state, not the elastic law of the displacements
         let interfaces = p.bushings.iter().enumerate().map(|(i, b)| interface_result(&sol, 2 * i, b.hole, b.friction, p.hole_at(b.hole).map_or([0.0, 0.0], |(s, ..)| s.centre()))).collect();

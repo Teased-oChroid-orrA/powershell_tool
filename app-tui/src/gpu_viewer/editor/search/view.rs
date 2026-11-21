@@ -630,7 +630,7 @@ fn find_suggestions(s: &SearchSession) -> Vec<Entry> {
             candidates
                 .iter()
                 .take(3)
-                .map(|candidate| pill(candidate, &[])),
+                .map(|candidate| pill(&candidate, &[])),
         );
         suggestions
     }

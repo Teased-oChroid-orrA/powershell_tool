@@ -141,6 +141,10 @@ impl<G: Geometry<D>, const D: usize> Search<'_, G, D> {
         self.candidate(domain.map(|d| d[0] + (d[1] - d[0]) * 0.5))
     }
 }
+/// The best upper distance bound found so far; `candidates` has always run on a cell before this is asked.
+fn best_upper<G, const D: usize>(search: &Search<'_, G, D>) -> f64 {
+    search.best.as_ref().expect("a candidate is recorded for every cell").0
+}
 pub(crate) fn distance<G: Geometry<D>, const D: usize>(
     geometry: &G,
     query: V3,
@@ -165,6 +169,12 @@ pub(crate) fn distance<G: Geometry<D>, const D: usize>(
         return Err(cancelled());
     }
     let cells = geometry.cells(opt.max_pending)?;
+    if cells.is_empty() {
+        return Err(fail(
+            ErrorKind::Geometry,
+            "geometry has no non-degenerate parameter cell to search",
+        ));
+    }
     let mut search = Search {
         geometry,
         query,
@@ -179,14 +189,14 @@ pub(crate) fn distance<G: Geometry<D>, const D: usize>(
         if !progress(Progress {
             enclosures: search.calls,
             pending_intervals: queue.len(),
-            distance_bounds: [0., search.best.unwrap().0],
+            distance_bounds: [0., best_upper(&search)],
         }) {
             return Err(cancelled());
         }
     }
     let full = geometry.domain();
     loop {
-        let (upper, parameter, enclosure) = search.best.unwrap();
+        let (upper, parameter, enclosure) = search.best.expect("every searched cell records a candidate, and there is at least one");
         let lower = queue.peek().map_or(upper, |node| node.lower.min(upper));
         let state = Progress {
             enclosures: search.calls,
@@ -212,7 +222,7 @@ pub(crate) fn distance<G: Geometry<D>, const D: usize>(
             }
             return Ok(result);
         }
-        let node = queue.pop().unwrap();
+        let node = queue.pop().expect("an empty queue has lower = upper, which ends the search above");
         if node.lower >= upper {
             continue;
         }
@@ -240,7 +250,7 @@ pub(crate) fn distance<G: Geometry<D>, const D: usize>(
             let mut domain = node.domain;
             domain[axis][1 - half] = middle;
             let child = search.node(domain)?;
-            if child.lower < search.best.unwrap().0 {
+            if child.lower < best_upper(&search) {
                 if queue.len() >= opt.max_pending {
                     return Err(fail(
                         ErrorKind::Limit,
@@ -266,4 +276,34 @@ pub(crate) fn push_cell<const D: usize>(
     }
     cells.push(domain);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// A geometry whose parameter domain yields no cell to search (a trait implementation is free to).
+    struct NoCells;
+    impl Geometry<1> for NoCells {
+        fn domain(&self) -> [[f64; 2]; 1] {
+            [[0., 1.]]
+        }
+        fn cells(&self, _maximum: usize) -> Result<Vec<[[f64; 2]; 1]>, Error> {
+            Ok(Vec::new())
+        }
+        fn enclose(&self, _domain: [[f64; 2]; 1]) -> Result<Bounds3, Error> {
+            unreachable!("no cell, so nothing is enclosed")
+        }
+        fn representative(&self, _parameter: [f64; 1], _enclosure: Bounds3) -> Result<V3, Error> {
+            unreachable!("no cell, so no candidate")
+        }
+    }
+    /// Without a cell there is no candidate and no upper bound: the search used to unwrap its missing best candidate.
+    #[test]
+    fn a_geometry_without_cells_is_refused_not_unwrapped() {
+        let Err(error) = distance(&NoCells, [0.; 3], Options::default(), |_| true) else {
+            panic!("a search without cells cannot bound a distance");
+        };
+        assert_eq!(error.kind, ErrorKind::Geometry);
+        assert!(error.detail.contains("no non-degenerate parameter cell"), "{}", error.detail);
+    }
 }

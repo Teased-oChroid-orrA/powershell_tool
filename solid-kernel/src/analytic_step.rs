@@ -831,8 +831,8 @@ fn samples(
                     ]
                 })
                 .collect();
-            *p.first_mut().unwrap() = a;
-            *p.last_mut().unwrap() = b;
+            p[0] = a;
+            p[n] = b; // `pieces >= 1`, so the polyline has n + 1 >= 2 points
             p
         }
         Curve::Circle { frame, radius } => {
@@ -899,8 +899,8 @@ fn samples(
                         .map(|x| if x.abs() < 1e-25 { 0. } else { x }),
                 );
             }
-            *p.first_mut().unwrap() = a;
-            *p.last_mut().unwrap() = b;
+            p[0] = a;
+            p[n] = b;
             p
         }
         Curve::Ellipse {
@@ -953,8 +953,8 @@ fn samples(
                 .map(|i| angle[0] + span * (i as f64 / start as f64))
                 .collect();
             let mut pts: Vec<V3> = ts.iter().map(|t| at(*t)).collect();
-            *pts.first_mut().unwrap() = a;
-            *pts.last_mut().unwrap() = b;
+            pts[0] = a;
+            pts[start] = b; // `start >= 2`, `pts` holds start + 1 points
             let limit = opt
                 .max_edge_points
                 .saturating_sub(1)
@@ -974,8 +974,8 @@ fn samples(
                         split = true;
                     }
                 }
-                next_t.push(*ts.last().unwrap());
-                next_p.push(*pts.last().unwrap());
+                next_t.push(ts[ts.len() - 1]);
+                next_p.push(pts[pts.len() - 1]);
                 if next_t.len() > limit + 1 {
                     return Err(Error {
                         offset: e.offset,
@@ -1119,8 +1119,8 @@ fn sample_spline_range(
                 split = true;
             }
         }
-        next_t.push(*params.last().unwrap());
-        next_p.push(*points.last().unwrap());
+        next_t.push(params[params.len() - 1]);
+        next_p.push(points[points.len() - 1]);
         if next_t.len() > max_points {
             return Err("spline edge sample budget exceeded".into());
         }
@@ -1405,7 +1405,7 @@ impl AnalyticModel {
                 // Rounding noise around an exact zero would sit below the exact predicates' arithmetic envelope.
                 let scale = w[0].iter().chain(&w[1]).fold(0f64, |m, x| m.max(x.abs()));
                 let p = p.map(|x| if x.abs() < 1e-13 * scale { 0. } else { x });
-                if !coordinate_domain(p) || p == *out.last().unwrap() || p == w[1] {
+                if !coordinate_domain(p) || p == out[out.len() - 1] || p == w[1] {
                     continue;
                 }
                 out.push(p);
@@ -1414,9 +1414,9 @@ impl AnalyticModel {
                 }
             }
         }
-        out.push(*old.last().unwrap());
+        out.push(old[old.len() - 1]);
         if let Some(params) = spline_params {
-            out_params.push(*params.last().unwrap());
+            out_params.push(params[params.len() - 1]);
         }
         self.edges.insert(edge, out);
         if spline_params.is_some() {
@@ -1549,7 +1549,7 @@ impl AnalyticModel {
                 .iter()
                 .any(|c| c.name == "B_SPLINE_CURVE_WITH_KNOTS")
             {
-                let reference = data.entity_reference(edge.id).unwrap();
+                let reference = data.require_reference(edge.id)?;
                 let declaration =
                     context.read_spline_curve_active_domain(data, reference, crate::nurbs::Limits::default())?;
                 if declaration.curve.degree() != 1 || declaration.curve.control_points().len() != 2
@@ -1597,8 +1597,9 @@ impl AnalyticModel {
                         pts.reverse();
                     }
                     // the vertices are the authoritative end points
-                    *pts.first_mut().unwrap() = vertices[&edge.start];
-                    *pts.last_mut().unwrap() = vertices[&edge.end];
+                    pts[0] = vertices[&edge.start];
+                    let last = pts.len() - 1; // `sample_spline_range` ends at the domain end, so `pts` is not empty
+                    pts[last] = vertices[&edge.end];
                     if pts.iter().any(|p| !coordinate_domain(*p))
                         || pts.windows(2).any(|w| w[0] == w[1])
                     {
@@ -1678,7 +1679,7 @@ impl AnalyticModel {
             {
                 let declaration = context.read_spline_surface_active_domain(
                     data,
-                    data.entity_reference(face.id).unwrap(),
+                    data.require_reference(face.id)?,
                     crate::nurbs_surface::Limits::default(),
                 )?;
                 match crate::planar_spline::PlanarPatch::new(&declaration.surface, source_surface) {
@@ -2009,7 +2010,7 @@ impl AnalyticModel {
             edge: seam,
             forward: false,
         });
-        let face = self.body.faces.get_mut(&face_id).unwrap();
+        let face = self.body.faces.get_mut(&face_id).expect("the band seam is cut on a face of the body");
         let mut bounds = vec![RawBound {
             id: first.id,
             loop_id: first.loop_id,
@@ -2172,7 +2173,7 @@ impl AnalyticModel {
             let mut merged = uses.clone();
             merged.push(EdgeUse { id: seam + 1, edge: seam, forward: true });
             merged.push(EdgeUse { id: seam + 2, edge: seam, forward: false });
-            let face = self.body.faces.get_mut(&face_id).unwrap();
+            let face = self.body.faces.get_mut(&face_id).expect("the apex seam is cut on a face of the body");
             let first = face.bounds[0].clone();
             face.bounds = vec![RawBound { id: first.id, loop_id: first.loop_id, forward: true, explicitly_outer: false, edges: merged }];
         }
@@ -2249,7 +2250,7 @@ impl AnalyticModel {
             else {
                 continue;
             };
-            let (first, last) = (points[0], *points.last().unwrap());
+            let (first, last) = (points[0], points[points.len() - 1]);
             let radial = |p: V3| {
                 let d = sub(p, origin);
                 sub(d, mul(axis, dot(d, axis)))
@@ -2303,7 +2304,8 @@ impl AnalyticModel {
                 params.reverse();
             }
             samples[0] = pa;
-            *samples.last_mut().unwrap() = pb;
+            let last = samples.len() - 1;
+            samples[last] = pb;
             self.install_band_seam(
                 face_id,
                 pair,
@@ -2367,12 +2369,13 @@ impl AnalyticModel {
                 samples.reverse();
                 params.reverse();
             }
-            let (first, last) = (samples[0], *samples.last().unwrap());
+            let (first, last) = (samples[0], samples[samples.len() - 1]);
             if norm(sub(first, pa)) > reach || norm(sub(last, pb)) > reach {
                 continue;
             }
             samples[0] = pa;
-            *samples.last_mut().unwrap() = pb;
+            let last = samples.len() - 1;
+            samples[last] = pb;
             self.install_band_seam(face_id, pair, la, lb, (va, vb), Curve::Spline { curve: std::sync::Arc::new(iso), params }, samples, next);
         }
     }
@@ -2505,7 +2508,7 @@ impl AnalyticModel {
     /// seam off the generator, which the cone chart refuses.
     fn drop_samples_beside(&mut self, edge: u64, mut index: usize) -> usize {
         let tolerance = self.geometry_tolerance_mm;
-        let samples = self.edges.get_mut(&edge).unwrap();
+        let samples = self.edges.get_mut(&edge).expect("the sampled edge belongs to the model");
         let near = |samples: &[V3], i: usize, index: usize| norm(sub(samples[i], samples[index])) < tolerance;
         let mut drop = Vec::new();
         if index + 2 < samples.len() && near(samples, index + 1, index) {
@@ -2614,6 +2617,20 @@ impl AnalyticModel {
 #[cfg(test)]
 mod conversion_tests {
     use super::*;
+    /// A face without a normal at a triangle's chart centre (a spline surface with vanishing partials has none; a face whose
+    /// surface is missing from a damaged model has none either) is refused with its id, not unwrapped.
+    #[test]
+    fn a_face_without_a_normal_at_a_triangle_centre_is_refused() {
+        let text = include_str!("../tests/data/edit-plate-centre-hole.step");
+        let data = crate::step::inventory(text, crate::step::Limits::default()).unwrap();
+        let mut model = AnalyticModel::read(&data, Options::default()).unwrap();
+        let face = *model.surfaces.keys().next().unwrap();
+        assert!(model.chart_face_normal(face, [0.; 2]).is_ok(), "the intact model has a normal");
+        model.surfaces.remove(&face).unwrap();
+        let error = model.chart_face_normal(face, [0.; 2]).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Geometry);
+        assert!(error.detail.contains(&format!("face #{face} has a sampled triangle centred where")), "{}", error.detail);
+    }
     /// A placement with an axis along x (either sense) and no reference direction (NIST CTC/FTC circles are written so) has
     /// a right-handed orthonormal frame whose axes are perpendicular to the declared axis.
     #[test]

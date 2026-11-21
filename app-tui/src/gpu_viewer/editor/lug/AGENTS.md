@@ -15,8 +15,8 @@ Does not own: any lug formula or check (`lug-solver` through `toolboxes/lug_anal
 | The picture: Q9 -> 8 triangles, half model mirrored; von Mises / hoop / displacement; part codes before the field | `drawing.rs` |
 | The saved case (JSON: numbers by key, materials by name, choices by label, switches, overrides) | `file.rs` |
 | Session tests | `tests.rs` |
-| Input-level test (click Pin Load P, type, open the material picker) | `gpu_viewer/window.rs` `the_lug_workbench_*` |
-| GPU snapshots (parts, inputs / results dark and light, narrow, picker) | `gpu_viewer/render.rs` `lug_snapshot` (`FEA_SNAPSHOT_LUG_OUT=dir`, ignored) |
+| Input-level test (click Pin Load P, type, open the material picker) | `gpu_viewer/window/tests/workbenches.rs` `the_lug_workbench_*` |
+| GPU snapshots (parts, inputs / results dark and light, narrow, picker) | `gpu_viewer/render/snapshot_tests/analysis_workbenches.rs` `lug_snapshot` (`FEA_SNAPSHOT_LUG_OUT=dir`, ignored) |
 
 ## Contracts
 - **One model.** The window wraps `LugUiModel` directly; never re-implement a row, a check or a formula here.

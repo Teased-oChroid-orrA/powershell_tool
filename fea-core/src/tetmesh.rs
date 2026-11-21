@@ -263,6 +263,9 @@ struct Refiner<'a> {
     boundary_size: f64,
     max_tets: usize,
     live: usize,
+    /// Which side of the surface each vertex is on (`true` inside), filled when first asked. A vertex never moves during
+    /// refinement and belongs to many tetrahedra, so the solid's distance query runs once per vertex, not once per look.
+    inside: Vec<Option<bool>>,
 }
 
 impl<'a> Refiner<'a> {
@@ -321,14 +324,20 @@ impl<'a> Refiner<'a> {
         }
     }
     /// Does tetrahedron `t` still have to be split to meet the size field?
-    fn needs(&self, t: usize) -> bool {
+    fn needs(&mut self, t: usize) -> bool {
         let l = self.len(self.longest(t));
         let c = self.centroid(t);
         let mut target = (self.s.size)(c);
-        let v = self.tets[t];
-        let signs: Vec<bool> = v.iter().map(|&i| (self.s.sdf)(self.p[i]) < 0.0).collect();
-        let near = (self.s.sdf)(c).abs() < l;
-        if near || signs.iter().any(|&b| b) != signs.iter().all(|&b| b) {
+        self.inside.resize(self.p.len(), None);
+        let (sdf, p) = (self.s.sdf, &self.p);
+        let (mut any, mut all) = (false, true);
+        for i in self.tets[t] {
+            let b = *self.inside[i].get_or_insert_with(|| sdf(p[i]) < 0.0);
+            any |= b;
+            all &= b;
+        }
+        // The centroid's distance only matters when the corners agree.
+        if any != all || sdf(c).abs() < l {
             target = target.min(self.boundary_size);
         }
         l > target
@@ -484,7 +493,7 @@ pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<
         return Err("the mesher needs a positive base size, a positive boundary size and a box with volume".into());
     }
     let (p, tets) = lattice(s.lo, s.hi, opts.base)?;
-    let mut r = Refiner { p, tets: Vec::new(), alive: Vec::new(), around: HashMap::new(), mids: HashMap::new(), s, boundary_size: opts.boundary_size, max_tets: opts.max_tets, live: 0 };
+    let mut r = Refiner { p, tets: Vec::new(), alive: Vec::new(), around: HashMap::new(), mids: HashMap::new(), s, boundary_size: opts.boundary_size, max_tets: opts.max_tets, live: 0, inside: Vec::new() };
     for t in tets {
         r.add_tet(t);
     }
@@ -1331,5 +1340,78 @@ mod tests {
             }
         }
         assert!(checked >= 3, "the search must find sample-blind elements: {checked}");
+    }
+
+    /// The `needs` of before the per-vertex side cache: every look asked the distance of the four corners and of the centroid.
+    fn needs_reference(r: &Refiner, t: usize) -> bool {
+        let l = r.len(r.longest(t));
+        let c = r.centroid(t);
+        let mut target = (r.s.size)(c);
+        let v = r.tets[t];
+        let signs: Vec<bool> = v.iter().map(|&i| (r.s.sdf)(r.p[i]) < 0.0).collect();
+        let near = (r.s.sdf)(c).abs() < l;
+        if near || signs.iter().any(|&b| b) != signs.iter().all(|&b| b) {
+            target = target.min(r.boundary_size);
+        }
+        l > target
+    }
+
+    /// The refinement loop of `mesh_solid_reported`, with the old or the new `needs`; returns the refined vertices,
+    /// tetrahedra and alive flags.
+    fn refined(s: &Solid, opts: TetOptions, old: bool) -> (Vec<V3>, Vec<[usize; 4]>, Vec<bool>) {
+        let (p, tets) = lattice(s.lo, s.hi, opts.base).unwrap();
+        let mut r = Refiner { p, tets: Vec::new(), alive: Vec::new(), around: HashMap::new(), mids: HashMap::new(), s, boundary_size: opts.boundary_size, max_tets: opts.max_tets, live: 0, inside: Vec::new() };
+        for t in tets {
+            r.add_tet(t);
+        }
+        let mut queue: Vec<usize> = (0..r.tets.len()).collect();
+        while let Some(t) = queue.pop() {
+            let needs = if old { needs_reference(&r, t) } else { r.needs(t) };
+            if !r.alive[t] || !needs {
+                continue;
+            }
+            let before = r.tets.len();
+            r.refine(t).unwrap();
+            queue.extend(before..r.tets.len());
+            if r.alive[t] {
+                queue.push(t);
+            }
+        }
+        (r.p, r.tets, r.alive)
+    }
+
+    #[test]
+    fn refinement_with_cached_vertex_sides_matches_the_uncached_original_and_asks_less() {
+        use std::cell::Cell;
+        // A sphere, a box with a through hole (a sign change that is not a single surface), and an offset ellipsoid.
+        type Sdf = fn(V3) -> f64;
+        let sphere: Sdf = |x| norm(x) - 1.0;
+        let holed: Sdf = |x| {
+            let outer = x[0].abs().max(x[1].abs()).max(x[2].abs()) - 0.9;
+            let hole = 0.3 - x[0].hypot(x[1]);
+            outer.max(hole)
+        };
+        let ellipsoid: Sdf = |x| ((x[0] - 0.1) / 1.1).powi(2) + (x[1] / 0.7).powi(2) + (x[2] / 0.5).powi(2) - 1.0;
+        for (name, f, size) in [("sphere", sphere, 0.45), ("box with hole", holed, 0.4), ("ellipsoid", ellipsoid, 0.35)] {
+            let calls = Cell::new(0usize);
+            let sdf = |x: V3| {
+                calls.set(calls.get() + 1);
+                f(x)
+            };
+            let size_field = |_: V3| 0.8;
+            let face = |_: V3| 0;
+            let solid = Solid { lo: [-1.3; 3], hi: [1.3; 3], sdf: &sdf, size: &size_field, face_of: &face, face_dists: None };
+            let opts = TetOptions { base: 0.8, boundary_size: size, max_tets: 2_000_000, ..TetOptions::default() };
+            calls.set(0);
+            let old = refined(&solid, opts, true);
+            let old_calls = calls.replace(0);
+            let new = refined(&solid, opts, false);
+            let new_calls = calls.get();
+            assert!(old.1.len() > 500, "{name}: the case must refine ({} tetrahedra)", old.1.len());
+            assert_eq!(old.0, new.0, "{name}: vertices");
+            assert_eq!(old.1, new.1, "{name}: tetrahedra");
+            assert_eq!(old.2, new.2, "{name}: alive flags");
+            assert!(new_calls * 2 < old_calls, "{name}: distance queries {old_calls} -> {new_calls}");
+        }
     }
 }

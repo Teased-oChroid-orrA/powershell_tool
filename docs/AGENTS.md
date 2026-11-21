@@ -49,6 +49,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | Bushing stackup line-reaming geometry (two full-stack axes, per-member required hole diameters, Bushing Workbench handoff) | `docs/bushing-stackup.md` |
 | MIL-HDBK-5J material library (1,375 conditions in the Bushing / Pressure Vessel pickers; provenance, conversion rules, what is estimated) | `docs/material-handbook.md` |
 | Index audit 2026-10 — freshness precision, scheduling, version stamp, measured rejections | `docs/index-audit-2026-10.md` |
+| Performance profile 2026-11 — sampled hotspots of search extraction/index build, tet mesher, sparse solves, egui frame cost; the `line_quality` allocation fix | `docs/performance-profile-2026-11.md` |
 | #8 — perf/indexing/scalability evidence report | `docs/issue-8-status.md` (single-file report against #6's shipped state) |
 | #9 — general-purpose indexed query engine (regex-aware exec) | `docs/issue-9-status.md` (single-file; initial investigation/first pass, no phase docs follow) |
 | #10 — 14-toolbox "Engineering Toolbox Platform" | `docs/issue-10-status.md` (explicitly scoped to Phase 1 only) → `docs/issue-10-phase-1.md`. **Remaining 13 toolboxes are on hold, not started** — don't assume this epic is done because a `-status.md` exists |

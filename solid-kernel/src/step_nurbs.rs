@@ -314,7 +314,7 @@ pub(crate) fn read_definition(
             return Err(fail(e, "spline control point must be an entity reference"));
         };
         points.push(read_point(*id)?);
-        control_point_sources.push(data.entity_reference(*id).unwrap());
+        control_point_sources.push(data.require_reference(*id)?);
     }
     let construct = if active_domain {
         NurbsCurve::new_active_domain
@@ -327,7 +327,7 @@ pub(crate) fn read_definition(
     })?;
     Ok(DecodedCurve {
         curve,
-        source: data.entity_reference(id).unwrap(),
+        source: data.require_reference(id)?,
         control_point_sources,
         declared_name: name.into(),
         declared_form: enumeration(

@@ -111,7 +111,7 @@ pub(crate) fn validate_connectivity(mesh: &SurfaceMesh) -> Result<(), Error> {
             return Err(fail(ErrorKind::Topology, "invalid sampled vertex link"));
         }
         let mut reached = BTreeSet::new();
-        let mut pending = vec![*adjacency.keys().next().unwrap()];
+        let mut pending = vec![*adjacency.keys().next().expect("an empty link is refused above")];
         while let Some(v) = pending.pop() {
             if reached.insert(v) {
                 pending.extend(&adjacency[&v]);
@@ -167,6 +167,16 @@ pub(crate) fn signed_volume_of(
     Ok(volume)
 }
 impl AnalyticModel {
+    /// The sense-adjusted normal of a plane, cylinder or spline face at a triangle's chart centre. A spline surface has none
+    /// where its partial derivatives vanish or cannot be evaluated: that is a refusal of the face, never a panic.
+    pub(crate) fn chart_face_normal(&self, face_id: u64, centre: [f64; 2]) -> Result<crate::V3, Error> {
+        self.declared_face_normal(face_id, centre).ok_or_else(|| {
+            fail(
+                ErrorKind::Geometry,
+                format!("face #{face_id} has a sampled triangle centred where its surface has no normal, or no surface"),
+            )
+        })
+    }
     /// Assemble all faces or fail. Callback runs before each bounded face job and
     /// once at completion; false cancels without returning a partial surface.
     pub fn sampled_surface(
@@ -187,7 +197,7 @@ impl AnalyticModel {
             .edges
             .keys()
             .try_fold(self.body().vertices.len(), |n, id| {
-                n.checked_add(self.edge_points(*id).unwrap().len() - 2)
+                n.checked_add(self.edge_points(*id).expect("every body edge is sampled when the model is read").len() - 2)
             })
             .ok_or_else(|| fail(ErrorKind::Limit, "surface boundary count overflow"))?;
         if boundary_vertices > limits.vertices {
@@ -287,7 +297,7 @@ impl AnalyticModel {
                             n.map(|x| -x)
                         }
                     }
-                    _ => self.declared_face_normal(face.id, center).unwrap(),
+                    _ => self.chart_face_normal(face.id, center)?,
                 };
                 let orientation = dot(cross(sub(b, a), sub(c, a)), normal);
                 // A chord triangle of a curved boundary leaves the surface by up to the chord error: a sliver of the chart

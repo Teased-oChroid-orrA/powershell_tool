@@ -24,7 +24,7 @@ use crate::catalog::Catalog;
 use crate::entities::{extract_candidates, EntityKind};
 use crate::extraction;
 
-const EXTRACTOR: &str = "pattern-v3";
+const EXTRACTOR: &str = "pattern-v4";
 const CLASS: &str = "pattern";
 /// Kind string of rare-term rows (not an [`EntityKind`]: the extractor in `entities` knows nothing of it).
 pub const RARE_TERM_KIND: &str = "rare_term";
