@@ -236,3 +236,5 @@ Measured with the `lug-solver` `kernel_analysis` tests (`-- --nocapture --test-t
 
 The printed physics (hoop, pressure, travel, arc, von Mises, verification residuals) is byte-identical before and after (same md5 over the output without the timings), and the `fea-core` tests give the same counts. The gain is mostly CPU time, not wall time: on an idle 8-core machine the lug tests are 5 to 30 % faster, on a busy one the saved CPU shows up as wall time as well. What remains of the zero-fill is one allocation per thread; the per-task cost is gone.
 
+
+Repeat on a quiet machine (load 4), the merged tree against the old binary, three runs each, alternating: wall 8.8 to 9.0 s -> 7.7 to 8.0 s, user CPU 18.2 to 18.5 s -> 13.3 s, sys CPU 5.5 to 6.8 s -> 3.5 s; kernel ms per test (old, new): axial 119 -> 109, bushed axial 775 -> 728, collapse axial 280 -> 245, collapse bushed 440 -> 405, collapse oblique 30 / 60 860 / 1364 -> 790 / 1180, elastic pin 0 / 0 / 45 605 / 1037 / 863 -> 482 / 850 / 700, oblique frictional 622 -> 475 (the run-to-run spread of each side is under 5 %, except the old binary's last three cases at up to 15 %). Output again byte-identical.
