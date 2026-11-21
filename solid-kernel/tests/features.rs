@@ -420,3 +420,20 @@ fn a_bore_written_as_a_rational_spline_cylinder_is_the_same_hole_as_the_analytic
     assert_eq!(holes.len(), 1);
     assert_eq!(holes[0].closure(), Closure::Through);
 }
+
+#[test]
+fn a_spline_cylinder_whose_face_sense_is_reversed_is_a_convex_shank_and_never_a_hole() {
+    // the same surface with the face's sense flag flipped: material now lies inside the cylinder, which is a pin, not a bore
+    let text = plate_with_a_spline_bore();
+    let face = "ADVANCED_FACE('',(#403),#282,.F.);";
+    assert!(text.contains(face));
+    let data = inventory(&text.replace(face, "ADVANCED_FACE('',(#403),#282,.T.);"), Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::default()).unwrap();
+    let faces = classify_faces(std::slice::from_ref(&model)).unwrap();
+    let side = faces.iter().find_map(|f| match &f.geometry {
+        FaceGeometry::Cylinder { side, .. } => Some(*side),
+        _ => None,
+    });
+    assert_eq!(side, Some(Side::Convex));
+    assert!(detect(&[model]).unwrap().holes.is_empty());
+}
