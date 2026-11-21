@@ -27,6 +27,7 @@ pub struct Gliner {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // `score` is read by gliner_probe and entity_faa_eval only
 pub struct Span {
     pub bytes: Range<usize>,
     pub label: usize,
