@@ -607,7 +607,7 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     }
     let bc = apply_supports(&mesh, &p.supports)?;
     let mut loads = build_loads(&mut mesh, p)?;
-    if !p.bushings.is_empty() || !p.contacts.is_empty() {
+    if !p.bushings.is_empty() || !p.contacts.is_empty() || p.ties.iter().any(crate::ties::Tie::is_contact) {
         attach_plasticity(&mut mesh, p)?;
         return solve_mesh_contact(p, mesh, loads, bc);
     }
@@ -808,8 +808,24 @@ fn fit_specs(p: &Problem, mesh: &Mesh, setup: &FitSetup) -> Vec<fea_core::contac
     v
 }
 
+/// One contact pair of a solve: the two mesh surfaces, Coulomb friction, and how far apart the bodies start (a contact tie's gap).
+struct Joint {
+    a: String,
+    b: String,
+    friction: f64,
+    gap: f64,
+}
+
+/// The contact pairs of a problem: the 2D pairs between named surfaces of a sketch's regions, and the contact ties of an assembly.
+fn joints(p: &Problem) -> Result<Vec<Joint>, String> {
+    let pairs = p.contacts.iter().map(|c| Joint { a: c.a.clone(), b: c.b.clone(), friction: c.friction, gap: 0.0 });
+    let ties = crate::ties::contact_joints(p)?.into_iter().map(|t| Joint { a: t.a, b: t.b, friction: t.friction, gap: t.gap });
+    Ok(pairs.chain(ties).collect())
+}
+
 /// The contact pairs of a problem on `mesh`: their faces, the penalty and the weak springs that hold a body no support holds.
 struct PairSetup {
+    joints: Vec<Joint>,
     pairs: Vec<(String, Vec<Vec<usize>>, Vec<Vec<usize>>)>,
     eps_n: f64,
     margin: f64,
@@ -826,8 +842,8 @@ struct PairSetup {
 
 fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<PairSetup, String> {
     let d = mesh.dim();
-    let pairs: Vec<(String, Vec<Vec<usize>>, Vec<Vec<usize>>)> = p
-        .contacts
+    let joints = joints(p)?;
+    let pairs: Vec<(String, Vec<Vec<usize>>, Vec<Vec<usize>>)> = joints
         .iter()
         .enumerate()
         .map(|(i, c)| {
@@ -848,7 +864,7 @@ fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<PairSetup, Str
     };
     let face = pairs.iter().flat_map(|(_, a, b)| a.iter().chain(b.iter())).map(|f| span(std::slice::from_ref(f))).fold(0.0f64, f64::max);
     let extent = pairs.iter().map(|(_, a, b)| span(a).min(span(b))).fold(f64::INFINITY, f64::min);
-    let tune = if p.contacts.iter().any(|c| c.friction > 0.0) { Tuning { newton_tol: 1e-6, max_outer: 40, outer_tol: 5e-4, ..Tuning::friction() } } else { Tuning { newton_tol: 1e-6, ..Tuning::frictionless() } };
+    let tune = if joints.iter().any(|c| c.friction > 0.0) { Tuning { newton_tol: 1e-6, max_outer: 40, outer_tol: 5e-4, ..Tuning::friction() } } else { Tuning { newton_tol: 1e-6, ..Tuning::frictionless() } };
     let e_min = std::iter::once(p.material.e).chain(p.region_materials.iter().flatten().map(|m| m.e)).fold(f64::INFINITY, f64::min);
     let eps_n = tune.eps_n(e_min, (0.5 * extent).max(1e-12));
     // A body that no support holds is held only by contact and friction: weak springs keep a sliding or lifting-off body from
@@ -891,13 +907,16 @@ fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<PairSetup, Str
             ground.extend((0..d).map(|c| (node * d + c, k)));
         }
     }
-    Ok(PairSetup { pairs, eps_n, margin: 6.0 * face, touch: 1e-5 * face, ground, tune })
+    // A solid's matrix pattern grows with the faces within the margin (see `FIT_MARGIN_FACES_3D`); the bodies of an assembly may also
+    // start a gap apart, which the margin must span.
+    let margin = (if d == 3 { FIT_MARGIN_FACES_3D } else { FIT_MARGIN_FACES_2D }) * face + joints.iter().map(|j| j.gap.abs()).fold(0.0, f64::max);
+    Ok(PairSetup { joints, pairs, eps_n, margin, touch: 1e-5 * face, ground, tune })
 }
 
 /// The contact interfaces of the pairs (two passes each), after the bushing fits' ones.
-fn pair_specs(p: &Problem, setup: &PairSetup) -> Vec<fea_core::contact::ContactSpec> {
+fn pair_specs(setup: &PairSetup) -> Vec<fea_core::contact::ContactSpec> {
     let mut v = Vec::new();
-    for (c, (name, a, b)) in p.contacts.iter().zip(&setup.pairs) {
+    for (c, (name, a, b)) in setup.joints.iter().zip(&setup.pairs) {
         v.extend(fea_core::contact::ContactSpec::two_pass(name, a.clone(), b.clone(), setup.eps_n).map(|s| s.with_friction(c.friction, fea_core::fit::EPS_T_RATIO * setup.eps_n).with_margin(setup.margin).with_overlap(setup.touch)));
     }
     v
@@ -956,7 +975,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         return Err(blocking.join("; "));
     }
     let warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && !matches!(i.code, "low_order_element" | "no_load")).map(|i| i.message.clone()).collect();
-    let specs = || fit_specs(p, &model.mesh, &setup).into_iter().chain(pair_specs(p, &pairs)).collect::<Vec<_>>();
+    let specs = || fit_specs(p, &model.mesh, &setup).into_iter().chain(pair_specs(&pairs)).collect::<Vec<_>>();
     let t0 = std::time::Instant::now();
     let plastic = model.mesh.blocks.iter().any(|b| b.plasticity.is_some());
     let has_loads = !loads.nodal.is_empty() || !loads.faces.is_empty() || !loads.field_faces.is_empty() || loads.body.is_some() || loads.delta_t != 0.0;
@@ -1001,7 +1020,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         sol
     };
     let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
-    let contacts: Vec<ContactResult> = p.contacts.iter().zip(&pairs.pairs).enumerate().map(|(k, (c, _))| contact_result(&sol, 2 * p.bushings.len() + 2 * k, &c.a, &c.b, c.friction)).collect();
+    let contacts: Vec<ContactResult> = pairs.joints.iter().enumerate().map(|(k, c)| contact_result(&sol, 2 * p.bushings.len() + 2 * k, &c.a, &c.b, c.friction)).collect();
     if plastic {
         // the stress is that of the converged plastic state, not the elastic law of the displacements
         let interfaces = p.bushings.iter().enumerate().map(|(i, b)| interface_result(&sol, 2 * i, b.hole, b.friction, p.hole_at(b.hole).map_or([0.0, 0.0], |(s, ..)| s.centre()))).collect();

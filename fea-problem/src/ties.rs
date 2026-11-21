@@ -25,14 +25,24 @@ pub struct FaceSig {
     pub area: f64,
 }
 
-/// Two faces of different bodies bonded together. `gap` (signed, as the advice measured it) widens the distance within which
-/// the slave face's nodes are taken to touch the master.
+/// Two faces of different bodies joined. `gap` (signed, as the advice measured it) widens the distance within which the slave
+/// face's nodes are taken to touch the master (bonded) or sets how far apart the bodies start (contact). `friction` is `None` for a
+/// bonded joint; `Some(mu)` makes it a contact pair instead: the faces press and slide with Coulomb friction `mu` (`0` slides
+/// freely) and can open, so a pull that separates the bodies carries no load across it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tie {
     pub a: FaceSig,
     pub b: FaceSig,
     #[serde(default)]
     pub gap: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub friction: Option<f64>,
+}
+
+impl Tie {
+    pub fn is_contact(&self) -> bool {
+        self.friction.is_some()
+    }
 }
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -102,7 +112,10 @@ impl Problem {
             return Ok(());
         }
         if !self.contacts.is_empty() || !self.bushings.is_empty() {
-            return Err("ties and contact pairs or bushings do not combine yet: a tie is a bonded joint of a plain static study".into());
+            return Err("ties and 2D contact pairs or bushings do not combine yet: ties are for a plain static study of an assembly".into());
+        }
+        if self.ties.iter().any(Tie::is_contact) && self.ties.iter().any(|t| !t.is_contact()) {
+            return Err("bonded ties and contact ties do not combine yet: make every joint bonded, or every joint a contact".into());
         }
         if self.any_plastic() || self.study.is_thermal() {
             return Err("ties are for a linear-elastic structural study: not an elastic-plastic or thermal one".into());
@@ -117,6 +130,9 @@ impl Problem {
             if !ok {
                 return Err(format!("tie {} has a face with no finite position, normal and area", i + 1));
             }
+            if t.friction.is_some_and(|mu| !(0.0..=2.0).contains(&mu)) {
+                return Err(format!("tie {}: friction must be in 0..2", i + 1));
+            }
             if t.a.body == t.b.body {
                 return Err(format!("tie {} joins two faces of body {}: a tie joins different bodies", i + 1, t.a.body + 1));
             }
@@ -128,7 +144,17 @@ impl Problem {
     /// Bond the two faces of a `Tie` advice item (read from the problem's own STEP text, so its face keys are the ones
     /// `assembly_advice` gave). The faces are stored by signature in the problem's units; a tie already present is not added twice.
     pub fn apply_tie(&mut self, advice: &AssemblyAdvice) -> Result<(), String> {
-        let AssemblyAdvice::Tie { a, b, gap, .. } = advice else { return Err("only a Tie advice item can be applied as a tie".into()) };
+        self.add_joint(advice, None)
+    }
+
+    /// As [`apply_tie`](Self::apply_tie), but the two faces become a contact pair with Coulomb friction `friction` (they press and
+    /// slide and can open) instead of a bond.
+    pub fn apply_contact(&mut self, advice: &AssemblyAdvice, friction: f64) -> Result<(), String> {
+        self.add_joint(advice, Some(friction))
+    }
+
+    fn add_joint(&mut self, advice: &AssemblyAdvice, friction: Option<f64>) -> Result<(), String> {
+        let AssemblyAdvice::Tie { a, b, gap, .. } = advice else { return Err("only a Tie advice item can be applied as a tie or a contact".into()) };
         let Geometry::Solid { step, cache: Some(c) } = &self.geometry else { return Err("ties join the bodies of a STEP assembly".into()) };
         if !c.is_current(step) {
             return Err("the STEP surface cache is out of date: open the STEP file again".into());
@@ -147,7 +173,7 @@ impl Problem {
             let s = signature(key.body, &stat).ok_or_else(|| format!("body {} face {} is not a flat face", key.body + 1, key.face))?;
             Ok(FaceSig { centroid: s.centroid.map(|v| v * scale), area: s.area * scale * scale, ..s })
         };
-        let tie = Tie { a: sig(a)?, b: sig(b)?, gap: gap * scale };
+        let tie = Tie { a: sig(a)?, b: sig(b)?, gap: gap * scale, friction };
         let (stats, diag) = (face_stats(c), diagonal(c));
         resolve(c, &stats, diag, &tie).map_err(|e| format!("the tied faces are not in the stored solid: {e}"))?;
         if !self.ties.contains(&tie) {
@@ -196,7 +222,7 @@ pub(crate) fn constraints(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<(C
     let mut out = Constraints::new();
     let mut slaved: HashSet<usize> = HashSet::new();
     let mut skipped = 0usize;
-    for (i, t) in p.ties.iter().enumerate() {
+    for (i, t) in p.ties.iter().enumerate().filter(|(_, t)| !t.is_contact()) {
         let (slave, master) = resolve(c, &stats, diag, t).map_err(|e| format!("tie {}: {e}", i + 1))?;
         let faces = |f: usize| -> Result<&Vec<Vec<usize>>, String> {
             mesh.surfaces.get(&face_name(f)).filter(|l| !l.is_empty()).ok_or_else(|| format!("tie {}: {} has no boundary elements at this mesh size: reduce element size", i + 1, face_name(f)))
@@ -242,6 +268,29 @@ pub(crate) fn constraints(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<(C
     Ok((out, notes))
 }
 
+/// A contact tie's two mesh surfaces (`faceN`), its Coulomb friction and its gap, in the tie's order.
+pub(crate) struct ContactJoint {
+    pub a: String,
+    pub b: String,
+    pub friction: f64,
+    pub gap: f64,
+}
+
+/// The contact ties of a problem resolved to the surfaces of the stored assembly.
+pub(crate) fn contact_joints(p: &Problem) -> Result<Vec<ContactJoint>, String> {
+    let Some(Geometry::Solid { cache: Some(c), .. }) = p.ties.iter().any(Tie::is_contact).then_some(&p.geometry) else { return Ok(Vec::new()) };
+    let (stats, diag) = (face_stats(c), diagonal(c));
+    p.ties
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| t.friction.map(|mu| (i, t, mu)))
+        .map(|(i, t, friction)| {
+            let (a, b) = resolve(c, &stats, diag, t).map_err(|e| format!("tie {}: {e}", i + 1))?;
+            Ok(ContactJoint { a: face_name(a), b: face_name(b), friction, gap: t.gap })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +322,7 @@ mod tests {
             a: FaceSig { body: 0, centroid: [0.5, 0.5, 1.0], normal: [0.0, 0.0, 1.0], area: 1.0 },
             b: FaceSig { body: 1, centroid: [1.0, 0.5, 1.0], normal: [0.0, 0.0, -1.0], area: 1.0 },
             gap: 0.0,
+            friction: None,
         }];
         p
     }

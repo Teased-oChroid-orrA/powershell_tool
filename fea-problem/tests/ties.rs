@@ -52,6 +52,7 @@ fn tie(top: [f64; 2], x0: f64, gap: f64) -> Tie {
         a: FaceSig { body: 0, centroid: [0.5, 0.5, 1.0], normal: [0.0, 0.0, 1.0], area: 1.0 },
         b: FaceSig { body: 1, centroid: [x0 + 0.5 * top[0], 0.5 * top[1], 1.0], normal: [0.0, 0.0, -1.0], area: top[0] * top[1] },
         gap,
+        friction: None,
     }
 }
 
