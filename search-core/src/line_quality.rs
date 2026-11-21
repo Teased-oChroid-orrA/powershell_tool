@@ -81,12 +81,21 @@ fn stroke_only(core: &str) -> bool {
         && core.chars().any(|c| matches!(c, 'I' | 'l' | '|' | '!'))
 }
 
-fn classify(raw: &str) -> Token {
+/// Per-line buffers `classify` reuses for every token, so a token costs no allocation.
+#[derive(Default)]
+struct Scratch {
+    chars: Vec<char>,
+    letters: Vec<char>,
+}
+
+fn classify(raw: &str, scratch: &mut Scratch) -> Token {
     let core = raw.trim_matches(|c: char| matches!(c, '.' | ',' | ';' | ':' | '(' | ')' | '[' | ']' | '|' | '"' | '\'' | '\u{201c}' | '\u{201d}' | '\u{2018}' | '\u{2019}'));
     if core.is_empty() {
         return Token::Neutral;
     }
-    let chars: Vec<char> = core.chars().collect();
+    let Scratch { chars, letters: letter_chars } = scratch;
+    chars.clear();
+    chars.extend(core.chars());
     let alnum = chars.iter().filter(|c| c.is_alphanumeric()).count();
     let weird = (1..chars.len().saturating_sub(1))
         .filter(|&i| {
@@ -131,18 +140,18 @@ fn classify(raw: &str) -> Token {
         }
         return if c.is_ascii_uppercase() && c != 'I' { Token::Label } else { Token::Noise };
     }
-    let letter_chars: Vec<char> = chars.iter().copied().filter(|c| c.is_alphabetic()).collect();
-    let lower: String = letter_chars.iter().flat_map(|c| c.to_lowercase()).collect();
+    letter_chars.clear();
+    letter_chars.extend(chars.iter().copied().filter(|c| c.is_alphabetic()));
     let all_upper = letter_chars.iter().all(|c| c.is_uppercase());
     let has_vowel = letter_chars.iter().any(|c| is_vowel(*c));
     // `MLLMs`, `PDEs`, `GPUs`: an acronym with a plural s.
-    let plural_acronym = n_plural(&letter_chars);
+    let plural_acronym = n_plural(letter_chars);
     let mut run = 0usize;
     let mut max_run = 0usize;
     let mut same = 1usize;
     let mut max_same = 1usize;
     let mut prev: Option<char> = None;
-    for &c in &chars {
+    for &c in chars.iter() {
         if !c.is_alphabetic() {
             run = 0;
             same = 1;
@@ -176,6 +185,7 @@ fn classify(raw: &str) -> Token {
     }
     let n = letter_chars.len();
     if n == 2 {
+        let lower: String = letter_chars.iter().flat_map(|c| c.to_lowercase()).collect();
         // `mP`, `mN`, `Wn`, `tx` are fragments; `in`, `of`, `mm`, `ft` are words and units.
         let first_lower = letter_chars[0].is_lowercase();
         let second_upper = letter_chars[1].is_uppercase();
@@ -211,6 +221,10 @@ fn is_legit_latin1_gap(c: char) -> bool {
 
 /// `Some(reason)` when `line` has no plausible content; `None` when it stays.
 pub fn assess(line: &str, source: Source) -> Option<Noise> {
+    assess_with(line, source, &mut Scratch::default())
+}
+
+fn assess_with(line: &str, source: Source, scratch: &mut Scratch) -> Option<Noise> {
     let mut non_space = 0usize;
     let mut c0 = 0usize; // control codes and undefined C1 bytes
     let mut c1 = 0usize; // C1 bytes that are Windows-1252 punctuation when decoded properly
@@ -244,7 +258,7 @@ pub fn assess(line: &str, source: Source) -> Option<Noise> {
     let mut noise_chars = 0usize;
     for raw in line.split_whitespace() {
         tokens += 1;
-        match classify(raw) {
+        match classify(raw, scratch) {
             Token::Good => {
                 good += 1;
             }
@@ -345,7 +359,8 @@ fn repair_encoding(line: &str) -> Cow<'_, str> {
 pub(crate) fn clean_lines(lines: &mut Vec<String>, source: Source, origins: Option<&mut Vec<Option<usize>>>) -> usize {
     let before = lines.len();
     // Judged as extracted: repairing first would hide the binary signal.
-    let mut keep: Vec<bool> = lines.iter().map(|l| !is_noise(l, source)).collect();
+    let mut scratch = Scratch::default();
+    let mut keep: Vec<bool> = lines.iter().map(|l| assess_with(l, source, &mut scratch).is_none()).collect();
     // Lone capital letters are real labels beside text, but a "document" of
     // nothing else is not text (a font program that happened to decode).
     let lone_label = |l: &str| {
@@ -382,6 +397,9 @@ pub(crate) fn clean_lines(lines: &mut Vec<String>, source: Source, origins: Opti
 fn word_sets(lines: &[String]) -> (HashSet<String>, HashSet<String>) {
     let mut words = HashSet::new();
     let mut compounds = HashSet::new();
+    // A word seen again must not cost an allocation: build the lowercase key in a reused buffer and own a copy only
+    // for the first occurrence.
+    let mut key = String::new();
     for line in lines {
         let mut prev_word: Option<&str> = None;
         let mut prev_end = 0;
@@ -397,11 +415,23 @@ fn word_sets(lines: &[String]) -> (HashSet<String>, HashSet<String>) {
                 // A word that ends the line with a hyphen is a break, not a whole word.
                 let broken = i == line.trim_end().len() - 1 && line.trim_end().ends_with('-');
                 if !broken {
-                    words.insert(word.to_ascii_lowercase());
+                    key.clear();
+                    key.push_str(word);
+                    key.make_ascii_lowercase();
+                    if !words.contains(key.as_str()) {
+                        words.insert(key.clone());
+                    }
                 }
                 if let Some(prev) = prev_word {
                     if prev_end + 1 == start && bytes[prev_end] == b'-' {
-                        compounds.insert(format!("{}-{}", prev.to_ascii_lowercase(), word.to_ascii_lowercase()));
+                        key.clear();
+                        key.push_str(prev);
+                        key.push('-');
+                        key.push_str(word);
+                        key.make_ascii_lowercase();
+                        if !compounds.contains(key.as_str()) {
+                            compounds.insert(key.clone());
+                        }
                     }
                 }
                 prev_word = Some(word);
@@ -732,5 +762,226 @@ mod tests {
         assert_eq!((keep_ok, drop_ok), (keep_total, drop_total));
         assert!(keep_total >= 150 && drop_total >= 60, "label set shrank");
         assert!(miss_kept <= miss_total && miss_total >= 15, "known-miss list changed: {miss_kept}/{miss_total}");
+    }
+
+    // ---- differential tests: the allocation-free `classify` / `word_sets` against the code they replaced ----
+
+    /// The `classify` of before the scratch buffers (one `Vec<char>`, `Vec<char>` and `String` per token), kept verbatim.
+    fn classify_reference(raw: &str) -> Token {
+        let core = raw.trim_matches(|c: char| matches!(c, '.' | ',' | ';' | ':' | '(' | ')' | '[' | ']' | '|' | '"' | '\'' | '\u{201c}' | '\u{201d}' | '\u{2018}' | '\u{2019}'));
+        if core.is_empty() {
+            return Token::Neutral;
+        }
+        let chars: Vec<char> = core.chars().collect();
+        let alnum = chars.iter().filter(|c| c.is_alphanumeric()).count();
+        let weird = (1..chars.len().saturating_sub(1))
+            .filter(|&i| {
+                let c = chars[i];
+                // `|` and `~` inside a token are ruled-line speckle; `?` and `!` are
+                // prose punctuation unless wedged between letters (`in?tu`).
+                matches!(c, '|' | '~' | '\u{a6}' | '\u{ac}') || (is_weird(c) && chars[i - 1].is_alphanumeric() && chars[i + 1].is_alphanumeric())
+            })
+            .count();
+        if alnum == 0 {
+            let neutral = chars.iter().all(|c| {
+                matches!(c, '=' | '+' | '-' | '\u{2013}' | '\u{2014}' | '/' | '\u{d7}' | '\u{f7}' | '\u{b1}' | '\u{b0}' | '%' | '*' | '<' | '>' | '\u{2264}' | '\u{2265}' | '\u{2248}' | '\u{2260}' | '#' | '&' | '@' | '$' | '_' | '|' | '~' | '\u{2022}' | '\u{b7}' | '\u{2192}' | '\u{221e}' | '\u{2205}' | '\u{d8}')
+                    || (!c.is_ascii() && !c.is_control() && !c.is_alphanumeric() && !is_legit_latin1_gap(*c))
+            });
+            return if neutral { Token::Neutral } else { Token::Noise };
+        }
+        if stroke_only(core) {
+            return Token::Noise;
+        }
+        // Real words carry few Latin-1 accents; binary read as Latin-1 is full of them.
+        let hi = chars.iter().filter(|c| (0xC0..0x100).contains(&(**c as u32)) && **c != '\u{d7}' && **c != '\u{f7}').count();
+        if hi >= 3 && hi * 8 >= chars.len() {
+            return Token::Noise;
+        }
+        // Symbols jammed inside a short run of letters/digits (`l1|~`, `in?tu`).
+        if weird > 0 && (alnum <= 4 || weird * 3 >= alnum) {
+            return Token::Noise;
+        }
+        let letters = chars.iter().filter(|c| c.is_alphabetic()).count();
+        let digits = chars.iter().filter(|c| c.is_ascii_digit()).count();
+        if letters == 0 {
+            // Numbers, ranges, fractions, times, dimensions, money: all content;
+            // a digit run salted with `!%#$&` is a glyph-index sequence.
+            let body = core.trim_start_matches(|c: char| matches!(c, '$' | '\u{a3}' | '\u{20ac}' | '#' | '~' | '\u{b1}' | '+' | '-' | '\u{2212}' | '\u{2248}' | '<' | '>' | '\u{2264}' | '\u{2265}'));
+            let clean = body.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '/' | ':' | '-' | '%' | '+' | '\u{b0}' | '\u{d7}' | '\u{b1}' | '\u{2013}' | '\u{2212}' | '\u{b2}' | '\u{b3}' | '\u{b9}' | '\u{bc}' | '\u{bd}' | '\u{be}' | '\u{2032}' | '\u{2033}' | ')' | '(' | '\'' | '"'));
+            return if clean { Token::Good } else { Token::Noise };
+        }
+        if chars.len() == 1 {
+            let c = chars[0];
+            if (c as u32) >= 0x100 {
+                return Token::Good; // one CJK/Greek/Cyrillic letter is a word or a variable
+            }
+            return if c.is_ascii_uppercase() && c != 'I' { Token::Label } else { Token::Noise };
+        }
+        let letter_chars: Vec<char> = chars.iter().copied().filter(|c| c.is_alphabetic()).collect();
+        let lower: String = letter_chars.iter().flat_map(|c| c.to_lowercase()).collect();
+        let all_upper = letter_chars.iter().all(|c| c.is_uppercase());
+        let has_vowel = letter_chars.iter().any(|c| is_vowel(*c));
+        // `MLLMs`, `PDEs`, `GPUs`: an acronym with a plural s.
+        let plural_acronym = n_plural(&letter_chars);
+        let mut run = 0usize;
+        let mut max_run = 0usize;
+        let mut same = 1usize;
+        let mut max_same = 1usize;
+        let mut prev: Option<char> = None;
+        for &c in &chars {
+            if !c.is_alphabetic() {
+                run = 0;
+                same = 1;
+                prev = None;
+                continue;
+            }
+            if is_vowel(c) {
+                run = 0;
+            } else {
+                run += 1;
+                max_run = max_run.max(run);
+            }
+            if Some(c) == prev {
+                same += 1;
+                max_same = max_same.max(same);
+            } else {
+                same = 1;
+            }
+            prev = Some(c);
+        }
+        let switches = letter_chars.windows(2).filter(|w| w[0].is_uppercase() != w[1].is_uppercase()).count();
+        if switches >= 3 && letter_chars.iter().any(|c| !c.is_ascii()) {
+            return Token::Noise; // `ÜMžCþJ`: random bytes read as Latin-1 letters
+        }
+        if max_same >= 4 && chars.iter().any(|c| c.is_lowercase()) {
+            return Token::Noise; // `qqqqqq`, `llllll` (all-capital `FFFF` is a hex constant)
+        }
+        if digits > 0 {
+            // Part numbers, symbols with subscripts and code: AN3-5A, R1, M12, 4130N.
+            return Token::Good;
+        }
+        let n = letter_chars.len();
+        if n == 2 {
+            // `mP`, `mN`, `Wn`, `tx` are fragments; `in`, `of`, `mm`, `ft` are words and units.
+            let first_lower = letter_chars[0].is_lowercase();
+            let second_upper = letter_chars[1].is_uppercase();
+            if first_lower && second_upper {
+                return if SHORT_UNITS.contains(&lower.as_str()) || all_upper { Token::Good } else { Token::Noise };
+            }
+            return if (has_vowel && !stroke_only(core)) || SHORT_UNITS.contains(&lower.as_str()) || all_upper && letter_chars.iter().all(|c| *c != 'I') {
+                Token::Good
+            } else {
+                Token::Noise
+            };
+        }
+        if max_run >= 7 {
+            return Token::Noise;
+        }
+        if has_vowel || all_upper || plural_acronym || n <= 4 {
+            Token::Good // short vowel-less lowercase: psf, lbf, rpm, kPa
+        } else {
+            Token::Noise
+        }
+    }
+
+
+    /// The `word_sets` of before the reused key buffer (an allocation per word occurrence), kept verbatim.
+    fn word_sets_reference(lines: &[String]) -> (HashSet<String>, HashSet<String>) {
+        let mut words = HashSet::new();
+        let mut compounds = HashSet::new();
+        for line in lines {
+            let mut prev_word: Option<&str> = None;
+            let mut prev_end = 0;
+            let bytes = line.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i].is_ascii_alphabetic() {
+                    let start = i;
+                    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                        i += 1;
+                    }
+                    let word = &line[start..i];
+                    // A word that ends the line with a hyphen is a break, not a whole word.
+                    let broken = i == line.trim_end().len() - 1 && line.trim_end().ends_with('-');
+                    if !broken {
+                        words.insert(word.to_ascii_lowercase());
+                    }
+                    if let Some(prev) = prev_word {
+                        if prev_end + 1 == start && bytes[prev_end] == b'-' {
+                            compounds.insert(format!("{}-{}", prev.to_ascii_lowercase(), word.to_ascii_lowercase()));
+                        }
+                    }
+                    prev_word = Some(word);
+                    prev_end = i;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        (words, compounds)
+    }
+
+
+    /// Deterministic pseudo-random text over an alphabet chosen to reach every branch of `classify`.
+    fn random_tokens(count: usize) -> Vec<String> {
+        const ALPHABET: &[&str] = &[
+            "a", "e", "i", "o", "u", "y", "b", "c", "d", "k", "l", "m", "n", "q", "r", "s", "t", "x", "z", "A", "E", "I", "L", "M", "N", "P", "S", "T", "W", "0", "1", "2", "5", "9", ".", ",", "-", "/", "=", "%", "|",
+            "~", "?", "!", "(", ")", "\"", "'", "\u{a0}", "\u{ad}", "\u{b0}", "\u{b1}", "\u{d7}", "\u{c9}", "\u{fc}", "\u{df}", "\u{dc}", "\u{17e}", "\u{3a3}", "\u{3b1}", "\u{4e2d}", "\u{130}", "\u{2013}",
+            "\u{201c}", "\u{2022}", "\u{2264}", "\u{80}", "\u{93}", "\u{1}", "\u{fffd}", "$", "#", "+", "<", "*",
+        ];
+        let mut x = 0x9e3779b97f4a7c15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        (0..count)
+            .map(|_| {
+                let len = 1 + (next() % 9) as usize;
+                // Draw from a random prefix of the alphabet so that some tokens are single-class (all letters, all digits).
+                let span = 6 + (next() % (ALPHABET.len() as u64 - 5)) as usize;
+                (0..len).map(|_| ALPHABET[(next() % span as u64) as usize]).collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn classify_with_reused_buffers_matches_the_allocating_original() {
+        let tokens = random_tokens(200_000);
+        let mut scratch = Scratch::default();
+        let mut seen = [0usize; 4];
+        for t in &tokens {
+            let want = classify_reference(t);
+            // One scratch across every token: stale contents must never leak into the next answer.
+            assert!(classify(t, &mut scratch) == want, "token {t:?}");
+            seen[want as usize] += 1;
+        }
+        // The generator reaches every verdict (otherwise the comparison proves little).
+        assert!(seen.iter().all(|&n| n > 500), "verdict coverage {seen:?}");
+    }
+
+    #[test]
+    fn word_sets_with_a_reused_key_matches_the_allocating_original() {
+        let words = ["Model", "model", "high", "temperature", "pre", "training", "understand", "ing", "ONE", "one", "x", "Zed"];
+        let mut x = 12345u64;
+        let mut next = move || {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (x >> 33) as usize
+        };
+        let lines: Vec<String> = (0..3000)
+            .map(|_| {
+                let mut line = String::new();
+                for _ in 0..(next() % 9) {
+                    line.push_str(words[next() % words.len()]);
+                    line.push_str(["-", " ", "- ", "  ", ", ", "-1 ", "\u{e9}", "-"][next() % 8]);
+                }
+                if next() % 5 == 0 {
+                    line.push('-');
+                }
+                line
+            })
+            .collect();
+        assert_eq!(word_sets(&lines), word_sets_reference(&lines));
     }
 }
