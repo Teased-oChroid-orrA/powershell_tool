@@ -3382,6 +3382,18 @@ mod snapshot_tests {
                 };
                 gui.select_tab_named(&input, "Results");
                 draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                // Out of focus the pills are not drawn: the Find box says how many there are.
+                let idle = gui.target_labels();
+                assert!(
+                    chips(&session).iter().all(|chip| !idle.contains(chip)),
+                    "the pills are drawn without focus"
+                );
+                std::fs::write(format!("{dir}/{name}-idle.rgba"), read_back(&r, &texture)).unwrap();
+                // Focus in Find opens them under it, over the page.
+                gui.ctx().memory_mut(|m| m.request_focus(egui::Id::new(("doc-input", 1u8))));
+                for _ in 0..2 {
+                    draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                }
                 let drawn = gui.target_labels();
                 for chip in chips(&session) {
                     assert!(drawn.contains(&chip), "chip {chip:?} was not drawn");

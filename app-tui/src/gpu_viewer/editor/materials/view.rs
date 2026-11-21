@@ -144,6 +144,7 @@ pub(super) fn document(s: &MaterialsSession) -> Document {
         submit: None,
         commit_on_blur: false,
         grow: 1.0,
+        suggest: false,
         trailing: (!q.text.is_empty()).then(|| e("Clear", "Esc", MaterialsAct::ClearSearch)),
         help: None,
         choices: [Basis::Any, Basis::A, Basis::B, Basis::S]

@@ -52,6 +52,9 @@ pub(super) struct DocState {
     pub(super) open: Option<String>,
     pop_rect: Option<Rect>,
     anchor: Option<Rect>,
+    /// Where the suggestion pills were drawn last frame: a press on one takes focus from the input, and the pills
+    /// stay until it is released.
+    suggest_rect: Option<Rect>,
     /// The stored layout (the view's), set by the caller each frame.
     pub(super) layout: PageLayout,
     /// The layout drawn this frame (the stored one, or the splitter's while it moves).
@@ -1311,7 +1314,11 @@ impl Gui {
         });
         let top = ui.cursor().min;
         let choices_w = segmented_width(ui, &input.choices, p);
-        if input.choices.is_empty() {
+        if input.suggest {
+            self.text_box(ui, input, width, 34.0, p, out, hint);
+            let anchor = Rect::from_min_size(top, Vec2::new(width, 34.0));
+            self.suggestion_pills(ui, input, anchor, p, out, hint);
+        } else if input.choices.is_empty() {
             self.text_box(ui, input, width, 34.0, p, out, hint);
         } else if width - choices_w - 8.0 >= 220.0 {
             ui.horizontal(|ui| {
@@ -1328,6 +1335,64 @@ impl Gui {
             let anchor = Rect::from_min_size(top, Vec2::new(width, 34.0));
             self.help_popover(ui.ctx(), input, h, anchor, p, out);
         }
+    }
+
+    /// The input's suggestions as pills in an overlay just under it, shown while it has focus (and while a pill is
+    /// pressed). They take no page space; a pill that does not fit the input's width starts the next row, so none is
+    /// dropped. Out of focus, a count in the input's right end says they are there. Choosing one hands focus back.
+    fn suggestion_pills(&mut self, ui: &mut egui::Ui, input: &DocInput, anchor: Rect, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
+        if input.choices.is_empty() {
+            self.doc.suggest_rect = None;
+            return;
+        }
+        let ctx = ui.ctx().clone();
+        let id = Id::new(("doc-input", input.id));
+        let pressed = self.doc.suggest_rect.is_some_and(|r| ui.input(|i| i.pointer.interact_pos().is_some_and(|pos| r.contains(pos) && i.pointer.any_down())));
+        if !(ctx.memory(|m| m.has_focus(id)) || pressed) {
+            self.doc.suggest_rect = None;
+            let n = input.choices.len();
+            ui.painter().text(
+                Pos2::new(anchor.right() - 12.0, anchor.center().y),
+                Align2::RIGHT_CENTER,
+                format!("{n} suggestion{}", if n == 1 { "" } else { "s" }),
+                FontId::proportional(11.5),
+                p.dim.gamma_multiply(0.85),
+            );
+            return;
+        }
+        let width = anchor.width();
+        let shown = egui::Area::new(Id::new(("doc-suggestions", input.id)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(Pos2::new(anchor.left(), anchor.bottom() + 6.0))
+            .fade_in(false)
+            .show(&ctx, |ui| {
+                super::panels::popup_frame(p).inner_margin(Margin::same(8)).show(ui, |ui| {
+                    ui.set_width(width - 16.0);
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        for e in &input.choices {
+                            let w = (segment_width(ui, &e.label, p)).min(width - 16.0);
+                            let (r, resp) = ui.allocate_exact_size(Vec2::new(w, 26.0), Sense::click());
+                            self.targets.push((e.label.clone(), r));
+                            let hot = resp.hovered();
+                            ui.painter().rect(
+                                r,
+                                CornerRadius::same(13),
+                                if hot { with_alpha(p.accent, 28) } else { p.panel },
+                                Stroke::new(1.0, if hot { with_alpha(p.accent, 150) } else { p.line }),
+                                egui::StrokeKind::Inside,
+                            );
+                            ui.painter().with_clip_rect(r).text(r.center(), Align2::CENTER_CENTER, &e.label, FontId::proportional(13.0), if hot { p.text } else { p.dim });
+                            let resp = resp.on_hover_text(e.hover_text());
+                            if resp.clicked() {
+                                ctx.memory_mut(|m| m.request_focus(id));
+                            }
+                            self.entry_click(&resp, e, out, hint);
+                        }
+                    });
+                });
+            });
+        self.doc.suggest_rect = Some(shown.response.rect);
     }
 
     /// One choice of a few, as a segmented control: the checked entry raised and tinted. Entries that do not fit
