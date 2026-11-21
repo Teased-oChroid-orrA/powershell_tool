@@ -4,6 +4,7 @@
 //! Face numbers: the native face order is the order of the face entities in the STEP text, which is also the order of the
 //! surface mesh this module produces. A cache made by another kernel numbers faces differently, so an edit finds its flat face by
 //! plane (point and normal), never by number.
+use crate::assembly_mesh::assembly_cache;
 use crate::solid::{finish_import, flat_face, remap_faces, SolidCache, SolidOp, StepImport};
 use solid_kernel::analytic_step::{AnalyticModel, Options};
 use solid_kernel::cylindrical_step::ChartPolicy;
@@ -39,8 +40,11 @@ fn chord_of(deflection: f64) -> f64 {
 /// Tessellate STEP text natively (chord deflection `deflection` mm; a non-positive value means the default 0.05 mm).
 pub fn tessellate_step_native(step: &str, deflection: f64) -> Result<SolidCache, String> {
     let chord = chord_of(deflection);
-    let (_, surface) = sample(step, chord)?;
-    Ok(SolidCache::new(step, surface.mesh, chord))
+    match sample(step, chord) {
+        Ok((_, surface)) => Ok(SolidCache::new(step, surface.mesh, chord)),
+        // A file of several bodies is an assembly; one that is not keeps the single-body reader's reason.
+        Err(single) => assembly_cache(step, chord).map_err(|_| single),
+    }
 }
 
 /// Read a STEP solid natively: its cache at a thousandth of the bounding-box diagonal and the element size the editor starts with.
@@ -49,13 +53,26 @@ pub fn import_step_native(step: &str) -> Result<StepImport, String> {
         return crate::native_tessellated::import_tessellated(step);
     }
     // A first, coarse read gives the extent.
-    let (model, _) = sample(step, DEFAULT_CHORD)?;
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
-    for id in model.body().edges.keys() {
-        for p in model.edge_points(*id).unwrap_or(&[]) {
-            for k in 0..3 {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
+    match sample(step, DEFAULT_CHORD) {
+        Ok((model, _)) => {
+            for id in model.body().edges.keys() {
+                for p in model.edge_points(*id).unwrap_or(&[]) {
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(p[k]);
+                        hi[k] = hi[k].max(p[k]);
+                    }
+                }
+            }
+        }
+        // Several bodies: the extent of the whole assembly, from its coarse surface.
+        Err(single) => {
+            let coarse = assembly_cache(step, DEFAULT_CHORD).map_err(|_| single)?;
+            for p in &coarse.vertices {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
             }
         }
     }
@@ -107,6 +124,9 @@ fn refusal(what: &str, step: &str, cache: &SolidCache, err: String) -> String {
 /// Apply `op` natively; returns the new STEP text and its tessellation. A shape the native modeller cannot edit is refused with
 /// its reason (`"<what cannot be done>: <why>"`).
 pub fn apply_op_native(step: &str, cache: &SolidCache, op: &SolidOp) -> Result<(String, SolidCache), String> {
+    if !cache.bodies.is_empty() {
+        return Err("this assembly of several bodies cannot be edited: edit a part's own file".into());
+    }
     let brep = NativeBrep::from_step_text(step).map_err(|e| refusal("this solid cannot be edited", step, cache, e))?;
     let scale = cache.coordinate_scale;
     let positive = |v: f64, what: &str| if v.is_finite() && v > 0.0 { Ok(()) } else { Err(format!("the {what} must be a positive number")) };

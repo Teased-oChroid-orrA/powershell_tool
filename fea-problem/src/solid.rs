@@ -23,6 +23,10 @@ pub struct SolidCache {
     pub triangles: Vec<[usize; 3]>,
     /// B-rep face index of each triangle.
     pub face: Vec<usize>,
+    /// Faces of each body of an assembly, in body order: body `k` owns the face indices that follow body `k - 1`'s, so face names
+    /// stay `faceN` over the whole assembly. Empty is one body (every face).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bodies: Vec<usize>,
 }
 
 /// FNV-1a 64 of the text as 16 hex digits: stable across Rust versions (unlike `DefaultHasher`) and platforms, which a
@@ -44,7 +48,7 @@ impl SolidCache {
     pub fn new(step: &str, mesh: SurfaceMesh, deflection: f64) -> Self {
         Self {
             coordinate_scale: 1.0,
-            hash: text_hash(step), deflection, vertices: mesh.vertices, triangles: mesh.triangles, face: mesh.face,
+            hash: text_hash(step), deflection, vertices: mesh.vertices, triangles: mesh.triangles, face: mesh.face, bodies: Vec::new(),
         }
     }
     /// Whether the cache was made from exactly this STEP text.
@@ -64,13 +68,36 @@ impl SolidCache {
     pub fn surface(&self) -> SurfaceMesh {
         SurfaceMesh { vertices: self.vertices.clone(), triangles: self.triangles.clone(), face: self.face.clone() }
     }
-    /// `face1`.. for every B-rep face index that has a triangle, up to the largest.
+    /// `face1`.. for every B-rep face index that has a triangle, up to the largest (an assembly: up to the end of its last body).
     pub fn face_names(&self) -> Vec<String> {
-        (1..=self.face.iter().copied().max().map_or(0, |m| m + 1)).map(|i| format!("face{i}")).collect()
+        let top = self.face.iter().copied().max().map_or(0, |m| m + 1).max(self.bodies.iter().sum());
+        (1..=top).map(|i| format!("face{i}")).collect()
+    }
+    /// The face-index range of each body (one range over every face for a single solid).
+    pub fn body_faces(&self) -> Vec<std::ops::Range<usize>> {
+        if self.bodies.is_empty() {
+            return vec![0..self.face.iter().copied().max().map_or(0, |m| m + 1)];
+        }
+        let mut start = 0;
+        self.bodies.iter().map(|n| { let r = start..start + n; start += n; r }).collect()
+    }
+    /// The body that owns face index `face`.
+    pub fn body_of(&self, face: usize) -> usize {
+        self.body_faces().iter().position(|r| r.contains(&face)).unwrap_or(0)
+    }
+    /// The closed surface of body `k` alone, its face tags renumbered from 0 and its vertices compacted.
+    fn body_surface(&self, range: &std::ops::Range<usize>) -> SurfaceMesh {
+        let mut index = std::collections::HashMap::new();
+        let mut out = SurfaceMesh { vertices: Vec::new(), triangles: Vec::new(), face: Vec::new() };
+        for (t, f) in self.triangles.iter().zip(&self.face).filter(|(_, f)| range.contains(f)) {
+            out.triangles.push(t.map(|v| *index.entry(v).or_insert_with(|| { out.vertices.push(self.vertices[v]); out.vertices.len() - 1 })));
+            out.face.push(f - range.start);
+        }
+        out
     }
 }
 
-fn cache_of(p: &Problem) -> Result<&SolidCache, String> {
+pub(crate) fn cache_of(p: &Problem) -> Result<&SolidCache, String> {
     p.validate_geometry()?;
     match &p.geometry {
         Geometry::Solid { cache: Some(c), .. } => Ok(c),
@@ -78,28 +105,73 @@ fn cache_of(p: &Problem) -> Result<&SolidCache, String> {
     }
 }
 
-/// The closed, face-tagged surface of a solid problem (refused with the reason when the cached mesh is open or broken).
-pub fn solid_surface(p: &Problem) -> Result<SurfaceSolid, String> {
+/// The closed, face-tagged surface of each body of a solid problem (one for a single solid; refused with the reason when a cached
+/// mesh is open or broken). Face tags are local to the body: body `k`'s face `j` is the problem's face `body_faces()[k].start + j`.
+pub fn solid_surfaces(p: &Problem) -> Result<Vec<SurfaceSolid>, String> {
     let c = cache_of(p)?;
-    SurfaceSolid::new(c.surface(), c.deflection * 1e-3)
+    c.body_faces().iter().enumerate().map(|(k, range)| {
+        let body = if c.bodies.is_empty() { c.surface() } else { c.body_surface(range) };
+        SurfaceSolid::new(body, c.deflection * 1e-3).map_err(|e| if c.bodies.is_empty() { e } else { format!("body {}: {e}", k + 1) })
+    }).collect()
+}
+
+/// The closed, face-tagged surface of a single-solid problem (an assembly has one per body: [`solid_surfaces`]).
+pub fn solid_surface(p: &Problem) -> Result<SurfaceSolid, String> {
+    let mut all = solid_surfaces(p)?;
+    if all.len() != 1 {
+        return Err(format!("the assembly has {} bodies, not one surface", all.len()));
+    }
+    Ok(all.remove(0))
+}
+
+/// The bodies' meshes as one: nodes and elements side by side, faces named by the problem's `faceN` (each body's own `face{j}`
+/// moved on by the faces of the bodies before it). The bodies share no node: a tie joins them.
+fn merge_bodies(parts: Vec<(Mesh, usize)>) -> Mesh {
+    let mut out = Mesh::new(fea_core::Physics::Solid);
+    for (m, face_offset) in parts {
+        let node_offset = out.nodes.len();
+        out.nodes.extend(m.nodes);
+        for mut b in m.blocks {
+            b.conn.iter_mut().for_each(|n| *n += node_offset);
+            out.blocks.push(b);
+        }
+        for (name, list) in m.surfaces {
+            let local: usize = name.strip_prefix("face").and_then(|d| d.parse().ok()).expect("the volume mesher names surfaces faceN");
+            out.surfaces.insert(format!("face{}", local + face_offset), list.into_iter().map(|f| f.into_iter().map(|n| n + node_offset).collect()).collect());
+        }
+    }
+    out
 }
 
 /// Tetrahedral volume mesh of a solid problem at the problem's mesh size (Tet10 for a quadratic element choice). Refinement
-/// zones are sketch-plane features and do not apply. Faces are named `face1`.. as `Problem::edge_names` lists them.
+/// zones are sketch-plane features and do not apply. Faces are named `face1`.. as `Problem::edge_names` lists them. The bodies of an
+/// assembly are meshed one by one (the size and volume checks run per body) and joined by `Problem::ties` at the solve.
 pub fn solid_mesh(p: &Problem) -> Result<(Mesh, MeshReport), String> {
-    let solid = solid_surface(p)?;
+    let solids = solid_surfaces(p)?;
+    let ranges = cache_of(p)?.body_faces();
     let h = p.mesh.size;
-    let est = solid.volume() / (0.1179 * h * h * h);
+    let est: f64 = solids.iter().map(|s| s.volume()).sum::<f64>() / (0.1179 * h * h * h);
     if est > MAX_TETS {
         return Err(format!("about {est:.0} elements: that is too fine (limit {MAX_TETS:.0}); increase the mesh size"));
     }
     let params = VolumeParams { base: 2.0 * h, boundary_size: h, quadratic: p.mesh.element.is_quadratic(),
     };
-    let (mesh, report) = mesh_volume(&solid, p.material.elastic(), params, &|_| h)?;
-    let volume_error = (report.volume / solid.volume() - 1.0).abs();
-    if volume_error > 0.05 {
-        return Err(format!("the mesh does not resolve the STEP body: volume differs by {:.1}% (limit 5%); reduce element size from {h:.4e}", volume_error * 100.0));
+    let (mut parts, mut report) = (Vec::new(), None::<MeshReport>);
+    for (k, (solid, range)) in solids.iter().zip(&ranges).enumerate() {
+        let who = if solids.len() > 1 { format!("body {}: ", k + 1) } else { String::new() };
+        let (mesh, r) = mesh_volume(solid, p.material.elastic(), params, &|_| h).map_err(|e| format!("{who}{e}"))?;
+        let volume_error = (r.volume / solid.volume() - 1.0).abs();
+        if volume_error > 0.05 {
+            return Err(format!("{who}the mesh does not resolve the STEP body: volume differs by {:.1}% (limit 5%); reduce element size from {h:.4e}", volume_error * 100.0));
+        }
+        report = Some(match report {
+            None => r,
+            Some(t) => MeshReport { tets: t.tets + r.tets, nodes: t.nodes + r.nodes, volume: t.volume + r.volume, worst_quality: t.worst_quality.min(r.worst_quality), snapped: t.snapped + r.snapped, refused: t.refused + r.refused },
+        });
+        parts.push((mesh, range.start));
     }
+    let report = report.ok_or("the STEP solid has no body")?;
+    let mesh = if parts.len() == 1 { parts.remove(0).0 } else { merge_bodies(parts) };
     let unresolved = unresolved_faces(p, &mesh);
     let missing: Vec<_> = p.supports.iter().filter_map(Support::edge).chain(p.loads.iter().filter_map(Load::edge))
         .chain(p.thermal.supports.iter().filter_map(crate::thermal::HeatSupport::edge))
@@ -152,29 +224,36 @@ impl Problem {
 
 // ------------------------------------------------------------------------------------------ editing a stored solid
 
+/// Area, area-weighted centroid sum and net area vector of a face, built up triangle by triangle.
+pub(crate) type FaceStat = (f64, [f64; 3], [f64; 3]);
+
+/// Add triangle `[a, b, d]` to `e`; the centroid is a sum until [`finish_stat`].
+pub(crate) fn add_triangle(e: &mut FaceStat, [a, b, d]: [[f64; 3]; 3]) {
+    let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+    let nv = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+    let ar = 0.5 * (nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]).sqrt();
+    e.0 += ar;
+    for k in 0..3 {
+        e.1[k] += ar * (a[k] + b[k] + d[k]) / 3.0;
+        e.2[k] += 0.5 * nv[k];
+    }
+}
+
+/// The centroid of a finished face (its sum divided by the area).
+pub(crate) fn finish_stat(e: &mut FaceStat) {
+    if e.0 > 0.0 {
+        e.1 = e.1.map(|v| v / e.0);
+    }
+}
+
 /// Area, area-weighted centroid and net area vector of every face of a cache (one entry per `face` index).
-fn face_stats(c: &SolidCache) -> Vec<(f64, [f64; 3], [f64; 3])> {
-    let n = c.face.iter().copied().max().map_or(0, |m| m + 1);
+pub(crate) fn face_stats(c: &SolidCache) -> Vec<FaceStat> {
+    let n = c.face.iter().copied().max().map_or(0, |m| m + 1).max(c.bodies.iter().sum());
     let mut out = vec![(0.0, [0.0; 3], [0.0; 3]); n];
     for (t, f) in c.triangles.iter().zip(&c.face) {
-        let [a, b, d] = t.map(|i| c.vertices[i]);
-        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]],
-        );
-        let nv = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0],
-        ];
-        let ar = 0.5 * (nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]).sqrt();
-        let e = &mut out[*f];
-        e.0 += ar;
-        for k in 0..3 {
-            e.1[k] += ar * (a[k] + b[k] + d[k]) / 3.0;
-            e.2[k] += 0.5 * nv[k];
-        }
+        add_triangle(&mut out[*f], t.map(|i| c.vertices[i]));
     }
-    for e in &mut out {
-        if e.0 > 0.0 {
-            e.1 = e.1.map(|v| v / e.0);
-        }
-    }
+    out.iter_mut().for_each(finish_stat);
     out
 }
 
@@ -310,10 +389,14 @@ pub fn flat_face(c: &SolidCache, face: usize) -> Result<([f64; 3], [f64; 3]), St
 /// The element size a freshly imported solid gets: an eighteenth of the bounding-box diagonal, capped by a third of the thinnest
 /// wall between opposite flat faces and of the smallest box side (shared by the OpenCascade and the native import).
 pub(crate) fn finish_import(cache: SolidCache, lo: [f64; 3], hi: [f64; 3], diag: f64) -> StepImport {
-    let planes: Vec<_> = (0..cache.face_names().len()).filter_map(|f| flat_face(&cache, f + 1).ok()).collect();
+    // A wall is the thickness of one body: faces of different bodies of an assembly (an air gap between plates) are not one.
+    let planes: Vec<_> = (0..cache.face_names().len()).filter_map(|f| flat_face(&cache, f + 1).ok().map(|p| (cache.body_of(f), p))).collect();
     let mut wall = f64::INFINITY;
-    for (i, (a, n)) in planes.iter().enumerate() {
-        for (b, m) in planes.iter().skip(i + 1) {
+    for (i, (body_a, (a, n))) in planes.iter().enumerate() {
+        for (body_b, (b, m)) in planes.iter().skip(i + 1) {
+            if body_a != body_b {
+                continue;
+            }
             let dot = n.iter().zip(m).map(|(a,b)| a*b).sum::<f64>();
             let distance = (0..3).map(|d| (b[d]-a[d])*n[d]).sum::<f64>().abs();
             if dot < -0.999 && distance > diag * 1e-4 { wall = wall.min(distance); }

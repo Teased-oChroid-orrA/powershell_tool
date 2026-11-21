@@ -589,6 +589,14 @@ fn solve_thermal_only(mesh: Mesh, setup: &crate::thermal::Setup) -> Result<Pass,
     Ok(Pass { model, u: vec![0.0; n * d], nodal: vec![[0.0; 6]; n], zz, reaction: [0.0; 3], applied: [0.0; 3], force_scale: 0.0, solve_ms, strain_energy: 0.0, interfaces: Vec::new(), contacts: Vec::new(), warnings: Vec::new(), heat: Some((heat.temperature, summary)), plastic: None })
 }
 
+/// What a linear static solve gives the checks and post-processing of `solve_mesh`, whichever solver made it.
+struct StaticSolve {
+    u: Vec<f64>,
+    reactions: Vec<f64>,
+    rel_residual: f64,
+    fallback: Option<String>,
+}
+
 fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     if p.study.is_thermal() && (!p.bushings.is_empty() || !p.contacts.is_empty()) {
         return Err("a thermal study does not support bushings or contact pairs".into());
@@ -620,15 +628,25 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     };
     // The kernel's model check (inverted elements, loose nodes, rigid-body motion, non-finite loads, nothing applied):
     // an error stops the solve with its reason, a warning travels with the result.
+    // Ties join separate bodies, so the check that each connected piece is supported does not apply to a piece alone: a
+    // model that stays free as a whole is caught by the singular solve below.
+    let tied = if p.ties.is_empty() { None } else { Some(crate::ties::constraints(p, &model.mesh, &bc)?) };
     let issues = model.validate(&loads, &bc);
-    if let Some(first) = issues.iter().find(|i| i.severity == fea_core::Severity::Error) {
-        let all: Vec<&str> = issues.iter().filter(|i| i.severity == fea_core::Severity::Error).map(|i| i.message.as_str()).collect();
+    let blocking = |i: &&fea_core::Issue| i.severity == fea_core::Severity::Error && !(tied.is_some() && i.code == "rigid_body");
+    if let Some(first) = issues.iter().find(blocking) {
+        let all: Vec<&str> = issues.iter().filter(blocking).map(|i| i.message.as_str()).collect();
         return Err(if all.len() == 1 { first.message.clone() } else { all.join("; ") });
     }
-    let warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && i.code != "low_order_element").map(|i| i.message.clone()).collect();
+    let mut warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && i.code != "low_order_element").map(|i| i.message.clone()).collect();
+    warnings.extend(tied.iter().flat_map(|(_, notes)| notes.clone()));
     let t0 = std::time::Instant::now();
-    let solve = |model: &Model| {
-        model.solve_static(&loads, &bc).map_err(|e| {
+    // The constrained solve has no a-posteriori residual of its own: its result is held to the equilibrium check below.
+    let solve = |model: &Model| -> Result<StaticSolve, String> {
+        let solved = match &tied {
+            Some((cons, _)) => model.solve_static_constrained(&loads, &bc, cons, &[]).map(|s| StaticSolve { u: s.u, reactions: s.reactions, rel_residual: 0.0, fallback: None }),
+            None => model.solve_static(&loads, &bc).map(|s| StaticSolve { u: s.u, reactions: s.reactions, rel_residual: s.rel_residual, fallback: s.fallback }),
+        };
+        solved.map_err(|e| {
             if e.to_lowercase().contains("pivot") || e.to_lowercase().contains("positive") || e.to_lowercase().contains("singular") {
                 format!("the model is not fully constrained (rigid-body motion remains): add supports. Solver said: {e}")
             } else {
@@ -647,7 +665,6 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     // self-equilibrated one, has a net force of zero).
     let mut scale = force_scale(&f, &sol.reactions);
     let imbalance = |reaction: &[f64; 3], applied: &[f64; 3], scale: f64| balance_error(&model.mesh.physics, reaction, applied, scale);
-    let mut warnings = warnings;
     if let Some(why) = &sol.fallback {
         warnings.push(format!("The linear solve was repeated: {why}."));
     }
