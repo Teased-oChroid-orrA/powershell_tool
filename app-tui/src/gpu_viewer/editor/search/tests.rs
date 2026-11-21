@@ -1424,12 +1424,34 @@ fn rows_show_the_name_the_folder_below_the_root_and_the_type() {
     assert_eq!(rows[0].badge.as_deref(), Some("PDF"));
 }
 
+/// The `FIELDS` index of a setting, which is what `SearchAct::Edit` / `Step` carry. `settings()` skips the legacy
+/// "Open report" field (19), so a position in that iterator is the wrong number for every setting after it.
+fn setting_field(label: &str) -> usize {
+    settings_view::settings().find(|x| x.2 == label).unwrap().0
+}
+
+#[test]
+fn settings_after_the_skipped_legacy_field_act_on_themselves() {
+    let mut s = SearchSession::in_memory();
+    let loc = setting_field("Index location");
+    let before = s.st.config.index.location;
+    act_on(&mut s, SearchAct::Edit(loc));
+    assert_ne!(s.st.config.index.location, before, "a click on Index location moves it on");
+    let semantic = setting_field("Semantic index");
+    assert!(!s.st.config.index.semantic);
+    act_on(&mut s, SearchAct::Edit(semantic));
+    assert!(s.st.config.index.semantic, "Semantic index flips, nothing else does");
+    assert_eq!(
+        s.st.config.index.location,
+        crate::toolboxes::search::indexing::IndexLocation::OutputFolder
+    );
+    assert!(!s.st.config.index.watch && !s.st.config.index.lazy_embed);
+}
+
 #[test]
 fn options_are_the_terminal_forms_settings_typed_flipped_and_validated() {
     let mut s = SearchSession::in_memory();
-    let size = settings_view::settings()
-        .position(|x| x.2 == "Max file size (MB)")
-        .unwrap();
+    let size = setting_field("Max file size (MB)");
     act_on(&mut s, SearchAct::Edit(size));
     let card = s.value_card().expect("a typed setting opens a value card");
     assert_eq!(card.title, "Max file size (MB)");
@@ -1444,9 +1466,7 @@ fn options_are_the_terminal_forms_settings_typed_flipped_and_validated() {
         "an invalid number keeps the value"
     );
     assert!(s.status().contains("not a valid value"), "{}", s.status());
-    let regex = settings_view::settings()
-        .position(|x| x.2 == "Use regex")
-        .unwrap();
+    let regex = setting_field("Use regex");
     act_on(&mut s, SearchAct::Edit(regex));
     assert!(
         s.st.config.use_regex && s.value_card().is_none(),
@@ -1567,9 +1587,7 @@ fn the_output_folder_is_an_input_with_browse_in_the_report_popover() {
         "the folder to search is untouched"
     );
     // The ribbon and a typed-setting edit of the output folder open the picker too, never a value card.
-    let out = settings_view::settings()
-        .position(|x| x.2 == "Output folder")
-        .unwrap();
+    let out = setting_field("Output folder");
     act_on(&mut s, SearchAct::Edit(out));
     assert!(s.value_card().is_none());
 }
