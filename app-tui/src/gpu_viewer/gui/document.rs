@@ -55,6 +55,8 @@ pub(super) struct DocState {
     /// Where the suggestion pills were drawn last frame: a press on one takes focus from the input, and the pills
     /// stay until it is released.
     suggest_rect: Option<Rect>,
+    /// The pill picked with the arrow keys, for the text it was picked at (typing makes the list new).
+    suggest_sel: Option<(usize, String)>,
     /// The stored layout (the view's), set by the caller each frame.
     pub(super) layout: PageLayout,
     /// The layout drawn this frame (the stored one, or the splitter's while it moves).
@@ -1315,6 +1317,7 @@ impl Gui {
         let top = ui.cursor().min;
         let choices_w = segmented_width(ui, &input.choices, p);
         if input.suggest {
+            self.pill_keys(ui, input, out);
             self.text_box(ui, input, width, 34.0, p, out, hint);
             let anchor = Rect::from_min_size(top, Vec2::new(width, 34.0));
             self.suggestion_pills(ui, input, anchor, p, out, hint);
@@ -1335,6 +1338,32 @@ impl Gui {
             let anchor = Rect::from_min_size(top, Vec2::new(width, 34.0));
             self.help_popover(ui.ctx(), input, h, anchor, p, out);
         }
+    }
+
+    /// Arrow keys over the suggestion pills while the input has focus: Down picks the first pill, then the next; Up goes
+    /// back and off the first; Enter chooses the picked pill (instead of running the search) and Esc drops the pick.
+    /// Read before the text box so it does not also move the cursor or submit.
+    fn pill_keys(&mut self, ui: &mut egui::Ui, input: &DocInput, out: &mut Vec<Outcome>) {
+        let id = Id::new(("doc-input", input.id));
+        let n = input.choices.len();
+        if n == 0 || !ui.ctx().memory(|m| m.has_focus(id)) {
+            self.doc.suggest_sel = None;
+            return;
+        }
+        let picked = self.doc.suggest_sel.take().filter(|(i, text)| *i < n && *text == input.text).map(|(i, _)| i);
+        let mut key = |k| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+        let mut sel = picked;
+        if key(egui::Key::ArrowDown) {
+            sel = Some(step_pick(sel, n));
+        } else if sel.is_some() && key(egui::Key::ArrowUp) {
+            sel = step_pick_up(sel);
+        } else if sel.is_some() && key(egui::Key::Escape) {
+            sel = None;
+        } else if let Some(i) = sel.filter(|_| key(egui::Key::Enter)) {
+            out.push(Self::entry_outcome(&input.choices[i]));
+            sel = None;
+        }
+        self.doc.suggest_sel = sel.map(|i| (i, input.text.clone()));
     }
 
     /// The input's suggestions as pills in an overlay just under it, shown while it has focus (and while a pill is
@@ -1370,11 +1399,12 @@ impl Gui {
                     ui.set_width(width - 16.0);
                     ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
                     ui.horizontal_wrapped(|ui| {
-                        for e in &input.choices {
+                        let picked = self.doc.suggest_sel.as_ref().filter(|(_, text)| *text == input.text).map(|(i, _)| *i);
+                        for (k, e) in input.choices.iter().enumerate() {
                             let w = (segment_width(ui, &e.label, p)).min(width - 16.0);
                             let (r, resp) = ui.allocate_exact_size(Vec2::new(w, 26.0), Sense::click());
                             self.targets.push((e.label.clone(), r));
-                            let hot = resp.hovered();
+                            let hot = resp.hovered() || picked == Some(k);
                             ui.painter().rect(
                                 r,
                                 CornerRadius::same(13),
@@ -1562,10 +1592,14 @@ impl Gui {
             *hint = Some(e.hover_text());
         }
         if r.clicked() {
-            out.push(match (&e.reason, e.enabled) {
-                (Some(reason), false) => Outcome::Blocked(reason.clone()),
-                _ => Outcome::Action(e.action),
-            });
+            out.push(Self::entry_outcome(e));
+        }
+    }
+
+    fn entry_outcome(e: &Entry) -> Outcome {
+        match (&e.reason, e.enabled) {
+            (Some(reason), false) => Outcome::Blocked(reason.clone()),
+            _ => Outcome::Action(e.action),
         }
     }
 
@@ -2785,6 +2819,15 @@ fn copy_document_selection(ctx: &egui::Context, selection_id: Id) -> bool {
     true
 }
 
+/// The pill after an arrow Down: the first when none is picked, else the next (the last stays).
+fn step_pick(picked: Option<usize>, n: usize) -> usize {
+    picked.map_or(0, |i| (i + 1).min(n.saturating_sub(1)))
+}
+/// The pill after an arrow Up: the one before, or none off the first.
+fn step_pick_up(picked: Option<usize>) -> Option<usize> {
+    picked.and_then(|i| i.checked_sub(1))
+}
+
 /// The row of each entry when entries of these widths fill rows of `width` (3 points of margin each side): an entry
 /// that would cross the right edge starts the next row. Entries that exactly fill the control stay on one row.
 fn segment_rows(widths: &[f32], width: f32) -> Vec<usize> {
@@ -3019,6 +3062,17 @@ fn hit_block(ui: &mut egui::Ui, b: &DocBlock, p: &Palette) {
 
 #[cfg(test)]
 mod segment_rows_tests {
+    #[test]
+    fn arrow_keys_walk_the_pills_and_stop_at_the_ends() {
+        use super::{step_pick, step_pick_up};
+        assert_eq!(step_pick(None, 3), 0);
+        assert_eq!(step_pick(Some(0), 3), 1);
+        assert_eq!(step_pick(Some(2), 3), 2);
+        assert_eq!(step_pick_up(Some(2)), Some(1));
+        assert_eq!(step_pick_up(Some(0)), None);
+        assert_eq!(step_pick_up(None), None);
+    }
+
     use super::segment_rows;
 
     #[test]

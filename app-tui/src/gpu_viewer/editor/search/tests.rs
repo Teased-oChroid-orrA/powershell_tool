@@ -2675,3 +2675,126 @@ fn corpus_terms_are_mined_once_per_query_and_hits() {
     s.st.config.filters_text = "rivet".into();
     assert_ne!(s.corpus_term_suggestions(), ["sentinel"]);
 }
+
+/// Down picks the first suggestion pill, Enter chooses it instead of running the search; without a pick Enter still
+/// searches, and Up goes back off the first pill.
+#[cfg(feature = "gpu-viewer")]
+#[test]
+fn arrow_keys_pick_a_suggestion_pill_and_enter_chooses_it_instead_of_searching() {
+    use crate::gpu_viewer::{controller::ViewState, gui::Gui, menu::Outcome, results::GuiInput, Scene};
+    use crate::gpu_viewer::controller::UiAction;
+    let mut s = SearchSession::in_memory();
+    s.st.config.filters_text = "ultimate tensile strenght".into();
+    s.st.run.started = Some(Instant::now());
+    s.st.run.is_running = false;
+    s.completed_search_query = Some(s.st.config.filters_text.clone());
+    assert!(view::document(&s).inputs[1]
+        .choices
+        .iter()
+        .any(|c| c.label.contains("instead of")));
+    let scene = Scene {
+        label: "s".into(),
+        positions: vec![[0.0; 3]; 3],
+        triangles: vec![0, 1, 2],
+        samples: vec![[0.0; 4]; 3],
+        times: vec![0.0],
+        range: [0.0, 1.0],
+        gain: 1.0,
+        harmonic_period: None,
+        field_label: String::new(),
+        fields: Vec::new(),
+    };
+    let view = ViewState::new(&scene);
+    let scenes = [scene];
+    let mut gui = Gui::new();
+    let frame = |gui: &mut Gui, keys: &[egui::Key]| -> Vec<Outcome> {
+        let input = GuiInput {
+            view: &view,
+            scenes: &scenes,
+            selected: 0,
+            editor: Some(&s as &dyn Authoring),
+            error: None,
+            box_drag: None,
+            overlay: &[],
+        };
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+            events: keys
+                .iter()
+                .map(|&key| egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let (mut full, outcomes) = gui.run(raw, &input);
+        // Nothing paints here: egui (debug builds) panics when texture uploads are dropped unapplied.
+        full.textures_delta.clear();
+        outcomes
+    };
+    for _ in 0..3 {
+        frame(&mut gui, &[]);
+    }
+    let focus = |gui: &mut Gui| {
+        gui.ctx().memory_mut(|m| m.request_focus(egui::Id::new(("doc-input", 1u8))));
+        for _ in 0..3 {
+            frame(gui, &[]);
+        }
+    };
+    focus(&mut gui);
+    let runs = |out: &[Outcome]| out.iter().any(|o| matches!(o, Outcome::Action(UiAction::Editor(EditorAction::Search(SearchAct::Run)))));
+    let applies = |out: &[Outcome]| out.iter().any(|o| matches!(o, Outcome::Action(UiAction::Editor(EditorAction::Search(SearchAct::ApplyCorrection(_))))));
+    // Enter with nothing picked searches.
+    let out = frame(&mut gui, &[egui::Key::Enter]);
+    assert!(runs(&out) && !applies(&out), "{out:?}");
+    // Down then Up leaves nothing picked: Enter searches again (Enter in the box gave up focus; take it back).
+    focus(&mut gui);
+    frame(&mut gui, &[egui::Key::ArrowDown]);
+    frame(&mut gui, &[egui::Key::ArrowUp]);
+    let out = frame(&mut gui, &[egui::Key::Enter]);
+    assert!(runs(&out) && !applies(&out), "{out:?}");
+    // Down picks the first pill (the typo correction is the only one): Enter chooses it and does not search.
+    focus(&mut gui);
+    frame(&mut gui, &[egui::Key::ArrowDown]);
+    let out = frame(&mut gui, &[egui::Key::Enter]);
+    assert!(applies(&out) && !runs(&out), "{out:?}");
+}
+
+/// Cost of rebuilding the page document (what every redraw does) with 40 distinct hit lines, with the mined terms
+/// cached and with the cache cleared before each build:
+/// `cargo test --release -p app-tui --lib document_rebuild_cost -- --ignored --nocapture`.
+#[cfg(feature = "neural-search")]
+#[test]
+#[ignore = "timing measurement"]
+fn document_rebuild_cost() {
+    let mut s = SearchSession::in_memory();
+    s.st.config.search_path = "/w".into();
+    s.st.config.filters_text = "diameter".into();
+    let mut r = result("/w/a.txt", 40, 1);
+    for (i, h) in r.hits.iter_mut().enumerate() {
+        *h = hit(
+            1,
+            &format!("Lug {i} outer diameter of the titanium bushing {i} shall not exceed allowable edge distance case {} under fatigue loading of the bolt", i * 7),
+            "diameter",
+        );
+    }
+    s.st.run.results.push(r);
+    let _ = view::document(&s);
+    let n = 300;
+    let t = Instant::now();
+    for _ in 0..n {
+        let _ = view::document(&s);
+    }
+    let cached = t.elapsed() / n;
+    let t = Instant::now();
+    for _ in 0..n {
+        *s.corpus_term_cache.borrow_mut() = None;
+        let _ = view::document(&s);
+    }
+    let uncached = t.elapsed() / n;
+    eprintln!("document build: {cached:?} cached, {uncached:?} with the mined terms rebuilt");
+}
