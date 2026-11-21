@@ -3292,6 +3292,105 @@ mod snapshot_tests {
         shoot(&session, "search-running-narrow", true, (860, 760));
     }
 
+    /// The Search window with the Find bar's "Related from hits" chips (terms mined from the hits, related ones folded), dark and
+    /// light, as raw RGBA: `FEA_SNAPSHOT_CLUSTERS_OUT=/dir cargo test --release -p app-tui --lib search_term_clusters_snapshot -- --ignored`.
+    #[cfg(feature = "neural-search")]
+    #[test]
+    #[ignore]
+    fn search_term_clusters_snapshot() {
+        use crate::gpu_viewer::editor::search::{SearchAct, SearchSession};
+        use crate::gpu_viewer::editor::session::EditorAction;
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_CLUSTERS_OUT") else {
+            return;
+        };
+        let _guard = headless_guard();
+        let data = tempfile::tempdir().unwrap();
+        let root = data.path().join("Lug Study");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("lug.txt"),
+            "Lug outer diameter shall not exceed 1.500 in\nLug outside diameter is checked after the press fit\nLug bolt diameter 0.250 in per drawing\nLug yield strength of 7075-T6 governs the net section\nLug yield stress is taken from MMPDS\nLug fatigue life is limited by bearing stress\nLug fatigue limit from the S-N curve\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("notes.txt"),
+            "Lug landing gear fitting sealant cure time 24 hours\nLug ultimate tensile strength verified by coupon test\n",
+        )
+        .unwrap();
+        let mut session = SearchSession::in_memory();
+        session.document_field(0, root.to_string_lossy().into_owned());
+        session.document_field(1, "lug".into());
+        session.act(EditorAction::Search(SearchAct::Run));
+        let t = std::time::Instant::now();
+        let chips = |session: &SearchSession| -> Vec<String> {
+            (session as &dyn Authoring)
+                .document()
+                .map(|d| {
+                    d.inputs
+                        .iter()
+                        .filter(|i| i.label == "Find")
+                        .flat_map(|i| i.choices.iter().map(|c| c.label.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        // The chips are ordered in the background by the bundled model once the search has produced hits.
+        while session.solving() || !session.neural_order_ready_for_snapshot() {
+            session.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            assert!(
+                t.elapsed().as_secs() < 90,
+                "the chips never arrived: {:?}",
+                chips(&session)
+            );
+        }
+        session.poll();
+        eprintln!("CHIPS: {:#?}", chips(&session));
+        session.act(EditorAction::Search(SearchAct::Select(0)));
+        for (name, dark) in [("search-clusters-dark", true), ("search-clusters-light", false)] {
+            pollster::block_on(async {
+                let (w, h) = (1440, 900);
+                let adapter = test_adapter().await.expect("adapter required");
+                let scene = Scene {
+                    label: "s".into(),
+                    positions: vec![[0.0; 3]; 3],
+                    triangles: vec![0, 1, 2],
+                    samples: vec![[0.0; 4]; 3],
+                    times: vec![0.0],
+                    range: [0.0, 1.0],
+                    gain: 1.0,
+                    harmonic_period: None,
+                    field_label: String::new(),
+                    fields: Vec::new(),
+                };
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                    .await
+                    .unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                let view = ViewState::new(&scene);
+                let scenes = [scene];
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(&session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
+                gui.select_tab_named(&input, "Results");
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                let drawn = gui.target_labels();
+                for chip in chips(&session) {
+                    assert!(drawn.contains(&chip), "chip {chip:?} was not drawn");
+                }
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        }
+    }
+
     /// The Search window before a search, and after a words search with cited semantic passages (dark and light), as raw RGBA:
     /// `FEA_SNAPSHOT_PASSAGES_OUT=/dir cargo test ... --features neural-search,semantic-search passages_snapshot -- --ignored`.
     #[cfg(feature = "semantic-search")]

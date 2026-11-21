@@ -98,6 +98,36 @@ fn a_plate_with_holes_takes_more_holes_and_a_boss_beside_them() {
     within(s.signed_volume_mm3, exact, 1e-3, "plate, two holes, a boss");
 }
 
+/// The floor of a blind hole is a disk bounded by one full-circle edge. A point on its axis lies on the ray through that edge's vertex,
+/// so the in-face test must see a closed polygon: it used to lose the closing crossing for radii of about 3.7 mm and up (the last
+/// sample of the circle rounded to the far side of the start vertex) and call the centre of the floor outside the face.
+#[test]
+fn the_centre_of_a_blind_hole_floor_is_inside_it_at_every_radius() {
+    for r in [0.5, 1.0, 2.5, 3.5, 3.7, 3.9, 4.0, 4.5, 6.0, 9.0, 12.0] {
+        let plate = NativeBrep::box_from_corners([0., 0., 0.], [40., 30., 10.]).unwrap();
+        let top = plate.planar_faces_through([0., 0., 10.], [0., 0., 1.])[0];
+        let pocket = plate.drill(top, [20., 15., 10.], r, Some(3.)).unwrap();
+        let floor = pocket.planar_faces_through([20., 15., 7.], [0., 0., 1.]);
+        assert_eq!(floor.len(), 1, "r = {r}");
+        assert!(pocket.face_holds(floor[0], [20., 15., 7.]), "centre of the floor, r = {r}");
+        assert!(pocket.face_holds(floor[0], [20. + 0.5 * r, 15., 7.]), "half way to the wall, r = {r}");
+        assert!(!pocket.face_holds(floor[0], [20. + 1.5 * r, 15., 7.]), "outside the wall, r = {r}");
+    }
+}
+
+#[test]
+fn a_bore_can_be_drilled_in_the_floor_of_a_wide_counterbore() {
+    // 12 mm counterbore 3 mm deep over a 5 mm through hole in a 40 x 30 x 10 plate
+    let plate = NativeBrep::box_from_corners([0., 0., 0.], [40., 30., 10.]).unwrap();
+    let top = plate.planar_faces_through([0., 0., 10.], [0., 0., 1.])[0];
+    let pocket = plate.drill(top, [20., 15., 10.], 6., Some(3.)).unwrap();
+    let floor = pocket.planar_faces_through([20., 15., 7.], [0., 0., 1.])[0];
+    let bored = pocket.drill(floor, [20., 15., 7.], 2.5, None).unwrap();
+    let (_, s) = sample(&bored, 0.002);
+    let exact = 40. * 30. * 10. - PI * 36. * 3. - PI * 6.25 * 7.;
+    within(s.signed_volume_mm3, exact, 1e-3, "counterbored plate");
+}
+
 #[test]
 fn unsupported_or_unsafe_requests_are_refused_not_approximated() {
     let b = block();
