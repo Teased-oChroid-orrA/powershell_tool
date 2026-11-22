@@ -893,6 +893,16 @@ impl Problem {
                     Some(c) if !c.is_current(step) => return Err("the solid's cached surface mesh is out of date (the STEP text changed): open the STEP file again to re-tessellate it".into()),
                     Some(c) => c.validate()?,
                 }
+                // Body k (0-based; body 0 is the problem's own material) takes `region_materials[k - 1]`.
+                let bodies = cache.as_ref().map_or(1, |c| c.bodies.len().max(1));
+                if self.region_materials.len() > bodies - 1 {
+                    return Err(format!("{} body materials for {} bodies: body 1 takes the problem's material, the rest `region_materials`", self.region_materials.len() + 1, bodies));
+                }
+                for (i, m) in self.region_materials.iter().enumerate() {
+                    if let Some(m) = m {
+                        m.elastic().validate().map_err(|e| format!("body {} material: {e}", i + 2))?;
+                    }
+                }
             }
         }
         self.validate_bushings()?;

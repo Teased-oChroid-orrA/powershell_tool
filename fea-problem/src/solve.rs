@@ -138,7 +138,8 @@ pub struct Solved {
 /// The structural fields of a displacement vector `u` (`d` per node) and its nodal stresses, with their labels: what a mode
 /// shape can show besides its displacement. A mode's amplitude is arbitrary, so the values are relative.
 pub fn structural_fields(d: usize, u: &[f64], nodal: &[[f64; 6]], e: f64, nu: f64) -> Vec<(Field, Vec<f64>)> {
-    Field::ALL.into_iter().filter(|f| *f != Field::Displacement).map(|f| (f, field_values(d, u, nodal, f, e, nu))).collect()
+    let moduli = vec![(e, nu); nodal.len()];
+    Field::ALL.into_iter().filter(|f| *f != Field::Displacement).map(|f| (f, field_values(d, u, nodal, f, &moduli))).collect()
 }
 
 /// Sorted (descending) principal values of a symmetric stress in the library order.
@@ -171,11 +172,25 @@ fn elastic_strain(s: &[f64; 6], e: f64, nu: f64) -> [f64; 6] {
     [f(0), f(1), f(2), f(3), f(4), f(5)]
 }
 
-fn field_values(d: usize, u: &[f64], nodal: &[[f64; 6]], field: Field, e: f64, nu: f64) -> Vec<f64> {
+/// Young's modulus and Poisson ratio at every node, for the strain fields: the material of the element block that owns the node
+/// (the problem's `material` for a node no block uses). A node shared by two materials (the bonded regions of a sketch) takes the
+/// last block's; the bodies of an assembly share no node, so each reads its own.
+fn node_moduli(p: &Problem, mesh: &Mesh) -> Vec<(f64, f64)> {
+    let mut out = vec![(p.material.e, p.material.nu); mesh.nodes.len()];
+    for blk in &mesh.blocks {
+        for &n in &blk.conn {
+            out[n] = (blk.material.e, blk.material.nu);
+        }
+    }
+    out
+}
+
+fn field_values(d: usize, u: &[f64], nodal: &[[f64; 6]], field: Field, moduli: &[(f64, f64)]) -> Vec<f64> {
     nodal
         .iter()
         .enumerate()
         .map(|(i, s)| {
+            let (e, nu) = moduli[i];
             let comp = |c: usize| if c < d { u[i * d + c] } else { 0.0 };
             match field {
                 Field::VonMises => von_mises(s),
@@ -208,7 +223,7 @@ impl Solved {
         if field == Field::PlasticStrain {
             return self.plastic.clone().unwrap_or_else(|| vec![0.0; self.model.mesh.nodes.len()]);
         }
-        field_values(self.model.mesh.dim(), &self.u, &self.nodal, field, self.problem.material.e, self.problem.material.nu)
+        field_values(self.model.mesh.dim(), &self.u, &self.nodal, field, &node_moduli(&self.problem, &self.model.mesh))
     }
 
     /// The field a viewer opens on: the temperature of a thermal-only study, else the von Mises stress.
@@ -840,7 +855,7 @@ struct PairSetup {
     tune: Tuning,
 }
 
-fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<PairSetup, String> {
+fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet, couplings: &[fea_core::Coupling]) -> Result<PairSetup, String> {
     let d = mesh.dim();
     let joints = joints(p)?;
     let pairs: Vec<(String, Vec<Vec<usize>>, Vec<Vec<usize>>)> = joints
@@ -889,6 +904,16 @@ fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<PairSetup, Str
             let r0 = root(&mut body, el[0]);
             for &v in &el[1..] {
                 let rv = root(&mut body, v);
+                body[rv] = r0;
+            }
+        }
+    }
+    // Bodies a bonded tie couples are one body: a support on either holds both.
+    for cp in couplings {
+        if let Some(&(first, _)) = cp.terms.first() {
+            let r0 = root(&mut body, first / d);
+            for &(dof, _) in &cp.terms {
+                let rv = root(&mut body, dof / d);
                 body[rv] = r0;
             }
         }
@@ -962,7 +987,9 @@ fn contact_result(sol: &fea_core::NlSolution, first: usize, a: &str, b: &str, mu
 fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> Result<Pass, String> {
     let d = mesh.dim();
     let setup = fit_setup(p, &mesh)?;
-    let pairs = pair_setup(p, &mesh, &bc)?;
+    // Bonded ties next to contact ties: the contact solver has no elimination, so a stiff penalty holds them (and carries a pull).
+    let (couplings, tie_notes) = crate::ties::bonded_couplings(p, &mesh, &bc)?;
+    let pairs = pair_setup(p, &mesh, &bc, &couplings)?;
     let ground: Vec<(usize, f64)> = setup.ground.iter().chain(pairs.ground.iter()).copied().collect();
     let tune = if p.bushings.is_empty() { pairs.tune } else { setup.tune };
     let model = Model::new(mesh)?;
@@ -974,7 +1001,8 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     if !blocking.is_empty() {
         return Err(blocking.join("; "));
     }
-    let warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && !matches!(i.code, "low_order_element" | "no_load")).map(|i| i.message.clone()).collect();
+    let mut warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && !matches!(i.code, "low_order_element" | "no_load")).map(|i| i.message.clone()).collect();
+    warnings.extend(tie_notes);
     let specs = || fit_specs(p, &model.mesh, &setup).into_iter().chain(pair_specs(&pairs)).collect::<Vec<_>>();
     let t0 = std::time::Instant::now();
     let plastic = model.mesh.blocks.iter().any(|b| b.plasticity.is_some());
@@ -984,7 +1012,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         if !has_loads {
             return Err("nothing is applied: add a load, the bodies only touch".into());
         }
-        let full = Loads { ground: ground.clone(), ..loads.clone() };
+        let full = Loads { ground: ground.clone(), couplings: couplings.clone(), ..loads.clone() };
         let mut opts = tune.options(if plastic { CONTACT_PLASTIC_STEPS } else { 4 });
         opts.first_step = 0.5;
         if plastic {
@@ -997,7 +1025,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         }
         sol
     } else {
-        let fit_loads = Loads { ground: ground.clone(), ..Loads::default() };
+        let fit_loads = Loads { ground: ground.clone(), couplings: couplings.clone(), ..Loads::default() };
         let mut fit_opts = tune.options(if plastic { CONTACT_PLASTIC_STEPS } else { 1 });
         if plastic {
             fit_opts.ep_step = CONTACT_EP_STEP;
@@ -1007,7 +1035,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
             return Err(format!("the interference fit could not be solved: {:?}", sol.stop));
         }
         if has_loads {
-            let full = Loads { ground: ground.clone(), ..loads.clone() };
+            let full = Loads { ground: ground.clone(), couplings: couplings.clone(), ..loads.clone() };
             let mut opts = Tuning { chord_iters: FIT_CHORD_ITERS, outer_tol: LOADED_FIT_OUTER_TOL, ..Tuning::friction() }.options(if plastic { CONTACT_PLASTIC_STEPS } else { 4 });
             opts.first_step = 0.5;
             if plastic {
@@ -1120,7 +1148,8 @@ fn balance_error(physics: &Physics, reaction: &[f64; 3], applied: &[f64; 3], sca
 
 fn summarize(p: &Problem, pass: &Pass) -> Summary {
     let mesh = &pass.model.mesh;
-    let val = |f| field_values(mesh.dim(), &pass.u, &pass.nodal, f, p.material.e, p.material.nu);
+    let moduli = node_moduli(p, mesh);
+    let val = |f| field_values(mesh.dim(), &pass.u, &pass.nodal, f, &moduli);
     let (vm, disp, p1, p3) = (val(Field::VonMises), val(Field::Displacement), val(Field::MaxPrincipal), val(Field::MinPrincipal));
     let max_vm = extreme(&vm, &mesh.nodes, true);
     // A fit alone applies no load: the reactions are then judged against the force the interference fit transmits.

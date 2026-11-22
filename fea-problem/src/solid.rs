@@ -152,7 +152,7 @@ pub fn solid_mesh(p: &Problem) -> Result<(Mesh, MeshReport), String> {
     Ok((mesh, report))
 }
 
-/// The volume mesh itself, which depends on the geometry, the mesh settings and the material but not on the supports and loads.
+/// The volume mesh itself, which depends on the geometry, the mesh settings and the materials (body `k` takes `Problem::region_material(k)`) but not on the supports and loads.
 /// A mesh made for a problem without them can be reused by [`check_faces_resolved`] against the real ones.
 fn solid_mesh_of_geometry(p: &Problem) -> Result<(Mesh, MeshReport), String> {
     let solids = solid_surfaces(p)?;
@@ -167,7 +167,7 @@ fn solid_mesh_of_geometry(p: &Problem) -> Result<(Mesh, MeshReport), String> {
     let (mut parts, mut report) = (Vec::new(), None::<MeshReport>);
     for (k, (solid, range)) in solids.iter().zip(&ranges).enumerate() {
         let who = if solids.len() > 1 { format!("body {}: ", k + 1) } else { String::new() };
-        let (mesh, r) = mesh_volume(solid, p.material.elastic(), params, &|_| h).map_err(|e| format!("{who}{e}"))?;
+        let (mesh, r) = mesh_volume(solid, p.region_material(k).elastic(), params, &|_| h).map_err(|e| format!("{who}{e}"))?;
         let volume_error = (r.volume / solid.volume() - 1.0).abs();
         if volume_error > 0.05 {
             return Err(format!("{who}the mesh does not resolve the STEP body: volume differs by {:.1}% (limit 5%); reduce element size from {h:.4e}", volume_error * 100.0));

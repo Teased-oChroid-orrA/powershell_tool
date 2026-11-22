@@ -39,6 +39,19 @@ pub enum SurfaceLoad {
     Traction([f64; 3]),
 }
 
+/// A linear relation between displacement components held by a penalty, for the nonlinear driver: the energy `k/2 (sum c_j u_j - offset)^2`
+/// puts the force `k c_j (sum c_i u_i - offset)` on each dof `j`. With `offset = 0` and a large `k` it ties `sum c_j u_j` to zero (a bonded
+/// joint next to contact, which the elimination of [`crate::mpc`] cannot join to a nonlinear solve); with a true stiffness `k` it is a
+/// spring between two weighted sets of dofs (a bolt between its head and nut bearings), and `offset` is the relative displacement at which
+/// it is unloaded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Coupling {
+    /// `(dof, coefficient)`: `dof = node * d + component`.
+    pub terms: Vec<(usize, f64)>,
+    pub k: f64,
+    pub offset: f64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Loads {
     /// `(node, force)`; in 2D the `z` component is ignored. Axisymmetric: total force over 360 degrees.
@@ -61,6 +74,8 @@ pub struct Loads {
     /// body that is otherwise free to move or rotate rigidly (a pin or bushing held only by contact) and leak
     /// `k u` of force to ground, so keep them tiny. Ignored by the linear solvers.
     pub ground: Vec<(usize, f64)>,
+    /// Penalty couplings (see [`Coupling`]) of the nonlinear solver. Ignored by the linear solvers.
+    pub couplings: Vec<Coupling>,
     /// Follower pressures `(face nodes, p)`: a pressure that stays normal to the *deformed* surface (positive pushes
     /// into the body). The nonlinear driver applies them with their load stiffness; every linear analysis treats them as
     /// the dead `SurfaceLoad::Pressure` they equal for small displacements.

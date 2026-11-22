@@ -694,6 +694,8 @@ struct Ctx<'a> {
     events: RefCell<Vec<SolveEvent>>,
     start: Option<&'a Start>,
     ground: Vec<(usize, f64)>,
+    /// Penalty couplings: see `Loads::couplings`.
+    couplings: Vec<crate::loads::Coupling>,
     /// Follower pressures (face nodes, p): see `Loads::followers`.
     followers: Vec<(Vec<usize>, f64)>,
     /// Seconds spent (evaluation, factorisation, solves), reported under `NL_PROFILE`.
@@ -797,6 +799,25 @@ impl Ctx<'_> {
                 k.vals[blk * d * d + comp * d + comp] += kk;
             }
         }
+        // Penalty couplings: force k c (c.u - offset) on each of their dofs, and the rank-one tangent k c c^T.
+        for cp in &self.couplings {
+            let d = self.model.mesh.dim();
+            let g = cp.terms.iter().map(|&(dof, c)| c * u[dof]).sum::<f64>() - cp.offset;
+            for &(dof, c) in &cp.terms {
+                f[dof] += cp.k * c * g;
+            }
+            if let Some(k) = k.as_mut() {
+                for &(da, ca) in &cp.terms {
+                    for &(db, cb) in &cp.terms {
+                        let (na, nb) = (da / d, db / d);
+                        if na >= nb {
+                            let pos = self.pat.find(na, nb).expect("coupling pair in the pattern");
+                            k.vals[pos * d * d + (da % d) * d + db % d] += cp.k * ca * cb;
+                        }
+                    }
+                }
+            }
+        }
         state.rigid_q = q.to_vec();
         if f.iter().any(|v| !v.is_finite()) {
             return Err("non-finite internal force".into());
@@ -856,9 +877,11 @@ impl Ctx<'_> {
     }
 
     /// A residual this small against the full applied load is converged whatever the current force level (a body in
-    /// free flight has nothing but round-off to measure a relative tolerance against).
+    /// free flight has nothing but round-off to measure a relative tolerance against). A coupling's offset is a load too: the
+    /// force `k offset` it would carry if its dofs did not move (a bolt's preload with nothing else applied balances to round-off).
     fn abs_tol(&self) -> f64 {
-        1e-10 * norm(&self.f_ext)
+        let offsets = self.couplings.iter().map(|c| (c.k * c.offset).powi(2)).sum::<f64>().sqrt();
+        1e-10 * norm(&self.f_ext).max(offsets)
     }
 
     /// Make the Newton step the one the exact frictional tangent gives: the factorised matrix `K` is symmetric and
@@ -1043,7 +1066,7 @@ impl Model {
 
     /// Reject a body that nothing holds: no prescribed displacement, no grounding spring and no contact touching any of
     /// its nodes. It would float (a singular system can still factorise and return an arbitrary rigid motion).
-    fn check_not_floating(&self, bc: &Dirichlet, ground: &[(usize, f64)], contacts: &[ContactSpec]) -> Result<(), String> {
+    fn check_not_floating(&self, bc: &Dirichlet, ground: &[(usize, f64)], couplings: &[crate::loads::Coupling], contacts: &[ContactSpec]) -> Result<(), String> {
         let (n, d) = (self.mesh.nodes.len(), self.mesh.dim());
         let mut parent: Vec<usize> = (0..n).collect();
         fn find(p: &mut [usize], mut a: usize) -> usize {
@@ -1061,6 +1084,15 @@ impl Model {
                     used[a] = true;
                     block_of[a] = bi;
                     let (ra, rb) = (find(&mut parent, a), find(&mut parent, c[0]));
+                    parent[ra] = rb;
+                }
+            }
+        }
+        // A coupling joins the bodies of its nodes: one of them held holds the others.
+        for cp in couplings {
+            if let Some(&(first, _)) = cp.terms.first() {
+                for &(dof, _) in &cp.terms {
+                    let (ra, rb) = (find(&mut parent, dof / d), find(&mut parent, first / d));
                     parent[ra] = rb;
                 }
             }
@@ -1144,7 +1176,10 @@ impl Model {
             return Err("a temperature change cannot be combined with plasticity yet".into());
         }
         let n = self.mesh.n_dofs();
-        self.check_not_floating(bc, &loads.ground, &contacts)?;
+        if loads.couplings.iter().any(|cp| cp.terms.iter().any(|&(dof, _)| dof >= n)) {
+            return Err("a coupling names a dof the mesh does not have".into());
+        }
+        self.check_not_floating(bc, &loads.ground, &loads.couplings, &contacts)?;
         // Follower pressures are applied by the driver at the deformed configuration, not as dead loads.
         let f_ext = if loads.followers.is_empty() { loads::assemble(&self.mesh, loads)? } else { loads::assemble(&self.mesh, &Loads { followers: Vec::new(), ..loads.clone() })? };
         let contact_set = if contacts.is_empty() { None } else { Some(ContactSet::new(&self.mesh, contacts)?) };
@@ -1152,17 +1187,12 @@ impl Model {
             return Err("a rigid master with free translations needs load control (arc-length handles deformable contact only)".into());
         }
         let _ = Master::Faces(Vec::new());
-        let pat = match &contact_set {
-            Some(cs) => {
-                let pairs = cs.pattern_pairs(&self.mesh);
-                if pairs.is_empty() {
-                    self.pattern.clone()
-                } else {
-                    Arc::new(Pattern::new_with_extra(&self.mesh, &pairs)?)
-                }
-            }
-            None => self.pattern.clone(),
-        };
+        let d = self.mesh.dim();
+        let mut pairs = contact_set.as_ref().map_or_else(Vec::new, |cs| cs.pattern_pairs(&self.mesh));
+        for cp in &loads.couplings {
+            pairs.extend(cp.terms.iter().flat_map(|&(a, _)| cp.terms.iter().map(move |&(b, _)| (a / d, b / d))).filter(|(a, b)| a != b));
+        }
+        let pat = if pairs.is_empty() { self.pattern.clone() } else { Arc::new(Pattern::new_with_extra(&self.mesh, &pairs)?) };
         let red = Reduced::with_ordering(&pat, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
         let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
         let fixed: Vec<usize> = (0..n).filter(|&i| bc.fixed[i]).collect();
@@ -1171,7 +1201,7 @@ impl Model {
                 return Err("arc-length control needs zero prescribed displacements".into());
             }
         }
-        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), held: Cell::new(0), events: RefCell::new(Vec::new()), start, ground: loads.ground.clone(), followers: loads.followers.clone(), timers: Default::default(), last_start: RefCell::new(None) };
+        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), held: Cell::new(0), events: RefCell::new(Vec::new()), start, ground: loads.ground.clone(), couplings: loads.couplings.clone(), followers: loads.followers.clone(), timers: Default::default(), last_start: RefCell::new(None) };
         let mut sol = match opt.control {
             Control::Load => ctx.run_load_control()?,
             Control::Arc { ds, lambda_max, max_steps } => ctx.run_arc_length(ds, lambda_max, max_steps)?,
