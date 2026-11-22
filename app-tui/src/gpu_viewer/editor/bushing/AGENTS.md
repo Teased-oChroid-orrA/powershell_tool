@@ -13,6 +13,7 @@ Does not own: Lamé / press-fit / tolerance / edge-distance formulas (`bushing-s
 | Inputs -> `Problem` (housing rectangle, edge distance, bushing, pin load), `layout` | `fe.rs` |
 | The saved case (JSON keyed by row label, `NUMBERS`) | `file.rs` |
 | Three-pane workbench inputs, results, Send dialog and menus | `cards.rs` |
+| The edge-distance matrix tables of the "Edge distance estimate" card (models x applied load / bearing limit x Nominal, P90, P95, P99) | `edge_matrix.rs` (data: `edge_check::matrix`) |
 | 3D housing and bushing geometry and stress colouring | `drawing.rs` |
 | Axial and cross-section sketches | `sketch.rs`; shared layout in `gpu_viewer/sketch.rs` |
 | Bore / ID / friction / material pickers as value cards | `picker.rs` |
@@ -29,6 +30,8 @@ Does not own: Lamé / press-fit / tolerance / edge-distance formulas (`bushing-s
 - Inputs use US customary units (in, lbf, ksi, °F), stated on the Inputs card. New case files declare `in-lbf-ksi-F`; older files without a declaration retain the same interpretation, and files declaring other units are refused.
 - Strings that come from the model, advice and edge check pass through `cards::plain`: the window font lacks arrows and several symbols.
 - A `Field` whose tone is `Warn` is drawn as an edit box by the window, so an input a failing check points at is marked `! label` instead.
+
+- **The edge-distance estimate card is a matrix, with roles** (`edge_matrix.rs`, owner decision 2026-11-22): the contact FE row is labelled *best estimate*, the legacy solver row *governing* (tinted); the window text says the table never changes PASS / REVIEW and quotes the NACA TN 1503 validation and its limits. Nothing here may colour or word a stress-based number as governing. `bushing/tests.rs` checks that the verdict, edge and margin cards are identical before and after a run.
 
 ## Pitfalls
 - The default case fails the edge-distance (sequencing) check: that is the solver's answer for its own default fixture, not a bug here.
