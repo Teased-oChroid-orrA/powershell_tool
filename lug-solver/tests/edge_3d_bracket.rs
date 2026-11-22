@@ -42,6 +42,8 @@ struct Housing {
     nu: f64,
     /// Perfectly plastic flow stress, psi.
     flow: f64,
+    /// A hardening law instead (small strain, flat beyond its last point); `None` = perfectly plastic at `flow`.
+    law: Option<Hardening>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -97,7 +99,14 @@ impl Case {
 fn naca(ftu: f64, fty: f64, fbru_15: f64, fbru_20: f64, ed: f64, td: f64, around: usize) -> Case {
     let (e, nu) = (10.4e6, 0.33);
     let flow = flow_stress(&Strengths { e, nu, sy: fty, fsu: 0.6 * ftu, ftu, fbru: fbru_20, fbru_e15: fbru_15 });
-    Case { ed, td, width: 2.0, length: 5.0, around, housing: Housing { e, nu, flow }, bush: None }
+    Case { ed, td, width: 2.0, length: 5.0, around, housing: Housing { e, nu, flow, law: None }, bush: None }
+}
+
+/// The same specimen with the bar's own hardening: Ramberg-Osgood through `Fty` and `Ftu` at the uniform elongation
+/// (engineering stress treated as true, flat at `Ftu` beyond it: a strength-level idealisation, not a necking model).
+fn hardened(mut c: Case, ftu: f64, fty: f64, elong: f64) -> Case {
+    c.housing.law = Some(Hardening::ramberg_osgood(fty, ftu, elong).unwrap());
+    c
 }
 
 /// 75S-T 1x2 bar (the first NACA row) at the given geometry.
@@ -117,7 +126,7 @@ fn default_bushing(ed: f64, td: f64, around: usize) -> Case {
         width: 2.0 * reach,
         length: reach,
         around,
-        housing: Housing { e: s.e, nu: s.nu, flow: flow_stress(&s) },
+        housing: Housing { e: s.e, nu: s.nu, flow: flow_stress(&s), law: None },
         bush: Some(Bush { inner_dia: 0.375, e: 17.0e6, nu: 0.33, interference_dia: 0.0015, mu: 0.15 }),
     }
 }
@@ -145,8 +154,8 @@ impl Out {
     }
 }
 
-fn perfectly_plastic(flow: f64) -> J2 {
-    J2::small(Hardening::linear(flow, 0.0, 1.0).unwrap())
+fn plasticity(h: &Housing) -> J2 {
+    J2::small(h.law.unwrap_or_else(|| Hardening::linear(h.flow, 0.0, 1.0).unwrap()))
 }
 
 fn run(case: Case, ideal: Idealisation) -> Out {
@@ -167,7 +176,7 @@ fn run(case: Case, ideal: Idealisation) -> Out {
         }
         _ => mesh2,
     };
-    mesh.set_plasticity(0, perfectly_plastic(case.housing.flow)).unwrap();
+    mesh.set_plasticity(0, plasticity(&case.housing)).unwrap();
     let dim = mesh.dim();
     let lock_z = matches!(ideal, Idealisation::Solid { lock_z: true, .. });
     let model = Model::new(mesh).unwrap();
@@ -200,6 +209,10 @@ fn run(case: Case, ideal: Idealisation) -> Out {
     }
     let loads = Loads { ground, ..Default::default() };
     let a_contact = fe.bore_radius;
+    let trace = std::env::var_os("BRACKET_TRACE").is_some();
+    if trace {
+        eprintln!("[{:.1}s] model built: {} nodes, {} dof", t0.elapsed().as_secs_f64(), model.mesh.nodes.len(), model.mesh.n_dofs());
+    }
 
     // Stage 1: the interference fit.
     let overlap = case.bush.map_or(0.0, |b| 0.5 * b.interference_dia);
@@ -234,6 +247,9 @@ fn run(case: Case, ideal: Idealisation) -> Out {
             let (pf, wt) = nl.state.contact[k].iter().zip(&nl.contact_weights[k]).fold((0.0, 0.0), |(a, b), (s, w)| (a + s.p * w, b + w));
             pf / wt
         }).sum());
+        if trace {
+            eprintln!("[{:.1}s] fit done: pressure {:.0} psi, {} factorisations", t0.elapsed().as_secs_f64(), fit_pressure.unwrap(), nl.factorisations);
+        }
         fit_nl = Some(nl);
     }
 
@@ -350,11 +366,23 @@ fn explore() {
 }
 
 #[test]
-#[ignore = "exploration of the bushed default case"]
+#[ignore = "exploration of the bushed default case: edge-check's own 2D contact FE (the reference)"]
+fn explore_bushed_edge_check() {
+    let t0 = Instant::now();
+    let m = edge_mesh(1.5);
+    println!("built {:.1} s, {} nodes", t0.elapsed().as_secs_f64(), m.node_count());
+    println!("fit {:.0} psi ({:.1} s)", m.fit_only(0.00075).unwrap().0, t0.elapsed().as_secs_f64());
+    let h = mechanics_core::materials::get_material("al7075");
+    let flow = flow_stress(&Strengths::from_material(h));
+    println!("flow {flow:.0}");
+    let c = m.collapse(0.00075, flow, 0.5).unwrap();
+    println!("collapse {:.0} lbf, first yield {:.0}, plateau {} ({:.1} s)", c.collapse, c.first_yield, c.plateau, t0.elapsed().as_secs_f64());
+}
+
+#[test]
+#[ignore = "exploration of the bushed default case: the kernel driver in 2D"]
 fn explore_bushed() {
     let c = default_bushing(1.5, 1.0, 36);
-    let m = edge_mesh(1.5);
-    println!("edge-check contact FE (plane strain): fit {:.0} psi, collapse {:.0} lbf", m.fit_only(0.00075).unwrap().0, m.collapse(0.00075, flow_stress(&Strengths::from_material(mechanics_core::materials::get_material("al7075"))), 0.5).unwrap().collapse);
     for (name, ideal) in [("2D strain", Idealisation::Strain), ("2D stress", Idealisation::Stress)] {
         let o = run(c, ideal);
         println!("{name:<12} {:.0} lbf at limit, peak {:.0}, fit {:.0} psi, {:.1} s, {} dof", o.at_limit(), o.peak(), o.fit_pressure.unwrap(), o.secs, o.dofs);
@@ -445,5 +473,29 @@ fn edge_distance_extension() {
         let p = run(c, Idealisation::Stress).at_limit() / area;
         let t = run(c, Idealisation::Solid { layers: 2, lock_z: false }).at_limit() / area;
         println!("{ed:>5} | {s:>8.0} {p:>8.0} {t:>8.0} | {:>+6.1}% {:>+6.1}%", pct(s, t), pct(p, t));
+    }
+}
+
+/// Hardening: does the plane-strain / 3D gap survive a hardening law? Two bars (Table I elongations of TN 1503: 75S-T
+/// 0.112, 24S-T 0.196), plane strain and 3D, perfectly plastic at the model flow stress and with Ramberg-Osgood
+/// hardening to `Ftu`; the load is the bearing stress `P/(D t)` against the test.
+#[test]
+#[ignore = "prints the hardened comparison; ~20 min"]
+fn hardened_comparison() {
+    println!("{:<14} e/D {:>8} | {:>9} {:>9} | {:>9} {:>9} | strain/3D (EPP, hardened)", "bar", "test", "strain EPP", "3D EPP", "strain RO", "3D RO");
+    for (i, (alloy, ftu, fty, f15, f20)) in NACA_BARS.iter().enumerate() {
+        if i != 0 && i != 2 {
+            continue;
+        }
+        let elong = [0.112, 0.114, 0.196, 0.188, 0.120, 0.116][i];
+        for (ed, test) in [(1.5, *f15), (2.0, *f20)] {
+            let c = naca(*ftu, *fty, *f15, *f20, ed, 0.5, 36);
+            let ch = hardened(c, *ftu, *fty, elong);
+            let area = D * c.thickness();
+            let l = Idealisation::Solid { layers: 2, lock_z: false };
+            let (se, te) = (run(c, Idealisation::Strain).at_limit() / area, run(c, l).at_limit() / area);
+            let (sh, th) = (run(ch, Idealisation::Strain).at_limit() / area, run(ch, l).at_limit() / area);
+            println!("{alloy:<14} {ed:>3} {test:>8.0} | {se:>9.0} {te:>9.0} | {sh:>9.0} {th:>9.0} | {:>+6.1}% {:>+6.1}% | vs test: 3D EPP {:>+6.1}% 3D RO {:>+6.1}% strain RO {:>+6.1}%", pct(se, te), pct(sh, th), pct(te, test), pct(th, test), pct(sh, test));
+        }
     }
 }
