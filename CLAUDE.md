@@ -51,8 +51,8 @@ HTML report plus optional CSV/JSON export. It has grown into a multi-tool
 Pressure Vessel Analyzer, Preload Analysis, Lug Analysis, an FEA Workbench
 (define a 2D / extruded / imported-mesh problem, solve it on `fea-core`, contour
 the result) and Material Lookup
-(placeholders remain for Dupes/Rename/Logs). Every workbench opens in a native
-window from the dashboard; Pressure Vessel, Preload, Lug and Material Lookup
+(placeholders remain for Dupes/Rename/Logs). Every workbench opens in the dashboard's
+native window (ADR-024: parked tabs behind a nav strip; Shift-click or New window gives it a process of its own); Pressure Vessel, Preload, Lug and Material Lookup
 have no terminal toolbox any more (removed 2026-11-03).
 
 **Migration complete: PowerShell -> C#/WinUI -> Rust.** The PowerShell and
@@ -247,12 +247,12 @@ The app writes `toolbench-debug.log` into the folder it was launched from (`app-
 
 ## Architecture Decisions
 
-Formal ADRs live in `docs/adr/` (ADR-001 through ADR-023: ADR-001..011
+Formal ADRs live in `docs/adr/` (ADR-001 through ADR-024: ADR-001..011
 cover the Rust/native-search boundary, Tantivy, extraction and index
-location; ADR-012..023 cover the FEA kernel, eigen/transient methods,
+location; ADR-012..024 cover the FEA kernel, eigen/transient methods,
 native CAD, sketch history, mesh lifecycle, front end/layout, the
 OpenCascade solid kernel, failure guidance, thermal studies and hybrid
-meshing, OpenCascade retirement). See `docs/AGENTS.md` for the
+meshing, OpenCascade retirement, in-window workbenches). See `docs/AGENTS.md` for the
 full index mapping decision topics to ADR numbers.
 
 ## Entry Points

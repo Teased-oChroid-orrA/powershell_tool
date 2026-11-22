@@ -75,7 +75,7 @@ impl ApplicationHandler for Viewer {
         if self.quit {
             e.exit();
         }
-        let changed = self.editor.as_mut().is_some_and(|ed| ed.poll());
+        let changed = self.editor.as_mut().is_some_and(|ed| ed.poll()) | self.poll_parked();
         let now = Instant::now();
         let moving = !self.view.paused
             && (self.scene().duration() > 0.0 || self.view.swing(self.scene()).is_some());
@@ -84,10 +84,11 @@ impl ApplicationHandler for Viewer {
                 .next_redraw
                 .min(self.last + std::time::Duration::from_millis(16));
         }
-        if self
-            .editor
-            .as_ref()
-            .is_some_and(|ed| ed.solving_for().is_some())
+        if self.any_tab_busy()
+            || self
+                .editor
+                .as_ref()
+                .is_some_and(|ed| ed.solving_for().is_some())
         {
             self.next_redraw = self
                 .next_redraw
@@ -105,7 +106,7 @@ impl ApplicationHandler for Viewer {
         }));
         if self.recovery_flushed.elapsed().as_secs() >= 30 {
             self.recovery_flushed = Instant::now();
-            if let Some(ed) = &mut self.editor {
+            for ed in self.editors_mut() {
                 if ed.dirty() {
                     if let Ok(json) = ed.recovery_json() {
                         if let Err(e) = crate::persistence::write(

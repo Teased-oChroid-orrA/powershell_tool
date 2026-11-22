@@ -49,19 +49,26 @@ pub fn init() {
         let sink = Sink { file, path, started: Instant::now() };
         Some(Mutex::new(sink))
     });
+    // Once per process: the dashboard window builds a Search workbench each time one is opened, and every call
+    // would otherwise write another banner and chain another panic hook.
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
     if SINK.get().map(|s| s.is_some()).unwrap_or(false) {
-        write_banner();
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let bt = std::backtrace::Backtrace::force_capture();
-            let location = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
-            let payload = info.payload().downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| info.payload().downcast_ref::<String>().cloned()).unwrap_or_default();
-            // Frames only: the `at <path>` lines of a backtrace name build-machine folders.
-            let frames: String = bt.to_string().lines().filter(|l| !l.trim_start().starts_with("at ")).collect::<Vec<_>>().join("\n");
-            log("PANIC", format!("at {location}: {payload}\nbacktrace:\n{frames}"));
-            previous(info);
-        }));
+        INSTALLED.call_once(install_banner_and_panic_hook);
     }
+}
+
+fn install_banner_and_panic_hook() {
+    write_banner();
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let location = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        let payload = info.payload().downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| info.payload().downcast_ref::<String>().cloned()).unwrap_or_default();
+        // Frames only: the `at <path>` lines of a backtrace name build-machine folders.
+        let frames: String = bt.to_string().lines().filter(|l| !l.trim_start().starts_with("at ")).collect::<Vec<_>>().join("\n");
+        log("PANIC", format!("at {location}: {payload}\nbacktrace:\n{frames}"));
+        previous(info);
+    }));
 }
 
 /// Test seam: logs into `dir` instead of the launch folder. First caller wins.

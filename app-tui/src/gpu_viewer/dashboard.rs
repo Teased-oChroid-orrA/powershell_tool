@@ -1,8 +1,9 @@
 //! The Toolbench dashboard: every workbench in one list, how each one opens, and what was opened last. Pure data;
 //! `gui/dashboard.rs` draws it and `window/` carries out a launch.
 //!
-//! Process model (ADR-014): every workbench is its own native-window `app-tui` process (`--gpu-solid [file]`, ...).
-//! The dashboard window stays open as the launcher and only records what it started (`Recents`).
+//! Process model (ADR-014, amended by ADR-024): a workbench is its own native-window `app-tui` process
+//! (`--gpu-solid [file]`, ...). The dashboard window opens workbenches in itself (`nav`, `window/nav.rs`) and
+//! starts a separate process only for Shift-click and "New window" (`Dashboard::launch`); it records both (`Recents`).
 use super::EditorKind;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -15,21 +16,42 @@ pub struct Workbench {
     pub summary: &'static str,
     /// The native window it opens.
     pub kind: EditorKind,
+    /// The section of the dashboard it is listed under.
+    pub group: Group,
+}
+
+/// The dashboard's sections, in display order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Group {
+    Joints,
+    Structures,
+    Data,
+}
+
+impl Group {
+    pub const ALL: [Group; 3] = [Group::Joints, Group::Structures, Group::Data];
+    pub fn name(self) -> &'static str {
+        match self {
+            Group::Joints => "Joints & fasteners",
+            Group::Structures => "Structures & simulation",
+            Group::Data => "Documents & data",
+        }
+    }
 }
 
 pub const WORKBENCHES: [Workbench; 12] = [
-    Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", kind: EditorKind::Search },
-    Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", kind: EditorKind::FastenerHole },
-    Workbench { id: "assembly", name: "Assembly Joints", summary: "Holes, fastener sites and contact faces of a STEP assembly, shown on the model.", kind: EditorKind::Assembly },
-    Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", kind: EditorKind::Bushing },
-    Workbench { id: "bushing-stackup", name: "Bushing Stackup", summary: "Line-reamed through holes and per-member bushing bore preparation.", kind: EditorKind::BushingStackup },
-    Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", kind: EditorKind::PressureVessel },
-    Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", kind: EditorKind::Preload },
-    Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", kind: EditorKind::Lug },
-    Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", kind: EditorKind::Eccentric },
-    Workbench { id: "fea", name: "FEA Workbench", summary: "Sketch, STEP or mesh; supports, loads, solve, contour.", kind: EditorKind::Solid },
-    Workbench { id: "members", name: "Frame and Truss", summary: "Nodes, truss and frame members, supports and loads.", kind: EditorKind::Members },
-    Workbench { id: "material-lookup", name: "Material Lookup", summary: "About 1,400 materials; type to search.", kind: EditorKind::Materials },
+    Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", kind: EditorKind::Search , group: Group::Data },
+    Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", kind: EditorKind::FastenerHole , group: Group::Joints },
+    Workbench { id: "assembly", name: "Assembly Joints", summary: "Holes, fastener sites and contact faces of a STEP assembly, shown on the model.", kind: EditorKind::Assembly , group: Group::Joints },
+    Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", kind: EditorKind::Bushing , group: Group::Joints },
+    Workbench { id: "bushing-stackup", name: "Bushing Stackup", summary: "Line-reamed through holes and per-member bushing bore preparation.", kind: EditorKind::BushingStackup , group: Group::Joints },
+    Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", kind: EditorKind::PressureVessel , group: Group::Structures },
+    Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", kind: EditorKind::Preload , group: Group::Joints },
+    Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", kind: EditorKind::Lug , group: Group::Structures },
+    Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", kind: EditorKind::Eccentric , group: Group::Joints },
+    Workbench { id: "fea", name: "FEA Workbench", summary: "Sketch, STEP or mesh; supports, loads, solve, contour.", kind: EditorKind::Solid , group: Group::Structures },
+    Workbench { id: "members", name: "Frame and Truss", summary: "Nodes, truss and frame members, supports and loads.", kind: EditorKind::Members , group: Group::Structures },
+    Workbench { id: "material-lookup", name: "Material Lookup", summary: "About 1,400 materials; type to search.", kind: EditorKind::Materials , group: Group::Data },
 ];
 
 impl Workbench {
@@ -136,27 +158,41 @@ impl Dashboard {
     pub fn visible(&self) -> Vec<&'static Workbench> {
         WORKBENCHES.iter().filter(|w| w.matches(&self.query)).collect()
     }
-    /// Start `workbench` (on `file` when given, else its default), record it, and keep the list on disk.
-    pub fn launch(&mut self, id: &str, file: Option<PathBuf>) {
+    /// Start `workbench` in its own window (on `file` when given, else its default), record it, and keep the list on
+    /// disk. `false` when nothing started (`message` says why).
+    pub fn launch(&mut self, id: &str, file: Option<PathBuf>) -> bool {
         let Some(w) = Workbench::find(id) else {
             self.message = Some(format!("No workbench called {id}."));
-            return;
+            return false;
         };
         let file = file.or_else(|| w.default_file());
         if w.kind == EditorKind::BushingStackup {
-            if let Some(path)=&file {if let Err(e)=super::editor::stackup::WindowLease::acquire(path){self.message=Some(e);return;}}
+            if let Some(path) = &file {
+                if let Err(e) = super::editor::stackup::WindowLease::acquire(path) {
+                    self.message = Some(e);
+                    return false;
+                }
+            }
         }
         match spawn(w, file.as_deref()) {
             Ok(()) => {
-                self.message = Some(format!("Opened {}.", w.name));
-                self.recents.record(w.id, file.map(|f| f.to_string_lossy().into_owned()), unix_now());
-                if let Some(p) = &self.file {
-                    if let Err(e) = self.recents.save_to(p) {
-                        self.message = Some(format!("Opened {}, but the recent list could not be saved: {e}", w.name));
-                    }
-                }
+                self.note_opened(w, file);
+                true
             }
-            Err(e) => self.message = Some(format!("Could not open {}: {e}", w.name)),
+            Err(e) => {
+                self.message = Some(format!("Could not open {}: {e}", w.name));
+                false
+            }
+        }
+    }
+    /// Record that `w` was opened (in its own window or in this one) on `file`, and keep the list on disk.
+    pub fn note_opened(&mut self, w: &Workbench, file: Option<PathBuf>) {
+        self.message = Some(format!("Opened {}.", w.name));
+        self.recents.record(w.id, file.map(|f| f.to_string_lossy().into_owned()), unix_now());
+        if let Some(p) = &self.file {
+            if let Err(e) = self.recents.save_to(p) {
+                self.message = Some(format!("Opened {}, but the recent list could not be saved: {e}", w.name));
+            }
         }
     }
 }
@@ -203,6 +239,20 @@ mod tests {
         let lug = Workbench::find("lug").unwrap();
         assert!(lug.default_file().unwrap().ends_with("lug-case.json"));
         assert_eq!(lug.args(None), ["--gpu-lug"]);
+    }
+
+    #[test]
+    fn opening_a_workbench_in_the_window_is_recorded_like_a_launch() {
+        let dir = std::env::temp_dir().join(format!("dashboard-note-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("recent.json");
+        let mut d = Dashboard::new(Recents::default(), Some(file.clone()));
+        let fea = Workbench::find("fea").unwrap();
+        d.note_opened(fea, Some(PathBuf::from("/x/a.json")));
+        assert_eq!(d.message.as_deref(), Some("Opened FEA Workbench."));
+        assert_eq!(d.recents.last("fea").unwrap().path.as_deref(), Some("/x/a.json"));
+        assert_eq!(Recents::load_from(&file), d.recents, "kept on disk");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

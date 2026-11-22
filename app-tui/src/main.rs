@@ -40,10 +40,6 @@ fn main() -> io::Result<()> {
     }
     if let Some(kind) = first_arg.as_deref().and_then(app_tui::gpu_viewer::EditorKind::from_flag) {
         app_tui::console::release_own_console();
-        if kind == app_tui::gpu_viewer::EditorKind::Search {
-            // The search and index stages are logged like the terminal toolbox's (no paths or terms, see debug_log).
-            app_tui::debug_log::init();
-        }
         let path = std::env::args_os().nth(2).map_or_else(|| std::path::PathBuf::from(kind.default_file()), std::path::PathBuf::from);
         return app_tui::gpu_viewer::run_native_editor(kind, &path).map_err(io::Error::other);
     }

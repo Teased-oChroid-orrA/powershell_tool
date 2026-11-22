@@ -31,7 +31,8 @@ impl Viewer {
                 self.gui.confirm_close = false;
                 self.quit_warned = false;
             }
-            UiAction::DiscardAndClose => self.quit = true,
+            UiAction::DiscardAndClose => self.discard_and_close(),
+            UiAction::Nav(act) => self.nav_act(act),
             UiAction::RestoreRecovery => {
                 if let Some(ed) = &mut self.editor {
                     let message = match ed.restore_recovery() {
@@ -52,7 +53,9 @@ impl Viewer {
                     );
                 }
                 if !self.editor.as_ref().is_some_and(|ed| ed.dirty()) {
-                    self.quit = true;
+                    self.gui.confirm_close = false;
+                    // Another workbench may still hold unsaved edits: that asks next.
+                    self.request_quit();
                 }
             }
         }

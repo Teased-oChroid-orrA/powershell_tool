@@ -261,6 +261,7 @@ mod chrome;
 mod input;
 mod interaction;
 mod model;
+mod nav;
 mod search_materials;
 mod stackup;
 mod workbenches;

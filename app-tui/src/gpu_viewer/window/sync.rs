@@ -1,5 +1,6 @@
 //! Keeping the editor, the egui frame, quit and the persisted display settings in step with the viewer.
 use super::*;
+use crate::gpu_viewer::gui::DashEvent;
 
 impl Viewer {
     /// Keep the GPU scene in step with the editor state (rebuild only when it changed).
@@ -34,12 +35,21 @@ impl Viewer {
     }
     /// Run one egui frame from the current state and carry out what was clicked; returns what to paint.
     pub(super) fn run_gui(&mut self, raw: egui::RawInput) -> egui::FullOutput {
+        self.gui.set_nav(self.nav_strip());
         if let Some(mut dash) = self.dashboard.take() {
             let (full, events) = self.gui.run_dashboard(raw, &mut dash);
-            for crate::gpu_viewer::gui::DashEvent::Open(id, file) in events {
-                dash.launch(id, file);
-            }
             self.dashboard = Some(dash);
+            for event in events {
+                match event {
+                    DashEvent::Open(id, file) => self.open_workbench(id, file),
+                    DashEvent::NewWindow(id, file) => {
+                        if let Some(d) = &mut self.dashboard {
+                            d.launch(id, file);
+                        }
+                    }
+                    DashEvent::Nav(act) => self.nav_act(act),
+                }
+            }
             return full;
         }
         let vp = self.viewport();
@@ -67,32 +77,13 @@ impl Viewer {
         }
         full
     }
-    /// Close the window, unless the editor holds unsaved changes: the first request only says so.
-    pub(super) fn request_quit(&mut self) {
-        match &mut self.editor {
-            Some(ed) if ed.dirty() => {
-                self.quit_warned = true;
-                self.gui.confirm_close = true;
-                ed.set_status(
-                    "Unsaved changes: choose Save and close, Discard changes, or Keep editing."
-                        .into(),
-                );
-            }
-            _ => self.quit = true,
-        }
-    }
     /// Take the stored display style and background and keep them up to date from now on.
     pub(super) fn attach_display_store(&mut self, path: Option<std::path::PathBuf>) {
         if let Some(p) = &path {
-            let s = DisplaySettings::load_from(p);
-            (self.view.style, self.view.background, self.view.key_colours) =
-                (s.style, s.background, s.key_colours);
-            self.view.panel_pos = s
-                .panel_pos
-                .map(crate::gpu_viewer::display::sanitize_panel_pos);
-            self.view.page_layout = s
-                .page_layout
-                .and_then(crate::gpu_viewer::display::PageLayout::sanitized);
+            let mut s = DisplaySettings::load_from(p);
+            s.panel_pos = s.panel_pos.map(crate::gpu_viewer::display::sanitize_panel_pos);
+            s.page_layout = s.page_layout.and_then(crate::gpu_viewer::display::PageLayout::sanitized);
+            self.view.set_display(s);
         }
         self.display_file = path;
     }

@@ -32,11 +32,13 @@ mod frame;
 mod handler;
 mod input;
 mod launch;
+mod nav;
 mod pointer;
 mod sync;
 #[cfg(test)]
 mod tests;
 pub use launch::*;
+use nav::Nav;
 
 /// Window input reduced to what the viewer acts on, so the whole path (chrome, editor, camera) can be driven
 /// without a window: `window_event` converts winit events, tests feed these directly.
@@ -92,6 +94,8 @@ struct Viewer {
     editor: Option<Box<dyn Authoring>>,
     /// This window is the Toolbench dashboard: no model, just the list of workbenches.
     dashboard: Option<super::dashboard::Dashboard>,
+    /// The dashboard window as a shell: workbenches opened and parked in it (ADR-024). `None` in a workbench's own window.
+    nav: Option<Nav>,
 }
 
 /// winit key to editor key (letters keep their case; unsupported keys are `None`).
@@ -121,6 +125,11 @@ fn opens_palette(key: &Key, mods: ModifiersState) -> bool {
         Key::Character(c) if command && mods.shift_key() && c.eq_ignore_ascii_case("p") => true,
         _ => false,
     }
+}
+
+/// Ctrl/Cmd+J opens the workbench switcher of the dashboard window.
+fn opens_switcher(key: &Key, mods: ModifiersState) -> bool {
+    matches!(key, Key::Character(c) if (mods.control_key() || mods.super_key()) && c.eq_ignore_ascii_case("j"))
 }
 
 impl Viewer {

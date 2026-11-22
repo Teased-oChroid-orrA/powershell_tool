@@ -113,6 +113,10 @@ impl Viewer {
             self.gui.open_palette();
             return;
         }
+        if !typing && self.nav.is_some() && opens_switcher(key, self.mods) {
+            self.gui.open_switcher();
+            return;
+        }
         if matches!(key, Key::Named(NamedKey::Escape)) && self.gui.close_floating() {
             return;
         }
@@ -154,6 +158,8 @@ impl Viewer {
             }
         }
         match key {
+            // The dashboard with workbenches parked behind it keeps them: closing is the window's button.
+            Key::Named(NamedKey::Escape) if self.has_open_workbench() => {}
             Key::Named(NamedKey::Escape) => self.request_quit(),
             Key::Named(NamedKey::Space) => self.command(Command::TogglePause),
             Key::Named(NamedKey::Home) => self.command(Command::Rewind),

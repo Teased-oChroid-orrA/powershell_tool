@@ -8,6 +8,7 @@ pub mod editor;
 pub mod gui;
 pub mod menu;
 pub mod menus;
+pub mod nav;
 pub mod page;
 pub mod progress;
 pub mod results;
@@ -128,26 +129,7 @@ impl EditorKind {
 pub fn run_native_editor(kind: EditorKind, path: &std::path::Path) -> Result<(), String> {
     #[cfg(feature = "gpu-viewer")]
     {
-        match kind {
-            EditorKind::Members => {
-                let problem = if path.exists() { editor::state::read_problem(path)? } else { fea_problem::members::blank_planar() };
-                window::run_editor(problem, path.to_path_buf())
-            }
-            EditorKind::Solid => {
-                let (problem, destination) = editor::solid::open_path(path)?;
-                window::run_solid(problem, destination)
-            }
-            EditorKind::Bushing => window::run_bushing(editor::bushing::BushingSession::open(path)?),
-            EditorKind::BushingStackup => window::run_stackup(editor::stackup::StackupSession::open(path)?),
-            EditorKind::Eccentric => window::run_eccentric(editor::eccentric::EccentricSession::open(path)?),
-            EditorKind::FastenerHole => window::run_fastener(editor::fastener::FastenerSession::open(path)?),
-            EditorKind::Assembly => window::run_assembly(editor::assembly::AssemblySession::open(path)?),
-            EditorKind::Search => window::run_search(editor::search::SearchSession::open(Some(path))?),
-            EditorKind::Materials => window::run_page(Box::new(editor::materials::MaterialsSession::open(Some(path))?), "materials"),
-            EditorKind::PressureVessel => window::run_vessel(editor::vessel::VesselSession::open(path)?),
-            EditorKind::Preload => window::run_preload(editor::preload::PreloadSession::open(path)?),
-            EditorKind::Lug => window::run_lug(editor::lug::LugSession::open(path)?),
-        }
+        window::run_workbench(kind, path)
     }
     #[cfg(not(feature = "gpu-viewer"))]
     {

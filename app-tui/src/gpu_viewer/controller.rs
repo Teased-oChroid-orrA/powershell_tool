@@ -125,6 +125,8 @@ pub enum UiAction {
     DiscardAndClose,
     CancelClose,
     RestoreRecovery,
+    /// Switch between the dashboard and the open workbenches of the dashboard window (ADR-024).
+    Nav(super::nav::NavAct),
 }
 
 /// What the Window menu can ask of the adaptive layout (ADR-018).
@@ -198,6 +200,11 @@ impl ViewState {
     /// The part of the view that persists between sessions.
     pub fn display_settings(&self) -> super::display::DisplaySettings {
         super::display::DisplaySettings { style: self.style, background: self.background, key_colours: self.key_colours, panel_pos: self.panel_pos, page_layout: self.page_layout }
+    }
+
+    /// Take the stored display style, colours and layout (a workbench shown in the dashboard window keeps the window's).
+    pub fn set_display(&mut self, s: super::display::DisplaySettings) {
+        (self.style, self.background, self.key_colours, self.panel_pos, self.page_layout) = (s.style, s.background, s.key_colours, s.panel_pos, s.page_layout);
     }
 
     pub fn new(scene: &Scene) -> Self {
