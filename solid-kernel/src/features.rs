@@ -690,6 +690,31 @@ pub fn size_matches(diameter_mm: f64) -> Vec<SizeMatch> {
     out
 }
 
+/// The thread and a clearance hole of a standard size, in millimetres (what an assembly analysis of a fastener needs of its size).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SizeInfo {
+    /// The nominal (major) diameter.
+    pub nominal: f64,
+    /// The thread pitch: ISO 261 coarse for the metric sizes, `1 / threads per inch` for the unified ones.
+    pub pitch: f64,
+    /// The normal clearance hole of the metric sizes, the close one of the unified ones.
+    pub clearance: f64,
+}
+
+/// ISO 261 coarse pitches of the [`METRIC`] sizes, millimetres.
+const METRIC_PITCH: [(&str, f64); 10] = [("M3", 0.5), ("M4", 0.7), ("M5", 0.8), ("M6", 1.0), ("M8", 1.25), ("M10", 1.5), ("M12", 1.75), ("M16", 2.0), ("M20", 2.5), ("M24", 3.0)];
+
+/// The thread and clearance of a size named as the tables name it (`"M6"`, `"1/4-20"`), `None` for any other name.
+pub fn size_info(size: &str) -> Option<SizeInfo> {
+    if let Some((_, _, nominal, _, normal, _)) = METRIC.iter().find(|m| m.0 == size) {
+        let pitch = METRIC_PITCH.iter().find(|m| m.0 == size)?.1;
+        return Some(SizeInfo { nominal: *nominal, pitch, clearance: *normal });
+    }
+    let (_, _, nominal, close, _) = INCH.iter().find(|m| m.0 == size)?;
+    let tpi: f64 = size.rsplit('-').next()?.parse().ok()?;
+    Some(SizeInfo { nominal: nominal * 25.4, pitch: 25.4 / tpi, clearance: close * 25.4 })
+}
+
 /// One bore of a fastener site.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bore {

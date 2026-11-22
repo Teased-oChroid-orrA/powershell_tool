@@ -600,3 +600,18 @@ fn a_drilled_plate_has_no_near_closed_bore_and_a_stack_still_finds_its_site() {
     assert!(f.near_closed.is_empty());
     assert_eq!((f.holes.len(), f.sites.len()), (2, 1));
 }
+
+#[test]
+fn a_standard_size_has_its_thread_and_clearance() {
+    use solid_kernel::features::size_info;
+    let m6 = size_info("M6").unwrap();
+    assert_eq!((m6.nominal, m6.pitch, m6.clearance), (6.0, 1.0, 6.6));
+    let quarter = size_info("1/4-20").unwrap();
+    assert!((quarter.nominal - 6.35).abs() < 1e-12 && (quarter.pitch - 1.27).abs() < 1e-12 && (quarter.clearance - 0.257 * 25.4).abs() < 1e-12);
+    assert!(size_info("M7").is_none() && size_info("M6 or M8").is_none());
+    // every table size has a pitch
+    for size in ["M3", "M4", "M5", "M6", "M8", "M10", "M12", "M16", "M20", "M24", "#4-40", "#6-32", "#8-32", "#10-24", "1/4-20", "5/16-18", "3/8-16", "1/2-13"] {
+        let i = size_info(size).unwrap_or_else(|| panic!("{size}"));
+        assert!(i.pitch > 0.0 && i.pitch < i.nominal && i.clearance > i.nominal, "{size}");
+    }
+}

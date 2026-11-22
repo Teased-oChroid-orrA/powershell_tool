@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 fea-core = { path = "../fea-core" }
 mechanics-core = { path = "../mechanics-core" }
+fastened-joint-solver = { path = "../fastened-joint-solver" }
 solid-kernel = { path = "../solid-kernel" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
