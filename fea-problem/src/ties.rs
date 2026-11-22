@@ -301,6 +301,8 @@ pub(crate) struct ContactJoint {
     pub b: String,
     pub friction: f64,
     pub gap: f64,
+    /// Outward unit normal of `b`'s face (it points towards `a`): `b` closes a gap by moving along it.
+    pub normal: [f64; 3],
 }
 
 /// The contact ties of a problem resolved to the surfaces of the stored assembly.
@@ -313,7 +315,7 @@ pub(crate) fn contact_joints(p: &Problem) -> Result<Vec<ContactJoint>, String> {
         .filter_map(|(i, t)| t.friction.map(|mu| (i, t, mu)))
         .map(|(i, t, friction)| {
             let (a, b) = resolve(c, &stats, diag, t).map_err(|e| format!("tie {}: {e}", i + 1))?;
-            Ok(ContactJoint { a: face_name(a), b: face_name(b), friction, gap: t.gap })
+            Ok(ContactJoint { a: face_name(a), b: face_name(b), friction, gap: t.gap, normal: t.b.normal })
         })
         .collect()
 }

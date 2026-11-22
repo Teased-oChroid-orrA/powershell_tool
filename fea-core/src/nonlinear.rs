@@ -1112,6 +1112,10 @@ impl Model {
                 hold(dof / d, &mut anchored, &mut parent);
             }
         }
+        // A coupling of one dof is a grounding spring about its offset.
+        for cp in couplings.iter().filter(|c| c.k > 0.0 && c.terms.len() == 1) {
+            hold(cp.terms[0].0 / d, &mut anchored, &mut parent);
+        }
         for spec in contacts {
             for face in spec.slave.iter().chain(match &spec.master {
                 crate::contact::Master::Faces(f) => f.iter(),
