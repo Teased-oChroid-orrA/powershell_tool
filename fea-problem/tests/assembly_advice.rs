@@ -135,3 +135,16 @@ fn a_counterbore_over_a_mated_bore_is_part_of_the_site_not_an_unmated_hole() {
     assert_eq!(ds.len(), 2, "{alone:?}");
     assert!((ds[0] - 6.0).abs() < 1e-9 && (ds[1] - 8.0).abs() < 1e-9, "{ds:?}");
 }
+
+#[test]
+fn a_pin_bridging_bores_that_do_not_touch_is_named_in_the_fastener_reason() {
+    let hole = [([20., 15.], 2.5)];
+    let pin = NativeBrep::cylinder_z([20., 15., 5.], 2.5, 15.).unwrap();
+    // the plates are 5 mm apart; without the pin the two bores are unrelated holes (unmated), not one fastener
+    let apart = advice(&[plate([0., 0., 0.], [40., 30., 10.], &hole), plate([0., 0., 15.], [40., 30., 25.], &hole)]);
+    assert!(!apart.iter().any(|i| matches!(i, AssemblyAdvice::Fastener { .. })), "{apart:?}");
+    let items = advice(&[plate([0., 0., 0.], [40., 30., 10.], &hole), plate([0., 0., 15.], [40., 30., 25.], &hole), pin]);
+    let AssemblyAdvice::Fastener { bodies, reason, .. } = items.iter().find(|i| matches!(i, AssemblyAdvice::Fastener { .. })).expect("a fastener item") else { unreachable!() };
+    assert_eq!(bodies, &vec![0, 1]);
+    assert!(reason.contains("do not touch") && reason.contains("body 3"), "{reason}");
+}
