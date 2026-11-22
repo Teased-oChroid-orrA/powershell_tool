@@ -1,0 +1,80 @@
+{
+ "model": "Qwen3.5-4B-Q4_K_M.gguf",
+ "threads": 4,
+ "load_s": 24.0,
+ "peak_rss_mb": 3222,
+ "parse": {
+  "n": 30,
+  "valid_json": 30,
+  "gold_conditions": 48,
+  "condition_recall": 44,
+  "count_exact": 17,
+  "extra_conditions": 17,
+  "negation_found": "5/5",
+  "sec_per_parse": 36.91,
+  "gen_tok_per_s": 1.4
+ },
+ "judge": {
+  "n": 45,
+  "tp": 18,
+  "fn": 2,
+  "fp": 0,
+  "tn": 25,
+  "accuracy": 0.956,
+  "yes_quotes_valid": "18/18",
+  "sec_per_judge": 9.52
+ },
+ "parse_misses": [
+  [
+   "anything mentioning anodize per MIL-A-8625 Type II",
+   [
+    "anodiz",
+    "mil-a-8625",
+    "ii"
+   ]
+  ],
+  [
+   "documents that mention cadmium plating is prohibited",
+   [
+    "cadmium",
+    "plat",
+    "prohibit"
+   ]
+  ],
+  [
+   "files where corrosion was removed by blending and the area was inspected after",
+   [
+    "inspect",
+    "after"
+   ]
+  ],
+  [
+   "repairs where the damage was blended out within limits and fairing was restored",
+   [
+    "damage",
+    "blend",
+    "limit"
+   ]
+  ]
+ ],
+ "judge_errors": [
+  [
+   "FN",
+   "corrosion is blended",
+   "Light surface corrosion was removed by blending with abrasive pad.",
+   {
+    "quote": "",
+    "verdict": "no"
+   }
+  ],
+  [
+   "FN",
+   "seam is spot radiographed",
+   "A spot-radiographed longitudinal seam uses joint efficiency 0.85.",
+   {
+    "quote": "",
+    "verdict": "no"
+   }
+  ]
+ ]
+}

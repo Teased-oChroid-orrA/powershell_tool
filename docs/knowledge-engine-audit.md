@@ -512,3 +512,18 @@ Cost on the public corpora (`entity_corpus_eval`, found-gold, same mapping): aer
 
 Limits: ADs hold few quantities and few unit kinds; precision here is read from contexts by one person, and the guard is English-text tuned (the word list after `in`). A bill of materials with `5 in` lines at line ends would lose them.
 
+## 2026-11-21: Qwen3.5-4B against Qwen3-4B-Instruct-2507 for NL-find (measured; not adopted)
+
+Question (owner, 2026-11-21): is there a better model than Qwen3-4B-Instruct-2507 Q4_K_M at about the same size? Shortlisted without testing from model cards and web roundups (Qwen3.5-4B, Qwen3.5-9B, Gemma 4 E4B, Ministral 3 8B, Phi-4-mini, SmolLM3, Granite 4): only Qwen3.5-4B is the same size class with a published instruction-following gain (IFEval 89.8 on the Qwen card); the 9B (about 5.5 GB), Gemma 4 E4B (5.3 GB on disk, 4.5B effective) and Ministral 3 8B do not fit an 8 GB machine without paging (Llama 3.1 8B at 4.7 GB already paged there). The owner's rule for the test: switch only if it matches or beats 0.933 on the judge **with fewer extra conditions** at the same size.
+
+Model `unsloth/Qwen3.5-4B-GGUF` `Qwen3.5-4B-Q4_K_M.gguf` (Apache-2.0, 2,740,937,888 bytes), run on the same 30 parse and 45 judge cases with `.audit/llm_bakeoff_q35.py` (a copy of `llm_bakeoff.py`: Qwen3.5 thinks by default, so the GGUF's own chat template is rendered with `enable_thinking=False` and the JSON schema is applied as a grammar through `create_completion`; same prompts, temperature 0, CPU only, 4 threads, `llama-cpp-python` 0.3.37, which loads the Qwen3.5 architecture). The Qwen3-4B row is the 2026-11-21 re-run above (original harness). Raw output: `.audit/llm-bakeoff-qwen35-4b-2026-11-21.json`.
+
+| Model (Q4_K_M) | File | Peak RSS | Cond. recall | Exact count | Extra conds | Neg. found | Judge acc | TP/FN/FP/TN | Quotes valid |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---:|
+| Qwen3-4B-Instruct-2507 | 2,497 MB | 2.9 GB | 43/48 | 20/30 | **14** | 4/5 | 0.933 | 18/2/1/24 | 19/19 |
+| Qwen3.5-4B (non-thinking) | 2,741 MB | 3.2 GB | 44/48 | 17/30 | 17 | 5/5 | **0.956** | 18/2/0/25 | 18/18 |
+
+Read: Qwen3.5-4B is one judge case better (the one false positive is gone; both miss two true cases, and its two are "corrosion is blended" and "seam is spot radiographed", with an empty quote), finds one more condition and the fifth negation, but invents three more conditions (17 against 14) and gets the exact condition count right in 17 of 30 sentences against 20. Each extra condition is a required AND, which is the failure the owner's rule guards against, so the rule is not met. The file is 10% larger and uses 0.3 GB more memory. Speed is not comparable: this run shared the machine with other builds (load average 8 to 29) and measured 36.9 s per parse, 9.5 s per judge and 1.4 generated tokens per second, against 17.5 s and 3.1 tokens per second for Qwen3-4B on an idle machine; Qwen3.5 uses a hybrid recurrent layer design, which is the likely reason it is slower per token on a CPU build, but this was not isolated. The one-case judge difference is 2.2 points on a 45-case set and is inside noise.
+
+Verdict: **not adopted; Qwen3-4B-Instruct-2507 Q4_K_M stays the NL-find reference.** Not run: Qwen3.5-9B and Gemma 4 E4B (do not fit the 8 GB target), Phi-4-mini, SmolLM3-3B, Granite 4.x 3B (nothing suggests a gain over the two measured). Limits: the case sets are synthetic and author-written, so further model comparisons need a larger set first. Both GGUF files are kept in `~/Models` (never in the repository).
+
