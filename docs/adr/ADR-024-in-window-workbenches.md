@@ -32,12 +32,26 @@ showed which workbenches were open or had unsaved edits.
 Rejected: tabs as child windows embedded by the OS (no portable API), and one `Viewer` per workbench with window
 switching in winit (a second surface, device and egui context per workbench; the parked state is a few boxed values).
 
+## Follow-up (2026-11-21, same day)
+
+The first cut's gaps were closed:
+
+- **Page state** (selected tab, folded cards, drawer, tree state, step tracking, a page's scroll and selection) is taken
+  from `Gui` when a workbench is parked (`Gui::park_page`, `PageState`) and given back when it is shown (`restore_page`).
+  Transient things (popups, menus, the switcher) are still cleared (`reset_page`, `DocState::settle`).
+- **Hand-offs**: `editor::handoff::launch` is the one seam every "open the other workbench" path uses (Bushing and
+  Eccentric to FEA and back, the stackup, the fastener transfer). The dashboard window calls `handoff::serve_shell()`;
+  after that `launch` queues the request (`take_asked`) and `Viewer::serve_asked` opens it as a tab. A standalone
+  `--gpu-*` window still starts a process. Thread-local, so it is the window thread's setting.
+- **Window size**: the dashboard window starts at 1200 x 760 like the workbench windows and grows to that when a workbench
+  opens (`nav::room_for_workbench`); it never shrinks a window the person sized.
+- **`pop_out`** is tested: `Dashboard::launch` records instead of spawning under `cfg(test)` (`dashboard::SPAWNED`).
+
 ## Known gaps
 
-- Page state (selected tab, scroll) resets when swapping between workbenches; the model, file and results are kept.
-- `handoff.rs` (Bushing <-> FEA) still spawns processes.
-- The window keeps the dashboard's size when a workbench opens.
-- `pop_out` spawns a process and has no unit test; the logic around it is covered in `window/tests/nav.rs`.
+- A tab asked for by a hand-off while its case is already open is not brought forward (the open window updates itself
+  from the file, as before).
+- The live native window was driven only through the window-level tests and snapshots, not by a pointer on a real display.
 
 ## Evidence
 

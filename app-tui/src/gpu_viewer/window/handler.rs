@@ -75,7 +75,7 @@ impl ApplicationHandler for Viewer {
         if self.quit {
             e.exit();
         }
-        let changed = self.editor.as_mut().is_some_and(|ed| ed.poll()) | self.poll_parked();
+        let changed = self.editor.as_mut().is_some_and(|ed| ed.poll()) | self.poll_parked() | self.serve_asked();
         let now = Instant::now();
         let moving = !self.view.paused
             && (self.scene().duration() > 0.0 || self.view.swing(self.scene()).is_some());

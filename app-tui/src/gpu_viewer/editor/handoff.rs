@@ -110,8 +110,29 @@ thread_local! {
     pub static LAUNCHED: std::cell::RefCell<Vec<(EditorKind, PathBuf)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Start the window of `kind` on `file` as its own process.
+thread_local! {
+    /// The window thread serves the dashboard shell (ADR-024): a `launch` is queued for it to open in the same window.
+    static SHELL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ASKED: std::cell::RefCell<Vec<(EditorKind, PathBuf)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Called by the dashboard window on its own thread: from now on `launch` asks that window instead of starting a process.
+pub fn serve_shell() {
+    SHELL.with(|s| s.set(true));
+}
+
+/// The workbenches `launch` asked the shell for since the last call, in order.
+pub fn take_asked() -> Vec<(EditorKind, PathBuf)> {
+    ASKED.with(|a| std::mem::take(&mut *a.borrow_mut()))
+}
+
+/// Start the window of `kind` on `file`: in the dashboard window when this thread serves one (and the kind has a
+/// workbench there), else as its own process.
 pub fn launch(kind: EditorKind, file: &Path) -> Result<(), String> {
+    if SHELL.with(|s| s.get()) && crate::gpu_viewer::dashboard::Workbench::for_kind(kind).is_some() {
+        ASKED.with(|a| a.borrow_mut().push((kind, file.to_path_buf())));
+        return Ok(());
+    }
     #[cfg(test)]
     {
         LAUNCHED.with(|l| l.borrow_mut().push((kind, file.to_path_buf())));

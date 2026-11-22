@@ -58,6 +58,10 @@ impl Workbench {
     pub fn find(id: &str) -> Option<&'static Workbench> {
         WORKBENCHES.iter().find(|w| w.id == id)
     }
+    /// The workbench that opens `kind` (each kind has one).
+    pub fn for_kind(kind: EditorKind) -> Option<&'static Workbench> {
+        WORKBENCHES.iter().find(|w| w.kind == kind)
+    }
     /// The file used when none is given: the editor's default, in the working folder.
     pub fn default_file(&self) -> Option<PathBuf> {
         match self.kind {
@@ -197,8 +201,25 @@ impl Dashboard {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// What `spawn` was asked to start on this thread (tests start no process).
+    pub static SPAWNED: std::cell::RefCell<Vec<(&'static str, Option<PathBuf>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Start the workbench as a separate process that outlives nothing it needs from this one.
 fn spawn(w: &Workbench, file: Option<&Path>) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        SPAWNED.with(|s| s.borrow_mut().push((w.id, file.map(Path::to_path_buf))));
+        Ok(())
+    }
+    #[cfg(not(test))]
+    spawn_process(w, file)
+}
+
+#[cfg(not(test))]
+fn spawn_process(w: &Workbench, file: Option<&Path>) -> Result<(), String> {
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut c = Command::new(&exe);
