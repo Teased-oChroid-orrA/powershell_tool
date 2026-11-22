@@ -231,7 +231,7 @@ fn the_edge_check_runs_off_the_ui_thread_and_fills_the_folded_cross_checks_card(
     wait(&mut s, "the edge check", |s| s.st.edge_check.is_some());
     let c = card(&s.result_cards(), "bushing-edge-check");
     let t = texts(&[c.clone()]);
-    assert!(t.contains("Superposition") && t.contains("Legacy solver"), "{t}");
+    assert!(t.contains("Superposition") && t.contains("Legacy"), "{t}");
     assert_eq!(c.tag, "current");
     act(&mut s, BushingAct::EdgeCheck(false));
     s.do_act(BushingAct::CancelEdgeCheck);
@@ -262,7 +262,7 @@ fn the_quick_check_shows_a_matrix_per_target_with_legacy_governing_and_no_best_e
         let titles: Vec<_> = t.columns.iter().map(|c| c.title.as_str()).collect();
         assert_eq!(titles, ["Model", "Nominal", "P90", "P95", "P99"]);
         let names: Vec<String> = t.rows.iter().map(|r| if let crate::gpu_viewer::page::Cell::Text { text, .. } = &r.cells[0] { text.clone() } else { String::new() }).collect();
-        assert!(names.iter().any(|n| n == "Legacy solver \u{b7} governing"), "{names:?}");
+        assert!(names.iter().any(|n| n == "Legacy \u{b7} governing"), "{names:?}");
         assert!(!names.iter().any(|n| n.contains("best estimate")), "the contact FE did not run: {names:?}");
         assert_eq!(t.rows.iter().filter(|r| r.governing).count(), 1, "exactly the legacy row is tinted");
         let legacy = t.rows.iter().find(|r| r.governing).unwrap();

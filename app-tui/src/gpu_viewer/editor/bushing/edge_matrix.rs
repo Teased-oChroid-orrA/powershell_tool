@@ -16,7 +16,8 @@ fn text(t: impl Into<String>, tone: Tone) -> Cell {
 }
 
 fn name_cell(r: &MatrixRow) -> Cell {
-    let name = matrix_name(r);
+    // The legacy row's long name would wrap and clip in the narrow results pane; the window text spells it out.
+    let name = if r.id == edge_check::matrix::LEGACY_ID { "Legacy" } else { matrix_name(r) };
     match r.role {
         Role::Comparison => text(name, Tone::Normal),
         role => text(format!("{name} \u{b7} {}", role.label()), Tone::Title),
@@ -71,7 +72,7 @@ pub(super) fn items(m: &EdgeMatrix, run: &EdgeCheckRun) -> Vec<DockItem> {
         None => out.push(dim("Best estimate: not run. Use \"Run with contact FE\" below; the contact FE meshes the bushing and the housing together.".into())),
     }
     out.push(dim("Governing: the legacy solver check decides PASS / REVIEW. This table never changes it. Best estimate: the contact FE is the closest to what the joint does, but it stays advisory until it is correlated with edge-distance test data and the plane-strain assumption is bracketed by a 3D check.".into()));
-    out.push(dim(VALIDATION.into()));
+    out.push(dim(format!("{VALIDATION} Further validation and its limits: docs/edge-distance-crosscheck.md.")));
     let fy: Vec<String> = m.rows.iter().filter_map(|r| r.first_yield.map(|c| format!("{} {}", matrix_name(r), c.text()))).collect();
     if !fy.is_empty() {
         out.push(dim(format!("First yield at the applied load (informational), e/D: {}.", fy.join(", "))));
