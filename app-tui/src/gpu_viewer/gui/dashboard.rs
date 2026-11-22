@@ -25,7 +25,12 @@ const TILE_MIN: f32 = 236.0;
 const TILE_H: f32 = 186.0;
 const RAIL_W: f32 = 300.0;
 /// The window width from which the recent files sit beside the tiles instead of below them.
-const RAIL_FROM: f32 = 980.0;
+const RAIL_FROM: f32 = 900.0;
+/// The window width from which the left rail shows, and its width.
+const SIDE_FROM: f32 = 760.0;
+const SIDE_W: f32 = 232.0;
+/// The height the rail's foot takes (theme picker, circadian slider, hint).
+const SIDE_FOOT_H: f32 = 150.0;
 
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     a.lerp_to_gamma(b, t)
@@ -53,21 +58,29 @@ impl Gui {
         let p = theme::current(ui.ctx());
         let now = unix_now();
         events.extend(self.nav_ui(ui, &p).into_iter().map(DashEvent::Nav));
+        // The left rail (brand, sections, theme) from RAIL_SIDE_FROM; narrower, the sections are a row of chips.
+        let side = ui.available_width() >= SIDE_FROM;
+        if side {
+            egui::Panel::left("toolbench-side").exact_size(SIDE_W).show_separator_line(false).frame(egui::Frame::new().fill(p.side).stroke(Stroke::new(1.0, p.line)).inner_margin(egui::Margin::symmetric(14, 20))).show(ui, |ui| self.side(ui, &p, dash));
+        }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg)).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(32, 26)).show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new("GS Engineering Toolbench").size(26.0).strong());
-                        ui.label(RichText::new("pick a workbench").color(p.dim));
-                        ui.add_space(16.0);
-                        theme::theme_picker(ui);
-                        theme::circadian_control(ui, &p);
-                    });
+                    ui.label(RichText::new("Workbenches").size(26.0).strong());
+                    let n = dash.visible().len();
+                    ui.label(RichText::new(format!("{n} {} for joints, structures and documents.", if n == 1 { "tool" } else { "tools" })).color(p.dim));
                     ui.add_space(12.0);
                     let search = egui::Frame::new().fill(p.panel).stroke(Stroke::new(1.0, p.line)).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(12, 9)).show(ui, |ui| {
                         ui.add(egui::TextEdit::singleline(&mut dash.query).frame(egui::Frame::NONE).hint_text("Filter workbenches").desired_width(f32::INFINITY)).rect
                     });
                     self.targets.push(("Filter workbenches".into(), search.inner));
+                    if !side {
+                        ui.add_space(10.0);
+                        ui.horizontal_wrapped(|ui| {
+                            self.section_buttons(ui, &p, dash, true);
+                            theme::theme_picker(ui);
+                        });
+                    }
                     ui.add_space(22.0);
                     let wide = ui.available_width() >= RAIL_FROM;
                     if wide {
@@ -97,6 +110,66 @@ impl Gui {
                 });
             });
         });
+    }
+
+    /// The left rail: the brand, the section buttons with their counts, and the colour theme at the foot.
+    fn side(&mut self, ui: &mut egui::Ui, p: &theme::Palette, dash: &mut Dashboard) {
+        ui.horizontal(|ui| {
+            let (mark, _) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::hover());
+            ui.painter().rect_filled(mark, CornerRadius::same(9), p.accent);
+            dashboard_glyphs::brand_mark(ui.painter(), mark.shrink(7.0), p.on_accent);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(RichText::new("GS Engineering").strong().size(14.5));
+                ui.label(RichText::new("Toolbench").size(11.5).color(p.muted));
+            });
+        });
+        ui.add_space(22.0);
+        ui.label(RichText::new("WORKBENCHES").size(10.5).strong().color(p.muted));
+        ui.add_space(6.0);
+        self.section_buttons(ui, p, dash, false);
+        // The foot sits at the bottom of the rail: theme, circadian slider, then the hint.
+        ui.add_space((ui.available_height() - SIDE_FOOT_H).max(14.0));
+        theme::theme_picker(ui);
+        ui.add_space(6.0);
+        theme::circadian_control(ui, p);
+        ui.add_space(12.0);
+        ui.label(RichText::new("A click opens the workbench here and keeps the others open. Shift-click opens a new window.").size(11.5).color(p.muted));
+    }
+
+    /// "All" and one button per section, with how many workbenches match the filter box in each. A column in the rail
+    /// (`chips` false), a row of chips when the window is narrow.
+    fn section_buttons(&mut self, ui: &mut egui::Ui, p: &theme::Palette, dash: &mut Dashboard, chips: bool) {
+        let entries: Vec<(Option<Group>, &str)> = std::iter::once((None, "All")).chain(Group::ALL.into_iter().map(|g| (Some(g), g.name()))).collect();
+        for (group, name) in entries {
+            let selected = dash.group == group;
+            let count = dash.count(group);
+            let size = if chips { Vec2::new(0.0, 28.0) } else { Vec2::new(ui.available_width(), 34.0) };
+            let (rect, resp) = if chips {
+                let galley = ui.painter().layout_no_wrap(name.to_string(), FontId::proportional(13.5), p.text);
+                ui.allocate_exact_size(Vec2::new(galley.size().x + 78.0, size.y), Sense::click())
+            } else {
+                ui.allocate_exact_size(size, Sense::click())
+            };
+            self.targets.push((format!("Show {name}"), rect));
+            let painter = ui.painter_at(rect);
+            let hot = resp.hovered() || resp.has_focus();
+            if selected {
+                painter.rect_filled(rect, CornerRadius::same(if chips { 14 } else { 8 }), p.select);
+            } else if hot {
+                painter.rect_filled(rect, CornerRadius::same(if chips { 14 } else { 8 }), p.text.gamma_multiply(0.07));
+            }
+            let ink = if selected { p.text } else if hot { p.text } else { p.dim };
+            let icon = Rect::from_center_size(egui::pos2(rect.left() + 18.0, rect.center().y), Vec2::splat(16.0));
+            dashboard_glyphs::section_icon(&painter, icon, group, if selected { p.accent } else { ink });
+            let text = painter.layout_no_wrap(name.to_string(), FontId::proportional(13.5), ink);
+            painter.galley(egui::pos2(icon.right() + 10.0, rect.center().y - text.size().y / 2.0), text, ink);
+            let n = painter.layout_no_wrap(count.to_string(), FontId::monospace(11.5), p.muted);
+            painter.galley(egui::pos2(rect.right() - 10.0 - n.size().x, rect.center().y - n.size().y / 2.0), n, p.muted);
+            if resp.clicked() {
+                dash.group = group;
+            }
+        }
     }
 
     /// The tiles, one section per `Group` that has a workbench matching the filter.
@@ -317,7 +390,11 @@ mod tests {
         let mut recents = Recents::default();
         recents.record("lug", Some("/work/lug-a.json".into()), crate::gpu_viewer::dashboard::unix_now());
         let (mut gui, mut dash) = (Gui::new(), Dashboard::new(recents, None));
-        frames(&mut gui, &mut dash, Vec::new());
+        // 1400 px: the left rail takes 232, the tiles and the recent files need 900 of what is left.
+        for _ in 0..3 {
+            let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1400.0, 1700.0))), ..Default::default() };
+            gui.run_dashboard(raw, &mut dash).0.textures_delta.clear();
+        }
         // Sections draw in `Group::ALL` order, so the tiles' targets come out grouped.
         let order: Vec<_> = gui.targets.iter().filter_map(|(l, _)| WORKBENCHES.iter().find(|w| w.name == l)).map(|w| Group::ALL.iter().position(|g| *g == w.group).unwrap()).collect();
         assert_eq!(order.len(), WORKBENCHES.len());
@@ -326,7 +403,7 @@ mod tests {
         let tile = gui.targets.iter().find(|(l, _)| l == "Material Lookup").unwrap().1;
         assert!(wide.x > tile.right(), "beside the tiles when wide");
         // A narrow window stacks the rail under the tiles, and it still opens the file.
-        let narrow = |events| egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(760.0, 2400.0))), events, ..Default::default() };
+        let narrow = |events| egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700.0, 2400.0))), events, ..Default::default() };
         let mut run = |gui: &mut Gui, events| {
             let (mut full, out) = gui.run_dashboard(narrow(events), &mut dash);
             full.textures_delta.clear();
@@ -339,5 +416,38 @@ mod tests {
         let at = centre(&gui, "Recent lug-a.json");
         assert!(at.y > tile.bottom(), "below the tiles when narrow");
         assert_eq!(run(&mut gui, click(at)), [DashEvent::Open("lug", Some(PathBuf::from("/work/lug-a.json")))]);
+    }
+
+    #[test]
+    fn a_section_button_narrows_the_tiles_in_the_rail_and_as_chips_when_narrow() {
+        use crate::gpu_viewer::dashboard::{Group, WORKBENCHES};
+        let tiles = |gui: &Gui| -> Vec<&'static str> { gui.targets.iter().filter_map(|(l, _)| WORKBENCHES.iter().find(|w| w.name == l)).map(|w| w.name).collect() };
+        let (mut gui, mut dash) = (Gui::new(), Dashboard::new(Recents::default(), None));
+        frames(&mut gui, &mut dash, Vec::new());
+        assert_eq!(tiles(&gui).len(), WORKBENCHES.len());
+        let rail = centre(&gui, "Show Documents & data");
+        assert!(rail.x < 232.0, "the buttons are in the left rail at 1100 px");
+        frames(&mut gui, &mut dash, click(rail));
+        assert_eq!(dash.group, Some(Group::Data));
+        assert_eq!(tiles(&gui), ["Search", "Material Lookup"]);
+        // The same buttons as chips above the tiles in a narrow window.
+        let narrow = |events| egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700.0, 1700.0))), events, ..Default::default() };
+        let run = |gui: &mut Gui, dash: &mut Dashboard, events| {
+            let (mut full, out) = gui.run_dashboard(narrow(events), dash);
+            full.textures_delta.clear();
+            out
+        };
+        for _ in 0..2 {
+            run(&mut gui, &mut dash, Vec::new());
+        }
+        let chip = centre(&gui, "Show Structures & simulation");
+        assert!(chip.x > 232.0 || chip.y < 400.0, "a chip, not a rail button");
+        run(&mut gui, &mut dash, click(chip));
+        run(&mut gui, &mut dash, Vec::new());
+        assert_eq!(dash.group, Some(Group::Structures));
+        assert_eq!(tiles(&gui), ["Pressure Vessel", "Lug Analysis", "FEA Workbench", "Frame and Truss"]);
+        let all = centre(&gui, "Show All");
+        run(&mut gui, &mut dash, click(all));
+        assert_eq!(dash.group, None);
     }
 }

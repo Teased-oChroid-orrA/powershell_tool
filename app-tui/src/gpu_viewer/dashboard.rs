@@ -149,6 +149,8 @@ pub fn unix_now() -> u64 {
 pub struct Dashboard {
     pub recents: Recents,
     pub query: String,
+    /// Only this section is listed (`None`: all of them).
+    pub group: Option<Group>,
     /// The outcome of the last launch (an error says why nothing opened).
     pub message: Option<String>,
     file: Option<PathBuf>,
@@ -156,11 +158,16 @@ pub struct Dashboard {
 
 impl Dashboard {
     pub fn new(recents: Recents, file: Option<PathBuf>) -> Self {
-        Self { recents, query: String::new(), message: None, file }
+        Self { recents, query: String::new(), group: None, message: None, file }
     }
-    /// The workbenches that match the search box.
+    /// The workbenches that match the search box and the chosen section.
     pub fn visible(&self) -> Vec<&'static Workbench> {
-        WORKBENCHES.iter().filter(|w| w.matches(&self.query)).collect()
+        WORKBENCHES.iter().filter(|w| w.matches(&self.query) && self.group.is_none_or(|g| w.group == g)).collect()
+    }
+    /// How many workbenches match the search box in `group` (`None`: in all), whatever section is chosen: the numbers
+    /// beside the section buttons.
+    pub fn count(&self, group: Option<Group>) -> usize {
+        WORKBENCHES.iter().filter(|w| w.matches(&self.query) && group.is_none_or(|g| w.group == g)).count()
     }
     /// Start `workbench` in its own window (on `file` when given, else its default), record it, and keep the list on
     /// disk. `false` when nothing started (`message` says why).
@@ -323,5 +330,18 @@ mod tests {
         assert_eq!(ago(10_000, 100), "2 h ago");
         assert_eq!(ago(300_000, 100), "3 d ago");
         assert_eq!(ago(5, 100), "just now", "a clock that went backwards");
+    }
+
+    #[test]
+    fn a_chosen_section_narrows_the_list_and_the_counts_follow_the_search_box() {
+        let mut d = Dashboard::new(Recents::default(), None);
+        assert_eq!(d.visible().len(), WORKBENCHES.len());
+        d.group = Some(Group::Data);
+        let names: Vec<_> = d.visible().iter().map(|w| w.name).collect();
+        assert_eq!(names, ["Search", "Material Lookup"]);
+        assert_eq!(d.count(None), WORKBENCHES.len(), "the buttons count every section, not only the chosen one");
+        d.query = "bushing".into();
+        assert!(d.visible().is_empty(), "a search no workbench of the section matches");
+        assert_eq!((d.count(None), d.count(Some(Group::Joints)), d.count(Some(Group::Data))), (3, 3, 0));
     }
 }

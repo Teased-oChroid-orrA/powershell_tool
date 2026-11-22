@@ -47,6 +47,11 @@ The first cut's gaps were closed:
   opens (`nav::room_for_workbench`); it never shrinks a window the person sized.
 - **`pop_out`** is tested: `Dashboard::launch` records instead of spawning under `cfg(test)` (`dashboard::SPAWNED`).
 
+- **Dashboard left rail** (owner review of the mockup): brand, section filter buttons with counts (`Dashboard::group`),
+  theme at the foot; chips above the tiles below 760 px.
+- **Way back from "Send joint to FEM"**: a Model > Send group (To Bushing / To Eccentric) in the FEA workbench for a file linked
+  to that case (`SolidSession::linked_sends`); the Bushing window's status says where it is. The Tools menu entries stay.
+
 ## Known gaps
 
 - A tab asked for by a hand-off while its case is already open is not brought forward (the open window updates itself

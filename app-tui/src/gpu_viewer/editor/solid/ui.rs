@@ -418,13 +418,19 @@ impl Authoring for SolidSession {
         let act = |label: &str, shortcut: &str, row: FieldRow| entry(label, shortcut, SolidAction::Activate(row)).when(self.row_available(row));
         let imported = matches!(self.problem.geometry, Geometry::Imported { .. });
         // NX / SolidWorks layout: Model builds the part, Mesh discretizes it, Simulation sets up and runs the study.
-        // File, Undo/Redo, Save and Send-to live in the menus and shortcuts only, never repeated in the ribbon.
+        // File, Undo/Redo and Save live in the menus and shortcuts only, never repeated in the ribbon. Send-to is in the
+        // Tools menu and, for a file linked to a Bushing or Eccentric case, also here (the way back from "Send joint to FEM").
         let part = vec![act("Geometry source", "", Source), act("Import mesh", "", ImportPath).when(if imported { Ok(()) } else { Err("switch the geometry source to Imported first".to_string()) }), entry("Convert to history", "", SolidAction::Sketch(SketchAction::Convert)).when(self.convert_availability()), entry("Material", "", SolidAction::OpenCard(CardForm::Materials)), entry("Units", "", SolidAction::OpenCard(CardForm::Units))];
+        let mut model = RibbonTab::new("Model")
+            .group("Sketch", self.sketch_start_entries())
+            .group("Features", [self.solid_feature_entries(), self.part_op_entries()].concat())
+            .group("Part", part);
+        let sends = self.linked_sends();
+        if !sends.is_empty() {
+            model = model.group("Send", sends);
+        }
         vec![
-            RibbonTab::new("Model")
-                .group("Sketch", self.sketch_start_entries())
-                .group("Features", [self.solid_feature_entries(), self.part_op_entries()].concat())
-                .group("Part", part),
+            model,
             RibbonTab::new("Mesh").group(
                 "Mesh",
                 vec![act("Element type", "", Element), act("Element size", "", MeshSize), act("Adaptive passes", "", AdaptPasses), act("Target error", "", TargetError), entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability())],
@@ -536,5 +542,24 @@ impl SolidSession {
             return Vec::new();
         };
         wrap(&text, 38).into_iter().map(|l| DockItem::text(l, Tone::Dim)).collect()
+    }
+}
+
+impl SolidSession {
+    /// Ribbon buttons that send this model back to the case it came from: one per workbench whose case this file is linked
+    /// to (`handoff::Link`, written by "Send joint to FEM"). Empty for a file that was never sent from a case.
+    fn linked_sends(&self) -> Vec<Entry> {
+        use crate::gpu_viewer::EditorKind;
+        if !crate::gpu_viewer::editor::handoff::Link::exists(&self.path) {
+            return Vec::new();
+        }
+        let link = crate::gpu_viewer::editor::handoff::Link::load(&self.path);
+        let mut out = Vec::new();
+        for (kind, label, linked) in [(EditorKind::Bushing, "To Bushing", link.bushing.is_some()), (EditorKind::Eccentric, "To Eccentric", link.eccentric.is_some())] {
+            if linked {
+                out.push(entry(label, "", SolidAction::SendTo(kind)).when(self.send_availability(kind)));
+            }
+        }
+        out
     }
 }

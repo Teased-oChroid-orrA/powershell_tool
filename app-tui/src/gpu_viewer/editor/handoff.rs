@@ -336,7 +336,7 @@ pub fn open_in_fea(case: &Path, kind: EditorKind, problem: &Problem) -> Result<S
     link.set(&fea, kind, case);
     link.save(&fea)?;
     if is_open(&fea) {
-        return Ok(format!("{} is already open in the FEA workbench; its model is not replaced. Use Send to the workbench there to bring its changes back.", fea.display()));
+        return Ok(format!("{} is already open in the FEA workbench; its model is not replaced. Use Model > Send (or Tools > Send to the workbench) there to bring its changes back.", fea.display()));
     }
     let json = problem.to_json()?;
     let mut note = String::new();
@@ -347,7 +347,8 @@ pub fn open_in_fea(case: &Path, kind: EditorKind, problem: &Problem) -> Result<S
     }
     write(&fea, &json)?;
     launch(EditorKind::Solid, &fea)?;
-    Ok(format!("Opened {} in the FEA workbench.{note} Edit the bushing there, then Send to the workbench.", fea.display()))
+    let back = if kind == EditorKind::Eccentric { "To Eccentric" } else { "To Bushing" };
+    Ok(format!("Opened {} in the FEA workbench.{note} Edit the joint there, then bring it back with Model > Send > {back} (or Tools > Send to the workbench).", fea.display()))
 }
 
 /// Whether the FEA model `p` can go to the workbench `kind` (what it would refuse, without sending).

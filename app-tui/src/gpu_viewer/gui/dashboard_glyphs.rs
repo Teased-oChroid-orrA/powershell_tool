@@ -203,6 +203,47 @@ pub(super) fn paint(painter: &Painter, rect: Rect, id: &str, p: &Palette, surfac
     true
 }
 
+/// The small icon of a dashboard section (`None`: all workbenches) in a 24-unit design space, one colour.
+pub(super) fn section_icon(painter: &Painter, rect: Rect, group: Option<crate::gpu_viewer::dashboard::Group>, color: Color32) {
+    use crate::gpu_viewer::dashboard::Group;
+    let s = rect.width() / 24.0;
+    let st = Stroke::new((1.7 * s).max(1.2), color);
+    let pt = |x: f32, y: f32| rect.min + egui::vec2(x, y) * s;
+    let line = |pts: &[(f32, f32)]| painter.add(Shape::line(pts.iter().map(|&(x, y)| pt(x, y)).collect(), st));
+    match group {
+        None => {
+            for (x, y) in [(4.0, 4.0), (13.5, 4.0), (4.0, 13.5), (13.5, 13.5)] {
+                painter.rect_stroke(Rect::from_min_size(pt(x, y), egui::vec2(6.5, 6.5) * s), egui::CornerRadius::same((1.5 * s) as u8), st, egui::StrokeKind::Middle);
+            }
+        }
+        Some(Group::Joints) => {
+            painter.circle_stroke(pt(12.0, 12.0), 7.0 * s, st);
+            painter.circle_stroke(pt(12.0, 12.0), 2.6 * s, st);
+        }
+        Some(Group::Structures) => {
+            line(&[(3.0, 19.0), (21.0, 19.0)]);
+            line(&[(5.0, 19.0), (10.0, 7.0), (14.0, 19.0)]);
+            line(&[(10.0, 7.0), (19.0, 7.0)]);
+            line(&[(14.0, 19.0), (19.0, 7.0)]);
+        }
+        Some(Group::Data) => {
+            line(&[(6.0, 3.0), (15.0, 3.0), (19.0, 7.0), (19.0, 21.0), (6.0, 21.0), (6.0, 3.0)]);
+            line(&[(15.0, 3.0), (15.0, 7.0), (19.0, 7.0)]);
+            line(&[(9.0, 12.0), (16.0, 12.0)]);
+            line(&[(9.0, 16.0), (16.0, 16.0)]);
+        }
+    }
+}
+
+/// The Toolbench mark: a hexagon with a ring in it, on `color` (24-unit design space).
+pub(super) fn brand_mark(painter: &Painter, rect: Rect, color: Color32) {
+    let s = rect.width() / 24.0;
+    let pt = |x: f32, y: f32| rect.min + egui::vec2(x, y) * s;
+    let hex = [(12.0, 2.5), (20.2, 7.25), (20.2, 16.75), (12.0, 21.5), (3.8, 16.75), (3.8, 7.25)];
+    painter.add(Shape::closed_line(hex.iter().map(|&(x, y)| pt(x, y)).collect(), Stroke::new((1.8 * s).max(1.2), color)));
+    painter.circle_stroke(pt(12.0, 12.0), 3.3 * s, Stroke::new((1.8 * s).max(1.2), color));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
