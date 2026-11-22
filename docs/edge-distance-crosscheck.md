@@ -146,13 +146,11 @@ One input, one output for every workbench with a hole near a free edge: `Estimat
 
 **Case (a), a pin or fastener bearing toward the edge**, is what the shared estimate does today (`BoreFit::Pin`, `LoadCase::PinTowardEdge`). The Fastener Hole workbench has no load or material inputs and no plate thickness for a regular hole, so wiring it needs: an edge-strength section (housing material, plate thickness, pin load, pin-hole friction), the estimate run on a worker with the same stale / cancel behaviour as the Bushing window, and the shared matrix tables (`gpu_viewer/editor/bushing/edge_matrix.rs` to move to a shared place). Fastener Hole has no legacy edge check, so its matrix is **advisory** (`EdgeMatrix::is_advisory`): no row is governing, and the window says so.
 
-**Case (b), a plate with a hole near an edge under remote tension**, is not supported, and the models differ in whether they could be:
-* *Direction.* A uniform remote stress perpendicular to a free edge cannot exist in a half plane (the edge is traction free), so a plate load can only be tension **parallel to the edge** (across the ligament between hole and edge) or a bearing-type load. The half-plane stress superposition fits bore tractions only; a remote term would have to be added and checked.
-* *Plane-stress FE* (`kfem.rs`): has far and top faces, so a remote traction is possible on the same O-grid; its failure rules (`field.rs`: shear-out, splitting, first yield) are defined for a pin load and would need replacing by net-section and hole-edge rules.
-* *Contact FE*: built around a pin; with no pin there is no contact, so it would reduce to an elastic-plastic plate with a hole. A different model, unvalidated for this use.
-* *Tabulated allowables*: pin bearing and shear-out only; not applicable.
-
-**Open question for the owner** (needed before case (b) is built): (1) is the plate load tension parallel to the free edge only? (2) which failure criterion governs: net-section strength across the ligament (`Ftu`), first yield at the hole edge (`Kt` times the net stress against `Sy`), or both reported? Until it is answered, a plate-tension case would show every model as unavailable, never a number.
+**Case (b), a plate with a hole near an edge under an axial plate load** (owner decisions, 2026-11-22):
+* **Geometry and load.** A finite plate or strip: inputs are plate width, edge distance, hole size, thickness, material and the **load angle (any angle)**.
+* **Two failure criteria, each its own labelled row of the matrix:** net-section strength across the ligament against `Ftu`, and first yield at the hole edge. A model that cannot compute one criterion shows that cell as *unavailable*, never a number.
+* **Which models can carry it.** The half-plane stress superposition (`analytic.rs`: one free edge, no far field) and the tabulated allowables (pin bearing and shear-out only) **cannot represent a finite strip at an angle**; they are shown as unavailable. The candidates are the plane-stress FE (`kfem.rs`, the same O-grid on `fea-core` with far and top faces, so a remote traction is possible) and the contact FE (an elastic-plastic plate with a hole when there is no pin: a different use of it, unvalidated). What each is checked against is stated when it is built; the planned limiting check is the open-hole finite-width stress-concentration factor `Kt(d/W)` as the width grows and the edge distance goes to infinity (`Kt` to 3 for a hole in a wide plate, tension across it).
+* **Labels.** Fastener Hole has no legacy edge check: its matrix is advisory, no row governing.
 
 ## UI: advisory, tooltips, material data
 
