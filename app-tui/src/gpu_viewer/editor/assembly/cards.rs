@@ -41,7 +41,7 @@ fn group(a: &AssemblyAdvice) -> Group {
         AssemblyAdvice::Fastener { .. } => Group::Sites,
         AssemblyAdvice::Tie { .. } => Group::Interfaces,
         AssemblyAdvice::Unmated { .. } => Group::Unmated,
-        AssemblyAdvice::Unresolved { .. } => Group::Check,
+        AssemblyAdvice::NearClosed { .. } | AssemblyAdvice::Unresolved { .. } => Group::Check,
     }
 }
 
@@ -51,6 +51,7 @@ impl AssemblySession {
         match &self.loaded {
             Some(l) => {
                 let unmated = if l.unmated > 0 { format!(", {}", plural(l.unmated, "hole without a mate", "holes without a mate")) } else { String::new() };
+                let unmated = if l.near_closed > 0 { format!("{unmated}, {}", plural(l.near_closed, "near-closed bore", "near-closed bores")) } else { unmated };
                 format!(
                     "{}, {}, {}{unmated}, detected in {:.2} s",
                     plural(l.mesh.bodies(), "body", "bodies"),
@@ -115,6 +116,9 @@ impl AssemblySession {
         if l.unmated > 0 {
             items.push(DockItem::field("Holes without a mate", l.unmated.to_string(), Tone::Normal, None, false));
         }
+        if l.near_closed > 0 {
+            items.push(DockItem::field("Near-closed bores", l.near_closed.to_string(), Tone::Warn, None, false));
+        }
         if l.unresolved > 0 {
             items.push(DockItem::field("To check", l.unresolved.to_string(), Tone::Warn, None, false));
         }
@@ -136,7 +140,7 @@ impl AssemblySession {
             out.push(TreeNode::new(BODY_ID + b as u32, 2, 'B', format!("Body {}", b + 1)).selected(self.selected == Some(Sel::Body(b))).on_click(sel(Sel::Body(b))));
         }
         out.push(TreeNode::new(3, 1, '+', "Detected").folder().on_click(clear.clone()));
-        for (k, (glyph, text)) in [('o', format!("Holes ({})", l.holes)), ('H', format!("Fastener sites ({})", l.sites)), ('=', format!("Interfaces ({})", l.interfaces)), ('o', format!("Holes without a mate ({})", l.unmated))].into_iter().enumerate() {
+        for (k, (glyph, text)) in [('o', format!("Holes ({})", l.holes)), ('H', format!("Fastener sites ({})", l.sites)), ('=', format!("Interfaces ({})", l.interfaces)), ('o', format!("Holes without a mate ({})", l.unmated)), ('!', format!("Near-closed bores ({})", l.near_closed))].into_iter().enumerate() {
             out.push(TreeNode::new(100 + k as u32, 2, glyph, text).on_click(clear.clone()));
         }
         out.push(TreeNode::new(4, 1, '+', format!("Advice ({})", l.advice.len())).folder().on_click(clear));

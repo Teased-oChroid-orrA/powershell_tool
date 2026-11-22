@@ -34,9 +34,17 @@ def same_line(p1, z1, p2, z2):
     return abs(dot(z1, z2)) >= ANG and on_axis(p1, z1, p2, z2)
 
 
+def near_summary(near):
+    """Partial bores (half a turn or more) by the turn they cover: where the near-closed threshold falls."""
+    edges = [0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]
+    bins = [sum(1 for n in near if lo <= n['covered'] < hi) for lo, hi in zip(edges, edges[1:])]
+    cand = [n for n in near if n['candidate']]
+    return 'partial bores by covered turn ' + ', '.join(f'[{lo},{hi}): {b}' for (lo, hi), b in zip(zip(edges, edges[1:]), bins)) + f'; near-closed candidates {len(cand)}'
+
+
 def main():
     work, exe = sys.argv[1], sys.argv[2]
-    report = {'assemblies': 0, 'unread_parts': 0, 'bolted': [], 'times': [], 'hole_total': 0, 'site_total': 0}
+    report = {'assemblies': 0, 'unread_parts': 0, 'bolted': [], 'times': [], 'hole_total': 0, 'site_total': 0, 'near': []}
     for a in json.load(open(work + '/manifest.json')):
         r = subprocess.run([exe] + a['files'], capture_output=True, text=True)
         try:
@@ -52,6 +60,7 @@ def main():
         report['times'].append(res['seconds'])
         report['hole_total'] += len(res['holes'])
         report['site_total'] += len(res['sites'])
+        report['near'] += [dict(n, asm=a['id']) for n in res.get('near', [])]
         cyl = {}
         for c in res['cyl']:
             cyl.setdefault(c['body'], []).append(c)
@@ -112,6 +121,7 @@ def main():
     full = [b for b in bj if b['bores_full_turn']]
     print(f"labelled bolted joints (shank mated to two bored bodies): {len(bj)}; both bores a full turn: {len(full)}; site found among those: {sum(b['site_found'] for b in full)} (bridged across a gap: {sum(1 for b in full if b['bridged_by'])})")
     print(f"size table matched on found sites: {sum(1 for b in full if b['size'])}; diameter mismatch reported: {sum(1 for b in full if b['mismatch'])}")
+    print(near_summary(report['near']))
     print('max detect seconds', max(report['times']) if report['times'] else None)
 
 

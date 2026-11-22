@@ -4,7 +4,7 @@
 //! a reason string with the measured numbers. Nothing here edits a `Problem`: a `Problem` still holds one body, so there is nothing
 //! to apply a tie or a fastener to until the multi-body representation (and the solver exposure of epic Phase C) exists. Body numbers
 //! in the text are 1-based (the order of the STEP product structure); `FaceKey::body` is the 0-based index.
-use solid_kernel::features::{size_matches, FaceKey, FastenerSite, FitClass, Features, Hole, Interface, SizeMatch};
+use solid_kernel::features::{size_matches, FaceKey, FastenerSite, FitClass, Features, Hole, Interface, NearClosedBore, SizeMatch};
 /// Re-exported so a front end names a hole's closure without a direct `solid-kernel` dependency.
 pub use solid_kernel::features::Closure;
 
@@ -18,6 +18,10 @@ pub enum AssemblyAdvice {
     /// load. `size` names the standard sizes the diameter matches, "M5 or M6" when more than one does (5.0 mm is the M5 nominal and the M6 tap drill; the reason gives each match with its fit); `closure` is never
     /// `Enclosed` (an internal cavity is not a hole to bolt through).
     Unmated { body: usize, faces: Vec<FaceKey>, diameter: f64, closure: Closure, size: String, reason: String },
+    /// A bore that covers nearly, not quite, a full turn: not a hole (the full-turn rule stands) but a candidate for a modelling gap.
+    /// `covered` is the fraction of a turn; `gap_point` is on the bore wall in the middle of the widest gap (millimetres, in the
+    /// assembly's frame) and `gap_width` the arc length of that gap at the wall. The advice repairs nothing.
+    NearClosed { body: usize, faces: Vec<FaceKey>, diameter: f64, covered: f64, gap_width: f64, gap_point: [f64; 3], reason: String },
     /// Faces that looked like an interface but whose common area could not be computed: check them by hand.
     Unresolved { a: FaceKey, b: FaceKey, reason: String },
 }
@@ -34,6 +38,7 @@ impl AssemblyAdvice {
                 }
             }
             AssemblyAdvice::Unmated { body, diameter, size, .. } => format!("Body {} hole \u{d8}{diameter:.3} mm ({size}) has no mate", body + 1),
+            AssemblyAdvice::NearClosed { body, diameter, covered, .. } => format!("Body {} bore \u{d8}{diameter:.3} mm is {:.1} % closed: possible modelling gap", body + 1, covered * 100.0),
             AssemblyAdvice::Unresolved { a, b, .. } => format!("Check body {} face {} against body {} face {}", a.body + 1, a.face, b.body + 1, b.face),
         }
     }
@@ -49,19 +54,20 @@ impl AssemblyAdvice {
                 format!("{d} mm \u{b7} {span:.2} mm")
             }
             AssemblyAdvice::Unmated { diameter, closure, .. } => format!("\u{d8}{diameter:.3} mm \u{b7} {}", closure_word(*closure)),
+            AssemblyAdvice::NearClosed { diameter, covered, gap_width, .. } => format!("\u{d8}{diameter:.3} mm \u{b7} {:.1} % of a turn \u{b7} {gap_width:.3} mm gap", covered * 100.0),
             AssemblyAdvice::Unresolved { .. } => "common area not computed".to_string(),
         }
     }
     pub fn reason(&self) -> &str {
         match self {
-            AssemblyAdvice::Tie { reason, .. } | AssemblyAdvice::Fastener { reason, .. } | AssemblyAdvice::Unmated { reason, .. } | AssemblyAdvice::Unresolved { reason, .. } => reason,
+            AssemblyAdvice::Tie { reason, .. } | AssemblyAdvice::Fastener { reason, .. } | AssemblyAdvice::Unmated { reason, .. } | AssemblyAdvice::NearClosed { reason, .. } | AssemblyAdvice::Unresolved { reason, .. } => reason,
         }
     }
     /// The faces to highlight when the item is selected.
     pub fn faces(&self) -> Vec<FaceKey> {
         match self {
             AssemblyAdvice::Tie { a, b, .. } | AssemblyAdvice::Unresolved { a, b, .. } => vec![*a, *b],
-            AssemblyAdvice::Fastener { faces, .. } | AssemblyAdvice::Unmated { faces, .. } => faces.clone(),
+            AssemblyAdvice::Fastener { faces, .. } | AssemblyAdvice::Unmated { faces, .. } | AssemblyAdvice::NearClosed { faces, .. } => faces.clone(),
         }
     }
 }
@@ -208,14 +214,33 @@ fn unmated(f: &Features) -> Vec<AssemblyAdvice> {
         .collect()
 }
 
-/// The advice for detected features, in the detector's order: interfaces, fastener sites, holes without a mate, then unresolved pairs.
+/// A near-closed bore as advice: where the gap is, how wide, and that it is a candidate to look at, not a hole.
+fn near_closed(n: &NearClosedBore) -> AssemblyAdvice {
+    let h = &n.hole;
+    let p = n.gap_point;
+    let reason = format!(
+        "Body {} has a \u{d8}{:.3} mm bore {:.2} mm deep whose faces cover {:.1} % of a turn: it is not a hole, because only a bore that wraps the full turn is one. The missing {:.3} mm of wall (arc length) is at ({:.2}, {:.2}, {:.2}) mm, halfway along the bore. It may be a designed slit (a split collar or clamp) or a gap left in the model: if it is a gap, close it in the CAD model and open the file again, and the bore counts as a hole and can pair into a fastener site.",
+        h.body + 1,
+        h.diameter(),
+        h.depth(),
+        n.covered * 100.0,
+        n.gap_width,
+        p[0],
+        p[1],
+        p[2]
+    );
+    AssemblyAdvice::NearClosed { body: h.body, faces: h.faces.iter().map(|&face| FaceKey { body: h.body, face }).collect(), diameter: h.diameter(), covered: n.covered, gap_width: n.gap_width, gap_point: p, reason }
+}
+
+/// The advice for detected features, in the detector's order: interfaces, fastener sites, holes without a mate, near-closed bores,
+/// then unresolved pairs.
 pub fn recommend(f: &Features) -> Vec<AssemblyAdvice> {
     let unresolved = f.unresolved.iter().map(|(a, b)| AssemblyAdvice::Unresolved {
         a: *a,
         b: *b,
         reason: format!("Body {} face {} and body {} face {} look like a contact (anti-parallel, within the gap tolerance) but the area they share could not be computed.", a.body + 1, a.face, b.body + 1, b.face),
     });
-    f.interfaces.iter().map(tie).chain(f.sites.iter().map(|s| fastener(f, s))).chain(unmated(f)).chain(unresolved).collect()
+    f.interfaces.iter().map(tie).chain(f.sites.iter().map(|s| fastener(f, s))).chain(unmated(f)).chain(f.near_closed.iter().map(near_closed)).chain(unresolved).collect()
 }
 
 /// Read every body of a STEP assembly the way the solid editor does (strict, then the tolerant foreign-CAD read) and detect its

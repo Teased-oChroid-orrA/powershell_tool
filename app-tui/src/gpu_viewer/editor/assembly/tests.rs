@@ -296,3 +296,48 @@ fn a_step_with_no_bodies_is_a_status_not_a_blank_window_or_a_panic() {
     assert!(s.loaded().is_none() && s.status().starts_with("Cannot open "), "{}", s.status());
     assert!(s.scene().is_ok(), "the empty window still draws");
 }
+
+/// The plates with one near-closed bore added to the advice (the fixture has none: its bores are full turns).
+fn plates_with_a_near_closed_bore() -> AssemblySession {
+    let mut s = plates();
+    let key = s.loaded().unwrap().mesh.face[0];
+    let l = s.loaded.as_mut().unwrap();
+    l.advice.push(AssemblyAdvice::NearClosed {
+        body: 0,
+        faces: vec![key],
+        diameter: 3.675,
+        covered: 0.9689,
+        gap_width: 0.359,
+        gap_point: [1.0, 2.0, 3.0],
+        reason: "Body 1 has a \u{d8}3.675 mm bore. It is not a hole. The missing 0.359 mm of wall is at (1.00, 2.00, 3.00) mm.".into(),
+    });
+    l.near_closed = 1;
+    s
+}
+
+#[test]
+fn a_near_closed_bore_is_listed_under_check_with_its_numbers_counted_and_its_faces_lit() {
+    let mut s = plates_with_a_near_closed_bore();
+    let all = texts(&s.inspector());
+    let item = s.loaded().unwrap().advice[2].clone();
+    // under the Check group (a warning), after the groups that are not warnings, with the label and the dim numbers
+    assert!(all.contains(item.label().as_str()) && all.contains(item.detail().as_str()), "{all}");
+    let advice_card = s.inspector().into_iter().find(|c| c.id == "assembly-advice").unwrap();
+    let headings: Vec<String> = advice_card.items.iter().filter_map(|i| if let crate::gpu_viewer::ui::DockItem::Heading(t) = i { Some(t.clone()) } else { None }).collect();
+    assert_eq!(headings, vec!["Fastener sites", "Interfaces", "Check"], "the item is under Check, the warning group, after the others");
+    // the summary card and the status bar count it, and the tree has the Detected row and the item
+    assert!(all.contains("Near-closed bores"), "{all}");
+    assert!(s.status().contains("1 near-closed bore"), "{}", s.status());
+    let labels: Vec<String> = s.tree().iter().map(|n| n.label.clone()).collect();
+    assert!(labels.iter().any(|l| l == "Near-closed bores (1)") && labels.iter().any(|l| *l == item.label()), "{labels:?}");
+    // selecting it lights only the bore's faces and the Why card says where the gap is
+    act(&mut s, AssemblyAct::Select(Sel::Item(2)));
+    assert_eq!(s.selected_faces(), item.faces());
+    let why = s.inspector().into_iter().find(|c| c.id == "assembly-why").unwrap();
+    assert_eq!(why.items.len(), 3, "one line per sentence");
+    assert!(why.items.iter().filter_map(|i| i.plain_text()).any(|t| t.contains("(1.00, 2.00, 3.00)")));
+    assert!(s.scene().is_ok());
+    // the plates alone have none
+    assert!(!texts(&plates().inspector()).contains("Near-closed bores"));
+    assert!(!plates().status().contains("near-closed"));
+}

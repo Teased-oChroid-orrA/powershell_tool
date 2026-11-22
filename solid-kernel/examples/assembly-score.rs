@@ -1,11 +1,12 @@
 //! Scoring harness for the AutoMate check (`scripts/automate/README.md`, `docs/epic-assembly-feature-advice.md`): the STEP files
 //! given are the placed parts of ONE assembly (each already in the root frame, one body per file, in occurrence order). Prints one
 //! JSON object with what `features::detect` finds, in millimetres: every hole, every cylinder face (either side), the fastener
-//! sites and the faces that are not analytic. Parts that cannot be read are listed under `unread` and left out of the detection
+//! sites, the partial bores (half a turn or more, with the turn each covers; `candidate` marks the near-closed ones at or above
+//! `NEAR_CLOSED_MIN_TURN`) and the faces that are not analytic. Parts that cannot be read are listed under `unread` and left out of the detection
 //! (`occ` maps each detected body index to the argument position, so the caller can match mates to bodies).
 //! `cargo run --release -p solid-kernel --example assembly-score -- OCC0.stp OCC1.stp ...`
 use solid_kernel::analytic_step::{AnalyticModel, Options};
-use solid_kernel::features::{detect, FaceGeometry, Side};
+use solid_kernel::features::{detect, find_near_closed, FaceGeometry, Side, NEAR_CLOSED_MIN_TURN};
 use solid_kernel::step::{inventory, Limits};
 
 fn v(p: [f64; 3]) -> String {
@@ -78,6 +79,24 @@ fn main() {
             )
         })
         .collect();
+    let near: Vec<String> = find_near_closed(&models, &f.faces, 0.5)
+        .iter()
+        .map(|n| {
+            format!(
+                "{{\"body\":{},\"p\":{},\"a\":{},\"d\":{:.6},\"covered\":{:.6},\"gap_mm\":{:.6},\"gap_point\":{},\"range\":[{:.6},{:.6}],\"candidate\":{}}}",
+                occ[n.hole.body],
+                v(n.hole.axis_point),
+                v(n.hole.axis),
+                n.hole.diameter(),
+                n.covered,
+                n.gap_width,
+                v(n.gap_point),
+                n.hole.range[0],
+                n.hole.range[1],
+                n.covered >= NEAR_CLOSED_MIN_TURN
+            )
+        })
+        .collect();
     let sites: Vec<String> = f
         .sites
         .iter()
@@ -99,12 +118,13 @@ fn main() {
         })
         .collect();
     println!(
-        "{{\"occ\":{:?},\"unread\":[{}],\"seconds\":{seconds:.4},\"holes\":[{}],\"cyl\":[{}],\"sites\":[{}],\"interfaces\":{},\"unresolved\":{},\"other\":[{}]}}",
+        "{{\"occ\":{:?},\"unread\":[{}],\"seconds\":{seconds:.4},\"holes\":[{}],\"cyl\":[{}],\"sites\":[{}],\"near\":[{}],\"interfaces\":{},\"unresolved\":{},\"other\":[{}]}}",
         occ,
         unread.join(","),
         holes.join(","),
         cyl.join(","),
         sites.join(","),
+        near.join(","),
         f.interfaces.len(),
         f.unresolved.len(),
         other.join(",")

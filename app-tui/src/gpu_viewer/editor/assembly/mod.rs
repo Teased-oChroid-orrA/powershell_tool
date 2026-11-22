@@ -56,6 +56,8 @@ pub struct Loaded {
     /// Bolt-sized holes with no mate on another body (the `Unmated` advice items).
     pub unmated: usize,
     pub unresolved: usize,
+    /// Bores that cover nearly a full turn (the `NearClosed` advice items): not holes, a candidate modelling gap shown to the person.
+    pub near_closed: usize,
     /// Seconds to read, detect and mesh.
     pub seconds: f64,
 }
@@ -92,6 +94,7 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
         sites: features.sites.len(),
         interfaces: features.interfaces.len(),
         unresolved: features.unresolved.len(),
+        near_closed: features.near_closed.len(),
         mesh,
         seconds: started.elapsed().as_secs_f64(),
     })

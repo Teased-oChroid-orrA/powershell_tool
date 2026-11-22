@@ -467,11 +467,19 @@ fn find_end(hole: &Hole, mine: &[&ClassifiedFace], tol: f64, end: usize) -> Hole
     HoleEnd::Open
 }
 
-/// Group the concave cylinder faces of every body into holes, ordered by body, then lowest face id. A group of faces is a hole
-/// only if together they cover the full circle about the axis (within the angle the geometry tolerance subtends at the radius,
-/// twice: one per end of an arc): a slot end or an inside fillet is a concave cylinder that is not a hole and stays visible in `faces`.
-pub fn find_holes(models: &[AnalyticModel], faces: &[ClassifiedFace]) -> Vec<Hole> {
-    let mut holes = Vec::new();
+/// A group of concave cylinder faces that are one bore (coaxial, one radius, touching axial ranges) and the angle they cover together.
+struct BoreGroup {
+    hole: Hole,
+    /// Radians about `hole.axis` covered by the union of the faces' angular intervals, at most a full turn.
+    covered: f64,
+    /// The merged intervals that make `covered`, in `[0, 2 pi]`, measured about `hole.axis` in [`stable_basis`]'s frame.
+    arcs: Vec<[f64; 2]>,
+    full: bool,
+}
+
+/// Every group of concave cylinder faces of every body, whole turn or not, ordered by body, then lowest face id.
+fn bore_groups(models: &[AnalyticModel], faces: &[ClassifiedFace]) -> Vec<BoreGroup> {
+    let mut out = Vec::new();
     for (body, model) in models.iter().enumerate() {
         let tol = model.geometry_tolerance_mm();
         let mine: Vec<&ClassifiedFace> = faces.iter().filter(|f| f.key.body == body).collect();
@@ -512,23 +520,19 @@ pub fn find_holes(models: &[AnalyticModel], faces: &[ClassifiedFace]) -> Vec<Hol
             let r = root(&mut group, i);
             members.entry(r).or_default().push(i);
         }
-        let mut made: Vec<Hole> = members
+        let mut made: Vec<BoreGroup> = members
             .values()
-            // a bore wraps the full circle: a slot end, a counter-sunk half or an inside fillet is a concave cylinder but no hole
-            .filter(|m| {
+            .map(|m| {
+                let first = &cyls[m[0]];
                 // the angles the group's faces cover together, measured about the first face's axis (a face whose axis points the
                 // other way measures them mirrored)
-                let first = &cyls[m[0]];
                 let mut all = Vec::new();
                 for k in m.iter() {
                     let flip = dot(cyls[*k].2, first.2) < 0.0;
                     all.extend(cyls[*k].5.iter().map(|a| if flip { [TAU - a[1], TAU - a[0]] } else { *a }));
                 }
-                let covered: f64 = merge_arcs(all, tol / first.3).iter().map(|a| a[1] - a[0]).sum();
-                covered >= TAU - 2.0 * tol / first.3
-            })
-            .map(|m| {
-                let first = &cyls[m[0]];
+                let arcs = merge_arcs(all, tol / first.3);
+                let covered: f64 = arcs.iter().map(|a| a[1] - a[0]).sum();
                 let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
                 for &k in m {
                     let e = ends_in(first.1, first.2, cyls[k].1, cyls[k].2, cyls[k].4, [cyls[k].3; 2]);
@@ -537,17 +541,70 @@ pub fn find_holes(models: &[AnalyticModel], faces: &[ClassifiedFace]) -> Vec<Hol
                 }
                 let mut ids: Vec<u64> = m.iter().map(|k| cyls[*k].0).collect();
                 ids.sort_unstable();
-                Hole { body, faces: ids, axis_point: first.1, axis: first.2, radius: first.3, range: [lo, hi], ends: [HoleEnd::Open; 2] }
+                let hole = Hole { body, faces: ids, axis_point: first.1, axis: first.2, radius: first.3, range: [lo, hi], ends: [HoleEnd::Open; 2] };
+                // a bore wraps the full circle: a slot end, a counter-sunk half or an inside fillet is a concave cylinder but no hole
+                BoreGroup { hole, covered, arcs, full: covered >= TAU - 2.0 * tol / first.3 }
             })
             .collect();
-        made.sort_by_key(|h| h.faces[0]);
-        for h in &mut made {
-            let snapshot = h.clone();
-            h.ends = [find_end(&snapshot, &mine, tol, 0), find_end(&snapshot, &mine, tol, 1)];
+        made.sort_by_key(|g| g.hole.faces[0]);
+        for g in &mut made {
+            let snapshot = g.hole.clone();
+            g.hole.ends = [find_end(&snapshot, &mine, tol, 0), find_end(&snapshot, &mine, tol, 1)];
         }
-        holes.extend(made);
+        out.extend(made);
     }
-    holes
+    out
+}
+
+/// Group the concave cylinder faces of every body into holes, ordered by body, then lowest face id. A group of faces is a hole
+/// only if together they cover the full circle about the axis (within the angle the geometry tolerance subtends at the radius,
+/// twice: one per end of an arc): a slot end or an inside fillet is a concave cylinder that is not a hole and stays visible in `faces`.
+/// A group that falls just short is not a hole either: see [`find_near_closed`].
+pub fn find_holes(models: &[AnalyticModel], faces: &[ClassifiedFace]) -> Vec<Hole> {
+    bore_groups(models, faces).into_iter().filter(|g| g.full).map(|g| g.hole).collect()
+}
+
+/// The least fraction of a turn a concave cylinder group must cover to be reported as a [`NearClosedBore`] (see there for how it
+/// was chosen).
+pub const NEAR_CLOSED_MIN_TURN: f64 = 0.9;
+
+/// A bore that nearly closes: a concave cylinder group that covers [`NEAR_CLOSED_MIN_TURN`] or more of a turn about its axis but not
+/// all of it, with the missing angle in one or more gaps. It is **not** a hole (`find_holes` keeps the full-turn rule) and nothing
+/// repairs it here: it is a candidate for a modelling gap (a slit left in the sketch, a seam the CAD export did not close) shown to
+/// the person, who decides whether to repair the model; once repaired the group covers the turn and is found as a hole.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NearClosedBore {
+    /// The bore as it would be if closed: body, cylinder faces, axis, radius, axial range and ends.
+    pub hole: Hole,
+    /// The fraction of a turn the faces cover, in `[NEAR_CLOSED_MIN_TURN, 1)`.
+    pub covered: f64,
+    /// The widest uncovered angle interval `[from, to]` (radians, `from` < `to`, about `hole.axis` in the frame of the face
+    /// intervals), and the point on the bore wall at its middle, halfway along the bore: where the gap is.
+    pub gap: [f64; 2],
+    pub gap_point: V3,
+    /// The uncovered arc length at the wall (millimetres): `radius x` the widest gap.
+    pub gap_width: f64,
+}
+
+/// Every concave cylinder group that is not a full turn and covers at least `min_turn` of one, as a [`NearClosedBore`]. `detect`
+/// passes [`NEAR_CLOSED_MIN_TURN`]; a lower value lists the partial bores a survey wants to histogram.
+pub fn find_near_closed(models: &[AnalyticModel], faces: &[ClassifiedFace], min_turn: f64) -> Vec<NearClosedBore> {
+    bore_groups(models, faces)
+        .into_iter()
+        .filter(|g| !g.full && g.covered >= min_turn * TAU && !g.arcs.is_empty())
+        .map(|g| {
+            // the uncovered intervals are the spaces between the merged ones, the last wrapping through 2 pi to the first
+            let mut gaps: Vec<[f64; 2]> = g.arcs.windows(2).map(|w| [w[0][1], w[1][0]]).collect();
+            gaps.push([g.arcs[g.arcs.len() - 1][1], g.arcs[0][0] + TAU]);
+            let gap = gaps.into_iter().filter(|x| x[1] > x[0]).max_by(|a, b| (a[1] - a[0]).total_cmp(&(b[1] - b[0]))).unwrap_or([0.0, 0.0]);
+            let mid = 0.5 * (gap[0] + gap[1]);
+            let (u, v) = stable_basis(g.hole.axis);
+            let t = 0.5 * (g.hole.range[0] + g.hole.range[1]);
+            let wall = add(mul(u, mid.cos() * g.hole.radius), mul(v, mid.sin() * g.hole.radius));
+            let gap_point = add(add(g.hole.axis_point, mul(g.hole.axis, t)), wall);
+            NearClosedBore { covered: g.covered / TAU, gap_width: g.hole.radius * (gap[1] - gap[0]), gap, gap_point, hole: g.hole }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -1007,6 +1064,8 @@ pub struct Features {
     pub interfaces: Vec<Interface>,
     /// Face pairs that looked like an interface but whose common area could not be computed.
     pub unresolved: Vec<(FaceKey, FaceKey)>,
+    /// Bores that almost close (not holes: see [`NearClosedBore`]).
+    pub near_closed: Vec<NearClosedBore>,
 }
 
 /// Detect the holes, fastener sites and contact interfaces of placed bodies (the models of `AnalyticModel::read_all`).
@@ -1015,7 +1074,8 @@ pub fn detect(models: &[AnalyticModel]) -> Result<Features, Error> {
     let holes = find_holes(models, &faces);
     let sites = find_sites(models, &holes, &faces);
     let (interfaces, unresolved) = find_interfaces(models, &faces);
-    Ok(Features { faces, holes, sites, interfaces, unresolved })
+    let near_closed = find_near_closed(models, &faces, NEAR_CLOSED_MIN_TURN);
+    Ok(Features { faces, holes, sites, interfaces, unresolved, near_closed })
 }
 
 #[cfg(test)]
