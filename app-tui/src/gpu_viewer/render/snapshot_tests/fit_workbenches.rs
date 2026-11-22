@@ -312,6 +312,44 @@ fn bushing_snapshot() {
     shoot(&mut session, "bushing-quick-fe", true, (1360, 860), None);
 }
 
+/// The Bushing edge-distance matrix (contact FE run, best estimate + governing legacy row), one tall dark shot:
+/// `FEA_SNAPSHOT_BUSHING_OUT=/dir cargo test ... bushing_edge_matrix_snapshot -- --ignored`.
+#[test]
+#[ignore = "needs a graphics adapter and FEA_SNAPSHOT_BUSHING_OUT"]
+fn bushing_edge_matrix_snapshot() {
+    use crate::gpu_viewer::editor::bushing::{file::BushingFile, BushingAct, BushingSession};
+    use crate::gpu_viewer::editor::session::EditorAction;
+    use crate::toolboxes::bushing::model::BushingModel;
+    let Ok(dir) = std::env::var("FEA_SNAPSHOT_BUSHING_OUT") else {
+        return;
+    };
+    let _guard = headless_guard();
+    let mut session = BushingSession::new(&BushingFile::capture(&BushingModel::default(), "Edge matrix"), std::env::temp_dir().join("bushing-edge-matrix.json"));
+    let t = std::time::Instant::now();
+    session.act(EditorAction::Bushing(BushingAct::EdgeCheck(true)));
+    while session.status().starts_with("Edge check running") || session.model().recommendations.is_empty() && t.elapsed().as_millis() < 300 {
+        session.poll();
+        assert!(t.elapsed().as_secs() < 180);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    for (name, dark, (w, h)) in [("bushing-edge-matrix", true, (1360u32, 2600u32)), ("bushing-edge-matrix-light", false, (1360, 2600))] {
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let scene = session.scene().unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = target(&r, w, h);
+            let mut gui = Gui::new();
+            gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+            let view = ViewState::new(&scene);
+            let scenes = [scene];
+            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+            draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+            std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+        });
+    }
+}
+
 /// The Bushing fit section when the bore band is wider than the interference band: Advanced settings open, the
 /// tolerance bands entered, and the fit routes card showing: `FEA_SNAPSHOT_BUSHING_OUT=/dir cargo test ... bushing_fit_snapshot -- --ignored`.
 #[test]

@@ -5,6 +5,7 @@ pub mod fem;
 pub mod field;
 pub mod kfem;
 pub mod linalg;
+pub mod matrix;
 pub mod mc;
 pub mod model;
 pub mod plastic;

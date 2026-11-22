@@ -14,7 +14,7 @@ use crate::gpu_viewer::{
 };
 use crate::toolboxes::bushing::{
     advice::{self, CheckKind, Severity},
-    edge_check::{self, TableRow},
+    edge_check,
     model::{self, FieldRow, NumberTarget},
     report,
 };
@@ -463,16 +463,7 @@ impl BushingSession {
                     items.push(line("Inputs changed since this run; it re-runs when they settle.", Tone::Warn));
                 }
                 items.push(line(format!("e/D {:.2}  load {:.0} lbf  bearing limit {:.0} lbf  fit {:.0} psi", r.edge / r.bore_diameter, r.applied_load, r.bearing_limit_load, r.fit_pressure), Tone::Dim));
-                items.push(line("minimum e/D to carry it:  strength | bearing | 1st yield | P(fail)", Tone::Dim));
-                for TableRow { name, cells, p_fail, error, .. } in edge_check::table_rows(run, m) {
-                    match error {
-                        Some(e) => items.push(line(format!("{name}: not evaluated ({e})"), Tone::Warn)),
-                        None => {
-                            let short = cells.iter().any(|c| c.1);
-                            items.push(field(&name, format!("{} | {} | {} | {p_fail}", cells[0].0, cells[1].0, cells[2].0), if short { Tone::Warn } else { Tone::Normal }));
-                        }
-                    }
-                }
+                items.extend(super::edge_matrix::items(&edge_check::matrix(run, m), run));
                 for l in edge_check::completion_lines(run).into_iter().skip(1).filter(|l| l.starts_with("Recommended")) {
                     items.push(line(plain(&l), Tone::Dim));
                 }
@@ -498,7 +489,9 @@ impl BushingSession {
             (Some(_), false, true) => "current",
             (Some(_), false, false) => "stale",
         };
-        Card::new("bushing-edge-check", "Cross-checks", Relevance::Context, items).folded().tag(tag)
+        let card = Card::new("bushing-edge-check", "Edge distance estimate", Relevance::Context, items).tag(tag);
+        // A finished run is the result; before one the card stays out of the way.
+        if self.st.edge_check.is_some() { card } else { card.folded() }
     }
 
     /// The FE solve of this joint (plane stress, fit contact), as a check on the closed-form fit pressure. Open while it

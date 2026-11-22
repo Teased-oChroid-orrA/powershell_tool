@@ -19,6 +19,7 @@ Does not own: the legacy `Fbru + 0.8 p` check (stays in `bushing-solver/src/solv
 | Bushing + housing contact FE (penalty contact, friction, fit-then-pin, J2 housing) and its edge-distance/fit table | `src/contact.rs`, `src/models/contact_model.rs` |
 | Elastic-plastic limit load (J2, plane strain, displacement control, Anderson-accelerated initial stress) and its parallel edge-distance profile | `src/plastic.rs`, `src/models/plastic_model.rs` |
 | Run, min-edge search, Monte Carlo, report types | `src/runner.rs`, `src/mc.rs` |
+| Model-by-target matrix with roles (best estimate / governing / comparison) for a UI | `src/matrix.rs` (`tests/matrix.rs`) |
 | Proof the models are right | `tests/verification.rs`, unit tests in `analytic.rs`/`fem.rs` |
 
 ## Contracts
@@ -29,6 +30,8 @@ Does not own: the legacy `Fbru + 0.8 p` check (stays in `bushing-solver/src/solv
 - A model that cannot evaluate a case returns `Err`; the runner reports it and the rest still run. Never silently drop a model.
 
 - `fem::{shape1, shape_q9, GAUSS3, element_stiffness}` and `linalg::BandedSpd` are `pub` because **`lug-solver` builds on them**: changing their conventions (local node order `3*b + a`, per-unit-thickness stiffness, lower-triangle band storage) breaks that crate. The bearing-allowable rule `Fbru(e/D)` lives in `mechanics_core::materials::fbru_at_edge_ratio` (shared with Lug Analysis).
+
+- **Roles are the owner's decision, not a property of the numbers** (`matrix.rs`): the legacy solver check is *governing*, the contact FE (`BEST_ESTIMATE_MODEL`) is the *best estimate*, the rest are comparison. `EdgeMatrix::build` only reads a report and the legacy numbers it is given; it must never feed a verdict, and nothing here may be promoted to governing until the evidence in `docs/edge-distance-crosscheck.md` exists (test-data correlation and a 3D bracket of plane strain). `matrix::VALIDATION` quotes the NACA numbers; a test keeps it equal to the doc.
 
 ## Pitfalls
 - Recommended edge distances (`runner::search_levels`) share `margin_sample` with the Monte-Carlo pass: any new random factor goes there once. Tests that need a deterministic result must set `strength_cv: 0.0, model_error: false` (and a collapsed fit band). `EdgeModel::model_cv` must come from validation or be flagged as judgement where it is set.

@@ -104,8 +104,8 @@ trick was tried and rejected: the result depended on the zone size and just move
 The two elastic stress models agree with each other; both assume the shear on the planes reaches
 `Fsu` everywhere, which is an upper bound on capacity. The plastic FE computes the failure instead
 and lands 30 % higher in e/D, between the tabulated rule and the legacy number: collapse reaches only
-~0.75-0.85 of the parallel-plane kinematic bound `2 k e t` at e/D 1-1.5. The UI flags any non-stress
-model that needs >10 % more edge distance than the stress models.
+~0.75-0.85 of the parallel-plane kinematic bound `2 k e t` at e/D 1-1.5. The UI advisory (below) warns whenever a
+non-stress model's margin is negative at the actual edge distance; there is no 10 % threshold.
 
 ### Should the stress-based number replace the legacy governing check?
 
@@ -116,6 +116,22 @@ data or the MMPDS `Fbru(e/D)` curve (the plastic FE gives `Pc(1.5)/Pc(2.0) = 0.7
 plane-strain assumption is bracketed by a 3D check, and countersunk/flanged geometry and load angle
 are covered. Until then legacy is the most conservative of the computed numbers by only ~15 % and is
 differentially tested.
+
+## Roles and the model-by-target matrix (owner decision, 2026-11-22)
+
+* **Governing**: the legacy solver check (`Fbru + 0.8 p`, `bushing-solver/src/solve.rs`). It decides PASS / REVIEW. Nothing in
+  `edge-check` or the matrix changes it, and no stress-based number is promoted to governing until it is correlated with
+  edge-distance test data **and** the plane-strain assumption is bracketed by a 3D check (that evidence work is separate).
+* **Best estimate**: the contact FE. It is shown as the owner's best estimate of the edge distance, not as a verdict.
+* **Comparison**: the stress superposition, the tabulated allowables, the plane-stress FE and the plastic FE.
+
+`edge_check::matrix::EdgeMatrix::build(&report, legacy)` turns a finished run into rows (models, best estimate first, then
+the governing legacy row) by columns (the applied-load and bearing-limit targets, each at Nominal, P90, P95, P99), every
+cell the minimum e/D with a flag for "the housing's actual e/D is short of it". The legacy row has Nominal cells only
+(it is a closed form: no probability levels). First yield (informational) and P(fail) at the actual edge distance are kept
+beside the table. The matrix only reads the report; a test (`bushing/tests.rs`) checks that the verdict, the legacy edge
+numbers and the margins are identical before and after a run. The native Bushing window draws it (`editor/bushing/edge_matrix.rs`);
+the window text quotes the validation numbers of the section below (a unit test keeps them equal to this doc).
 
 ## UI: advisory, tooltips, material data
 

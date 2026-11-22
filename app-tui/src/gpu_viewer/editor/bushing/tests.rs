@@ -231,11 +231,67 @@ fn the_edge_check_runs_off_the_ui_thread_and_fills_the_folded_cross_checks_card(
     wait(&mut s, "the edge check", |s| s.st.edge_check.is_some());
     let c = card(&s.result_cards(), "bushing-edge-check");
     let t = texts(&[c.clone()]);
-    assert!(t.contains("Superposition") && t.contains("Legacy solver"), "{t}");
+    assert!(t.contains("Superposition") && t.contains("Legacy"), "{t}");
     assert_eq!(c.tag, "current");
     act(&mut s, BushingAct::EdgeCheck(false));
     s.do_act(BushingAct::CancelEdgeCheck);
     assert!(s.st.edge_job.is_none());
+}
+
+/// The cards whose numbers are the solver's own verdict, as items (they must not move when an edge check runs).
+fn verdict_items(s: &BushingSession) -> Vec<(String, Vec<DockItem>)> {
+    let cards = s.result_cards();
+    ["bushing-verdict", "bushing-edge", "bushing-margins"].iter().map(|id| (id.to_string(), card(&cards, id).items)).collect()
+}
+
+fn tables(c: &Card) -> Vec<crate::gpu_viewer::page::DockTable> {
+    c.items.iter().filter_map(|i| if let DockItem::Table(t) = i { Some((**t).clone()) } else { None }).collect()
+}
+
+#[test]
+fn the_quick_check_shows_a_matrix_per_target_with_legacy_governing_and_no_best_estimate() {
+    let mut s = session();
+    let before = verdict_items(&s);
+    act(&mut s, BushingAct::EdgeCheck(false));
+    wait(&mut s, "the edge check", |s| s.st.edge_check.is_some());
+    let c = card(&s.result_cards(), "bushing-edge-check");
+    assert!(!c.folded, "a finished run opens the card");
+    let ts = tables(&c);
+    assert_eq!(ts.len(), 2, "one table per target");
+    for t in &ts {
+        let titles: Vec<_> = t.columns.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, ["Model", "Nominal", "P90", "P95", "P99"]);
+        let names: Vec<String> = t.rows.iter().map(|r| if let crate::gpu_viewer::page::Cell::Text { text, .. } = &r.cells[0] { text.clone() } else { String::new() }).collect();
+        assert!(names.iter().any(|n| n == "Legacy \u{b7} governing"), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains("best estimate")), "the contact FE did not run: {names:?}");
+        assert_eq!(t.rows.iter().filter(|r| r.governing).count(), 1, "exactly the legacy row is tinted");
+        let legacy = t.rows.iter().find(|r| r.governing).unwrap();
+        assert!(matches!(legacy.cells[2], crate::gpu_viewer::page::Cell::Text { ref text, .. } if text == "-"), "the legacy check has no P90");
+    }
+    let t = texts(&[c]);
+    assert!(t.contains("Best estimate: not run"), "{t}");
+    assert!(t.contains("Governing: the legacy solver check decides PASS / REVIEW"), "{t}");
+    assert!(t.contains("0.6 to 20 % low, mean -9.9 %, sd 6.9 %"), "the validation numbers are quoted: {t}");
+    assert!(t.contains("Not validated: the interference fit and the bushing"), "{t}");
+    assert_eq!(verdict_items(&s), before, "the matrix leaves the solver's verdict, edge numbers and margins untouched");
+}
+
+#[test]
+fn the_contact_fe_row_is_marked_best_estimate_first_and_the_legacy_verdict_does_not_move() {
+    let mut s = session();
+    let before = verdict_items(&s);
+    let (verdict_before, gov_before) = (s.failing(), s.st.model.output.governing.name);
+    act(&mut s, BushingAct::EdgeCheck(true));
+    wait(&mut s, "the contact FE check", |s| s.st.edge_check.as_ref().is_some_and(|r| r.deep));
+    let c = card(&s.result_cards(), "bushing-edge-check");
+    for t in tables(&c) {
+        let first = if let crate::gpu_viewer::page::Cell::Text { text, .. } = &t.rows[0].cells[0] { text.clone() } else { String::new() };
+        assert_eq!(first, "Contact FE \u{b7} best estimate");
+        assert!(!t.rows[0].governing && t.rows.iter().filter(|r| r.governing).count() == 1, "legacy, not the best estimate, is the tinted governing row");
+    }
+    assert!(texts(&[c]).contains("Best estimate (contact FE): bearing limit needs e/D"));
+    assert_eq!(verdict_items(&s), before, "PASS / REVIEW, the legacy edge numbers and the margins are the solver's, unchanged");
+    assert_eq!((s.failing(), s.st.model.output.governing.name), (verdict_before, gov_before), "the governing check is the same");
 }
 
 #[test]
