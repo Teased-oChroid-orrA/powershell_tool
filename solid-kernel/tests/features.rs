@@ -482,3 +482,121 @@ fn a_pin_through_touching_bores_is_not_recorded_as_a_bridge() {
     assert_eq!(f.sites.len(), 1);
     assert!(f.sites[0].bridged_by.is_empty(), "{:?}", f.sites[0]);
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Near-closed bores: a modelling gap, shown, never a hole
+// ---------------------------------------------------------------------------------------------------------------------------
+use solid_kernel::features::{find_near_closed, NEAR_CLOSED_MIN_TURN};
+
+/// The bore of a drilled plate (radius 2 at (20, 15), 10 mm deep) with its one cylinder face replaced by faces covering the given
+/// angular intervals.
+fn bore_with_arcs(lists: &[Vec<[f64; 2]>]) -> (AnalyticModel, Vec<ClassifiedFace>) {
+    let model = read(&plate_with_holes([0., 0., 0.], [40., 30., 10.], &[([20., 15.], 2.)]));
+    let mut faces = classify_faces(std::slice::from_ref(&model)).unwrap();
+    let i = faces.iter().position(|f| matches!(f.geometry, FaceGeometry::Cylinder { .. })).unwrap();
+    let template = faces.remove(i);
+    for (k, l) in lists.iter().enumerate() {
+        let mut f = template.clone();
+        f.key.face += 100_000 * (k as u64 + 1);
+        let FaceGeometry::Cylinder { arcs, .. } = &mut f.geometry else { unreachable!() };
+        *arcs = l.clone();
+        faces.push(f);
+    }
+    (model, faces)
+}
+
+/// A bore covering `fraction` of a turn from angle `from`, the gap running on from there.
+fn slit_bore(fraction: f64, from: f64) -> (AnalyticModel, Vec<ClassifiedFace>) {
+    let tau = std::f64::consts::TAU;
+    let end = from + fraction * tau;
+    // an interval that runs past 2 pi is two, as `arcs_of` writes them
+    let arcs = if end > tau { vec![[0., end - tau], [from, tau]] } else { vec![[from, end]] };
+    bore_with_arcs(&[arcs])
+}
+
+#[test]
+fn a_bore_97_and_99_5_percent_of_a_turn_is_a_near_closed_candidate_and_not_a_hole() {
+    // the two slit bores of the AutoMate check: 0.36 mm of a 1.84 mm radius bore (97 %) and 0.7 mm of a 22 mm radius bore (99.5 %)
+    let tau = std::f64::consts::TAU;
+    for fraction in [1. - 0.36 / (tau * 1.84), 1. - 0.7 / (tau * 22.)] {
+        assert!(fraction > 0.96 && fraction < 0.996);
+        let (model, faces) = slit_bore(fraction, 0.4);
+        assert!(find_holes(std::slice::from_ref(&model), &faces).is_empty(), "{fraction}: the full-turn rule is kept");
+        let near = find_near_closed(std::slice::from_ref(&model), &faces, NEAR_CLOSED_MIN_TURN);
+        assert_eq!(near.len(), 1, "{fraction}");
+        let n = &near[0];
+        assert!((n.covered - fraction).abs() < 1e-9, "{} vs {fraction}", n.covered);
+        // the bore as it would be: its body, axis, radius and the 10 mm it runs
+        assert_eq!((n.hole.body, n.hole.faces.len()), (0, 1));
+        assert!((n.hole.radius - 2.).abs() < 1e-9 && (n.hole.depth() - 10.).abs() < 1e-9);
+        // the gap is the missing angle, and its width at the wall is that angle times the radius of THIS bore (2 mm)
+        let missing = (1. - fraction) * tau;
+        assert!((n.gap[1] - n.gap[0] - missing).abs() < 1e-9, "{:?}", n.gap);
+        assert!((n.gap_width - 2. * missing).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn the_gap_point_lies_on_the_wall_halfway_along_the_bore_in_the_middle_of_the_gap() {
+    let tau = std::f64::consts::TAU;
+    // covers [0.4, 0.4 + 0.97 tau]; the gap is the rest of the turn
+    let (model, faces) = slit_bore(0.97, 0.4);
+    let n = &find_near_closed(std::slice::from_ref(&model), &faces, NEAR_CLOSED_MIN_TURN)[0];
+    let p = n.gap_point;
+    // on the wall: 2 mm from the axis through (20, 15); halfway along the plate's 10 mm
+    assert!(((p[0] - 20.).hypot(p[1] - 15.) - 2.).abs() < 1e-9, "{p:?}");
+    assert!((p[2] - 5.).abs() < 1e-9, "{p:?}");
+    // at the angle in the middle of the gap, measured in the frame the arcs use (the first axis-perpendicular axes of the face)
+    let mid = 0.5 * (n.gap[0] + n.gap[1]);
+    assert!((mid - (0.4 + 0.97 * tau + 0.015 * tau)).rem_euclid(tau).min(tau - (mid - (0.4 + 0.97 * tau + 0.015 * tau)).rem_euclid(tau)) < 1e-9, "{mid}");
+    // and the point is at that angle in the frame the arcs use: u = the x axis (the axis is along z), v = axis x u
+    let a = n.hole.axis;
+    let v = [a[1] * 0. - a[2] * 0., a[2] * 1. - a[0] * 0., a[0] * 0. - a[1] * 1.];
+    let angle = ((p[0] - 20.) * v[0] + (p[1] - 15.) * v[1] + (p[2] - n.hole.axis_point[2]) * v[2]).atan2(p[0] - 20.);
+    assert!((angle - mid).rem_euclid(tau).min(tau - (angle - mid).rem_euclid(tau)) < 1e-9, "{angle} vs {mid}");
+    let a = n.hole.axis;
+    let c = n.hole.axis_point;
+    let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+    let along = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
+    assert!((along - 0.5 * (n.hole.range[0] + n.hole.range[1])).abs() < 1e-9);
+}
+
+#[test]
+fn the_threshold_separates_a_near_closed_bore_from_slot_ends_fillets_and_notches() {
+    let pi = std::f64::consts::PI;
+    let near = |lists: &[Vec<[f64; 2]>], min: f64| {
+        let (model, faces) = bore_with_arcs(lists);
+        find_near_closed(std::slice::from_ref(&model), &faces, min).len()
+    };
+    // a half turn (a slot end), a quarter turn (an inside fillet) and three quarters (a notch) are not candidates
+    assert_eq!(near(&[vec![[0., pi]]], NEAR_CLOSED_MIN_TURN), 0);
+    assert_eq!(near(&[vec![[0.3, 0.3 + 0.5 * pi]]], NEAR_CLOSED_MIN_TURN), 0);
+    assert_eq!(near(&[vec![[0., 1.5 * pi]]], NEAR_CLOSED_MIN_TURN), 0);
+    // a bore short by a tenth of a turn is
+    assert_eq!(near(&[vec![[0., 1.8 * pi]]], NEAR_CLOSED_MIN_TURN), 1);
+    // a full turn is a hole and never also a candidate, whatever the threshold
+    assert_eq!(near(&[vec![[0., 2. * pi]]], 0.0), 0);
+    // two faces that together leave a gap are one candidate with one covered total
+    assert_eq!(near(&[vec![[0., pi]], vec![[pi + 0.1, 2. * pi - 0.05]]], NEAR_CLOSED_MIN_TURN), 1);
+    // the same half twice covers a half turn, not a whole one
+    assert_eq!(near(&[vec![[0., pi]], vec![[0., pi]]], NEAR_CLOSED_MIN_TURN), 0);
+}
+
+#[test]
+fn healing_the_gap_turns_the_candidate_into_a_hole() {
+    let pi = std::f64::consts::PI;
+    let (model, faces) = bore_with_arcs(&[vec![[0.2, 0.2 + 1.9 * pi]]]);
+    assert!(find_holes(std::slice::from_ref(&model), &faces).is_empty());
+    assert_eq!(find_near_closed(std::slice::from_ref(&model), &faces, NEAR_CLOSED_MIN_TURN).len(), 1);
+    // the repaired model: the faces cover the turn
+    let (model, faces) = bore_with_arcs(&[vec![[0., 2. * pi]]]);
+    assert_eq!(find_holes(std::slice::from_ref(&model), &faces).len(), 1);
+    assert!(find_near_closed(std::slice::from_ref(&model), &faces, NEAR_CLOSED_MIN_TURN).is_empty());
+}
+
+#[test]
+fn a_drilled_plate_has_no_near_closed_bore_and_a_stack_still_finds_its_site() {
+    let (_, f) = detected(&stack(&[([20., 15.], 2.)]));
+    assert!(f.near_closed.is_empty());
+    assert_eq!((f.holes.len(), f.sites.len()), (2, 1));
+}
