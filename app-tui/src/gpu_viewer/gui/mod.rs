@@ -63,6 +63,19 @@ struct Floating {
     items: Vec<Item>,
 }
 
+/// What a workbench's page keeps while another one is shown in the window (`Gui::park_page`).
+pub(crate) struct PageState {
+    tab: usize,
+    collapsed: HashSet<u32>,
+    drawer: Option<workbench::Drawer>,
+    inspector_dismissed: Option<String>,
+    tree_user: Option<bool>,
+    prev_steps: HashMap<String, StepState>,
+    done_at: HashMap<String, f64>,
+    last_focus_step: Option<&'static str>,
+    doc: document::DocState,
+}
+
 pub struct Gui {
     ctx: egui::Context,
     pub visible: Visible,
@@ -212,6 +225,43 @@ impl Gui {
         self.search_menu_open = None;
         self.doc = document::DocState::default();
         self.switcher = None;
+    }
+
+    /// The selected tab (tests check that a page gets it back).
+    #[cfg(test)]
+    pub(crate) fn tab_index(&self) -> usize {
+        self.tab
+    }
+
+    /// Take what the page shown keeps for when its workbench is shown again (selected tab, folded cards, scroll and
+    /// selection of a page, step tracking), then forget the rest as `reset_page` does.
+    pub(crate) fn park_page(&mut self) -> PageState {
+        self.doc.settle();
+        let state = PageState {
+            tab: self.tab,
+            collapsed: std::mem::take(&mut self.collapsed),
+            drawer: self.drawer.take(),
+            inspector_dismissed: self.inspector_dismissed.take(),
+            tree_user: self.tree_user.take(),
+            prev_steps: std::mem::take(&mut self.prev_steps),
+            done_at: std::mem::take(&mut self.done_at),
+            last_focus_step: self.last_focus_step.take(),
+            doc: std::mem::take(&mut self.doc),
+        };
+        self.reset_page();
+        state
+    }
+    /// Give a workbench's page back what `park_page` took (after `reset_page` cleared the previous page).
+    pub(crate) fn restore_page(&mut self, s: PageState) {
+        self.tab = s.tab;
+        self.collapsed = s.collapsed;
+        self.drawer = s.drawer;
+        self.inspector_dismissed = s.inspector_dismissed;
+        self.tree_user = s.tree_user;
+        self.prev_steps = s.prev_steps;
+        self.done_at = s.done_at;
+        self.last_focus_step = s.last_focus_step;
+        self.doc = s.doc;
     }
 
     /// Keep what the layout learns between sessions (`<app data>/fea-editor/layout`).

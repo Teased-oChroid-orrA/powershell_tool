@@ -12,6 +12,7 @@ pub fn run(project: ViewerProject) -> Result<(), String> {
 pub fn run_dashboard() -> Result<(), String> {
     let mut app = new_viewer(ViewerProject::single(blank_scene("dashboard")), None);
     app.nav = Some(Nav::default());
+    crate::gpu_viewer::editor::handoff::serve_shell();
     let file = crate::gpu_viewer::dashboard::Recents::path();
     app.dashboard = Some(crate::gpu_viewer::dashboard::Dashboard::new(
         file.as_deref()

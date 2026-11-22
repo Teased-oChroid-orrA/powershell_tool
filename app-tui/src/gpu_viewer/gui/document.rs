@@ -39,6 +39,21 @@ const SUGGEST_BADGE_W: f32 = 122.0;
 /// A grip moved less than this is a click, not a move.
 const DRAG_LEAST: f32 = 24.0;
 
+impl DocState {
+    /// Close what hangs off the page (popover, row menu, suggestion pills, a drag) so it is not there when the page
+    /// comes back; scroll, selection and layout stay.
+    pub(super) fn settle(&mut self) {
+        self.pending_menu = None;
+        self.open = None;
+        self.pop_rect = None;
+        self.anchor = None;
+        self.suggest_rect = None;
+        self.suggest_sel = None;
+        self.dragging = None;
+        self.live = None;
+    }
+}
+
 /// What the page remembers between frames (scrolling and which row was selected).
 #[derive(Default)]
 pub(super) struct DocState {

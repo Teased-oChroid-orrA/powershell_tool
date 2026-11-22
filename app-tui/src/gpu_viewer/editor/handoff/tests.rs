@@ -237,6 +237,23 @@ mod flow {
     }
 
     #[test]
+    fn a_file_sent_from_a_case_shows_a_send_back_button_in_the_model_ribbon_and_an_unlinked_one_does_not() {
+        use crate::gpu_viewer::editor::authoring::Authoring;
+        let send_buttons = |f: &SolidSession| -> Vec<(String, bool)> {
+            f.ribbon().into_iter().find(|t| t.title == "Model").unwrap().groups.into_iter().find(|g| g.title == "Send").map(|g| g.buttons.into_iter().map(|b| (b.label, b.enabled)).collect()).unwrap_or_default()
+        };
+        let d = dir("ribbon");
+        let case = d.join("wing.json");
+        let mut s = BushingSession::open(&case).unwrap();
+        send(&mut s);
+        let fea = fea_path(&case);
+        let f = SolidSession::new(crate::gpu_viewer::editor::solid::read_problem(&fea).unwrap(), fea.clone());
+        assert_eq!(send_buttons(&f), [("To Bushing".to_string(), true)], "only the workbench the file came from, and it can take the model");
+        let lone = SolidSession::new(fea_problem::templates::templates().remove(0).1, d.join("plate.json"));
+        assert!(send_buttons(&lone).is_empty(), "a file never sent from a case has no Send group");
+    }
+
+    #[test]
     fn the_fea_workbench_sends_its_edit_back_and_the_open_bushing_window_takes_it_in() {
         let d = dir("loop");
         let case = d.join("wing.json");

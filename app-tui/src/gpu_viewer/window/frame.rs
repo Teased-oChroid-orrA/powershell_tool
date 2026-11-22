@@ -4,12 +4,14 @@ use super::*;
 impl Viewer {
     pub(super) fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
         let mut attributes = Window::default_attributes().with_title("FEA GPU viewport");
-        if self
-            .editor
-            .as_ref()
-            .is_some_and(|editor| editor.workbench().is_some())
+        if self.dashboard.is_some()
+            || self
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.workbench().is_some())
         {
-            attributes = attributes.with_inner_size(winit::dpi::LogicalSize::new(1200.0, 760.0));
+            let (w, h) = nav::WORKBENCH_SIZE;
+            attributes = attributes.with_inner_size(winit::dpi::LogicalSize::new(w, h));
         }
         let window = Arc::new(
             event_loop

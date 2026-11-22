@@ -10,6 +10,7 @@ fn shell() -> Viewer {
     let mut v = new_viewer(ViewerProject::single(blank_scene("dashboard")), None);
     v.size_override = Some((1600, 900));
     v.nav = Some(Nav::default());
+    crate::gpu_viewer::editor::handoff::serve_shell();
     v.dashboard = Some(Dashboard::new(Recents::default(), None));
     frame(&mut v);
     v
@@ -206,4 +207,82 @@ fn a_standalone_workbench_window_has_no_strip() {
     assert!(v.gui.find_target("Toolbench home").is_none());
     v.open_workbench("members", None);
     assert!(v.editor.is_some(), "nothing happens without a shell");
+}
+
+#[test]
+fn a_workbench_gets_its_tab_back_after_another_one_was_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = shell();
+    v.open_workbench("fea", Some(case(&dir, "a.fea.json")));
+    frame(&mut v);
+    let mesh = target(&v, "Mesh tab");
+    click(&mut v, mesh);
+    let chosen = v.gui.tab_index();
+    assert_ne!(chosen, 0, "the Mesh tab is not the first");
+    v.dispatch(UiAction::Nav(NavAct::Open("material-lookup")));
+    frame(&mut v);
+    assert_eq!(v.gui.tab_index(), 0, "another workbench starts on its own first tab");
+    v.dispatch(UiAction::Nav(NavAct::Open("fea")));
+    frame(&mut v);
+    assert_eq!(v.gui.tab_index(), chosen, "the tab came back with the workbench");
+    v.dispatch(UiAction::Nav(NavAct::Home));
+    frame(&mut v);
+    v.dispatch(UiAction::Nav(NavAct::Open("fea")));
+    frame(&mut v);
+    assert_eq!(v.gui.tab_index(), chosen, "and after a visit to the dashboard");
+}
+
+#[test]
+fn a_handoff_launch_opens_the_workbench_in_this_window_not_in_a_process() {
+    use crate::gpu_viewer::{editor::handoff, EditorKind};
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = shell();
+    let file = case(&dir, "b.fea.json");
+    handoff::LAUNCHED.with(|l| l.borrow_mut().clear());
+    handoff::launch(EditorKind::Solid, &file).unwrap();
+    assert!(handoff::LAUNCHED.with(|l| l.borrow().is_empty()), "no process was asked for");
+    assert!(v.serve_asked(), "the window took the request");
+    frame(&mut v);
+    assert_eq!((tabs(&v), active(&v)), (vec!["fea"], Some("fea")));
+    assert_eq!(v.editor.as_ref().unwrap().path(), file);
+    assert!(!v.serve_asked(), "a request is served once");
+}
+
+#[test]
+fn a_standalone_window_still_starts_a_process_for_a_handoff() {
+    use crate::gpu_viewer::{editor::handoff, EditorKind};
+    // Not `shell()`: this thread does not serve a dashboard window.
+    std::thread::spawn(|| {
+        handoff::LAUNCHED.with(|l| l.borrow_mut().clear());
+        handoff::launch(EditorKind::Bushing, std::path::Path::new("c.json")).unwrap();
+        assert_eq!(handoff::LAUNCHED.with(|l| l.borrow().len()), 1);
+        assert!(handoff::take_asked().is_empty());
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn new_window_moves_a_clean_workbench_to_a_process_and_refuses_one_with_edits() {
+    use crate::gpu_viewer::dashboard::SPAWNED;
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = shell();
+    let file = case(&dir, "a.json");
+    SPAWNED.with(|s| s.borrow_mut().clear());
+    dirty_members(&mut v, file.clone());
+    v.dispatch(UiAction::Nav(NavAct::PopOut("members")));
+    assert!(SPAWNED.with(|s| s.borrow().is_empty()), "unsaved edits stay in this window");
+    assert_eq!(tabs(&v), vec!["members"]);
+    v.editor.as_mut().unwrap().act(session::EditorAction::Run(crate::gpu_viewer::editor::caps::Operation::Save));
+    v.dispatch(UiAction::Nav(NavAct::PopOut("members")));
+    assert_eq!(SPAWNED.with(|s| s.borrow().clone()), vec![("members", Some(file))], "the process is asked for the same file");
+    assert!(tabs(&v).is_empty() && v.dashboard.is_some(), "the tab is gone and the dashboard is shown");
+}
+
+#[test]
+fn the_window_grows_to_hold_a_workbench_and_never_shrinks() {
+    use super::super::nav::{room_for_workbench, WORKBENCH_SIZE};
+    assert_eq!(room_for_workbench((800.0, 600.0)), Some(WORKBENCH_SIZE));
+    assert_eq!(room_for_workbench((1500.0, 700.0)), Some((1500.0, WORKBENCH_SIZE.1)));
+    assert_eq!(room_for_workbench((1600.0, 900.0)), None);
 }

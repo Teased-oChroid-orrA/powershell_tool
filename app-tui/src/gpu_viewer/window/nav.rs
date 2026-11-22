@@ -3,7 +3,8 @@
 use super::*;
 use crate::gpu_viewer::{
     dashboard::{Dashboard, Workbench},
-    editor::stackup::WindowLease,
+    editor::{handoff, stackup::WindowLease},
+    gui::PageState,
     nav::{NavAct, NavStrip, NavTab},
 };
 use std::path::PathBuf;
@@ -34,6 +35,8 @@ struct Parked {
     editor: Box<dyn Authoring>,
     project: ViewerProject,
     view: ViewState,
+    /// Its page's tab, folded cards and scroll, given back when it is shown again.
+    page: PageState,
 }
 
 impl Viewer {
@@ -93,6 +96,18 @@ impl Viewer {
             changed |= p.editor.poll();
         }
         changed
+    }
+    /// Open what a workbench asked for through `handoff::launch` (Bushing to FEA and back, the stackup, the fastener
+    /// transfer) in this window instead of a process. True when something was opened.
+    pub(super) fn serve_asked(&mut self) -> bool {
+        let asked = handoff::take_asked();
+        let any = !asked.is_empty();
+        for (kind, file) in asked {
+            if let Some(w) = Workbench::for_kind(kind) {
+                self.open_workbench(w.id, Some(file));
+            }
+        }
+        any
     }
     /// Some tab is solving: the strip's busy mark needs a steady redraw.
     pub(super) fn any_tab_busy(&self) -> bool {
@@ -158,6 +173,16 @@ impl Viewer {
             home.note_opened(w, file.or_else(|| w.default_file()));
         }
         self.after_swap();
+        self.make_room();
+    }
+
+    /// A workbench needs more room than the dashboard window may have: grow it (never shrink a window the person sized).
+    fn make_room(&self) {
+        let Some(win) = &self.window else { return };
+        let size: winit::dpi::LogicalSize<f64> = win.inner_size().to_logical(win.scale_factor());
+        if let Some((w, h)) = room_for_workbench((size.width, size.height)) {
+            let _ = win.request_inner_size(winit::dpi::LogicalSize::new(w, h));
+        }
     }
 
     /// Show `to` (a workbench that is open, or the dashboard) and park what was shown.
@@ -170,12 +195,14 @@ impl Viewer {
         let display = self.view.display_settings();
         let Some(nav) = &mut self.nav else { return };
         let parked = to.and_then(|id| nav.open.iter_mut().find(|o| o.id == id)?.parked.take());
+        let mut page = None;
         match parked {
             Some(p) => {
                 self.editor = Some(p.editor);
                 self.project = p.project;
                 self.view = p.view;
                 self.view.set_display(display);
+                page = Some(p.page);
                 nav.active = to;
             }
             None => {
@@ -184,6 +211,9 @@ impl Viewer {
             }
         }
         self.after_swap();
+        if let Some(page) = page {
+            self.gui.restore_page(page);
+        }
     }
 
     /// Move what is shown (the dashboard, or a workbench with its model and view) out of the viewer's own fields.
@@ -200,6 +230,7 @@ impl Viewer {
                         editor,
                         project: std::mem::replace(&mut self.project, blank),
                         view: std::mem::replace(&mut self.view, view),
+                        page: self.gui.park_page(),
                     });
                 }
             }
@@ -287,4 +318,13 @@ impl Viewer {
         }
         self.quit = true;
     }
+}
+
+/// The size (logical px) of a window that holds a workbench comfortably, and the window the dashboard asks for.
+pub(super) const WORKBENCH_SIZE: (f64, f64) = (1200.0, 760.0);
+
+/// The size to ask for when the window is `current` (logical px): at least `WORKBENCH_SIZE`, `None` when it already is.
+pub(super) fn room_for_workbench(current: (f64, f64)) -> Option<(f64, f64)> {
+    let want = (current.0.max(WORKBENCH_SIZE.0), current.1.max(WORKBENCH_SIZE.1));
+    (want != current).then_some(want)
 }
