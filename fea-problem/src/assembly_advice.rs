@@ -123,6 +123,10 @@ fn fastener(f: &Features, s: &FastenerSite) -> AssemblyAdvice {
         Some(size) => reason.push_str(&format!(" Every bore fits {size}, so one {size} fastener can pass through them.")),
         None => reason.push_str(" No single standard size fits every bore."),
     }
+    if !s.bridged_by.is_empty() {
+        let pins = s.bridged_by.iter().map(|b| (b + 1).to_string()).collect::<Vec<_>>().join(", ");
+        reason.push_str(&format!(" The bores do not touch (a spacer, washer or air gap lies between them); a pin or bolt of body {pins} runs through that gap and joins them."));
+    }
     if s.diameter_mismatch {
         reason.push_str(" The bore diameters differ (a clearance hole in one part and a tapped or smaller hole in another is normal for a bolted joint; a mismatch with no common size is not).");
     }

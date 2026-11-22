@@ -437,3 +437,48 @@ fn a_spline_cylinder_whose_face_sense_is_reversed_is_a_convex_shank_and_never_a_
     assert_eq!(side, Some(Side::Convex));
     assert!(detect(&[model]).unwrap().holes.is_empty());
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// A pin or bolt that bridges bores which do not touch (spacer, washer, air gap): AutoMate check, `docs/epic-assembly-feature-advice.md`
+// ---------------------------------------------------------------------------------------------------------------------------
+
+/// Two 40 x 30 x 10 plates with a 5 mm hole at (20, 15), the second raised by `gap`, and a pin of radius `r` from z = `z0` to `z1`.
+fn gapped_pair_with_pin(gap: f64, pin: Option<([f64; 2], f64, f64, f64)>) -> solid_kernel::features::Features {
+    let hole = [([20., 15.], 2.5)];
+    let mut parts = vec![plate_with_holes([0., 0., 0.], [40., 30., 10.], &hole), plate_with_holes([0., 0., 10. + gap], [40., 30., 20. + gap], &hole)];
+    if let Some((xy, r, z0, z1)) = pin {
+        parts.push(NativeBrep::cylinder_z([xy[0], xy[1], z0], r, z1 - z0).unwrap());
+    }
+    detected(&parts).1
+}
+
+#[test]
+fn a_pin_that_spans_the_gap_between_two_bores_makes_them_one_site() {
+    // the bores are 5 mm apart (a washer's worth of air); the 5 mm pin runs from inside the first through the second
+    let f = gapped_pair_with_pin(5., Some(([20., 15.], 2.5, 5., 20.)));
+    assert_eq!(f.sites.len(), 1, "{:?}", f.sites);
+    let s = &f.sites[0];
+    assert_eq!((s.bodies.clone(), s.bridged_by.clone()), (vec![0, 1], vec![2]));
+    assert!((s.span[1] - s.span[0] - 25.).abs() < 1e-6, "{:?}", s.span);
+    assert!(s.bores.iter().all(|b| (b.diameter - 5.).abs() < 1e-9));
+    // the same plates and no pin stay two unrelated holes in line
+    assert!(gapped_pair_with_pin(5., None).sites.is_empty());
+}
+
+#[test]
+fn a_pin_that_cannot_bridge_the_gap_leaves_the_bores_apart() {
+    let none = |pin| assert!(gapped_pair_with_pin(5., Some(pin)).sites.is_empty(), "{pin:?}");
+    none(([20., 15.], 3.5, 5., 20.)); // wider than the bore
+    none(([20., 15.], 2.5, 5., 12.)); // stops inside the gap
+    none(([20., 15.], 2.5, 13., 20.)); // starts inside the gap
+    none(([22., 15.], 2.5, 5., 20.)); // off the axis
+    // a narrower pin (a bolt in a clearance hole) does bridge
+    assert_eq!(gapped_pair_with_pin(5., Some(([20., 15.], 2., 5., 20.))).sites.len(), 1);
+}
+
+#[test]
+fn a_pin_through_touching_bores_is_not_recorded_as_a_bridge() {
+    let f = gapped_pair_with_pin(0., Some(([20., 15.], 2.5, 2., 18.)));
+    assert_eq!(f.sites.len(), 1);
+    assert!(f.sites[0].bridged_by.is_empty(), "{:?}", f.sites[0]);
+}

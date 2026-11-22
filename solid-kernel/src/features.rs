@@ -657,12 +657,44 @@ pub struct FastenerSite {
     /// The bore diameters differ by more than the tolerance: a clearance hole in one part and a tapped, press or smaller hole in
     /// another is normal for a bolted joint, but it is reported, not hidden.
     pub diameter_mismatch: bool,
+    /// Bodies of the pins or bolts whose shank runs through bores that do not touch (a spacer, a washer or an air gap between
+    /// the plates): ascending, empty when every bore touches the next. A site whose bores are all separate and none is bridged
+    /// is not a site.
+    pub bridged_by: Vec<usize>,
+}
+
+/// A convex cylinder of a body that can be a pin or bolt shank: at least half a turn about its axis (an outside fillet, a
+/// quarter turn, is not).
+struct Shank {
+    body: usize,
+    axis_point: V3,
+    axis: V3,
+    radius: f64,
+    range: [f64; 2],
+}
+
+fn shanks(faces: &[ClassifiedFace]) -> Vec<Shank> {
+    faces
+        .iter()
+        .filter_map(|f| match &f.geometry {
+            FaceGeometry::Cylinder { axis_point, axis, radius, side: Side::Convex, range, .. } if f.geometry.wrap().is_some_and(|w| w >= std::f64::consts::PI - 1e-9) => {
+                Some(Shank { body: f.key.body, axis_point: *axis_point, axis: *axis, radius: *radius, range: *range })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Group the holes of different bodies that share an axis and touch or overlap along it into fastener sites, ordered by their
-/// lowest hole index.
-pub fn find_sites(models: &[AnalyticModel], holes: &[Hole]) -> Vec<FastenerSite> {
+/// lowest hole index. Two coaxial bores of different bodies that do not touch are joined too when a pin or bolt of a third body
+/// bridges them: a convex cylinder of at least half a turn on the same axis, no wider than the narrower bore (within the
+/// tolerance), that spans the whole gap between them. Without such a shank a gap between bores stays a gap (two unrelated holes
+/// that happen to be in line are not a joint).
+pub fn find_sites(models: &[AnalyticModel], holes: &[Hole], faces: &[ClassifiedFace]) -> Vec<FastenerSite> {
     let tol_of = |a: usize, b: usize| models[holes[a].body].geometry_tolerance_mm().max(models[holes[b].body].geometry_tolerance_mm());
+    let shanks = shanks(faces);
+    let mut candidates: Vec<(usize, usize, usize)> = Vec::new();
+    let mut bridges: Vec<(usize, usize, usize)> = Vec::new();
     let mut group: Vec<usize> = (0..holes.len()).collect();
     fn root(g: &mut Vec<usize>, i: usize) -> usize {
         let mut r = i;
@@ -684,10 +716,36 @@ pub fn find_sites(models: &[AnalyticModel], holes: &[Hole]) -> Vec<FastenerSite>
                 continue;
             }
             let e = ends_in(a.axis_point, a.axis, b.axis_point, b.axis, b.range, [b.radius; 2]);
-            if a.range[0].max(e[0].0) - a.range[1].min(e[1].0) <= tol {
+            let gap = a.range[0].max(e[0].0) - a.range[1].min(e[1].0);
+            if gap <= tol {
                 let (ri, rj) = (root(&mut group, i), root(&mut group, j));
                 group[rj] = ri;
+            } else {
+                // the gap interval between the two bores along a's axis
+                let (lo, hi) = if a.range[1] < e[0].0 { (a.range[1], e[0].0) } else { (e[1].0, a.range[0]) };
+                let narrow = a.radius.min(b.radius);
+                for s in &shanks {
+                    if s.body == a.body || s.body == b.body || s.radius > narrow + tol {
+                        continue;
+                    }
+                    if !coaxial(a.axis_point, a.axis, s.axis_point, s.axis, tol, length) {
+                        continue;
+                    }
+                    let se = ends_in(a.axis_point, a.axis, s.axis_point, s.axis, s.range, [s.radius; 2]);
+                    if se[0].0 <= lo + tol && se[1].0 >= hi - tol {
+                        candidates.push((i, j, s.body));
+                        break;
+                    }
+                }
             }
+        }
+    }
+    // A bridge counts only where it joins bores the touching pass left apart.
+    for (i, j, body) in candidates {
+        let (ri, rj) = (root(&mut group, i), root(&mut group, j));
+        if ri != rj {
+            group[rj] = ri;
+            bridges.push((i, j, body));
         }
     }
     let mut members: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
@@ -719,7 +777,10 @@ pub fn find_sites(models: &[AnalyticModel], holes: &[Hole]) -> Vec<FastenerSite>
             .iter()
             .map(|c| c.size)
             .find(|s| bores.iter().all(|b| b.matches.iter().any(|c| c.size == *s)));
-        sites.push(FastenerSite { axis_point: first.axis_point, axis: first.axis, span: [lo, hi], bodies, bores, fastener, diameter_mismatch: dmax - dmin > tol });
+        let mut bridged_by: Vec<usize> = bridges.iter().filter(|(i, j, _)| m.contains(i) && m.contains(j)).map(|b| b.2).collect();
+        bridged_by.sort_unstable();
+        bridged_by.dedup();
+        sites.push(FastenerSite { axis_point: first.axis_point, axis: first.axis, span: [lo, hi], bodies, bores, fastener, diameter_mismatch: dmax - dmin > tol, bridged_by });
     }
     sites
 }
@@ -952,7 +1013,7 @@ pub struct Features {
 pub fn detect(models: &[AnalyticModel]) -> Result<Features, Error> {
     let faces = classify_faces(models)?;
     let holes = find_holes(models, &faces);
-    let sites = find_sites(models, &holes);
+    let sites = find_sites(models, &holes, &faces);
     let (interfaces, unresolved) = find_interfaces(models, &faces);
     Ok(Features { faces, holes, sites, interfaces, unresolved })
 }
