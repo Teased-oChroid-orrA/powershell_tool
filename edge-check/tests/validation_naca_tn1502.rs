@@ -104,10 +104,10 @@ fn the_contact_fe_is_conservative_on_the_tn1502_tests() {
         sum_abs += err.abs();
     }
     assert!(sum_abs / (p.len() as f64) < 0.22, "mean |error| {:.1} %", 100.0 * sum_abs / p.len() as f64);
-    for i in 0..ROWS.len() {
+    for (i, row) in ROWS.iter().enumerate() {
         let at = |ed: f64| p.iter().find(|r| r.0 == i && r.1 == ed).unwrap();
         let (test_ratio, pred_ratio) = (at(2.0).2 / at(1.5).2, at(2.0).3 / at(1.5).3);
-        assert!((pred_ratio / test_ratio - 1.0).abs() < 0.10, "{} {}: Fbru(2.0)/Fbru(1.5) test {test_ratio:.3}, predicted {pred_ratio:.3}", ROWS[i].alloy, ROWS[i].dir);
+        assert!((pred_ratio / test_ratio - 1.0).abs() < 0.10, "{} {}: Fbru(2.0)/Fbru(1.5) test {test_ratio:.3}, predicted {pred_ratio:.3}", row.alloy, row.dir);
     }
 }
 
