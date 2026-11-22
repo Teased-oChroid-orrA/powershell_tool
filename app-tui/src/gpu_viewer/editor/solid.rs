@@ -920,8 +920,10 @@ impl SolidSession {
         }
         self.fold_error_zones();
         let (problem, import) = (self.problem.clone(), self.import_text());
+        // The analysis mesh the preview already made for these geometry, mesh and material settings is the one the solve would make.
+        let premeshed = self.preview.as_ref().filter(|_| self.preview_current()).map(|p| Arc::clone(&p.mesh));
         let tag = self.take_tag();
-        match self.solve_worker.start_observed(tag, move |progress| fea_problem::solve::solve_observed(&problem, import.as_deref(), &|stage| {
+        match self.solve_worker.start_observed(tag, move |progress| fea_problem::solve::solve_observed_with(&problem, import.as_deref(), premeshed.as_deref(), &|stage| {
             if progress.cancelled() { return Err("solve cancelled".into()); }
             progress.stage(stage); Ok(())
         })) {
