@@ -219,7 +219,7 @@ fn near_closed(n: &NearClosedBore) -> AssemblyAdvice {
     let h = &n.hole;
     let p = n.gap_point;
     let reason = format!(
-        "Body {} has a \u{d8}{:.3} mm bore {:.2} mm deep whose faces cover {:.1} % of a turn: it is not a hole, because only a bore that wraps the full turn is one. The missing {:.3} mm of wall (arc length) is at ({:.2}, {:.2}, {:.2}) mm, halfway along the bore. It may be a slit or an unclosed seam left in the model: close it in the CAD model and open the file again, and the bore counts as a hole and can pair into a fastener site.",
+        "Body {} has a \u{d8}{:.3} mm bore {:.2} mm deep whose faces cover {:.1} % of a turn: it is not a hole, because only a bore that wraps the full turn is one. The missing {:.3} mm of wall (arc length) is at ({:.2}, {:.2}, {:.2}) mm, halfway along the bore. It may be a designed slit (a split collar or clamp) or a gap left in the model: if it is a gap, close it in the CAD model and open the file again, and the bore counts as a hole and can pair into a fastener site.",
         h.body + 1,
         h.diameter(),
         h.depth(),

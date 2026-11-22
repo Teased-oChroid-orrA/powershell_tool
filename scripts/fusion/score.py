@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Score the detector against the designed Hole features of prepared Fusion 360 Gallery assemblies (see README.md).
-Usage: score.py WORK_DIR PATH/TO/assembly-score [report.json]
+Usage: score.py WORK_DIR PATH/TO/assembly-score [report.json [DATA_DIR]]
 
 Labels come only from the dataset's `holes` (a designer's Hole feature: diameter, origin, direction), never from the detector.
  * hole recall: a labelled hole is found when a detected hole on a body of the same index has the same axis (parallel within 1 degree,
@@ -10,10 +10,12 @@ Labels come only from the dataset's `holes` (a designer's Hole feature: diameter
    detected site names both bodies on that line. (Instances of one body share a label, so a pair needs two distinct body ids.)
  * near-closed: partial bores at or above NEAR_CLOSED_MIN_TURN; a candidate that lies on a labelled hole's axis with its diameter is a
    designed full hole the reader split short of a turn (a false candidate)."""
-import json, math, subprocess, sys
+import json, math, os, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 ANG = math.cos(math.radians(1.0))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from prepare import instances, mul  # noqa: E402
 
 
 def dot(a, b): return sum(x * y for x, y in zip(a, b))
@@ -41,11 +43,12 @@ def run(exe, a):
 
 def main():
     work, exe = sys.argv[1], sys.argv[2]
+    data_dir = sys.argv[4] if len(sys.argv) > 4 else None
     manifest = json.load(open(work + '/manifest.json'))
     with ThreadPoolExecutor(max_workers=6) as pool:
         results = list(pool.map(lambda a: run(exe, a), manifest))
     rep = {'assemblies': 0, 'failed': [], 'unread_parts': 0, 'labelled': 0, 'found': 0, 'missed': [], 'sites': 0, 'site_pairs': 0, 'site_pairs_found': 0,
-           'labelled_read': 0, 'found_read': 0, 'pairs_read': 0, 'pairs_read_found': 0, 'instances': 0, 'bridged': 0, 'bridged_on_label': 0, 'near': [], 'times': [], 'holes': 0}
+           'found_world': 0, 'found_local': 0, 'miss_partial': 0, 'miss_full_wrap': 0, 'miss_no_cylinder': 0, 'labelled_read': 0, 'found_read': 0, 'pairs_read': 0, 'pairs_read_found': 0, 'instances': 0, 'bridged': 0, 'bridged_on_label': 0, 'near': [], 'times': [], 'holes': 0}
     for a, res in zip(manifest, results):
         if isinstance(res, Exception):
             rep['failed'].append((a['id'], type(res).__name__))
@@ -64,16 +67,45 @@ def main():
         # detected body index (argument position) -> manifest body id
         label = lambda occ: body_ids[occ]
         labelled = list(a['holes'])
+        # Is a designed hole's origin in the root frame (world) or in the frame of its body's component (local, then the instance's
+        # transform puts it in the root frame)? Both are tried; `found` is either.
+        mats = None
+        if data_dir:
+            try:
+                mats = [m for _, m in instances(json.load(open(f"{data_dir}/{a['id']}/assembly.json")))]
+            except Exception:
+                mats = None
+        def variants(h):
+            out = []
+            for i, b in enumerate(body_ids):
+                if b == h['body']:
+                    out.append(('world', i, h['p'], h['a']))
+                    if mats:
+                        out.append(('local', i, mul(mats[i], h['p'], 1.0), mul(mats[i], h['a'], 0.0)))
+            return out
         for h in labelled:
             rep['labelled'] += 1
-            hit = [d for d in res['holes'] if label(d['body']) == h['body'] and same_axis(h['p'], h['a'], d['p'], d['a']) and abs(d['d'] - h['d']) <= 0.05]
+            hit = {}
+            for frame, i, p, ax in variants(h):
+                if any(d['body'] == i and same_axis(p, ax, d['p'], d['a']) and abs(d['d'] - h['d']) <= 0.05 for d in res['holes']):
+                    hit[frame] = True
             if h['body'] in read_ids:
                 rep['labelled_read'] += 1
                 rep['found_read'] += bool(hit)
+                rep['found_world'] += 'world' in hit
+                rep['found_local'] += 'local' in hit
             if hit:
                 rep['found'] += 1
             else:
-                rep['missed'].append({'asm': a['id'], 'type': h['type'], 'd': round(h['d'], 3)})
+                kind = None
+                if h['body'] in read_ids:
+                    # a miss on a body that was read: is there a concave cylinder of this axis and size, and how much of a turn does it wrap?
+                    # one face that wraps the whole turn is a full bore the detector should have found; the wraps of several faces are not
+                    # added (two half rings at different depths, or of two instances, are not a whole one)
+                    wraps = [c['wrap'] for frame, i, p, ax in variants(h) for c in res['cyl'] if c['body'] == i and c['side'] == 'concave' and same_axis(p, ax, c['p'], c['a']) and abs(2 * c['r'] - h['d']) <= 0.05]
+                    kind = 'miss_no_cylinder' if not wraps else ('miss_full_wrap' if max(wraps) >= 2 * math.pi - 1e-3 else 'miss_partial')
+                    rep[kind] += 1
+                rep['missed'].append({'asm': a['id'], 'type': h['type'], 'd': round(h['d'], 3), 'kind': kind})
         # labelled sites: designed holes of two different bodies on one axis with the same diameter
         pairs = set()
         for i, h1 in enumerate(labelled):
@@ -101,6 +133,8 @@ def main():
     print(f"assemblies scored {rep['assemblies']} (failed {len(rep['failed'])}, unread parts {rep['unread_parts']}), holes {rep['holes']}, sites {rep['sites']}")
     print(f"body instances {rep['instances']}, unread {rep['unread_parts']} ({100 * rep['unread_parts'] / max(1, rep['instances']):.1f} %)")
     print(f"designed holes {rep['labelled']}, found {rep['found']} ({100 * rep['found'] / max(1, rep['labelled']):.1f} %); on bodies that were read: {rep['labelled_read']}, found {rep['found_read']} ({100 * rep['found_read'] / max(1, rep['labelled_read']):.1f} %)")
+    print(f"on read bodies, by frame of the label: root frame {rep['found_world']}, component frame placed by the instance {rep['found_local']}")
+    print(f"misses on read bodies: only a partial turn of cylinder {rep['miss_partial']} (an edge or notch hole: not a bore), no cylinder of that axis and size {rep['miss_no_cylinder']}, a full turn present but not a hole {rep['miss_full_wrap']}")
     print(f"designed coaxial pairs on different bodies {rep['site_pairs']}, found as a site {rep['site_pairs_found']}; with both bodies read: {rep['pairs_read']}, found {rep['pairs_read_found']} ({100 * rep['pairs_read_found'] / max(1, rep['pairs_read']):.1f} %)")
     print(f"bridged sites {rep['bridged']}, on a designed hole axis {rep['bridged_on_label']}")
     edges = [0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]

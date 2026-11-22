@@ -321,8 +321,10 @@ fn a_near_closed_bore_is_listed_under_check_with_its_numbers_counted_and_its_fac
     let all = texts(&s.inspector());
     let item = s.loaded().unwrap().advice[2].clone();
     // under the Check group (a warning), after the groups that are not warnings, with the label and the dim numbers
-    assert!(all.contains("Check") && all.contains(item.label().as_str()) && all.contains(item.detail().as_str()), "{all}");
-    assert!(all.find("Interfaces").unwrap() < all.find("Check").unwrap(), "{all}");
+    assert!(all.contains(item.label().as_str()) && all.contains(item.detail().as_str()), "{all}");
+    let advice_card = s.inspector().into_iter().find(|c| c.id == "assembly-advice").unwrap();
+    let headings: Vec<String> = advice_card.items.iter().filter_map(|i| if let crate::gpu_viewer::ui::DockItem::Heading(t) = i { Some(t.clone()) } else { None }).collect();
+    assert_eq!(headings, vec!["Fastener sites", "Interfaces", "Check"], "the item is under Check, the warning group, after the others");
     // the summary card and the status bar count it, and the tree has the Detected row and the item
     assert!(all.contains("Near-closed bores"), "{all}");
     assert!(s.status().contains("1 near-closed bore"), "{}", s.status());
