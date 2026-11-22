@@ -229,9 +229,11 @@ fn run(case: Case, ideal: Idealisation) -> Out {
         let specs = fit_specs(tune.eps_n(case.housing.e, a_contact));
         let nl = model.solve_nonlinear_contact(&loads, &bc, specs, &tune.options(1)).unwrap();
         assert!(nl.complete(), "the fit stopped early: {:?}", nl.stop);
-        let (st, w) = (&nl.state.contact[0], &nl.contact_weights[0]);
-        let (pf, wt) = st.iter().zip(w).fold((0.0, 0.0), |(a, b), (s, w)| (a + s.p * w, b + w));
-        fit_pressure = Some(pf / wt);
+        // The two passes (each body the slave of the other) carry about half of the physical pressure each: it is their sum.
+        fit_pressure = Some((0..2).map(|k| {
+            let (pf, wt) = nl.state.contact[k].iter().zip(&nl.contact_weights[k]).fold((0.0, 0.0), |(a, b), (s, w)| (a + s.p * w, b + w));
+            pf / wt
+        }).sum());
         fit_nl = Some(nl);
     }
 
@@ -371,5 +373,77 @@ fn convergence() {
     for (around, layers) in [(36, 2), (36, 3), (36, 4), (54, 2)] {
         let o = run(naca_75s(1.5, 0.5, around), Idealisation::Solid { layers, lock_z: false });
         println!("3D around {around:>3} layers {layers}: {:.0} lbf at limit, peak {:.0}, {:.0} s, {} dof", o.at_limit(), o.peak(), o.secs, o.dofs);
+    }
+}
+
+// ------------------------------------------------------------------------------------- NACA TN 1503 table
+
+/// Table I (tensile) and II (bearing ultimate) averages of NACA TN 1503, as in `validation_naca_tn1503.rs`:
+/// `(alloy, Ftu, Fty, Fbru(1.5), Fbru(2.0))`, psi.
+const NACA_BARS: [(&str, f64, f64, f64, f64); 6] = [
+    ("75S-T 1x2 bar", 87_900.0, 79_800.0, 115_500.0, 151_900.0),
+    ("75S-T 2x2 bar", 86_300.0, 69_000.0, 109_500.0, 140_400.0),
+    ("24S-T 1x2 bar", 67_800.0, 48_400.0, 98_500.0, 123_000.0),
+    ("24S-T 2x2 bar", 65_400.0, 46_500.0, 98_400.0, 123_400.0),
+    ("14S-T 1x2 bar", 69_300.0, 63_200.0, 102_800.0, 129_500.0),
+    ("14S-T 2x2 bar", 68_700.0, 61_100.0, 99_400.0, 124_200.0),
+];
+
+/// All twelve NACA points in plane strain, plane stress and 3D (t/D 0.5, 36 elements around, 2 layers over half the
+/// thickness): the bearing stress `P/(D t)` of each against the test and the plane-strain / plane-stress ratios to 3D.
+#[test]
+#[ignore = "prints the NACA table in 2D and 3D; ~15-30 min"]
+fn naca_table() {
+    println!("{:<14} e/D {:>8} | {:>8} {:>8} {:>8} | vs test: {:>7} {:>7} {:>7} | strain/3D stress/3D", "bar", "test", "strain", "stress", "3D", "strain", "stress", "3D");
+    let (mut sums, mut n) = ([0.0f64; 3], 0.0);
+    for (alloy, ftu, fty, f15, f20) in NACA_BARS {
+        for (ed, test) in [(1.5, f15), (2.0, f20)] {
+            let c = naca(ftu, fty, f15, f20, ed, 0.5, 36);
+            let area = D * c.thickness();
+            let s = run(c, Idealisation::Strain).at_limit() / area;
+            let p = run(c, Idealisation::Stress).at_limit() / area;
+            let t = run(c, Idealisation::Solid { layers: 2, lock_z: false }).at_limit() / area;
+            println!("{alloy:<14} {ed:>3} {test:>8.0} | {s:>8.0} {p:>8.0} {t:>8.0} | vs test: {:>+6.1}% {:>+6.1}% {:>+6.1}% | {:>+6.1}% {:>+6.1}%", pct(s, test), pct(p, test), pct(t, test), pct(s, t), pct(p, t));
+            for (k, v) in [s, p, t].iter().enumerate() {
+                sums[k] += pct(*v, test);
+            }
+            n += 1.0;
+        }
+    }
+    println!("mean error vs test: plane strain {:+.1} %, plane stress {:+.1} %, 3D {:+.1} %", sums[0] / n, sums[1] / n, sums[2] / n);
+}
+
+/// Thickness sweep of the 75S-T 1x2 case: where plane stress < 3D < plane strain, and how fast plane strain converges
+/// to the mid-plane of a thick plate. Model against model (no test data at these t/D), e/D 1.5 and 2.0.
+#[test]
+#[ignore = "prints the t/D sweep; ~20-40 min"]
+fn thickness_sweep() {
+    println!("{:>5} {:>5} | {:>8} {:>8} {:>8} | strain/3D stress/3D | s", "e/D", "t/D", "strain", "stress", "3D");
+    for ed in [1.5, 2.0] {
+        for td in [0.1, 0.25, 0.5, 1.0, 2.0] {
+            let c = naca_75s(ed, td, 36);
+            let layers = if td <= 0.5 { 2 } else { 3 };
+            let area = D * c.thickness();
+            let s = run(c, Idealisation::Strain).at_limit() / area;
+            let p = run(c, Idealisation::Stress).at_limit() / area;
+            let o3 = run(c, Idealisation::Solid { layers, lock_z: false });
+            let t = o3.at_limit() / area;
+            println!("{ed:>5} {td:>5} | {s:>8.0} {p:>8.0} {t:>8.0} | {:>+6.1}% {:>+6.1}% | {:.0}", pct(s, t), pct(p, t), o3.secs);
+        }
+    }
+}
+
+/// e/D beyond the tested 1.5-2.0 (model against model), t/D 0.5.
+#[test]
+#[ignore = "prints the e/D extension; ~10 min"]
+fn edge_distance_extension() {
+    println!("{:>5} | {:>8} {:>8} {:>8} | strain/3D stress/3D", "e/D", "strain", "stress", "3D");
+    for ed in [1.0, 1.25, 3.0] {
+        let c = naca_75s(ed, 0.5, 36);
+        let area = D * c.thickness();
+        let s = run(c, Idealisation::Strain).at_limit() / area;
+        let p = run(c, Idealisation::Stress).at_limit() / area;
+        let t = run(c, Idealisation::Solid { layers: 2, lock_z: false }).at_limit() / area;
+        println!("{ed:>5} | {s:>8.0} {p:>8.0} {t:>8.0} | {:>+6.1}% {:>+6.1}%", pct(s, t), pct(p, t));
     }
 }
