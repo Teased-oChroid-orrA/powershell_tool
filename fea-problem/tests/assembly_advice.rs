@@ -148,3 +148,46 @@ fn a_pin_bridging_bores_that_do_not_touch_is_named_in_the_fastener_reason() {
     assert_eq!(bodies, &vec![0, 1]);
     assert!(reason.contains("do not touch") && reason.contains("body 3"), "{reason}");
 }
+
+use solid_kernel::features::{Features, NearClosedBore};
+
+/// A drilled plate and a second plate, detected, with the plate's bore moved from the holes to the near-closed list (the faces of a
+/// bore short of a turn): what `detect` gives for a model whose bore has a slit.
+fn slit_plate_features(covered: f64) -> Features {
+    let models: Vec<AnalyticModel> = [plate([0., 0., 0.], [40., 30., 10.], &[([20., 15.], 2.)]), plate([0., 0., 10.], [40., 30., 20.], &[])].iter().map(read).collect();
+    let mut f = detect(&models).unwrap();
+    assert_eq!((f.holes.len(), f.sites.len()), (1, 0));
+    let hole = f.holes.remove(0);
+    let missing = (1. - covered) * std::f64::consts::TAU;
+    f.near_closed.push(NearClosedBore { hole, covered, gap: [0.2, 0.2 + missing], gap_point: [22., 15., 5.], gap_width: 2. * missing });
+    f
+}
+
+#[test]
+fn a_near_closed_bore_is_advice_that_names_where_the_gap_is_and_is_not_a_hole_or_an_unmated_hole() {
+    let f = slit_plate_features(0.97);
+    let items = recommend(&f);
+    let near: Vec<&AssemblyAdvice> = items.iter().filter(|i| matches!(i, AssemblyAdvice::NearClosed { .. })).collect();
+    assert_eq!(near.len(), 1, "{items:?}");
+    // the bore is not a hole, so it is no unmated-hole advice either
+    assert!(!items.iter().any(|i| matches!(i, AssemblyAdvice::Unmated { .. })), "{items:?}");
+    let AssemblyAdvice::NearClosed { body, faces, diameter, covered, gap_point, .. } = near[0] else { unreachable!() };
+    assert_eq!((*body, faces.len()), (0, 1));
+    assert!((diameter - 4.).abs() < 1e-9 && (covered - 0.97).abs() < 1e-12 && gap_point == &[22., 15., 5.]);
+    // the measured numbers: the label says how closed, the detail the width of the gap, the reason where it is and what to do
+    assert_eq!(near[0].label(), "Body 1 bore \u{d8}4.000 mm is 97.0 % closed: possible modelling gap");
+    assert!(near[0].detail().contains("97.0 % of a turn") && near[0].detail().contains("mm gap"), "{}", near[0].detail());
+    let reason = near[0].reason();
+    assert!(reason.contains("not a hole") && reason.contains("(22.00, 15.00, 5.00)") && reason.contains("close it in the CAD model"), "{reason}");
+    // selecting the item lights the bore's faces
+    assert_eq!(near[0].faces(), faces.clone());
+    // it follows the holes without a mate and comes before nothing it should not (no interface or unresolved item moves)
+    let positions: Vec<usize> = items.iter().enumerate().filter(|(_, i)| matches!(i, AssemblyAdvice::NearClosed { .. })).map(|(k, _)| k).collect();
+    assert_eq!(positions, vec![items.len() - 1], "no unresolved pair follows it here");
+}
+
+#[test]
+fn no_near_closed_advice_without_a_near_closed_bore() {
+    let items = advice(&[plate([0., 0., 0.], [40., 30., 10.], &[([20., 15.], 2.)]), plate([0., 0., 10.], [40., 30., 20.], &[([20., 15.], 2.)])]);
+    assert!(!items.iter().any(|i| matches!(i, AssemblyAdvice::NearClosed { .. })), "{items:?}");
+}
