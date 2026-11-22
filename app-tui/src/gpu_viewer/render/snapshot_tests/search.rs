@@ -86,6 +86,15 @@ fn search_snapshot() {
             } else {
                 egui::Theme::Light
             });
+            // FEA_SNAPSHOT_NAV=1 puts the dashboard window's nav strip over the page (ADR-024).
+            if std::env::var("FEA_SNAPSHOT_NAV").is_ok() {
+                use crate::gpu_viewer::nav::{NavStrip, NavTab};
+                gui.set_nav(Some(NavStrip {
+                    tabs: vec![NavTab { id: "search", name: "Search", dirty: false, busy: false }],
+                    active: Some("search"),
+                    ask_close: None,
+                }));
+            }
             let mut view = ViewState::new(&scene);
             view.page_layout = layout;
             let scenes = [scene];

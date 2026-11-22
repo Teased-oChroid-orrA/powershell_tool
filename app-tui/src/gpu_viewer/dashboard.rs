@@ -16,21 +16,42 @@ pub struct Workbench {
     pub summary: &'static str,
     /// The native window it opens.
     pub kind: EditorKind,
+    /// The section of the dashboard it is listed under.
+    pub group: Group,
+}
+
+/// The dashboard's sections, in display order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Group {
+    Joints,
+    Structures,
+    Data,
+}
+
+impl Group {
+    pub const ALL: [Group; 3] = [Group::Joints, Group::Structures, Group::Data];
+    pub fn name(self) -> &'static str {
+        match self {
+            Group::Joints => "Joints & fasteners",
+            Group::Structures => "Structures & simulation",
+            Group::Data => "Documents & data",
+        }
+    }
 }
 
 pub const WORKBENCHES: [Workbench; 12] = [
-    Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", kind: EditorKind::Search },
-    Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", kind: EditorKind::FastenerHole },
-    Workbench { id: "assembly", name: "Assembly Joints", summary: "Holes, fastener sites and contact faces of a STEP assembly, shown on the model.", kind: EditorKind::Assembly },
-    Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", kind: EditorKind::Bushing },
-    Workbench { id: "bushing-stackup", name: "Bushing Stackup", summary: "Line-reamed through holes and per-member bushing bore preparation.", kind: EditorKind::BushingStackup },
-    Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", kind: EditorKind::PressureVessel },
-    Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", kind: EditorKind::Preload },
-    Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", kind: EditorKind::Lug },
-    Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", kind: EditorKind::Eccentric },
-    Workbench { id: "fea", name: "FEA Workbench", summary: "Sketch, STEP or mesh; supports, loads, solve, contour.", kind: EditorKind::Solid },
-    Workbench { id: "members", name: "Frame and Truss", summary: "Nodes, truss and frame members, supports and loads.", kind: EditorKind::Members },
-    Workbench { id: "material-lookup", name: "Material Lookup", summary: "About 1,400 materials; type to search.", kind: EditorKind::Materials },
+    Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", kind: EditorKind::Search , group: Group::Data },
+    Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", kind: EditorKind::FastenerHole , group: Group::Joints },
+    Workbench { id: "assembly", name: "Assembly Joints", summary: "Holes, fastener sites and contact faces of a STEP assembly, shown on the model.", kind: EditorKind::Assembly , group: Group::Joints },
+    Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", kind: EditorKind::Bushing , group: Group::Joints },
+    Workbench { id: "bushing-stackup", name: "Bushing Stackup", summary: "Line-reamed through holes and per-member bushing bore preparation.", kind: EditorKind::BushingStackup , group: Group::Joints },
+    Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", kind: EditorKind::PressureVessel , group: Group::Structures },
+    Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", kind: EditorKind::Preload , group: Group::Joints },
+    Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", kind: EditorKind::Lug , group: Group::Structures },
+    Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", kind: EditorKind::Eccentric , group: Group::Joints },
+    Workbench { id: "fea", name: "FEA Workbench", summary: "Sketch, STEP or mesh; supports, loads, solve, contour.", kind: EditorKind::Solid , group: Group::Structures },
+    Workbench { id: "members", name: "Frame and Truss", summary: "Nodes, truss and frame members, supports and loads.", kind: EditorKind::Members , group: Group::Structures },
+    Workbench { id: "material-lookup", name: "Material Lookup", summary: "About 1,400 materials; type to search.", kind: EditorKind::Materials , group: Group::Data },
 ];
 
 impl Workbench {

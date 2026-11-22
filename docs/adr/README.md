@@ -31,3 +31,4 @@ for Sections 13 and 15.
 | [021](ADR-021-thermal-studies.md) | Thermal studies (steady conduction, thermal stress) as a study of the same `Problem`, not a second schema | Accepted |
 | [022](ADR-022-hybrid-meshing-and-goal-oriented-adaptivity.md) | Hybrid structured/unstructured meshing and goal-oriented adaptivity in `fea-core` | Accepted (direct user direction; epic #25) |
 | [023](ADR-023-retire-opencascade.md) | Retire OpenCascade; the native kernel is the only CAD backend | Accepted (owner direction, 2026-11-19; supersedes OCCT parts of ADR-019) |
+| [024](ADR-024-in-window-workbenches.md) | Workbenches open inside the dashboard window with a nav strip; separate process only for Shift-click / New window | Accepted (owner direction, 2026-11-21; amends ADR-014 decision 1) |

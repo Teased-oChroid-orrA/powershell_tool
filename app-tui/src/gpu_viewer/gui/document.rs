@@ -1354,7 +1354,7 @@ impl Gui {
             return;
         }
         let picked = self.doc.suggest_sel.take().filter(|(i, text)| *i < n && *text == input.text).map(|(i, _)| i);
-        let mut key = |k| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+        let key = |k| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
         let mut sel = picked;
         if key(egui::Key::ArrowDown) {
             sel = Some(step_pick(sel, n));

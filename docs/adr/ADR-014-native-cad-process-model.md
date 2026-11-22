@@ -1,5 +1,7 @@
 # ADR-014: Native CAD window - process model and benches
 
+Amended 2026-11-21 by ADR-024: decision 1's process model now applies to Shift-click / New window only; the dashboard window holds workbenches in-process.
+
 Status: Accepted (user direction 2026-10-10: the native window becomes a SolidWorks-like front end with separate
 benches; the terminal UI stays the launcher and the home of the toolboxes that are not ported)
 

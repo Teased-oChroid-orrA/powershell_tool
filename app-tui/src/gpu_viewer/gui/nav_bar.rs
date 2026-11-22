@@ -65,10 +65,13 @@ impl Gui {
                     acts.push(NavAct::Open(tab.id));
                 }
                 if tab.dirty {
-                    ui.label(RichText::new("●").color(p.warn)).on_hover_text("Unsaved edits");
+                    // Painted: the UI font has no "●" glyph (it rendered as an empty box).
+                    let (dot, resp) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
+                    ui.painter().circle_filled(dot.center(), 3.5, p.warn);
+                    resp.on_hover_text("Unsaved edits");
                 }
                 if tab.busy {
-                    ui.add(egui::Spinner::new().size(12.0)).on_hover_text("Solving");
+                    ui.add(egui::Spinner::new().size(14.0)).on_hover_text("Solving");
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
                 }
                 let x = ui.add(egui::Button::new(RichText::new("×").color(p.dim)).frame(false));
@@ -98,7 +101,7 @@ impl Gui {
     /// "Close X?" under the strip while its tab holds unsaved edits or a running solve.
     fn close_question(&mut self, ctx: &egui::Context, p: &theme::Palette, nav: &NavStrip, acts: &mut Vec<NavAct>) {
         let Some(tab) = nav.ask_close.and_then(|id| nav.tabs.iter().find(|t| t.id == id)) else { return };
-        egui::Area::new(Id::new("nav-close-question")).order(Order::Foreground).anchor(Align2::CENTER_TOP, Vec2::new(0.0, 46.0)).show(ctx, |ui| {
+        egui::Area::new(Id::new("nav-close-question")).fade_in(false).order(Order::Foreground).anchor(Align2::CENTER_TOP, Vec2::new(0.0, 46.0)).show(ctx, |ui| {
             panels::popup_frame(p).show(ui, |ui| {
                 let why = match (tab.dirty, tab.busy) {
                     (true, true) => "has unsaved edits and a solve is running",

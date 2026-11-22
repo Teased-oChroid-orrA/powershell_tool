@@ -229,7 +229,9 @@ fn dashboard_snapshot() {
     let mut dash = Dashboard::new(recents, None);
     pollster::block_on(async {
         let adapter = test_adapter().await.expect("adapter required");
-        let (w, h) = (1280u32, 800u32);
+        // FEA_SNAPSHOT_DASH_W=<px> shoots a narrower window (the recent files move below the tiles).
+        let w: u32 = std::env::var("FEA_SNAPSHOT_DASH_W").ok().and_then(|v| v.parse().ok()).unwrap_or(1280);
+        let h = 800u32;
         let scene = Scene {
             label: "d".into(),
             positions: vec![[0.0; 3]; 3],
@@ -288,5 +290,101 @@ fn dashboard_snapshot() {
             )
             .unwrap();
         }
+    });
+}
+
+/// The nav strip of the dashboard window (ADR-024) over the dashboard and over a viewer page, with a dirty and a busy tab,
+/// as raw RGBA dumps: `FEA_SNAPSHOT_NAV_OUT=/dir cargo test ... nav_strip_snapshot -- --ignored`.
+#[test]
+#[ignore = "needs a graphics adapter and FEA_SNAPSHOT_NAV_OUT"]
+fn nav_strip_snapshot() {
+    use crate::gpu_viewer::dashboard::{Dashboard, Recents};
+    use crate::gpu_viewer::nav::{NavStrip, NavTab};
+    let Ok(dir) = std::env::var("FEA_SNAPSHOT_NAV_OUT") else {
+        return;
+    };
+    let _guard = headless_guard();
+    let strip = |active: Option<&'static str>, ask_close: Option<&'static str>| NavStrip {
+        tabs: vec![
+            NavTab { id: "fea", name: "FEA Workbench", dirty: true, busy: false },
+            NavTab { id: "lug", name: "Lug Analysis", dirty: false, busy: true },
+            NavTab { id: "bushing", name: "Bushing", dirty: false, busy: false },
+        ],
+        active,
+        ask_close,
+    };
+    let mut dash = Dashboard::new(Recents::default(), None);
+    pollster::block_on(async {
+        let adapter = test_adapter().await.expect("adapter required");
+        let (w, h) = (1280u32, 800u32);
+        let scene = Scene {
+            label: "n".into(),
+            positions: vec![[0.0; 3]; 3],
+            triangles: vec![0, 1, 2],
+            samples: vec![[0.0; 4]; 3],
+            times: vec![0.0],
+            range: [0.0, 1.0],
+            gain: 1.0,
+            harmonic_period: None,
+            field_label: String::new(),
+            fields: Vec::new(),
+        };
+        let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+            .await
+            .unwrap();
+        crate::gpu_viewer::gui::theme::choose(None);
+        crate::gpu_viewer::gui::theme::set_hour(Some(12.0));
+        // The dashboard with the strip (a tab is open, none shown) and the close question.
+        for (name, ask) in [("dashboard", None), ("close-question", Some("fea"))] {
+            let texture = target(&r, w, h);
+            let mut gui = Gui::new();
+            gui.set_nav(Some(strip(None, ask)));
+            let view = texture.create_view(&Default::default());
+            let ctx = gui.ctx().clone();
+            for _ in 0..3 {
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))),
+                    ..Default::default()
+                };
+                let (out, _) = gui.run_dashboard(raw, &mut dash);
+                r.paint_egui(&view, &ctx, out, [w, h]);
+            }
+            std::fs::write(format!("{dir}/nav-{name}.rgba"), read_back(&r, &texture)).unwrap();
+        }
+        // The switcher open over the dashboard.
+        {
+            let texture = target(&r, w, h);
+            let mut gui = Gui::new();
+            gui.set_nav(Some(strip(None, None)));
+            gui.open_switcher();
+            let view = texture.create_view(&Default::default());
+            let ctx = gui.ctx().clone();
+            for _ in 0..3 {
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))),
+                    ..Default::default()
+                };
+                let (out, _) = gui.run_dashboard(raw, &mut dash);
+                r.paint_egui(&view, &ctx, out, [w, h]);
+            }
+            std::fs::write(format!("{dir}/nav-switcher.rgba"), read_back(&r, &texture)).unwrap();
+        }
+        // A workbench page under the strip.
+        let texture = target(&r, w, h);
+        let mut gui = Gui::new();
+        gui.set_nav(Some(strip(Some("fea"), None)));
+        let view = ViewState::new(&scene);
+        let scenes = [scene];
+        let input = GuiInput {
+            view: &view,
+            scenes: &scenes,
+            selected: 0,
+            editor: None,
+            error: None,
+            box_drag: None,
+            overlay: &[],
+        };
+        draw(&mut r, &mut gui, &texture, &input, [0.35, 0.4], true);
+        std::fs::write(format!("{dir}/nav-viewer.rgba"), read_back(&r, &texture)).unwrap();
     });
 }

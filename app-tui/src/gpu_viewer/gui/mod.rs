@@ -6,6 +6,7 @@
 //! The front end only reads what the editor and the viewer expose (`Authoring::tree/properties/ribbon/menus`,
 //! `menus::bar`) and reports clicks as `Outcome`s; availability rules stay with the model that owns them.
 mod dashboard;
+mod dashboard_glyphs;
 mod document;
 mod nav_bar;
 #[cfg(test)]
