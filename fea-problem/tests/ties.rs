@@ -340,23 +340,6 @@ fn a_frictional_contact_under_a_push_carries_it_and_no_shear() {
 }
 
 #[test]
-fn a_contact_that_starts_open_is_refused_not_solved_wrongly() {
-    // Body 2 starts 1e-3 above body 1 and is held only by the contact and the weak springs that keep a loose body from being a
-    // free body: loaded in steps it would have to travel far (load over spring stiffness) to find the contact, so the Newton
-    // iteration does not converge. The solve says so instead of returning a state with the gap still open.
-    let gap = 1.0e-3;
-    let mut p = stack([1.0, 1.0], 0.0, gap);
-    let mut t = tie([1.0, 1.0], 0.0, gap);
-    t.b.centroid[2] += gap;
-    t.friction = Some(0.0);
-    p.ties = vec![t];
-    p.loads = vec![Load::Traction { edge: "face12".into(), tx: 0.0, ty: 0.0, tz: -5.0e4 }];
-    assert!(p.validate().is_ok(), "{:?}", p.validate());
-    let err = solve(&p, None).unwrap_err();
-    assert!(err.contains("contact could not be solved"), "{err}");
-}
-
-#[test]
 fn a_pull_that_opens_the_contact_is_refused_with_the_reason() {
     let err = solve(&contact_stack(0.0, false), None).unwrap_err();
     assert!(err.contains("contact could not be solved") && err.contains("presses the bodies together"), "{err}");
@@ -668,4 +651,135 @@ fn bonded_ties_that_a_contact_solve_cannot_join_are_still_refused_with_the_reaso
     p.loads = vec![Load::Traction { edge: top(2), tx: 0.0, ty: 0.0, tz: -PULL }];
     let err = solve(&p, None).unwrap_err();
     assert!(err.contains("tie"), "{err}");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Gap-closing contact (Phase C follow-up 3): a body nothing holds, a gap away, is moved to the contact before the solve
+// ---------------------------------------------------------------------------------------------------------------------------
+
+/// [`bars`] in a column with `gap` between consecutive bars, a frictional-or-frictionless contact (`mu`) at every joint, the first
+/// bar fixed at its base and a push at the top of the last (the weights of the bars' materials are `ratios`).
+fn gapped_column(n: usize, gap: f64, mu: f64) -> (Problem, Vec<(f64, f64)>) {
+    let list: Vec<(f64, f64)> = (0..n).map(|k| (0.0, k as f64 * (1.0 + gap))).collect();
+    let mut p = bars(&list);
+    p.ties = (0..n - 1)
+        .map(|k| {
+            let mut t = joint(&list, k, k + 1, Some(mu));
+            t.gap = gap;
+            t
+        })
+        .collect();
+    p.supports = vec![Support::fixed(&bottom(0))];
+    (p, list)
+}
+
+#[test]
+fn a_body_a_gap_away_is_moved_to_the_contact_and_carries_the_push_by_the_closed_form() {
+    // Bar 1 starts `gap` above bar 0 and is held by nothing but the contact. It travels the gap and then shortens with the stack:
+    // its bottom moves `-(sigma L0/E0 + gap)`, its top `-(sigma (L0/E0 + L1/E1) + gap)`.
+    let gap = 1.0e-3;
+    for element in [ElementChoice::Tri3, ElementChoice::Tri6] {
+        let (mut p, list) = gapped_column(2, gap, 0.0);
+        p.mesh.element = element;
+        scaled(&mut p, &[3.0]);
+        let e = p.material.e;
+        p.loads = vec![Load::Traction { edge: top(1), tx: 0.0, ty: 0.0, tz: -5.0e4 }];
+        let s = solve(&p, None).unwrap();
+        let sigma = 5.0e4;
+        let (lo, hi) = uz_at(&s, 1.0);
+        let joint0 = -sigma / e;
+        assert!(rel("lower face of the joint", lo, joint0) < 1e-5 && rel("lower face of the joint", hi, joint0) < 1e-5, "{element:?}");
+        let _ = &list;
+        let (lo, hi) = uz_at(&s, 1.0 + gap);
+        let want = -(sigma / e + gap);
+        assert!(rel("upper face of the joint", lo, want) < 1e-6 && rel("upper face of the joint", hi, want) < 1e-6, "{element:?}: {lo:e} {hi:e} vs {want:e}");
+        let (lo, hi) = uz_at(&s, 2.0 + gap);
+        let want = -(sigma / e + sigma / (3.0 * e) + gap);
+        assert!(rel("tip", lo, want) < 1e-6 && rel("tip", hi, want) < 1e-6, "{element:?}: {lo:e} {hi:e} vs {want:e}");
+        let c = &s.summary.contacts[0];
+        assert!((c.normal_force / sigma - 1.0).abs() < 1e-5 && c.contact_share > 0.999, "{c:?}");
+        assert!(s.summary.equilibrium_error < 1e-6, "{element:?}: {}", s.summary.equilibrium_error);
+    }
+}
+
+#[test]
+fn two_gaps_in_a_column_close_one_after_the_other() {
+    let gap = 2.0e-3;
+    let (mut p, _) = gapped_column(3, gap, 0.0);
+    let sigma = 5.0e4;
+    p.loads = vec![Load::Traction { edge: top(2), tx: 0.0, ty: 0.0, tz: -sigma }];
+    let e = p.material.e;
+    let s = solve(&p, None).unwrap();
+    // bar k's top moves -((k + 1) sigma/E + k gap)
+    for k in 0..3 {
+        let z = (k + 1) as f64 * (1.0 + gap) - gap;
+        let (lo, hi) = uz_at(&s, z);
+        let want = -((k + 1) as f64 * sigma / e + k as f64 * gap);
+        assert!(rel(&format!("top of bar {k}"), lo, want) < 1e-5 && rel(&format!("top of bar {k}"), hi, want) < 1e-5, "bar {k}: {lo:e} {hi:e} vs {want:e}");
+    }
+    // The contact solve stops at a residual of 1e-6 of its force scale (`Tuning::frictionless`), the sum of the element forces of
+    // three bars: the base reaction may miss the push by a few of those, measured 1.5e-6 here.
+    assert!(s.summary.equilibrium_error < 3e-6, "{} {:?} {:?}", s.summary.equilibrium_error, s.summary.reaction, s.summary.applied);
+}
+
+#[test]
+fn the_loose_body_may_be_the_lower_one() {
+    // Bar 1 (the upper) is fixed at its top; bar 0 (the lower) is held by nothing and pushed up into it across the gap.
+    let gap = 1.0e-3;
+    let (mut p, _) = gapped_column(2, gap, 0.0);
+    p.supports = vec![Support::fixed(&top(1))];
+    let sigma = 5.0e4;
+    p.loads = vec![Load::Traction { edge: bottom(0), tx: 0.0, ty: 0.0, tz: sigma }];
+    let e = p.material.e;
+    let s = solve(&p, None).unwrap();
+    // the fixed top is at z = 2 + gap; bar 0 rises by the gap and its own shortening and bar 1 shortens too
+    let (lo, hi) = uz_at(&s, 0.0);
+    let want = gap + 2.0 * sigma / e;
+    assert!(rel("bottom of the loose bar", lo, want) < 1e-5 && rel("bottom of the loose bar", hi, want) < 1e-5, "{lo:e} {hi:e} vs {want:e}");
+    assert!(s.summary.equilibrium_error < 1e-6);
+}
+
+#[test]
+fn a_gap_with_friction_closes_and_carries_the_push_and_no_shear() {
+    let gap = 1.0e-3;
+    let (mut p, _) = gapped_column(2, gap, 0.3);
+    let sigma = 5.0e4;
+    p.loads = vec![Load::Traction { edge: top(1), tx: 0.0, ty: 0.0, tz: -sigma }];
+    let e = p.material.e;
+    let s = solve(&p, None).unwrap();
+    let (lo, hi) = uz_at(&s, 2.0 + gap);
+    let want = -(2.0 * sigma / e + gap);
+    // the frictional pair keeps its engaging overlap (1e-5 of a face): 0.3 % of this push's shortening
+    assert!(rel("tip", lo, want) < 5e-3 && rel("tip", hi, want) < 5e-3, "{lo:e} {hi:e} vs {want:e}");
+    let c = &s.summary.contacts[0];
+    assert!((c.normal_force / sigma - 1.0).abs() < 1e-4 && c.slip_share == 0.0 && c.tangential_force < 1e-4 * sigma, "{c:?}");
+}
+
+#[test]
+fn a_gap_that_a_bonded_tie_holds_is_closed_too() {
+    // bar 0 fixed, bar 1 bonded to it, bar 2 a gap above bar 1 and held by nothing but the contact
+    let gap = 1.0e-3;
+    let list = [(0.0, 0.0), (0.0, 1.0), (0.0, 2.0 + gap)];
+    let mut p = bars(&list);
+    let mut t = joint(&list, 1, 2, Some(0.0));
+    t.gap = gap;
+    p.ties = vec![joint(&list, 0, 1, None), t];
+    p.supports = vec![Support::fixed(&bottom(0))];
+    let sigma = 5.0e4;
+    p.loads = vec![Load::Traction { edge: top(2), tx: 0.0, ty: 0.0, tz: -sigma }];
+    let e = p.material.e;
+    let s = solve(&p, None).unwrap();
+    let (lo, hi) = uz_at(&s, 3.0 + gap);
+    let want = -(3.0 * sigma / e + gap);
+    assert!(rel("tip", lo, want) < 2e-6 && rel("tip", hi, want) < 2e-6, "{lo:e} {hi:e} vs {want:e}");
+}
+
+#[test]
+fn a_pull_after_the_gap_still_opens_the_contact_and_is_refused() {
+    // Closing the gap does not make a contact carry a tension: the pull is refused with the reason (a bonded or fastened path
+    // carries it).
+    let (mut p, _) = gapped_column(2, 1.0e-3, 0.0);
+    p.loads = vec![Load::Traction { edge: top(1), tx: 0.0, ty: 0.0, tz: 5.0e4 }];
+    let err = solve(&p, None).unwrap_err();
+    assert!(err.contains("contact could not be solved") && err.contains("presses the bodies together"), "{err}");
 }

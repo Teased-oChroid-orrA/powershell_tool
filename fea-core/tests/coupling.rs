@@ -98,3 +98,19 @@ fn a_coupling_that_names_a_missing_dof_is_refused() {
     let err = model.solve_nonlinear(&loads, &bc, &NlOptions::default()).err().expect("refused");
     assert!(err.contains("coupling"), "{err}");
 }
+
+#[test]
+fn a_one_dof_coupling_is_a_grounding_spring_about_its_offset() {
+    // A free plate held only by one-dof couplings on two nodes, each about the same offset `(dx, dy)`: the plate is carried there
+    // rigidly (no force: the springs sit at their offset), and the floating check accepts it.
+    let mesh = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad4, Elastic::new(E, 0.0), [2, 2, 1], &|p| p).unwrap();
+    let model = Model::new(mesh).unwrap();
+    let (dx, dy) = (3.0e-3, -2.0e-3);
+    let couplings = [(0usize, dx), (1, dy), (2, dx), (3, dy)].into_iter().map(|(dof, offset)| Coupling { terms: vec![(dof, 1.0)], k: E, offset }).collect();
+    let loads = Loads { couplings, ..Loads::default() };
+    let sol = model.solve_nonlinear(&loads, &model.dirichlet(), &NlOptions::default()).unwrap();
+    assert!(sol.complete(), "{:?}", sol.stop);
+    for n in 0..model.mesh.nodes.len() {
+        assert!((sol.u[2 * n] / dx - 1.0).abs() < 1e-9 && (sol.u[2 * n + 1] / dy - 1.0).abs() < 1e-9, "node {n}: {} {}", sol.u[2 * n], sol.u[2 * n + 1]);
+    }
+}

@@ -829,12 +829,14 @@ struct Joint {
     b: String,
     friction: f64,
     gap: f64,
+    /// Outward normal of `b`'s face, towards `a` (a 3D tie; zero for a 2D pair, which starts touching).
+    normal: [f64; 3],
 }
 
 /// The contact pairs of a problem: the 2D pairs between named surfaces of a sketch's regions, and the contact ties of an assembly.
 fn joints(p: &Problem) -> Result<Vec<Joint>, String> {
-    let pairs = p.contacts.iter().map(|c| Joint { a: c.a.clone(), b: c.b.clone(), friction: c.friction, gap: 0.0 });
-    let ties = crate::ties::contact_joints(p)?.into_iter().map(|t| Joint { a: t.a, b: t.b, friction: t.friction, gap: t.gap });
+    let pairs = p.contacts.iter().map(|c| Joint { a: c.a.clone(), b: c.b.clone(), friction: c.friction, gap: 0.0, normal: [0.0; 3] });
+    let ties = crate::ties::contact_joints(p)?.into_iter().map(|t| Joint { a: t.a, b: t.b, friction: t.friction, gap: t.gap, normal: t.normal });
     Ok(pairs.chain(ties).collect())
 }
 
@@ -852,6 +854,11 @@ struct PairSetup {
     /// both ends feels it as a prestress of about E x overlap / length (36 psi for the stack of the tests).
     touch: f64,
     ground: Vec<(usize, f64)>,
+    /// The displacement (`node * d + component`) that closes the gaps of the bodies nothing holds, as the start of the solve: a loose body
+    /// is held only by weak springs, so the load control cannot walk it across a gap (`Newton` stalls). Empty when every gap is closed.
+    shift: Vec<f64>,
+    /// The weak springs of the shifted bodies, about their shifted position (a spring about zero would leak `k shift` of force).
+    anchors: Vec<fea_core::Coupling>,
     tune: Tuning,
 }
 
@@ -927,15 +934,48 @@ fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet, couplings: &[fea_core::C
     let k = 1e-9 * e_min * if let Physics::PlaneStress { thickness } | Physics::PlaneStrain { thickness } = mesh.physics { thickness } else { 1.0 };
     let mut ground = Vec::new();
     let in_blocks: std::collections::BTreeSet<usize> = mesh.blocks.iter().flat_map(|b| b.conn.iter().copied()).collect();
-    for node in in_blocks {
+    for &node in &in_blocks {
         if !held.contains(&root(&mut body, node)) {
             ground.extend((0..d).map(|c| (node * d + c, k)));
         }
     }
+    // A body that no support or bond holds, a gap away from a body that is held (through any chain of contact ties), starts moved by the
+    // gap along the tie's normal, so the contact is engaged at the start of the solve.
+    let mut shift = Vec::new();
+    if d == 3 && joints.iter().any(|j| j.gap > 0.0) {
+        let mut placed: std::collections::BTreeMap<usize, [f64; 3]> = held.iter().map(|&r| (r, [0.0; 3])).collect();
+        let ends: Vec<(usize, usize)> = pairs.iter().map(|(_, a, b)| (root(&mut body, a[0][0]), root(&mut body, b[0][0]))).collect();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (j, &(ra, rb)) in joints.iter().zip(&ends) {
+                let (g, nb) = (j.gap.max(0.0), j.normal);
+                match (placed.get(&ra).copied(), placed.get(&rb).copied()) {
+                    (Some(s), None) => placed.insert(rb, [s[0] + g * nb[0], s[1] + g * nb[1], s[2] + g * nb[2]]),
+                    (None, Some(s)) => placed.insert(ra, [s[0] - g * nb[0], s[1] - g * nb[1], s[2] - g * nb[2]]),
+                    _ => None,
+                }
+                .inspect(|_| changed = true);
+            }
+        }
+        shift = vec![0.0; n * d];
+        for &node in &in_blocks {
+            let r = root(&mut body, node);
+            if let (false, Some(s)) = (held.contains(&r), placed.get(&r)) {
+                shift[node * d..node * d + 3].copy_from_slice(s);
+            }
+        }
+        if shift.iter().all(|v| *v == 0.0) {
+            shift.clear();
+        }
+    }
+    let moved = |dof: usize| !shift.is_empty() && shift[dof / d * d..dof / d * d + d].iter().any(|v| *v != 0.0);
+    let (moved_ground, ground): (Vec<_>, Vec<_>) = ground.into_iter().partition(|&(dof, _)| moved(dof));
+    let anchors = moved_ground.into_iter().map(|(dof, k)| fea_core::Coupling { terms: vec![(dof, 1.0)], k, offset: shift[dof] }).collect();
     // A solid's matrix pattern grows with the faces within the margin (see `FIT_MARGIN_FACES_3D`); the bodies of an assembly may also
     // start a gap apart, which the margin must span.
     let margin = (if d == 3 { FIT_MARGIN_FACES_3D } else { FIT_MARGIN_FACES_2D }) * face + joints.iter().map(|j| j.gap.abs()).fold(0.0, f64::max);
-    Ok(PairSetup { joints, pairs, eps_n, margin, touch: 1e-5 * face, ground, tune })
+    Ok(PairSetup { joints, pairs, eps_n, margin, touch: 1e-5 * face, ground, shift, anchors, tune })
 }
 
 /// The contact interfaces of the pairs (two passes each), after the bushing fits' ones.
@@ -988,8 +1028,9 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     let d = mesh.dim();
     let setup = fit_setup(p, &mesh)?;
     // Bonded ties next to contact ties: the contact solver has no elimination, so a stiff penalty holds them (and carries a pull).
-    let (couplings, tie_notes) = crate::ties::bonded_couplings(p, &mesh, &bc)?;
+    let (mut couplings, tie_notes) = crate::ties::bonded_couplings(p, &mesh, &bc)?;
     let pairs = pair_setup(p, &mesh, &bc, &couplings)?;
+    couplings.extend(pairs.anchors.iter().cloned());
     let ground: Vec<(usize, f64)> = setup.ground.iter().chain(pairs.ground.iter()).copied().collect();
     let tune = if p.bushings.is_empty() { pairs.tune } else { setup.tune };
     let model = Model::new(mesh)?;
@@ -1018,7 +1059,8 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         if plastic {
             opts.ep_step = CONTACT_EP_STEP;
         }
-        let sol = model.solve_nonlinear_contact(&full, &bc, specs(), &opts).map_err(|e| format!("the contact could not be solved: {e}"))?;
+        let start = (!pairs.shift.is_empty()).then(|| fea_core::Start { u: pairs.shift.clone(), contact: Vec::new(), gp: None, lambda: 0.0 });
+        let sol = model.solve_nonlinear_contact_from(&full, &bc, specs(), &opts, start.as_ref()).map_err(|e| format!("the contact could not be solved: {e}"))?;
         if !sol.complete() {
             let hint = if p.ties.iter().any(crate::ties::Tie::is_contact) { ": a contact between assembly bodies carries only a load that presses the bodies together, and a body that a pull leaves loose is not held" } else { "" };
             return Err(format!("the contact could not be solved: {:?}{hint}", sol.stop));
