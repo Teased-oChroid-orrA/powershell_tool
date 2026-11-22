@@ -340,6 +340,13 @@ pub fn related_reasons(path: &str) -> Vec<search_core::catalog_edges::Reason> {
     search_core::catalog::Catalog::open(&catalog).and_then(|c| c.reasons_for(path)).unwrap_or_default()
 }
 
+/// Which of `paths` have identical copies or other versions in the catalog (counts only, from stored facts), for the
+/// results table. Empty when there is no catalog. Tests never read the user's real catalog.
+pub fn relation_cues(paths: Vec<String>) -> Result<std::collections::HashMap<String, search_core::catalog_edges::Cue>, String> {
+    let Some(catalog) = catalog_path().filter(|p| !cfg!(test) && p.exists()) else { return Ok(Default::default()) };
+    search_core::catalog::Catalog::open(&catalog).and_then(|c| c.cues_for(&paths)).map_err(|e| e.to_string())
+}
+
 /// Resolves the on-disk index directory for one root, mirroring
 /// `app-egui/src/search.rs::resolve_index_dir` exactly: `SearchFolder`
 /// delegates to `search_core::native_index::index_directory` (the index

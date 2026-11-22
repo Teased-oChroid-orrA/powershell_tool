@@ -583,7 +583,35 @@ pub fn explain(path: &str, edges: &[StoredEdge], files: &[FileRow]) -> Vec<Reaso
     out
 }
 
+/// How many other files hold the same text as a file, and how many are other versions of it, from stored facts
+/// (`DUPLICATE_OF`, `VERSION_OF`): enough for a row of a results table to say "has copies / versions" without
+/// saying which.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Cue {
+    pub copies: u32,
+    pub versions: u32,
+}
+
 impl Catalog {
+    /// The [`Cue`] of each of `paths` that has one, in a single pass over the stored duplicate and version edges
+    /// (cost follows those edges, not the number of paths; no inferred edge is read).
+    pub fn cues_for(&self, paths: &[String]) -> rusqlite::Result<std::collections::HashMap<String, Cue>> {
+        let wanted: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+        let mut out: std::collections::HashMap<String, Cue> = std::collections::HashMap::new();
+        let mut stmt = self.conn.prepare("SELECT src,dst,type FROM relationship WHERE type IN ('DUPLICATE_OF','VERSION_OF')")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let (src, dst, kind): (String, String, String) = (row.get(0)?, row.get(1)?, row.get(2)?);
+            for end in [src, dst] {
+                if wanted.contains(end.as_str()) {
+                    let cue = out.entry(end).or_default();
+                    if kind == "DUPLICATE_OF" { cue.copies += 1 } else { cue.versions += 1 }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// [`explain`] for `path` from the stored edges.
     pub fn reasons_for(&self, path: &str) -> rusqlite::Result<Vec<Reason>> {
         let edges = self.edges_for(path)?;

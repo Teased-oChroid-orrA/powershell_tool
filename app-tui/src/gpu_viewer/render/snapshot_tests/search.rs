@@ -206,6 +206,17 @@ fn search_snapshot() {
     shoot(&session, "search-results-dark", true, (1440, 900));
     shoot(&session, "search-results-light", false, (1440, 900));
     {
+        // Row cues: identical copies and other versions, by result order (the real source reads the user's catalog).
+        session.cues_for_snapshot(|paths| {
+            use search_core::catalog_edges::Cue;
+            let by_row = [(2, 0), (0, 3), (1, 2)];
+            Ok(paths.into_iter().zip(by_row).map(|(p, (copies, versions))| (p, Cue { copies, versions })).collect())
+        });
+        shoot(&session, "search-cues-dark", true, (1440, 900));
+        shoot(&session, "search-cues-light", false, (1440, 900));
+        shoot(&session, "search-cues-narrow", true, (860, 760));
+    }
+    {
         // The selected file's relationships, as pills in the detail header (identical copy, version order, inferred).
         use search_core::catalog_edges::Reason;
         let reason = |other: &str, text: &str, inferred| Reason { other: other.into(), text: text.into(), inferred };

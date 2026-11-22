@@ -389,6 +389,7 @@ fn table(s: &MaterialsSession) -> DocTable {
                             on: s.st.marked.contains(&i),
                             action: act(MaterialsAct::ToggleMark(i)),
                         }),
+                        cue: None,
                     }
                 })
                 .collect();
@@ -450,6 +451,7 @@ fn detail(s: &MaterialsSession) -> Option<DocDetail> {
             subtitle,
             signals: Vec::new(),
             notes: Vec::new(),
+            related: Vec::new(),
             actions: vec![
                 e("Properties", "Esc", MaterialsAct::Compare),
                 clear_marks_entry(s),
@@ -479,6 +481,7 @@ fn detail(s: &MaterialsSession) -> Option<DocDetail> {
         subtitle,
         signals: Vec::new(),
         notes: Vec::new(),
+        related: Vec::new(),
         actions: vec![mark_entry(s), compare_entry(s)],
         match_navigation: None,
         scroll_to_line: None,

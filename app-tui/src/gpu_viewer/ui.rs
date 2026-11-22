@@ -727,6 +727,15 @@ pub struct DocRow {
     pub badge: Option<String>,
     /// A box before the name that sets the row aside for comparison.
     pub mark: Option<DocMark>,
+    /// A small pill on the second line (Search: this file has identical copies or other versions).
+    pub cue: Option<DocCue>,
+}
+
+/// A short fact about a row, with the longer explanation shown on hover.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocCue {
+    pub text: String,
+    pub hint: String,
 }
 
 /// The selected row in full: a title, a subtitle, actions and the text blocks that matter (the matching lines).
@@ -742,6 +751,9 @@ pub struct DocDetail {
     /// Short facts about the result (a PDF to double-check, entity suggestions), drawn as pills.
     pub notes: Vec<DocNote>,
     pub actions: Vec<Entry>,
+    /// Actions and findings about this file (Search: possible related documents and the exact-line comparison), drawn
+    /// under the actions row; empty draws nothing.
+    pub related: Vec<DockItem>,
     /// Previous/next match controls shown in the detail heading.
     pub match_navigation: Option<DocMatchNavigation>,
     /// One-based source line to bring into view in the detail's own scroll area.

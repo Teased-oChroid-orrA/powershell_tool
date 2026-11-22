@@ -1164,18 +1164,19 @@ fn semantic_search_shows_cited_hits_separately_from_exact_results() {
     assert_eq!((diff.added, diff.removed), (1, 1));
     assert_eq!(diff.rows[0].side, diff::Side::Source);
     assert_eq!(diff.rows[1].side, diff::Side::Candidate);
-    let index_panel = view::document(&s)
-        .panels
-        .into_iter()
-        .find(|panel| panel.label == "Options")
-        .unwrap();
-    assert!(index_panel
-        .cards
-        .iter()
-        .flat_map(|card| &card.items)
-        .any(|item| {
-            matches!(item, DockItem::Heading(title) if title == "Exact extracted-line changes")
-        }));
+    // The related-document tools sit in the selected file's detail pane, not in the Options popover.
+    let doc = view::document(&s);
+    let options = doc.panels.iter().find(|panel| panel.label == "Options").unwrap();
+    assert!(!options.cards.iter().flat_map(|card| &card.items).any(|item| {
+        matches!(item, DockItem::Line { text, .. } if text.starts_with("Find possible related") || text == "Compare exact lines")
+    }));
+    let related = doc.detail.unwrap().related;
+    let has = |wanted: &str| related.iter().any(|item| matches!(item, DockItem::Line { text, .. } if text.starts_with(wanted)));
+    assert!(has("Find possible related documents"));
+    assert!(has("Compare exact lines"));
+    assert!(related.iter().any(|item| {
+        matches!(item, DockItem::Heading(title) if title == "Exact extracted-line changes")
+    }));
     assert!(s.current_related_diff().is_some());
     let (stale_key, stale_diff) = s.diff_result.take().unwrap();
     let stale_generation = s.diff_generation;
@@ -2508,6 +2509,66 @@ fn gap_hints_wait_for_a_click_and_never_change_anything() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert_eq!(s.status, "Gap hints unavailable: catalog locked");
+}
+
+// ------------------------------------------------------------------ row cues (#240 P4-2)
+
+/// Fixed cues for `with_results`'s three files; the real source reads the user's catalog.
+fn three_cues(paths: Vec<String>) -> Result<std::collections::HashMap<String, search_core::catalog_edges::Cue>, String> {
+    use search_core::catalog_edges::Cue;
+    let cue = |p: &str, copies, versions| (format!("/w/{p}"), Cue { copies, versions });
+    assert_eq!(paths.len(), 3, "every result of the finished run is asked about");
+    Ok([cue("a/spec.pdf", 1, 0), cue("notes.txt", 2, 3), cue("b/plan.pdf", 0, 0)].into_iter().collect())
+}
+fn wait_for_cues(s: &mut SearchSession) {
+    let before = s.cues_gen;
+    let started = Instant::now();
+    while s.cues_gen == before {
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "the cues did not arrive");
+        s.poll();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn row_cues_state_copies_and_versions_and_nothing_for_none() {
+    let mut s = with_results();
+    s.cues_source = three_cues;
+    wait_for_cues(&mut s);
+    let cue = |path: &str| s.cue_of(path).map(|c| c.text);
+    assert_eq!(cue("/w/a/spec.pdf").as_deref(), Some("1 copy"));
+    assert_eq!(cue("/w/notes.txt").as_deref(), Some("2 copies · 3 versions"));
+    assert_eq!(cue("/w/b/plan.pdf"), None, "no edge, no cue");
+    assert_eq!(cue("/w/elsewhere.txt"), None);
+    let hint = s.cue_of("/w/notes.txt").unwrap().hint;
+    assert!(hint.contains("Identical text in 2 other files.") && hint.contains("3 other versions of this document."), "{hint}");
+    assert!(hint.ends_with("Select the file to see which."));
+    assert!(s.cue_of("/w/a/spec.pdf").unwrap().hint.starts_with("Identical text in 1 other file."));
+}
+
+#[test]
+fn rows_carry_their_cue_and_rebuild_when_cues_arrive_or_a_run_starts() {
+    let mut s = with_results();
+    s.cues_source = three_cues;
+    let cues = |s: &SearchSession| -> Vec<Option<String>> {
+        view::document(s).table.rows.iter().map(|r| r.cue.as_ref().map(|c| c.text.clone())).collect()
+    };
+    assert_eq!(cues(&s), [None, None, None], "none before the catalog answers");
+    wait_for_cues(&mut s);
+    assert_eq!(cues(&s), [Some("1 copy".into()), Some("2 copies · 3 versions".into()), None]);
+    assert_eq!(rows_built(|| drop(view::document(&s))), 0, "arrived cues are cached with the rows");
+    // A new run drops the old run's cues at once, before any new result.
+    s.st.run.is_running = true;
+    s.poll();
+    assert_eq!(cues(&s), [None, None, None]);
+}
+
+#[test]
+fn a_failed_cue_read_leaves_the_rows_plain() {
+    let mut s = with_results();
+    s.cues_source = |_| Err("catalog locked".into());
+    wait_for_cues(&mut s);
+    assert!(view::document(&s).table.rows.iter().all(|r| r.cue.is_none()));
 }
 
 // ------------------------------------------------------------------ narrowing (sidebar choices)
