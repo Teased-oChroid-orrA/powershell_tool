@@ -389,9 +389,9 @@ knock-down that depends on t/D and e/D (the table above is a first map of it for
 ### Known non-convergence and cost
 
 * **Kernel 2D plane stress with a bushing does not converge.** The fit stage converges (4 factorisations, 9011 psi), then the plastic pin
-  stage ran more than an hour with no result before being killed (CPU busy, no step completed). Plane-stress J2 has no collapse
-  mechanism once the bore crushes (the load keeps rising against the contact set), which the plastic Newton iteration reads as slow
-  convergence, the same ambiguity `edge-check/AGENTS.md` records for load control. Reproduce: `BRACKET_TRACE=1 cargo test --release -p lug-solver
+  stage ran more than an hour with no result before being killed (CPU busy, no step completed). Hypothesis (not verified): plane-stress J2 crushes the
+  bore at a limit load with no edge mechanism, and the plastic Newton iteration reads the missing equilibrium as slow convergence,
+  the ambiguity `edge-check/AGENTS.md` records for load control. Reproduce: `BRACKET_TRACE=1 cargo test --release -p lug-solver
   --test edge_3d_bracket explore_bushed -- --ignored --nocapture` (the "2D stress" row). Unbushed plane stress converges (0.7 s). A cheap fix is not known
   (a displacement-controlled plateau stop as in `limit_load`, or a travel cap tied to the first flat step, would end the run but changes what is read); not attempted.
 * **Kernel 3D bushed pin stage**: the fit stage takes 15 s (6290 nodes, 18870 dof, 12 factorisations); the plastic frictional pin
