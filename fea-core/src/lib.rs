@@ -55,7 +55,7 @@ pub fn sequentially<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 }
 pub use element::ElementKind;
 pub use linear::Dirichlet;
-pub use loads::{FaceField, Loads, SurfaceLoad};
+pub use loads::{Coupling, FaceField, Loads, SurfaceLoad};
 pub use mesh::{Elastic, Mesh, Physics};
 pub use material::J2;
 pub use nonlinear::{Control, Interrupt, NlOptions, StepEvent, StepObserver, NlSolution, NlState, Start};

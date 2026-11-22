@@ -10,7 +10,8 @@ use crate::assembly_advice::AssemblyAdvice;
 use crate::assembly_mesh::{assembly_mesh, DEFAULT_CHORD};
 use crate::problem::{Geometry, Problem};
 use crate::solid::{add_triangle, face_stats, finish_stat, FaceStat, SolidCache};
-use fea_core::mpc::Constraints;
+use fea_core::mpc::{Constraints, Equation};
+use fea_core::Coupling;
 use fea_core::{Dirichlet, Mesh};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
@@ -114,9 +115,6 @@ impl Problem {
         if !self.contacts.is_empty() || !self.bushings.is_empty() {
             return Err("ties and 2D contact pairs or bushings do not combine yet: ties are for a plain static study of an assembly".into());
         }
-        if self.ties.iter().any(Tie::is_contact) && self.ties.iter().any(|t| !t.is_contact()) {
-            return Err("bonded ties and contact ties do not combine yet: make every joint bonded, or every joint a contact".into());
-        }
         if self.any_plastic() || self.study.is_thermal() {
             return Err("ties are for a linear-elastic structural study: not an elastic-plastic or thermal one".into());
         }
@@ -213,13 +211,13 @@ fn weights(l: [f64; 3], nodes: usize) -> Vec<f64> {
     vec![u * (2.0 * u - 1.0), v * (2.0 * v - 1.0), w * (2.0 * w - 1.0), 4.0 * u * v, 4.0 * v * w, 4.0 * w * u]
 }
 
-/// The constraint equations of the problem's ties on `mesh` (3 per slave node: its displacement is the master element's
+/// The constraint equations of the problem's bonded ties on `mesh` (3 per slave node: its displacement is the master element's
 /// interpolation), with a note for every dof a prescribed support kept from being tied. A tie that joins no node is an error: the
 /// faces do not touch within the tolerance, or the mesh is too coarse to put a node on one of them.
-pub(crate) fn constraints(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<(Constraints, Vec<String>), String> {
+fn equations(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<(Vec<Equation>, Vec<String>), String> {
     let Geometry::Solid { cache: Some(c), .. } = &p.geometry else { return Err("ties join the bodies of a STEP assembly".into()) };
     let (stats, diag) = (face_stats(c), diagonal(c));
-    let mut out = Constraints::new();
+    let mut out = Vec::new();
     let mut slaved: HashSet<usize> = HashSet::new();
     let mut skipped = 0usize;
     for (i, t) in p.ties.iter().enumerate().filter(|(_, t)| !t.is_contact()) {
@@ -254,7 +252,7 @@ pub(crate) fn constraints(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<(C
                 if bc.fixed[dof] {
                     skipped += 1;
                 } else if slaved.insert(dof) {
-                    out.add_equation(dof, f.iter().zip(&w).map(|(m, w)| (m * 3 + comp, *w)).collect(), 0.0);
+                    out.push(Equation { slave: dof, terms: f.iter().zip(&w).map(|(m, w)| (m * 3 + comp, *w)).collect(), rhs: 0.0 });
                     tied = true;
                 }
             }
@@ -266,6 +264,35 @@ pub(crate) fn constraints(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<(C
     }
     let notes = if skipped > 0 { vec![format!("{skipped} tie dofs lie on a prescribed support and stay as supported; the support, not the tie, holds them.")] } else { Vec::new() };
     Ok((out, notes))
+}
+
+/// The bonded ties as exact constraint equations, for the linear solve (`fea_core::mpc`), with their notes.
+pub(crate) fn constraints(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<(Constraints, Vec<String>), String> {
+    let (eqs, notes) = equations(p, mesh, bc)?;
+    let mut out = Constraints::new();
+    for e in eqs {
+        out.add_equation(e.slave, e.terms, e.rhs);
+    }
+    Ok((out, notes))
+}
+
+/// How much stiffer than the stiffest member's own `E h` (`h` the mesh size) a bonded tie's penalty is: a slave node's force is about
+/// `sigma h^2` over a slip of `sigma h^2 / (PENALTY E h)`, so the tie yields `h / (PENALTY L)` of the structure's displacement `sigma L / E`
+/// (measured against the exact elimination, `tests/ties.rs`).
+const BOND_PENALTY: f64 = 1e6;
+
+/// The bonded ties as penalty couplings, for a solve that has contact too (the nonlinear contact solver has no elimination): each slave
+/// dof is held to the master element's interpolation by a stiff spring, so unlike a contact it carries a pull. With their notes.
+pub(crate) fn bonded_couplings(p: &Problem, mesh: &Mesh, bc: &Dirichlet) -> Result<(Vec<Coupling>, Vec<String>), String> {
+    if !p.ties.iter().any(|t| !t.is_contact()) {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let (eqs, mut notes) = equations(p, mesh, bc)?;
+    let e_max = std::iter::once(p.material.e).chain(p.region_materials.iter().flatten().map(|m| m.e)).fold(0.0, f64::max);
+    let k = BOND_PENALTY * e_max * p.mesh.size;
+    let couplings = eqs.into_iter().map(|e| Coupling { terms: std::iter::once((e.slave, 1.0)).chain(e.terms.into_iter().map(|(m, w)| (m, -w))).collect(), k, offset: 0.0 }).collect();
+    notes.push("Bonded ties next to contact ties are held by a stiff penalty rather than eliminated.".into());
+    Ok((couplings, notes))
 }
 
 /// A contact tie's two mesh surfaces (`faceN`), its Coulomb friction and its gap, in the tie's order.

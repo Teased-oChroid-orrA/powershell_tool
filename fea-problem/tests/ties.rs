@@ -376,10 +376,10 @@ fn contact_ties_are_validated_saved_and_kept_apart_from_bonded_ones() {
         p.ties[0].friction = Some(mu);
         assert!(p.validate().unwrap_err().contains("friction must be in 0..2"), "{mu}");
     }
-    // one joint of each kind cannot be solved together
+    // one joint of each kind is solved together since Phase C follow-up 2 (the bonded one by a stiff penalty in the contact solve)
     p.ties[0].friction = Some(0.0);
     p.ties.push(tie([1.0, 1.0], 0.0, 0.0));
-    assert!(p.validate().unwrap_err().contains("do not combine"), "{:?}", p.validate());
+    assert!(p.validate().is_ok(), "{:?}", p.validate());
     // the faces are named by what they are: a unit change keeps a contact a contact and still resolves
     let mut q = contact_stack(0.3, true);
     q.convert_units(UnitSystem::MmMpa).unwrap();
@@ -406,4 +406,266 @@ fn an_assembly_read_from_step_takes_a_contact_from_its_advice() {
     let want = 10.0 * 10.0 / p.material.e;
     assert!((s.summary.max_displacement.value / want - 1.0).abs() < 1e-5, "{} vs {want}", s.summary.max_displacement.value);
     assert!((s.summary.contacts[0].normal_force / 2000.0 - 1.0).abs() < 1e-5, "{:?}", s.summary.contacts);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Per-body materials (Phase C follow-up 1): body k > 0 takes `Problem::region_materials[k - 1]`
+// ---------------------------------------------------------------------------------------------------------------------------
+
+/// [`stack`] whose second body is `ratio` times as stiff as the first (no Poisson coupling), joined by `friction` (`None` bonded).
+fn two_materials(ratio: f64, friction: Option<f64>) -> Problem {
+    let mut p = stack([1.0, 1.0], 0.0, 0.0);
+    p.ties = vec![Tie { friction, ..tie([1.0, 1.0], 0.0, 0.0) }];
+    let mut second = p.material.clone();
+    second.name = "second body".into();
+    second.e *= ratio;
+    p.region_materials = vec![Some(second)];
+    p
+}
+
+fn node_at(s: &fea_problem::solve::Solved, z: f64) -> usize {
+    s.model.mesh.nodes.iter().position(|x| (x[2] - z).abs() < 1e-9).unwrap()
+}
+
+#[test]
+fn a_bonded_stack_of_two_materials_moves_by_the_series_closed_form() {
+    // Uniform axial stress in two bars of unit length: the tip moves sigma (L1 / E1 + L2 / E2), the joint sigma L1 / E1. The
+    // state is exact in both element orders, so the check is to rounding.
+    for (element, ratio) in [(ElementChoice::Tri3, 3.0), (ElementChoice::Tri6, 3.0), (ElementChoice::Tri3, 0.25)] {
+        let mut p = two_materials(ratio, None);
+        p.mesh.element = element;
+        let (e1, e2) = (p.material.e, p.material.e * ratio);
+        let s = solve(&p, None).unwrap();
+        let (lo, hi) = uz_at(&s, 1.0);
+        let joint = PULL / e1;
+        assert!((lo / joint - 1.0).abs() < 1e-6 && (hi / joint - 1.0).abs() < 1e-6, "{element:?} {ratio}: joint {lo:e} {hi:e} vs {joint:e}");
+        let want = PULL * (1.0 / e1 + 1.0 / e2);
+        let (lo, hi) = uz_at(&s, 2.0);
+        assert!((lo / want - 1.0).abs() < 1e-6 && (hi / want - 1.0).abs() < 1e-6, "{element:?} {ratio}: tip {lo:e} {hi:e} vs {want:e}");
+        assert!(s.summary.equilibrium_error < 1e-6);
+        // the stiffer body is meshed and solved with its own modulus: the energy is U = F^2/2 (L1/E1 + L2/E2) / A
+        let energy = 0.5 * PULL * PULL * (1.0 / e1 + 1.0 / e2);
+        assert!((s.summary.strain_energy / energy - 1.0).abs() < 1e-6, "{element:?} {ratio}: energy {:e} vs {energy:e}", s.summary.strain_energy);
+    }
+}
+
+#[test]
+fn a_frictionless_contact_of_two_materials_carries_a_push_by_the_series_closed_form() {
+    for element in [ElementChoice::Tri3, ElementChoice::Tri6] {
+        let mut p = two_materials(3.0, Some(0.0));
+        p.mesh.element = element;
+        p.loads = vec![Load::Traction { edge: "face12".into(), tx: 0.0, ty: 0.0, tz: -PULL }];
+        let (e1, e2) = (p.material.e, p.material.e * 3.0);
+        let s = solve(&p, None).unwrap();
+        let (lo, hi) = uz_at(&s, 1.0);
+        let joint = -PULL / e1;
+        assert!((lo / joint - 1.0).abs() < 1e-5 && (hi / joint - 1.0).abs() < 1e-5, "{element:?}: joint {lo:e} {hi:e} vs {joint:e}");
+        let want = -PULL * (1.0 / e1 + 1.0 / e2);
+        let (lo, hi) = uz_at(&s, 2.0);
+        assert!((lo / want - 1.0).abs() < 1e-5 && (hi / want - 1.0).abs() < 1e-5, "{element:?}: tip {lo:e} {hi:e} vs {want:e}");
+        assert!((s.summary.contacts[0].normal_force / PULL - 1.0).abs() < 1e-5);
+        assert!(s.summary.equilibrium_error < 1e-6);
+    }
+}
+
+#[test]
+fn a_body_material_equal_to_the_problem_material_changes_nothing() {
+    // differential: the explicit copy of the material gives the identical solve
+    for friction in [None, Some(0.0)] {
+        let mut same = two_materials(1.0, friction);
+        let mut alone = same.clone();
+        alone.region_materials.clear();
+        if friction.is_some() {
+            for p in [&mut same, &mut alone] {
+                p.loads = vec![Load::Traction { edge: "face12".into(), tx: 0.0, ty: 0.0, tz: -PULL }];
+            }
+        }
+        let (a, b) = (solve(&same, None).unwrap(), solve(&alone, None).unwrap());
+        assert_eq!(a.u, b.u, "{friction:?}");
+    }
+}
+
+#[test]
+fn strain_fields_read_each_body_with_its_own_modulus() {
+    // With nu = 0 the axial strain is sigma / E of the body the node belongs to; the problem's own modulus would read the stiff
+    // body's strain three times too large.
+    let p = two_materials(3.0, None);
+    let s = solve(&p, None).unwrap();
+    let strain = s.node_values(fea_problem::solve::Field::MaxPrincipalStrain);
+    let (base, tip) = (strain[node_at(&s, 0.0)], strain[node_at(&s, 2.0)]);
+    assert!((base / (PULL / p.material.e) - 1.0).abs() < 1e-6, "{base:e}");
+    assert!((tip / (PULL / (3.0 * p.material.e)) - 1.0).abs() < 1e-6, "{tip:e}");
+    // von Mises stress is the same in both bars (one force through equal sections)
+    let vm = s.node_values(fea_problem::solve::Field::VonMises);
+    assert!((vm[node_at(&s, 0.0)] / PULL - 1.0).abs() < 1e-6 && (vm[node_at(&s, 2.0)] / PULL - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn body_materials_are_validated_scaled_and_saved() {
+    let mut p = two_materials(3.0, None);
+    assert!(p.validate().is_ok(), "{:?}", p.validate());
+    // a body that does not exist
+    let mut extra = p.clone();
+    extra.region_materials.push(Some(p.material.clone()));
+    assert!(extra.validate().unwrap_err().contains("3 body materials for 2 bodies"), "{:?}", extra.validate());
+    // a material that is not a material
+    let mut bad = p.clone();
+    bad.region_materials[0].as_mut().unwrap().e = -1.0;
+    assert!(bad.validate().unwrap_err().contains("body 2 material"), "{:?}", bad.validate());
+    // a single solid has no second body
+    let mut one = stack([1.0, 1.0], 0.0, 0.0);
+    let Geometry::Solid { cache: Some(c), .. } = &mut one.geometry else { unreachable!() };
+    c.bodies.clear();
+    one.region_materials = vec![Some(one.material.clone())];
+    assert!(one.validate().unwrap_err().contains("body materials for 1 bodies"), "{:?}", one.validate());
+    // the unit change scales the second body's modulus with the first's, and the JSON keeps it
+    let back: Problem = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    assert_eq!(back.region_materials, p.region_materials);
+    let (e1, e2) = (p.material.e, p.region_materials[0].as_ref().unwrap().e);
+    p.convert_units(UnitSystem::MmMpa).unwrap();
+    let k = p.material.e / e1;
+    assert!((p.region_materials[0].as_ref().unwrap().e / e2 - k).abs() < 1e-9 * k);
+    assert!(p.validate().is_ok(), "{:?}", p.validate());
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Bonded and contact ties together (Phase C follow-up 2): the bonded ones are penalty couplings in the contact solve
+// ---------------------------------------------------------------------------------------------------------------------------
+
+/// Unit bars of footprint 1 x 1 and height 1 at `(x0, z0)` each, as one assembly (body `k` has faces `face{6k+1}..face{6k+6}`).
+fn bars(list: &[(f64, f64)]) -> Problem {
+    let mut m = SurfaceMesh::default();
+    for (k, &(x0, z0)) in list.iter().enumerate() {
+        box_at(&mut m, [x0, 0.0, z0], [1.0, 1.0, 1.0], 6 * k);
+    }
+    let mut cache = SolidCache::new(STEP, m, 0.01);
+    cache.bodies = vec![6; list.len()];
+    let mut p = templates::blank();
+    p.name = "Bars".into();
+    p.set_solid(STEP, cache);
+    p.material.nu = 0.0;
+    p.mesh = MeshSpec { size: 0.5, ..MeshSpec::default() };
+    p
+}
+
+fn bottom(k: usize) -> String {
+    format!("face{}", 6 * k + 5)
+}
+
+fn top(k: usize) -> String {
+    format!("face{}", 6 * k + 6)
+}
+
+/// The tie of bar `a`'s top face and bar `b`'s bottom face (`friction` `None` bonded).
+fn joint(list: &[(f64, f64)], a: usize, b: usize, friction: Option<f64>) -> Tie {
+    let ((xa, za), (xb, zb)) = (list[a], list[b]);
+    Tie {
+        a: FaceSig { body: a, centroid: [xa + 0.5, 0.5, za + 1.0], normal: [0.0, 0.0, 1.0], area: 1.0 },
+        b: FaceSig { body: b, centroid: [xb + 0.5, 0.5, zb], normal: [0.0, 0.0, -1.0], area: 1.0 },
+        gap: 0.0,
+        friction,
+    }
+}
+
+/// The z displacement of the nodes at height `z` with `x` in `[lo, hi]`, as (smallest, largest).
+fn uz_in(s: &fea_problem::solve::Solved, z: f64, lo: f64, hi: f64) -> (f64, f64) {
+    let uz = s.model.mesh.nodes.iter().enumerate().filter(|(_, x)| (x[2] - z).abs() < 1e-9 && x[0] >= lo - 1e-9 && x[0] <= hi + 1e-9).map(|(i, _)| s.u[3 * i + 2]);
+    uz.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| (a.min(v), b.max(v)))
+}
+
+fn scaled(p: &mut Problem, ratios: &[f64]) {
+    p.region_materials = ratios
+        .iter()
+        .map(|r| {
+            let mut m = p.material.clone();
+            m.e *= r;
+            Some(m)
+        })
+        .collect();
+}
+
+/// The relative distance of `got` from `want`, printed so the penalty's error is on record in the test log.
+fn rel(what: &str, got: f64, want: f64) -> f64 {
+    let r = (got / want - 1.0).abs();
+    eprintln!("{what}: {got:e} vs {want:e}, relative error {r:.2e}");
+    r
+}
+
+#[test]
+fn a_bonded_pull_and_a_contact_push_are_each_carried_by_the_closed_form() {
+    // Two independent columns in one problem. Column A (bars 0, 1) is bonded and pulled: the joint carries a tension, which a
+    // contact never could. Column B (bars 2, 3) is a frictionless contact and pushed. Each is a uniform axial state with nu = 0.
+    let list = [(0.0, 0.0), (0.0, 1.0), (3.0, 0.0), (3.0, 1.0)];
+    for element in [ElementChoice::Tri3, ElementChoice::Tri6] {
+        let mut p = bars(&list);
+        p.mesh.element = element;
+        scaled(&mut p, &[2.0, 0.5, 4.0]);
+        let e = p.material.e;
+        p.ties = vec![joint(&list, 0, 1, None), joint(&list, 2, 3, Some(0.0))];
+        p.supports = vec![Support::fixed(&bottom(0)), Support::fixed(&bottom(2))];
+        let push = 30.0;
+        p.loads = vec![Load::Traction { edge: top(1), tx: 0.0, ty: 0.0, tz: PULL }, Load::Traction { edge: top(3), tx: 0.0, ty: 0.0, tz: -push }];
+        let s = solve(&p, None).unwrap();
+        let (lo, hi) = uz_in(&s, 1.0, -1.0, 2.0);
+        let joint_a = PULL / e;
+        assert!(rel("A joint low", lo, joint_a) < 2e-7 && rel("A joint high", hi, joint_a) < 2e-7, "{element:?}");
+        let (lo, hi) = uz_in(&s, 2.0, -1.0, 2.0);
+        let tip_a = PULL * (1.0 / e + 1.0 / (2.0 * e));
+        assert!(rel("A tip low", lo, tip_a) < 2e-7 && rel("A tip high", hi, tip_a) < 2e-7, "{element:?}");
+        let (lo, hi) = uz_in(&s, 1.0, 2.0, 5.0);
+        let joint_b = -push / (0.5 * e);
+        assert!(rel("B joint low", lo, joint_b) < 1e-6 && rel("B joint high", hi, joint_b) < 1e-6, "{element:?}");
+        let (lo, hi) = uz_in(&s, 2.0, 2.0, 5.0);
+        let tip_b = -push * (1.0 / (0.5 * e) + 1.0 / (4.0 * e));
+        assert!(rel("B tip low", lo, tip_b) < 1e-6 && rel("B tip high", hi, tip_b) < 1e-6, "{element:?}");
+        let c = &s.summary.contacts[0];
+        assert!((c.normal_force / push - 1.0).abs() < 1e-5 && c.contact_share > 0.999, "{c:?}");
+        assert!(s.summary.equilibrium_error < 1e-6, "{element:?}: {}", s.summary.equilibrium_error);
+        // the reactions are the loads, to the penalty's accuracy
+        assert!((s.summary.reaction[2] + s.summary.applied[2]).abs() < 1e-6 * PULL, "{:?} {:?}", s.summary.reaction, s.summary.applied);
+        assert!(s.summary.notes.iter().any(|w| w.contains("held by a stiff penalty")), "{:?}", s.summary.notes);
+    }
+}
+
+#[test]
+fn a_column_bonded_then_in_contact_moves_by_the_series_closed_form_and_matches_the_exact_elimination() {
+    // Bar 0 fixed at the base, bar 1 bonded to it, bar 2 a frictionless contact on bar 1 and pushed at its top.
+    let list = [(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)];
+    let mut p = bars(&list);
+    scaled(&mut p, &[2.0, 4.0]);
+    let e = p.material.e;
+    p.ties = vec![joint(&list, 0, 1, None), joint(&list, 1, 2, Some(0.0))];
+    p.supports = vec![Support::fixed(&bottom(0))];
+    p.loads = vec![Load::Traction { edge: top(2), tx: 0.0, ty: 0.0, tz: -PULL }];
+    let s = solve(&p, None).unwrap();
+    let want = [-PULL / e, -PULL * (1.0 / e + 0.5 / e), -PULL * (1.0 / e + 0.5 / e + 0.25 / e)];
+    for (k, w) in want.iter().enumerate() {
+        let (lo, hi) = uz_at(&s, 1.0 + k as f64);
+        assert!(rel(&format!("z={}", k + 1), lo, *w) < 2e-6 && rel(&format!("z={}", k + 1), hi, *w) < 2e-6, "z={}: {lo:e} {hi:e} vs {w:e}", k + 1);
+    }
+    assert!(s.summary.equilibrium_error < 1e-6);
+    // differential: the same two bars with only the bonded tie, solved by exact elimination under the force the contact passes on
+    let two = [(0.0, 0.0), (0.0, 1.0)];
+    let mut q = bars(&two);
+    scaled(&mut q, &[2.0]);
+    q.ties = vec![joint(&two, 0, 1, None)];
+    q.supports = vec![Support::fixed(&bottom(0))];
+    q.loads = vec![Load::Traction { edge: top(1), tx: 0.0, ty: 0.0, tz: -PULL }];
+    let exact = solve(&q, None).unwrap();
+    for z in [1.0, 2.0] {
+        let (a, b) = (uz_at(&exact, z).0, uz_at(&s, z).0);
+        assert!(rel(&format!("penalty vs elimination z={z}"), b, a) < 2e-6, "z={z}: {b:e} vs {a:e}");
+    }
+}
+
+#[test]
+fn bonded_ties_that_a_contact_solve_cannot_join_are_still_refused_with_the_reason() {
+    // a bonded tie between faces that do not touch joins no node, in the contact solve as in the linear one
+    let list = [(0.0, 0.0), (0.0, 1.5), (0.0, 2.5)];
+    let mut p = bars(&list);
+    p.ties = vec![joint(&list, 0, 1, None), joint(&list, 1, 2, Some(0.0))];
+    p.supports = vec![Support::fixed(&bottom(0))];
+    p.loads = vec![Load::Traction { edge: top(2), tx: 0.0, ty: 0.0, tz: -PULL }];
+    let err = solve(&p, None).unwrap_err();
+    assert!(err.contains("tie"), "{err}");
 }
