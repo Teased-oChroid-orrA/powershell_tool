@@ -676,7 +676,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         LoadKind(_) => "Enter cycles pressure, traction, edge force, bearing (pin) load on a hole, point force and body force.",
         LoadParam(..) => "Pressure acts into the body. Tractions are force per area; edge and point forces are totals (axisymmetric: over 360 degrees). A bearing load is a cosine pressure on the half of the hole facing the force.",
         LoadAdd => "Adds a pressure on the first edge.",
-        BushingParam(..) => "A bushing pressed into a circular hole of a plane problem: its outer diameter is the hole's plus the diametral interference, in frictional contact with the plate. The bore may be offset from the hole centre (an eccentric bushing). A load or support on holeN then acts on the bushing's bore. A bushed problem is solved with contact (seconds) on r, not automatically.",
+        BushingParam(..) => "A bushing pressed into a circular hole of a plane problem: it is meshed at the hole's nominal size and the diametral interference is applied as a contact overlap, in frictional contact with the plate. The bore may be offset from the hole centre (an eccentric bushing). A load or support on holeN then acts on the bushing's bore. A bushed problem is solved with contact (seconds) on r, not automatically.",
         BushingRemove(_) => "Removes this bushing.",
         ContactA(_) | ContactB(_) => "Name of a surface of one of the two bodies (the sketch's regions; the first has plain names, the others r2/, r3/...). Enter or Right: next; Left: previous.",
         ContactFriction(_) => "Coulomb friction between the two surfaces. 0 slides freely. A body no support holds is held by this friction: with 0 it needs a support that stops its sliding.",
