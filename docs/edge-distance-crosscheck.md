@@ -133,6 +133,15 @@ beside the table. The matrix only reads the report; a test (`bushing/tests.rs`) 
 numbers and the margins are identical before and after a run. The native Bushing window draws it (`editor/bushing/edge_matrix.rs`);
 the window text quotes the validation numbers of the section below (a unit test keeps them equal to this doc).
 
+## The shared estimate (`edge_check::estimate`) and a bare pin in a hole
+
+One input, one output for every workbench with a hole near a free edge: `EstimateInput` (bore radius, edge distance, thickness, material strengths, the fit, the load case, the fit-pressure band, and the workbench's own legacy check if it has one) in, `EdgeEstimate { report, matrix }` out (`estimate()`; `prepare` / `execute` are the split the windows use to run on a worker thread). The Bushing window builds its input through it (`toolboxes/bushing/edge_check.rs::estimate_input`).
+
+* **`BoreFit::Pin`**: a pin or fastener in a bare hole, no bushing and no interference. The contact FE meshes the pin as the NACA TN 1503 validation does (`estimate::pin_spec`: a steel cylinder E 29e6, nu 0.30, loaded through a core of 0.4 a, no interference, friction 0 by default because the tests agree best with a frictionless pin). A test (`tests/estimate.rs`) checks the pin estimate at e/D 2.0 equals that validated solve to 1 %. A bare hole has no fit pressure: the stress models run with `p = 0`.
+* **`BoreFit::Bushing`** (the contact FE meshes the bushing; the fit is validated analytically only) and **`PressureOnly`** (the bushing is not described: no contact FE, the dead-load plastic plate model stands in on a deep run).
+* **Governing or advisory.** A workbench with its own legacy check passes it in and that row is governing. With none (`legacy: None`) every row is advisory (`EdgeMatrix::is_advisory()`), and a window must say so.
+* **Load case.** `LoadCase::PinTowardEdge`: a pin bearing on the bore, pulling toward the nearest free edge (worst case). A plate with a hole under remote tension is not supported yet (see the Fastener Hole work).
+
 ## UI: advisory, tooltips, material data
 
 * **Advisory, not governing.** After a run, any non-stress model (tabulated allowables, plastic FE) whose
