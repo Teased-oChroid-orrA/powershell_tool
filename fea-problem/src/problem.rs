@@ -559,9 +559,10 @@ pub enum Load {
     Body { bx: f64, by: f64, bz: f64 },
 }
 
-/// A bushing pressed into a circular hole of a plane problem: an annulus of its own material whose outer diameter is the
-/// hole's plus `interference`, in frictional contact with the plate (the interference fit is installed first, then the
-/// loads are applied). A load or support on `holeN` then acts on the bushing's bore. The bore may be offset from the
+/// A bushing pressed into a circular hole of a plane problem: an annulus of its own material meshed at the hole's
+/// nominal size (outer circle = the hole, no clearance), in frictional contact with the plate. `interference` is not
+/// modelled in the geometry: it is the contact overlap (radial, `interference / 2`) that starts the two surfaces
+/// penetrating, and the fit is installed first, then the loads are applied. A load or support on `holeN` then acts on the bushing's bore. The bore may be offset from the
 /// hole's centre (an eccentric bushing).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bushing {

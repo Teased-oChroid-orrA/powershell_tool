@@ -315,3 +315,40 @@ Results:
 - **Negative results kept**: (1) the 28 labelled joints whose bores did not touch: 25 had no fitting shank at all (not bolts), so a bridge without a shank would have joined unrelated holes; only a shank bridges. (2) A "pin in a hole" proxy (mate axis on a concave cylinder of one body and a convex one of the other, 261 of 295 mates) was dropped: 140 of those 261 have a boss wider than the bore (standoffs, collars), so it does not separate right from wrong and says nothing about side classification.
 
 Limits: the sample favours small assemblies; the labels are what users mated, not a designed ground truth, so recall is measured only on the 17 strict joints and precision is not measured (no label for a site nobody mated: 8 of the 11 bridged sites found in the 90 assemblies are unlabelled and unverified); 6.7 % of parts do not read.
+
+## Near-closed bores and the Fusion 360 Gallery check (2026-11-22)
+
+Owner decisions (2026-11-22): the Fusion 360 Gallery Assembly Dataset may be used (personal, non-commercial use; its licence is non-commercial research only and forbids redistribution, so nothing from it is committed); a bore that covers 97 % or 99.5 % of a turn is a **modelling error, not a hole**: the full-turn rule for what counts as a hole stays, and such bores are shown as candidates the person looks at and repairs, after which they count as holes.
+
+**Built.** `features::find_near_closed` / `NearClosedBore` / `Features::near_closed` (`solid-kernel/src/features.rs`): a concave cylinder group (the one pass `bore_groups` behind `find_holes`) covering `NEAR_CLOSED_MIN_TURN` = 0.9 or more of a turn but not the whole turn. It records the would-be `Hole` (body, faces, axis, radius, range, ends), the covered fraction, the widest uncovered angle interval, `gap_point` (on the bore wall in the middle of the gap, halfway along the bore) and `gap_width` (arc length). `AssemblyAdvice::NearClosed` (`fea-problem/src/assembly_advice.rs`) carries it into the advice: label "Body N bore Ø.. mm is 97.0 % closed: possible modelling gap", the reason gives the covered turn, the missing width and the gap's coordinates; it is listed after the holes without a mate. The Assembly Joints window shows it under Check (the warning group), counts it in the status bar, the Summary card and the Detected tree node, and highlights the bore's faces through the existing selection path. The gap itself is not drawn as a marker: its point is in the Why text. Tests: `solid-kernel/tests/features.rs` (97 % and 99.5 % are candidates and not holes, the gap point's place and angle, the threshold against slot ends, fillets and notches, a repaired bore is a hole), `fea-problem/tests/assembly_advice.rs`, `app-tui/src/gpu_viewer/editor/assembly/tests.rs`.
+
+**No repair is offered, because none exists.** The repo has no user-triggered mesh-heal action. The only heal is `solid-kernel/src/analytic_step/heal.rs`, which moves the samples of an imported STEP edge onto the faces that use it (within `Options::heal_limit_mm`) while reading; it cannot close a gap in a bore. The owner's proxy did not ask for one to be built and none was. The advice text therefore says only "close it in the CAD model and open the file again".
+
+**Threshold.** The partial bores (half a turn or more) by the turn they cover, and how many sit on a designed full hole (so the reader or the CAD export split a full bore short of a turn: a false candidate):
+
+| Turn covered | AutoMate (97 assemblies) | Fusion a1.0.0_04 (718 assemblies) | Fusion on a designed hole |
+|---|---|---|---|
+| 0.5 to 0.6 | 143 | 364 | 70 |
+| 0.6 to 0.7 | 5 | 39 | 23 |
+| 0.7 to 0.8 | 14 | 36 | 11 |
+| 0.8 to 0.9 | 4 | 56 | 32 |
+| 0.9 to 0.95 | 1 | 29 | 1 |
+| 0.95 to 0.99 | 6 | 9 | 0 |
+| 0.99 to 1 | 4 | 0 | 0 |
+
+(Counts include repeated instances of one part.) Below 0.9 more than half of Fusion's partial bores are designed full holes the reader split, so a lower threshold would flood the list; from 0.9 up only 1 of 38 is. AutoMate has a gap between 0.865 and 0.936. `NEAR_CLOSED_MIN_TURN` = 0.9: 11 candidates in AutoMate, 38 in 17 Fusion assemblies. The candidates are not all errors: AutoMate's six at 0.95 or more are slits with gaps of 0.07 to 1.02 mm (the 97 % and 99.5 % cases are 0.36 mm and 0.70 mm), while Fusion's gaps run 0.8 to 10.6 mm and most look like designed slits (split collars, clamp slots; 8.6 mm in a 29 mm bore 309 mm long). That is why the item says "possible modelling gap" and says it may be a designed slit.
+
+### AutoMate re-run (same scripts, a different sample)
+
+The fetch was repeated with the owner's approval; Zenodo rate-limited (HTTP 429) other parts than the first time, so the sample is a different one: 97 assemblies (first run 90), 48 unread parts. 20 labelled bolted joints (first run 17), 14 with both bores a full turn (first run 11), all 14 found as sites, 6 of them across a gap by the bridge rule (first run 3 of 11). Numbers are not comparable with the first run beyond "the rule held": the labels and limits are those of "AutoMate check" above.
+
+### Fusion 360 Gallery check (separate numbers)
+
+Source: Fusion 360 Gallery Assembly Dataset a1.0.0 (Autodesk AI Lab; licence above), archive `a1.0.0_04.7z` only (1.2 GB, 751 of about 8,251 assemblies; a 7z cannot be range-read, so a whole archive was fetched, with the owner's yes naming file, source and size). `scripts/fusion/` places every body from `assembly.json`'s occurrence transforms (the dataset's own `assembly.step` does not read through the multi-body path: "mapped item … of no representation") and scores against the **designed Hole features** (`holes`: type, diameter, origin, direction), which are a designer's labels, not mates. 721 assemblies placed (30 skipped for more than 80 body instances, 2 without JSON); 718 scored (3 timed out at 180 s), 8,710 body instances of which 1,937 (22.2 %) do not read (the reader's spline limits, epic #46). Detector: 4,496 holes, 499 sites, at most 2.3 s per assembly.
+
+- **Designed holes**: 5,396 labelled; 3,875 on bodies that were read; 2,006 matched by axis (1 degree, 0.1 mm) and diameter (0.05 mm): 51.8 % of those on read bodies. The 1,869 misses on read bodies, by what the model has at that axis and size: a cylinder wrapping only part of a turn, 740 (a hole cut at the body's edge or a notch: by the full-turn rule not a bore); no cylinder of that size on that axis, 1,129 (for 724 of these a same-size parallel bore exists elsewhere on the body); a single face wrapping the whole turn that is not a hole, 0: **no full designed bore was missed by the detector**. The label's frame was tried both ways (root frame 1,975, component frame placed by the instance 1,988, either 2,006): neither explains the 1,129. **Unverified:** the labels may record the feature where it was made in the design timeline, not where the finished part has it.
+- **Designed coaxial pairs** (two designed holes of different bodies on one axis with one diameter): 3,208, 2,877 with both bodies read; 319 found as a site (11.1 %). Read this as a ceiling check on a weak label (the same position question as above), not as the detector's recall.
+- **Bridge rule**: 126 bridged sites in the 718 assemblies, 83 of them on a designed hole's axis. No label says which bridges are real; the rule's own limit (a shank is required) stands.
+- **Near-closed bores**: see the table above.
+
+Limits: one of eleven archives; Fusion assemblies are small, mostly one designer's; the labels are hole features, not joints (the 1,710 dataset joints were not scored: their geometry is entity references to the Fusion model, not to the STEP faces); no dataset labels a modelling gap, so the precision of "possible modelling gap" is unmeasured (what is measured is the share of partial bores that are designed full holes); the 1,129 unexplained misses mean the recall figure is a lower bound of unknown looseness. Negative results kept: a threshold of 0.8 (32 of 56 partial bores in 0.8 to 0.9 sit on a designed hole); summing the wraps of faces at different depths made 22 half rings read as full turns (the scorer now counts one face).
