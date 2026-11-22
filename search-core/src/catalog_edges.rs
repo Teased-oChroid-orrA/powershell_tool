@@ -520,12 +520,32 @@ fn other_end<'a>(edge: &'a StoredEdge, path: &str) -> &'a str {
     if edge.src == path { &edge.dst } else { &edge.src }
 }
 
+/// Wording of a `VERSION_OF` reason: "Earlier"/"Later version" when the group's order is known between `other`
+/// and the asked-for file (by version tokens; by modification time it says so), the order-free sentence otherwise.
+fn version_text(chain: Option<&crate::catalog_chains::Chain>, other: &str, name: &str) -> String {
+    use crate::catalog_chains::Basis;
+    let plain = || format!("Another version of the same document: {name}");
+    let Some(chain) = chain else { return plain() };
+    let Some(j) = chain.files.iter().position(|f| f == other) else { return plain() };
+    let i = chain.position;
+    let steps = &chain.bases[i.min(j)..i.max(j)];
+    let which = if j < i { "Earlier" } else { "Later" };
+    if steps.iter().any(|b| *b == Basis::Path) {
+        plain()
+    } else if steps.iter().all(|b| *b == Basis::Token) {
+        format!("{which} version of the same document: {name}")
+    } else {
+        format!("{which} version of the same document by modified time: {name}")
+    }
+}
+
 /// Reasons for `path` from its stored edges: duplicates and versions (facts) first, then shared entities
 /// (inferred, at least [`EXPLAIN_MIN_CONFIDENCE`]). Folder edges are skipped (every file has one). At most
 /// three per kind, best first, plus a count of the rest. Only reads the edges' own evidence; no text is generated
 /// beyond naming the other file and what the evidence says.
-pub fn explain(path: &str, edges: &[StoredEdge]) -> Vec<Reason> {
+pub fn explain(path: &str, edges: &[StoredEdge], files: &[FileRow]) -> Vec<Reason> {
     let mut out = Vec::new();
+    let chain = crate::catalog_chains::version_chain(path, edges, files);
     let kinds = [("DUPLICATE_OF", false), ("VERSION_OF", false), ("SAME_ENTITY", true)];
     for (kind, inferred) in kinds {
         let mut of_kind: Vec<&StoredEdge> = edges
@@ -539,7 +559,7 @@ pub fn explain(path: &str, edges: &[StoredEdge]) -> Vec<Reason> {
             let name = file_name(other);
             let text = match kind {
                 "DUPLICATE_OF" => format!("Identical text to {name}"),
-                "VERSION_OF" => format!("Another version of the same document: {name}"),
+                "VERSION_OF" => version_text(chain.as_ref(), other, name),
                 _ => {
                     let shared = edge.evidence["shared_count"].as_u64().unwrap_or(1);
                     let first = edge.evidence["shared"][0]["src_text"].as_str().unwrap_or("");
@@ -563,10 +583,49 @@ pub fn explain(path: &str, edges: &[StoredEdge]) -> Vec<Reason> {
     out
 }
 
+/// How many other files hold the same text as a file, and how many are other versions of it, from stored facts
+/// (`DUPLICATE_OF`, `VERSION_OF`): enough for a row of a results table to say "has copies / versions" without
+/// saying which.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Cue {
+    pub copies: u32,
+    pub versions: u32,
+}
+
 impl Catalog {
+    /// The [`Cue`] of each of `paths` that has one, in a single pass over the stored duplicate and version edges
+    /// (cost follows those edges, not the number of paths; no inferred edge is read).
+    pub fn cues_for(&self, paths: &[String]) -> rusqlite::Result<std::collections::HashMap<String, Cue>> {
+        let wanted: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+        let mut out: std::collections::HashMap<String, Cue> = std::collections::HashMap::new();
+        let mut stmt = self.conn.prepare("SELECT src,dst,type FROM relationship WHERE type IN ('DUPLICATE_OF','VERSION_OF')")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let (src, dst, kind): (String, String, String) = (row.get(0)?, row.get(1)?, row.get(2)?);
+            for end in [src, dst] {
+                if wanted.contains(end.as_str()) {
+                    let cue = out.entry(end).or_default();
+                    if kind == "DUPLICATE_OF" { cue.copies += 1 } else { cue.versions += 1 }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// [`explain`] for `path` from the stored edges.
     pub fn reasons_for(&self, path: &str) -> rusqlite::Result<Vec<Reason>> {
-        Ok(explain(path, &self.edges_for(path)?))
+        let edges = self.edges_for(path)?;
+        let ends: std::collections::BTreeSet<&str> =
+            edges.iter().filter(|e| e.kind == "VERSION_OF").flat_map(|e| [e.src.as_str(), e.dst.as_str()]).collect();
+        let mut files: Vec<FileRow> = Vec::new();
+        let mut stmt = self.conn.prepare("SELECT path,size,modified,content_hash FROM files WHERE path=?1")?;
+        for end in ends {
+            let mut rows = stmt.query_map([end], |r| Ok(FileRow { path: r.get(0)?, size: r.get(1)?, modified: r.get(2)?, content_hash: r.get(3)? }))?;
+            if let Some(row) = rows.next() {
+                files.push(row?);
+            }
+        }
+        Ok(explain(path, &edges, &files))
     }
 }
 
@@ -637,7 +696,7 @@ mod tests {
             stored("/d/a.txt", "/d/weak.txt", "SAME_ENTITY", 0.2, json!({"shared_count": 1, "shared": []}), "statistical"),
             stored("/x/y.txt", "/x/z.txt", "DUPLICATE_OF", 1.0, json!({}), "verified"),
         ];
-        let got = explain("/d/a.txt", &edges);
+        let got = explain("/d/a.txt", &edges, &[]);
         let texts: Vec<(&str, bool)> = got.iter().map(|r| (r.text.as_str(), r.inferred)).collect();
         assert_eq!(texts, [
             ("Identical text to b.txt", false),
@@ -645,13 +704,38 @@ mod tests {
             ("Shares 2 entities with c.txt, e.g. AN3-5A", true),
         ]);
         // Seen from the other end of an entity edge, the other file's own spelling is quoted.
-        let dst_side = explain("/d/c.txt", &edges);
+        let dst_side = explain("/d/c.txt", &edges, &[]);
         assert_eq!(dst_side[0].text, "Shares 2 entities with a.txt, e.g. an3-5a");
         // More than three of a kind are counted, not listed.
         let many: Vec<StoredEdge> = (0..5).map(|i| stored("/d/a.txt", &format!("/d/c{i}.txt"), "DUPLICATE_OF", 1.0, json!({}), "verified")).collect();
-        let got = explain("/d/a.txt", &many);
+        let got = explain("/d/a.txt", &many, &[]);
         assert_eq!(got.len(), 4);
         assert_eq!(got[3].text, "and 2 more identical copies");
+    }
+
+    /// `VERSION_OF` reasons as `explain` words them for `path`, with the edges built the way `rebuild_edges` builds them.
+    fn version_reasons(files: &[FileRow], path: &str) -> Vec<String> {
+        let stored: Vec<StoredEdge> = version_edges(files)
+            .into_iter()
+            .map(|e| StoredEdge { src: e.src, dst: e.dst, kind: "VERSION_OF".into(), confidence: e.confidence, evidence: e.evidence, class: e.class.as_str().into(), created: 0, source_version: e.source_version })
+            .collect();
+        explain(path, &stored, files).into_iter().map(|r| r.text).collect()
+    }
+
+    #[test]
+    fn version_reasons_say_earlier_or_later_and_how_that_is_known() {
+        let row = |p: &str, modified: i64| FileRow { path: p.into(), size: 1, modified, content_hash: None };
+        // Tokens order the group (mtimes disagree on purpose): strong, no qualifier.
+        let by_token = [row("/d/spec v1.txt", 9), row("/d/spec v2.txt", 5), row("/d/spec v3.txt", 1)];
+        assert_eq!(version_reasons(&by_token, "/d/spec v2.txt"), ["Earlier version of the same document: spec v1.txt", "Later version of the same document: spec v3.txt"]);
+        // A mixed set is ordered by modification time, and the wording says so.
+        let by_time = [row("/d/plan v2.txt", 1), row("/d/plan rev B.txt", 2)];
+        assert_eq!(version_reasons(&by_time, "/d/plan rev B.txt"), ["Earlier version of the same document by modified time: plan v2.txt"]);
+        // Nothing distinguishes the two: no order is claimed.
+        let tied = [row("/d/log (1).txt", 4), row("/d/log (1) draft.txt", 4)];
+        for r in version_reasons(&tied, "/d/log (1).txt") {
+            assert!(r.starts_with("Another version of the same document: "), "{r}");
+        }
     }
 
     #[test]
@@ -663,7 +747,7 @@ mod tests {
             .map(|e| StoredEdge { src: e.src, dst: e.dst, kind: e.kind.as_str().into(), confidence: e.confidence, evidence: e.evidence, class: e.class.as_str().into(), created: 0, source_version: e.source_version })
             .collect();
         for (me, other) in [("/rootA/docs/spec.txt", "/rootB/archive/spec copy.txt"), ("/rootB/archive/spec copy.txt", "/rootA/docs/spec.txt")] {
-            let reasons = explain(me, &stored);
+            let reasons = explain(me, &stored, &[]);
             assert_eq!(reasons.len(), 1);
             assert_eq!(reasons[0].other, other);
         }

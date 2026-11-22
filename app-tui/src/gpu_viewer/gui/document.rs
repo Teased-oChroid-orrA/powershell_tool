@@ -2333,8 +2333,18 @@ impl Gui {
                 }
                 let name = clip.layout_no_wrap(cell.clone(), FontId::proportional(13.5), p.text);
                 clip.galley(Pos2::new(name_x, r.top() + 5.0), name, p.text);
-                let sub = clip.layout_no_wrap(row.sub.clone(), FontId::proportional(11.5), p.dim);
-                clip.galley(Pos2::new(r.left() + 4.0 + if row.mark.is_some() { 24.0 } else { 0.0 }, r.top() + 23.0), sub, p.dim);
+                // The cue pill sits at the right end of the second line; the folder is cut short before it.
+                let mut sub_clip = clip.clone();
+                if let Some(cue) = &row.cue {
+                    let g = clip.layout_no_wrap(cue.text.clone(), FontId::proportional(10.5), p.dim);
+                    let pill = Rect::from_min_size(Pos2::new(r.right() - g.size().x - 14.0, r.top() + 22.0), g.size() + Vec2::new(10.0, 3.0));
+                    clip.rect(pill, CornerRadius::same(5), with_alpha(p.muted, 30), Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
+                    clip.galley(pill.min + Vec2::new(5.0, 1.5), g, p.dim);
+                    ui.interact(pill, Id::new(("doc-cue", &t.title, i)), Sense::hover()).on_hover_text(&cue.hint);
+                    sub_clip = clip.with_clip_rect(Rect::from_min_max(r.min, Pos2::new(pill.left() - 6.0, r.max.y)).intersect(clip.clip_rect()));
+                }
+                let sub = sub_clip.layout_no_wrap(row.sub.clone(), FontId::proportional(11.5), p.dim);
+                sub_clip.galley(Pos2::new(r.left() + 4.0 + if row.mark.is_some() { 24.0 } else { 0.0 }, r.top() + 23.0), sub, p.dim);
             } else if let Some(fraction) = relevance_fraction(&t.columns[k].title, cell) {
                 // A relevance score is a short bar and its number, so a column of them reads at a glance.
                 let bar = Rect::from_min_size(
@@ -2587,6 +2597,16 @@ impl Gui {
                     self.entry_click(&r, e, out, hint);
                 }
             });
+            if !d.related.is_empty() {
+                egui::Frame::new().fill(with_alpha(p.raised, 125)).corner_radius(CornerRadius::same(9)).inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    egui::ScrollArea::vertical().id_salt(("doc-related", &d.title)).max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
+                        for item in &d.related {
+                            self.panel_item(ui, item, p, out);
+                        }
+                    });
+                });
+            }
             ui.add(egui::Separator::default().spacing(6.0));
             if let Some(drawing) = &d.drawing {
                 let height = (ui.available_height() - 55.0).clamp(140.0, 450.0);

@@ -37,6 +37,7 @@ use crate::notifications::NotificationQueue;
 use crate::toolboxes::search::{
     self as search, exec, model, persistence, settings_view, SearchToolState,
 };
+use search_core::catalog_edges::Cue;
 use search_core::catalog_gaps::Gap;
 use search_core::catalog_projects::ProjectSuggestion;
 use search_core::models::FileSearchResult;
@@ -45,6 +46,12 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+/// Relationship cues by file path.
+type Cues = std::collections::HashMap<String, Cue>;
+
+/// The most results asked about when reading cues (later rows simply show none).
+const MAX_CUE_PATHS: usize = 5_000;
 
 /// What a click in the Search workbench asks for (carried by `EditorAction::Search`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -342,6 +349,15 @@ pub struct SearchSession {
     gaps_tx: mpsc::UnboundedSender<Result<Vec<Gap>, String>>,
     gaps_rx: mpsc::UnboundedReceiver<Result<Vec<Gap>, String>>,
     gaps_source: fn() -> Result<Vec<Gap>, String>,
+    /// Relationship cues of the finished run's results (#240 P4-2): path -> identical copies / other versions, read
+    /// once per run on a blocking thread. `cues_key` is the run (start, result count) they were asked for; `cues_gen`
+    /// changes when they arrive or are dropped, so the cached rows are rebuilt.
+    cues: Cues,
+    cues_key: Option<(Option<Instant>, usize)>,
+    cues_gen: u64,
+    cues_tx: mpsc::UnboundedSender<((Option<Instant>, usize), Result<Cues, String>)>,
+    cues_rx: mpsc::UnboundedReceiver<((Option<Instant>, usize), Result<Cues, String>)>,
+    cues_source: fn(Vec<String>) -> Result<Cues, String>,
     #[cfg(feature = "semantic-search")]
     related_tx: mpsc::UnboundedSender<RelatedSearchEvent>,
     #[cfg(feature = "semantic-search")]
@@ -778,6 +794,26 @@ impl SearchSession {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
+    /// Give the open preview these related-file reasons (the window reads them from the user's catalog, which tests never touch).
+    #[cfg(test)]
+    pub(crate) fn related_for_snapshot(&mut self, reasons: Vec<search_core::catalog_edges::Reason>) {
+        self.preview.as_mut().expect("a selected result has a preview").related = reasons;
+    }
+    /// Read the finished run's row cues from `source` and wait for a non-empty answer (a read already in flight from the
+    /// default source may land first, empty), as the window does after a run (the real
+    /// source reads the user's catalog, which tests never touch).
+    #[cfg(test)]
+    pub(crate) fn cues_for_snapshot(&mut self, source: fn(Vec<String>) -> Result<Cues, String>) {
+        self.cues_source = source;
+        self.cues_key = None;
+        self.cues.clear();
+        let started = Instant::now();
+        while self.cues.is_empty() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10), "the cues did not arrive");
+            self.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     /// Look for projects from `source` and wait for the answer, as the Projects popover's button does.
     #[cfg(test)]
     pub(crate) fn projects_for_snapshot(&mut self, source: fn() -> Result<Vec<ProjectSuggestion>, String>) {
@@ -862,6 +898,7 @@ impl SearchSession {
         let (alert_tx, alert_rx) = mpsc::unbounded_channel();
         let (projects_tx, projects_rx) = mpsc::unbounded_channel();
         let (gaps_tx, gaps_rx) = mpsc::unbounded_channel();
+        let (cues_tx, cues_rx) = mpsc::unbounded_channel();
         #[cfg(feature = "semantic-search")]
         let (semantic_tx, semantic_rx) = mpsc::unbounded_channel();
         #[cfg(feature = "semantic-search")]
@@ -994,6 +1031,12 @@ impl SearchSession {
             gaps_tx,
             gaps_rx,
             gaps_source: crate::toolboxes::search::indexing::knowledge_gaps,
+            cues: Cues::new(),
+            cues_key: None,
+            cues_gen: 0,
+            cues_tx,
+            cues_rx,
+            cues_source: crate::toolboxes::search::indexing::relation_cues,
             #[cfg(feature = "nl-find")]
             nl: nl::NlFind::new(),
             #[cfg(feature = "semantic-search")]
@@ -2446,6 +2489,50 @@ impl SearchSession {
             let _ = tx.send(result);
         });
     }
+    /// The row cue of `path`: how many other files hold identical text, and how many are other versions of it.
+    /// Facts from the catalog; which files they are shows when the file is selected.
+    pub(super) fn cue_of(&self, path: &str) -> Option<crate::gpu_viewer::ui::DocCue> {
+        let cue = self.cues.get(path).filter(|c| c.copies + c.versions > 0)?;
+        let plural = |n: u32, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let mut parts = Vec::new();
+        let mut hint = Vec::new();
+        if cue.copies > 0 {
+            parts.push(plural(cue.copies, "copy", "copies"));
+            hint.push(format!("Identical text in {}.", plural(cue.copies, "other file", "other files")));
+        }
+        if cue.versions > 0 {
+            parts.push(plural(cue.versions, "version", "versions"));
+            hint.push(format!("{} of this document.", plural(cue.versions, "other version", "other versions")));
+        }
+        hint.push("Select the file to see which.".into());
+        Some(crate::gpu_viewer::ui::DocCue { text: parts.join(" · "), hint: hint.join(" ") })
+    }
+    /// Asks the catalog which results of the finished run have identical copies or other versions (one read per run,
+    /// on a blocking thread; the answer arrives through `poll`). While a run is going, nothing is shown from the last one.
+    fn request_cues(&mut self) {
+        let run = &self.st.run;
+        if run.is_running || run.results.is_empty() {
+            self.cues_key = None;
+            if !self.cues.is_empty() {
+                self.cues.clear();
+                self.cues_gen += 1;
+            }
+            return;
+        }
+        let key = (run.started, run.results.len());
+        if self.cues_key == Some(key) {
+            return;
+        }
+        self.cues_key = Some(key);
+        let paths: Vec<String> = run.results.iter().take(MAX_CUE_PATHS).map(|r| r.full_name.clone()).collect();
+        let (tx, source) = (self.cues_tx.clone(), self.cues_source);
+        self.rt.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || source(paths))
+                .await
+                .unwrap_or_else(|error| Err(format!("relationship cue task failed: {error}")));
+            let _ = tx.send((key, result));
+        });
+    }
     /// Reads the catalog's possible gaps on a blocking thread; the result arrives through `poll`.
     fn find_gaps(&mut self) {
         if self.gaps_running {
@@ -3031,6 +3118,14 @@ impl Authoring for SearchSession {
     fn poll(&mut self) -> bool {
         let mut changed = false;
         self.poll_watcher();
+        self.request_cues();
+        while let Ok((key, result)) = self.cues_rx.try_recv() {
+            if self.cues_key == Some(key) {
+                self.cues = result.unwrap_or_default();
+                self.cues_gen += 1;
+                changed = true;
+            }
+        }
         self.request_neural_suggestions();
         #[cfg(feature = "neural-search")]
         while let Ok(event) = self.neural_rx.try_recv() {

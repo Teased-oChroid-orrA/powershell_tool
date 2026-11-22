@@ -591,3 +591,41 @@ fn knowledge_gaps_precision_and_recall_on_a_labelled_tree() {
     assert!(mr == 1.0 && dr == 1.0, "recall {mr} {dr}");
     assert!(mp >= 0.8 && dp >= 0.5, "precision {mp} {dp}");
 }
+
+#[test]
+fn reasons_from_the_catalog_say_which_version_is_earlier() {
+    let mut env = Env::new();
+    let base = body(1);
+    env.write("a/spec_v1.txt", &format!("{base}\nrelease one"));
+    env.write("a/spec_v2.txt", &format!("{base}\nrelease two"));
+    env.write("a/spec_v3.txt", &format!("{base}\nrelease three"));
+    env.refresh();
+    env.catalog.rebuild_edges().unwrap();
+    let texts = |rel: &str| env.catalog.reasons_for(&env.path(rel)).unwrap().into_iter().map(|r| r.text).collect::<Vec<_>>();
+    assert_eq!(
+        texts("a/spec_v2.txt"),
+        ["Earlier version of the same document: spec_v1.txt", "Later version of the same document: spec_v3.txt"]
+    );
+    assert_eq!(texts("a/spec_v3.txt"), ["Earlier version of the same document: spec_v1.txt", "Earlier version of the same document: spec_v2.txt"]);
+}
+
+#[test]
+fn cues_count_copies_and_versions_of_the_asked_files_only() {
+    let mut env = Env::new();
+    let base = body(1);
+    env.write("a/doc.txt", &base);
+    env.write("b/doc-copy.txt", &base);
+    env.write("c/doc-copy2.txt", &base);
+    env.write("a/spec_v1.txt", &format!("{base}\nrelease one"));
+    env.write("a/spec_v2.txt", &format!("{base}\nrelease two"));
+    env.write("a/lonely.txt", &body(2));
+    env.refresh();
+    env.catalog.rebuild_edges().unwrap();
+    let asked: Vec<String> = ["a/doc.txt", "a/spec_v1.txt", "a/lonely.txt"].iter().map(|r| env.path(r)).collect();
+    let cues = env.catalog.cues_for(&asked).unwrap();
+    assert_eq!(cues.get(&env.path("a/doc.txt")).map(|c| c.copies), Some(2), "two identical copies");
+    assert_eq!(cues.get(&env.path("a/spec_v1.txt")).map(|c| c.versions), Some(1), "one other version");
+    assert!(!cues.contains_key(&env.path("a/lonely.txt")), "no edge, no cue");
+    assert!(!cues.contains_key(&env.path("b/doc-copy.txt")), "only the asked paths are reported");
+    assert!(env.catalog.cues_for(&[]).unwrap().is_empty());
+}

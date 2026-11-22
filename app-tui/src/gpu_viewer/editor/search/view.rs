@@ -31,6 +31,7 @@ pub(super) struct RowsCache {
     filter: String,
     narrow: narrow::Narrow,
     root: String,
+    cues_gen: u64,
     #[cfg(feature = "neural-search")]
     relevance_key: String,
     /// The result index of each row, in row order.
@@ -48,6 +49,7 @@ impl RowsCache {
             && self.filter == s.filter
             && self.narrow == s.narrow
             && self.root == s.st.config.search_path
+            && self.cues_gen == s.cues_gen
     }
 
     fn current(&self, s: &SearchSession) -> bool {
@@ -1228,6 +1230,7 @@ fn table(s: &SearchSession) -> DocTable {
             filter: s.filter.clone(),
             narrow: s.narrow.clone(),
             root: s.st.config.search_path.clone(),
+            cues_gen: s.cues_gen,
             #[cfg(feature = "neural-search")]
             relevance_key: s.relevance_key(),
             order,
@@ -1318,6 +1321,7 @@ fn result_row(s: &SearchSession, i: usize, selected: bool, root: &str) -> DocRow
             .extension()
             .map(|x| x.to_string_lossy().to_uppercase()),
         mark: None,
+        cue: s.cue_of(&r.full_name),
     }
 }
 
@@ -1449,10 +1453,7 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
     }
     let preview = s.preview.as_ref().filter(|p| p.path == r.full_name);
     let text = preview.and_then(|p| p.text.clone());
-    if let Some(related) = preview.map(|p| &p.related).filter(|r| !r.is_empty()) {
-        let lines: Vec<String> = related.iter().map(|r| if r.inferred { format!("{} (inferred)", r.text) } else { r.text.clone() }).collect();
-        notes.push(DocNote::new("Related files", lines.join("\n")));
-    }
+    notes.extend(preview.map_or(&[][..], |p| &p.related[..]).iter().map(related_note));
     let empty = preview.map_or("Loading the full document...".to_string(), |p| {
         p.status.clone()
     });
@@ -1507,7 +1508,9 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
         subtitle,
         signals,
         notes,
+        related: related_items(s),
         actions: {
+            #[cfg_attr(not(feature = "neural-search"), allow(unused_mut))]
             let mut actions = related_actions(preview);
             #[cfg(feature = "neural-search")]
             if s.feedback_enabled() && s.relevance_score(i).is_some() {
@@ -1528,6 +1531,22 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
         text,
         empty,
     })
+}
+
+/// One related-file reason as a visible pill (clipped to fit a narrow header; the hover text has all of it, the other
+/// file's folder, and for an inferred one that it is not confirmed).
+fn related_note(r: &search_core::catalog_edges::Reason) -> DocNote {
+    const MAX: usize = 64;
+    let full = if r.inferred { format!("{} (inferred)", r.text) } else { r.text.clone() };
+    let shown = if full.chars().count() > MAX { format!("{}...", full.chars().take(MAX - 3).collect::<String>()) } else { full.clone() };
+    let mut hint = full;
+    if let Some(folder) = std::path::Path::new(&r.other).parent().filter(|_| !r.other.is_empty()) {
+        hint.push_str(&format!("\nIn {}", folder.display()));
+    }
+    if r.inferred {
+        hint.push_str("\nInferred from shared identifiers; not confirmed.");
+    }
+    DocNote::new(shown, hint)
 }
 
 /// One "Open <name>" button per related file, labelled with its folder so a copy in another root is told apart.
@@ -1762,6 +1781,104 @@ fn setting_rows(s: &SearchSession, groups: &[&str]) -> Vec<DockItem> {
         .collect()
 }
 
+/// The selected file's related-document tools, drawn in the detail pane under its actions: find possible related
+/// documents, the ranked candidates (each opens or compares exact lines), and the exact-line comparison.
+#[cfg(feature = "semantic-search")]
+fn related_items(s: &SearchSession) -> Vec<DockItem> {
+    let mut items = Vec::new();
+    items.push(DockItem::row(
+        if s.related_running {
+            "Comparing selected document…"
+        } else {
+            "Find possible related documents"
+        },
+        Tone::Title,
+        Some(act(SearchAct::FindRelated)),
+        false,
+    ));
+    if let Some(hits) = s.current_related_hits() {
+        items.push(DockItem::Heading("Possible related documents".into()));
+        items.push(DockItem::text(
+            "Grouped by file. Similarity ranks candidates; it does not prove a duplicate or a revision, so read the excerpts.",
+            Tone::Dim,
+        ));
+        for (i, hit) in hits.iter().enumerate() {
+            items.push(DockItem::row(
+                format!(
+                    "{} · {:.0}% similar",
+                    semantic_citation(hit),
+                    hit.similarity * 100.0
+                ),
+                Tone::Normal,
+                Some(act(SearchAct::OpenRelated(i))),
+                false,
+            ));
+            items.push(DockItem::text(plain(&hit.excerpt), Tone::Dim));
+            items.push(DockItem::row(
+                if s.diff_running
+                    && s.diff_request
+                        .as_ref()
+                        .is_some_and(|key| key.candidate_path == hit.path)
+                {
+                    "Comparing exact lines…"
+                } else {
+                    "Compare exact lines"
+                },
+                Tone::Title,
+                Some(act(SearchAct::CompareRelated(i))),
+                false,
+            ));
+        }
+        if hits.is_empty() {
+            items.push(DockItem::text(
+                "No related indexed documents found.",
+                Tone::Dim,
+            ));
+        }
+    }
+    if let Some(diff) = s.current_related_diff() {
+        let identical = diff.added == 0 && diff.removed == 0;
+        items.push(DockItem::Heading(if identical {
+            "Identical extracted text".into()
+        } else {
+            "Exact extracted-line changes".into()
+        }));
+        items.push(DockItem::text(if identical {
+            "The extracted lines match exactly. This confirms text equality, not binary-file identity."
+        } else {
+            "Line numbers refer to extracted text. PDF pages are flattened. Similarity does not classify revisions."
+        }, Tone::Dim));
+        for row in &diff.rows {
+            let prefix = match row.side {
+                super::diff::Side::Source => "−",
+                super::diff::Side::Candidate => "+",
+            };
+            let suffix = if row.clipped { " …" } else { "" };
+            items.push(DockItem::text(
+                format!("{prefix} {:>5}  {}{suffix}", row.line, row.text),
+                Tone::Normal,
+            ));
+        }
+        if diff.omitted > 0 {
+            items.push(DockItem::text(
+                format!("{} additional changed lines omitted.", diff.omitted),
+                Tone::Dim,
+            ));
+        }
+    }
+    if let Some(error) = &s.diff_error {
+        items.push(DockItem::text(plain(error), Tone::Warn));
+    }
+    if let Some(error) = &s.related_error {
+        items.push(DockItem::text(plain(error), Tone::Warn));
+    }
+    items
+}
+#[cfg(not(feature = "semantic-search"))]
+fn related_items(_: &SearchSession) -> Vec<DockItem> {
+    Vec::new()
+}
+
 /// The option cards, grouped as the page's popovers show them (Options, Index, Report).
 pub(super) struct Cards {
     matching: Card,
@@ -1859,95 +1976,6 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
             }
         }
         if let Some(error) = &s.summary_error {
-            index.push(DockItem::text(plain(error), Tone::Warn));
-        }
-    }
-    #[cfg(feature = "semantic-search")]
-    {
-        index.push(DockItem::row(
-            if s.related_running {
-                "Comparing selected document…"
-            } else {
-                "Find possible related documents"
-            },
-            Tone::Title,
-            Some(act(SearchAct::FindRelated)),
-            false,
-        ));
-        if let Some(hits) = s.current_related_hits() {
-            index.push(DockItem::Heading("Possible related documents".into()));
-            index.push(DockItem::text(
-                "Grouped by file. Similarity ranks candidates; it does not prove a duplicate or a revision, so read the excerpts.",
-                Tone::Dim,
-            ));
-            for (i, hit) in hits.iter().enumerate() {
-                index.push(DockItem::row(
-                    format!(
-                        "{} · {:.0}% similar",
-                        semantic_citation(hit),
-                        hit.similarity * 100.0
-                    ),
-                    Tone::Normal,
-                    Some(act(SearchAct::OpenRelated(i))),
-                    false,
-                ));
-                index.push(DockItem::text(plain(&hit.excerpt), Tone::Dim));
-                index.push(DockItem::row(
-                    if s.diff_running
-                        && s.diff_request
-                            .as_ref()
-                            .is_some_and(|key| key.candidate_path == hit.path)
-                    {
-                        "Comparing exact lines…"
-                    } else {
-                        "Compare exact lines"
-                    },
-                    Tone::Title,
-                    Some(act(SearchAct::CompareRelated(i))),
-                    false,
-                ));
-            }
-            if hits.is_empty() {
-                index.push(DockItem::text(
-                    "No related indexed documents found.",
-                    Tone::Dim,
-                ));
-            }
-        }
-        if let Some(diff) = s.current_related_diff() {
-            let identical = diff.added == 0 && diff.removed == 0;
-            index.push(DockItem::Heading(if identical {
-                "Identical extracted text".into()
-            } else {
-                "Exact extracted-line changes".into()
-            }));
-            index.push(DockItem::text(if identical {
-                "The extracted lines match exactly. This confirms text equality, not binary-file identity."
-            } else {
-                "Line numbers refer to extracted text. PDF pages are flattened. Similarity does not classify revisions."
-            }, Tone::Dim));
-            for row in &diff.rows {
-                let prefix = match row.side {
-                    super::diff::Side::Source => "−",
-                    super::diff::Side::Candidate => "+",
-                };
-                let suffix = if row.clipped { " …" } else { "" };
-                index.push(DockItem::text(
-                    format!("{prefix} {:>5}  {}{suffix}", row.line, row.text),
-                    Tone::Normal,
-                ));
-            }
-            if diff.omitted > 0 {
-                index.push(DockItem::text(
-                    format!("{} additional changed lines omitted.", diff.omitted),
-                    Tone::Dim,
-                ));
-            }
-        }
-        if let Some(error) = &s.diff_error {
-            index.push(DockItem::text(plain(error), Tone::Warn));
-        }
-        if let Some(error) = &s.related_error {
             index.push(DockItem::text(plain(error), Tone::Warn));
         }
     }
