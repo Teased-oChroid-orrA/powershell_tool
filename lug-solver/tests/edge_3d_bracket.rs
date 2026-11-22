@@ -499,3 +499,19 @@ fn hardened_comparison() {
         }
     }
 }
+
+/// The default Bushing case in 3D (bronze bushing, interference, friction 0.15, 7075 housing, t/D 1.0, e/D 1.5),
+/// against plane strain on the same mesh and `edge-check`'s own 2D contact FE. Plane stress is not run: it stalled in
+/// the plastic pin stage (see the doc).
+#[test]
+#[ignore = "bushed 3D: minutes to hours"]
+fn bushed_3d() {
+    let c = default_bushing(1.5, 1.0, 36);
+    let area = D * c.thickness();
+    let strain = run(c, Idealisation::Strain);
+    println!("2D strain {:.0} lbf ({:.0} psi bearing), fit {:.0} psi, {:.1} s", strain.at_limit(), strain.at_limit() / area, strain.fit_pressure.unwrap(), strain.secs);
+    for layers in [2usize] {
+        let o = run(c, Idealisation::Solid { layers, lock_z: false });
+        println!("3D {layers} layers {:.0} lbf ({:+.1} % vs plane strain), fit {:.0} psi, {:.0} s, {} dof", o.at_limit(), pct(o.at_limit(), strain.at_limit()), o.fit_pressure.unwrap(), o.secs, o.dofs);
+    }
+}

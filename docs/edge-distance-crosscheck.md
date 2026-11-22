@@ -210,3 +210,200 @@ the same linear superposition (the back side is unloaded, not lost), not a credi
 assumes a rigid, frictionless bushing and uses the *nominal* pressure for the capacity numbers; the
 Monte-Carlo pass covers the pressure band. Not modelled: the housing's finite width in the half-plane
 model (the FE model includes it, to <= 5 %).
+
+
+## 3D bracket, second test set and promotion criteria (2026-11-22)
+
+Evidence only. Nothing here changes a governing check, the Bushing window or any product behaviour; the legacy
+`Fbru + 0.8 p` check stays governing. The owner decides promotion. Code: `lug-solver/tests/edge_3d_bracket.rs` (one
+driver for 2D plane strain, 2D plane stress and 3D) and `edge-check/tests/validation_naca_tn1502.rs`.
+
+### Result in one paragraph
+
+**The plane-strain contact FE is unconservative against a three-dimensional model of the same plate and the same
+material law, at every thickness and edge distance tested.** Plane stress is below 3D and plane strain above it on all
+12 NACA TN 1503 points (t/D 0.5): plane strain is **12 to 14 % above 3D at e/D 1.5 and 35 to 36 % above at e/D 2.0**;
+plane stress is 11 to 13 % and 15 to 16 % below. So the two 2D idealisations do bracket 3D, but the bracket is wide
+and the contact FE sits on its upper side. The contact FE still reads below the test values (TN 1503 and TN 1502) because
+three errors have the opposite sign: perfect plasticity (no hardening), the flow-stress rule, and a rigid frictionless
+pin. Its agreement with the tests is therefore **partly compensation**, not proof that plane strain is the right
+physics: a 3D model with the same material law is 15 to 45 % below the tests.
+
+### How the bracket was made (and proved)
+
+One driver (`run`) serves all three idealisations so that the only difference is dimensionality: `FeaLug`'s graded Q9 mesh
+(36 elements around the bore), the housing elastic-perfectly-plastic J2 at the model's flow stress
+(`contact_model::flow_stress`), an analytic rigid frictionless pin driven toward the edge by a prescribed travel
+(`Tuning::collapse`), the load read at a pin travel of 0.1 D (`COLLAPSE_D_OVER_D`, the contact FE's rule). 3D extrudes the
+same mesh into Hex27 layers over half the thickness (quarter model: load-line and mid-plane symmetry, far end clamped in
+x and y) with a rigid cylinder pin. A bushing is installed first (two-pass frictional interference contact), then the pin
+is made to fit the post-fit bore, as `edge-check` does. Proofs (default test suite):
+
+| Check | Result |
+|---|---|
+| 3D with every `uz` locked equals 2D plane strain (same mesh, steps, pin) | 13728.6 vs 13728.3 lbf (+0.003 %) |
+| the 2D driver equals `FeaLug::limit_load_axial` | identical to 4 digits (13728.3 lbf) |
+| a very thin 3D plate (t/D 0.05) approaches plane stress | +2.26 % |
+| kernel fit pressure of the default bushing equals `edge-check`'s contact FE | 9927 vs 9897 psi (+0.30 %; the two contact passes each carry about half the pressure, so the physical pressure is their sum) |
+| 2D mesh, 36 to 72 elements around | plane strain -0.8 %, plane stress -1.9 % |
+| 3D mesh, layers 2 / 3 / 4 over half the thickness | 12234 / 12227 / 12224 lbf (-0.08 %); 54 elements around, 2 layers: 12203 (-0.25 %) |
+
+### NACA TN 1503, all 12 points (t/D 0.5, 2 in wide, 3D 2 layers; bearing stress P/(D t), psi)
+
+| Bar | e/D | Test | Plane strain | Plane stress | 3D | strain / 3D | stress / 3D |
+|---|---|---|---|---|---|---|---|
+| 75S-T 1x2 | 1.5 | 115500 | 109826 (-4.9 %) | 87259 (-24.5 %) | 97873 (-15.3 %) | +12.2 % | -10.8 % |
+| 75S-T 1x2 | 2.0 | 151900 | 138450 (-8.9 %) | 86729 (-42.9 %) | 102338 (-32.6 %) | +35.3 % | -15.3 % |
+| 75S-T 2x2 | 1.5 | 109500 | 102034 (-6.8 %) | 80437 (-26.5 %) | 90683 (-17.2 %) | +12.5 % | -11.3 % |
+| 75S-T 2x2 | 2.0 | 140400 | 128352 (-8.6 %) | 79983 (-43.0 %) | 94712 (-32.5 %) | +35.5 % | -15.6 % |
+| 24S-T 1x2 | 1.5 | 98500 | 77327 (-21.5 %) | 59307 (-39.8 %) | 67997 (-31.0 %) | +13.7 % | -12.8 % |
+| 24S-T 1x2 | 2.0 | 123000 | 96380 (-21.6 %) | 59078 (-52.0 %) | 70653 (-42.6 %) | +36.4 % | -16.4 % |
+| 24S-T 2x2 | 1.5 | 98400 | 74592 (-24.2 %) | 57020 (-42.1 %) | 65502 (-33.4 %) | +13.9 % | -12.9 % |
+| 24S-T 2x2 | 2.0 | 123400 | 92857 (-24.8 %) | 56812 (-54.0 %) | 68011 (-44.9 %) | +36.5 % | -16.5 % |
+| 14S-T 1x2 | 1.5 | 102800 | 87657 (-14.7 %) | 68041 (-33.8 %) | 77456 (-24.7 %) | +13.2 % | -12.2 % |
+| 14S-T 1x2 | 2.0 | 129500 | 109723 (-15.3 %) | 67725 (-47.7 %) | 80679 (-37.7 %) | +36.0 % | -16.1 % |
+| 14S-T 2x2 | 1.5 | 99400 | 85950 (-13.5 %) | 66587 (-33.0 %) | 75889 (-23.7 %) | +13.3 % | -12.3 % |
+| 14S-T 2x2 | 2.0 | 124200 | 107512 (-13.4 %) | 66286 (-46.6 %) | 79017 (-36.4 %) | +36.1 % | -16.1 % |
+| **Mean error vs test** | | | **-14.9 %** | **-40.5 %** | **-31.0 %** | | |
+
+The kernel's rigid-pin plane strain reads -14.9 % (the same as `lug-solver/tests/kernel_naca.rs`, -15.1 %); `edge-check`'s own
+contact FE, whose pin is a steel cylinder with a rigid core, reads -9.9 %. In 3D the e/D 1.5 to 2.0 strengthening is only 4.6 %
+(75S-T 1x2) against +31 % in the tests and +26 % in plane strain: at the larger edge distance the bearing crush at the
+thin free surfaces, not the edge, limits the 3D plate, and 2D plane strain cannot see that.
+
+### Thickness and edge-distance sweep (75S-T 1x2; model against model, no test data at these points)
+
+Plane strain does not depend on thickness (P/(D t)); 3D does. 3D with 2 layers (t/D <= 0.5) or 3 (above).
+
+| e/D | t/D | plane strain | plane stress | 3D | strain / 3D | stress / 3D |
+|---|---|---|---|---|---|---|
+| 1.5 | 0.1 | 109826 | 87259 | 90862 | +20.9 % | -4.0 % |
+| 1.5 | 0.25 | 109826 | 87259 | 94113 | +16.7 % | -7.3 % |
+| 1.5 | 0.5 | 109826 | 87259 | 97873 | +12.2 % | -10.8 % |
+| 1.5 | 1 | 109826 | 87259 | 102167 | +7.5 % | -14.6 % |
+| 1.5 | 2 | 109826 | 87259 | 106137 | +3.5 % | -17.8 % |
+| 2.0 | 0.1 | 138451 | 86729 | 90543 | +52.9 % | -4.2 % |
+| 2.0 | 0.25 | 138450 | 86729 | 95188 | +45.4 % | -8.9 % |
+| 2.0 | 0.5 | 138450 | 86729 | 102338 | +35.3 % | -15.3 % |
+| 2.0 | 1 | 138450 | 86729 | 114330 | +21.1 % | -24.1 % |
+| 2.0 | 2 | 138450 | 86729 | 126885 | +9.1 % | -31.6 % |
+
+| e/D (t/D 0.5) | plane strain | plane stress | 3D | strain / 3D | stress / 3D |
+|---|---|---|---|---|---|
+| 1.0 | 73627 | 70360 | 71453 | +3.0 % | -1.5 % |
+| 1.25 | 92808 | 85130 | 87560 | +6.0 % | -2.8 % |
+| 1.5 | 109826 | 87259 | 97873 | +12.2 % | -10.8 % |
+| 2.0 | 138450 | 86729 | 102338 | +35.3 % | -15.3 % |
+| 3.0 | 161548 | 86939 | 102559 | +57.5 % | -15.2 % |
+
+Reading: plane stress < 3D < plane strain in all 15 cells. The plane-strain excess **narrows with thickness** (but is still
++3.5 % at t/D 2 for e/D 1.5 and +9.1 % for e/D 2.0, so plane strain is the thick-plate limit only well beyond t/D 2) and
+**widens with edge distance** (+3 % at e/D 1.0, +57 % at e/D 3.0, where 3D has saturated at the bearing-crush level and plane strain keeps
+rising). The contact FE's agreement with the tests is closest at small e/D and thick plates, where the excess is small.
+
+### Does hardening explain the gap to the tests?
+
+Ramberg-Osgood hardening through `Fty` and `Ftu` at the bar's elongation (engineering stress treated as true, flat at `Ftu`
+beyond it: a strength-level idealisation, not a necking model), bearing stress psi, two bars of TN 1503:
+
+| Bar | e/D | Test | plane strain EPP | 3D EPP | plane strain RO | 3D RO |
+|---|---|---|---|---|---|---|
+| 75S-T 1x2 | 1.5 | 115500 | 109826 | 97873 | 112464 (-2.6 %) | 100881 (-12.7 %) |
+| 75S-T 1x2 | 2.0 | 151900 | 138450 | 102338 | 140502 (-7.5 %) | 106710 (-29.7 %) |
+| 24S-T 1x2 | 1.5 | 98500 | 77327 | 67997 | 81162 (-17.6 %) | 73303 (-25.6 %) |
+| 24S-T 1x2 | 2.0 | 123000 | 96380 | 70653 | 99379 (-19.2 %) | 79583 (-35.3 %) |
+
+Hardening to `Ftu` adds only 3 to 11 % in either idealisation, so it does not close the gap between 3D and the tests: the 3D
+model with a rigid, frictionless, uniformly loaded pin and small strain remains 13 to 35 % low. What is missing from 3D is the
+subject of the next evaluation (deformable pin, friction, finite strain, true stress-strain beyond necking); until then the
+sign of the 3D-versus-test error says only that a 3D model with this material law would be conservative, not that it is
+accurate. Plane strain's near-agreement with the 75S-T tests (-2.6 %, -7.5 % with hardening) is the over-confinement
+of plane strain compensating for the missing physics.
+
+### Default Bushing case (bore 0.5, bronze bushing ID 0.375, 0.0015 diametral interference, 7075, friction 0.15, t/D 1.0, e/D 1.5)
+
+| Quantity | Result |
+|---|---|
+| `edge-check` contact FE (its own plane-strain solver), collapse at 0.1 D | 27647 lbf (doc above: 27,600), 1.2 s |
+| kernel 2D plane strain, same case | 26930 lbf (-2.6 % against `edge-check`: two independent 2D solvers agree), 2.7 s |
+| mean fit pressure: `edge-check` / kernel 2D / kernel 3D (2 layers, 18870 dof) | 9897 / 9927 / 9200 psi: 3D end relief 7 % below plane strain at t/D 1.0 |
+| kernel 3D pin stage | **not finished** (see "Known non-convergence and cost"); no 3D bushed collapse number |
+| kernel 2D plane stress | **did not converge** (see below) |
+
+### Second test set: NACA TN 1502 (24 points)
+
+`edge-check/tests/validation_naca_tn1502.rs`: R. L. Moore, Alcoa, 1948, "Bearing Tests of 14S Sheet and Plate" (NTRS
+19930082185, fetched with the owner's approval, deleted after transcription). 2 in wide specimens, e/D 1.5 and 2.0, 0.064 in
+sheet on a 1/4 in pin (**t/D 0.256**) and 0.250 in plate on a 1/2 in pin (t/D 0.5); Alclad 14S-W and 14S-T sheet, 14S-W and 14S-T plate;
+with-grain and across-grain tests each predicted from their own direction's tensile data (Table I). Bearing ultimate values are the
+Table III averages; the transcription reproduces the report's own Table IV ratios to within 0.6 % (`table_iv_ratios_match`).
+Result of the contact FE (frictionless steel pin, flow stress (Ftu+Fty)/2): **all 24 points under-predicted, mean -18.9 %, sd
+6.5 %, range -28.6 % to -5.0 %**. That is looser than TN 1503 (mean -9.9 %): the soft W tempers (14S-T3/T4) are the worst
+(-17 % to -29 %) because perfect plasticity ignores their strong hardening; the T6 tempers sit at -5 % to -23 %. There is no systematic
+difference between t/D 0.256 and 0.5 for the same alloy. The e/D 1.5 to 2.0 strengthening is within 10 % of the tests on every row (asserted).
+The report's nominal ratios (bearing / tensile ultimate 1.5 at e/D 1.5 and 1.9 at 2.0, i.e. Fbru(2.0)/Fbru(1.5) = 1.27) are the
+published shape of the curve: the contact FE gives 1.22 to 1.28.
+
+Pooled over both sets (36 points): mean -15.9 %, sd 7.8 %, none over-predicted. Note that the contact model's `model_cv` of 7 % (the sd of the 12
+TN 1503 errors) is below the pooled 7.8 %, and its *bias* (-16 %) is not in the model error at all.
+
+### Correlation survey
+
+* **Public raw data with edge distance: NACA TN 1503 and TN 1502 only (both Alcoa, 1948).** The earlier NACA notes (TN 897, 901, 920,
+  974, 981 for sheet, plate, extrusions; TN 2312 for castings; TN 2883 for forgings) tabulate the same e/D 1.5 and 2.0 tests; they were
+  not retrievable as readable tables (page-image PDFs of 8 to 16 MB) and were not fetched. They would add alloys, not new e/D or t/D.
+* MMPDS (proprietary) and the Air Force lug method (Melcon and Hoblit, 1953; reproduced in the Air Force Stress Analysis Manual) publish
+  curves and statistical allowables, not raw tests; the bearing-efficiency curves start at e/D 1.5. The repo's `fbru_at_edge_ratio`
+  encodes the MMPDS rule (interpolate 1.5 to 2.0, none below 1.5).
+* No public bushed-hole or interference-fit edge-distance test data was found, and no test data below e/D 1.5 or above 2.0.
+* **Not covered by any test value in the repo:** interference fit and bushing; t/D outside 0.256 to 0.5; e/D outside 1.5 to 2.0;
+  materials other than aluminium; load angle; countersunk or flanged bushings; 3D effects measured (the tests give only the total load).
+
+### Promotion criteria (proposed; the owner decides, nothing is promoted)
+
+A stress-based or contact-FE number could become the governing edge-distance check only if each row below is met. Thresholds
+are proposals for the owner to adopt or change. "Today" is the contact FE (the best of the three computed numbers); the stress-superposition
+and plastic-FE numbers are no better on any row (the first is unvalidated against test data, the second is superseded).
+
+| # | Criterion | Proposed threshold | Today (contact FE) | Met? |
+|---|---|---|---|---|
+| 1 | Bias against test data, conservative sign | no test point over-predicted; mean error between -25 % and 0 %, shown on at least 30 independent tests over at least 3 alloy families | 36 points (2 reports, 6 alloy / temper groups, all aluminium): none over-predicted, mean -15.9 % | **Met** for aluminium bearing at e/D 1.5 to 2.0 |
+| 2 | Scatter | sd of the error at most the model error used for P90/P95/P99 (`model_cv`), and that cv includes the bias | pooled sd 7.8 % against `model_cv` 7 %; bias not included | **Not met** (small; fixable by re-deriving `model_cv` from 36 points) |
+| 3 | t/D coverage of the range of use | tests at least at 0.25, 0.5 and the largest t/D the window accepts | 0.256 and 0.5 only | **Not met** (partly: MMPDS range 0.25 to 0.50 is covered; the Bushing window accepts any t) |
+| 4 | e/D coverage of the range of use | tests below 1.5 and above 2.0, or the check refuses outside 1.5 to 2.0 | 1.5 and 2.0 only | **Not met** (and 3D says the model is least safe at large e/D: see 5) |
+| 5 | 3D bracket of the plane-strain assumption | plane-strain number within +5 % of a 3D model (or below it) over the range of use, same material law | +3.5 % to +53 % above 3D for t/D 0.1 to 2 at e/D 2.0; +3.5 % to +21 % at e/D 1.5; +57 % at e/D 3.0 | **Not met, and unconservative** |
+| 6 | Plane stress as the other side of the bracket | plane stress at or below 3D | 1.5 % to 32 % below 3D everywhere | Met (but 4 to 32 % too low to use) |
+| 7 | 3D itself against tests | a 3D model that reproduces the tests (to about -10 % with sd 7 %) before it can be a reference | 3D with this material law and a rigid frictionless pin is 15 to 45 % below the tests | **Not met**: the reference to bracket against is not yet validated |
+| 8 | Fit and bushing | tests with interference-fit bushings, or an accepted analytic-only argument | none; fit pressure equals Lame to 0.2 % (2D), equals the kernel's to 0.3 % (2D) and is 7 % lower in 3D at t/D 1.0 (end relief) | **Not met** |
+| 9 | Material law beyond aluminium bearing | validated on each material class the library offers (steel, titanium, other) | aluminium only; hardening ignored (-17 to -29 % on soft tempers) | **Not met** |
+| 10 | Numerical credibility | mesh convergence under 3 %; independent solver agrees; converges over the range of use | 2D mesh <1 %, 3D <0.3 %; kernel vs `edge-check` 2.6 %; contact FE swept over 81 cases; **plane-stress bushed run does not converge** | Met for plane strain; non-convergence noted |
+| 11 | Geometry and load coverage | load angle, countersunk / flanged bushings, bushing length | none | **Not met** |
+
+Recommendation (evidence, not a decision): keep the legacy check governing. Criterion 5 is the blocker and it points the
+wrong way: the plane-strain contact FE, taken alone, over-predicts 3D by amounts that grow with e/D, so promoting it would credit
+the edge distance where the third dimension takes strength away, relying on conservative material assumptions
+(no hardening, flow stress at (Ftu+Fty)/2) that happen to be 15 % low on average to cover it. If a computed number is ever to
+govern, the two defensible routes are a 3D-validated number (criterion 7 first), or the plane-strain number scaled by a measured 3D
+knock-down that depends on t/D and e/D (the table above is a first map of it for one alloy).
+
+### Known non-convergence and cost
+
+* **Kernel 2D plane stress with a bushing does not converge.** The fit stage converges (4 factorisations, 9011 psi), then the plastic pin
+  stage ran more than an hour with no result before being killed (CPU busy, no step completed). Plane-stress J2 has no collapse
+  mechanism once the bore crushes (the load keeps rising against the contact set), which the plastic Newton iteration reads as slow
+  convergence, the same ambiguity `edge-check/AGENTS.md` records for load control. Reproduce: `BRACKET_TRACE=1 cargo test --release -p lug-solver
+  --test edge_3d_bracket explore_bushed -- --ignored --nocapture` (the "2D stress" row). Unbushed plane stress converges (0.7 s). A cheap fix is not known
+  (a displacement-controlled plateau stop as in `limit_load`, or a travel cap tied to the first flat step, would end the run but changes what is read); not attempted.
+* **Kernel 3D bushed pin stage**: the fit stage takes 15 s (6290 nodes, 18870 dof, 12 factorisations); the plastic frictional pin
+  stage had not finished after 45 minutes at 2 to 3 cores (RSS about 0.2 GB) when this section was written. Treat bushed 3D collapse as a manual study
+  of hours, not a check (`fea-problem/AGENTS.md` records the same for the 3D bushing fit).
+* Cost of the unbushed bracket (release, 8 cores shared with other work): 2D 0.5 s; 3D with uz locked 14 s; 3D 2 layers (17k dof) 44 s alone, 90 to 410 s
+  under load for 17k to 31k dof; the 15-cell sweep took 28 minutes. Memory was not measured separately (the 31k-dof runs fit comfortably in the
+  8 GB machine).
+
+### Limits of this evidence
+
+Rigid, frictionless, uniformly loaded pin (the tests' steel pin bends and has friction; `edge-check`'s plain-pin friction 0.2 raised its prediction 5 to 8 %);
+small strain; hardening only as a strength-level Ramberg-Osgood cap; collapse read at a fixed 0.1 D pin travel; one alloy for the sweeps; plate
+width and clamped far end as in the NACA specimens; 3D resolved with 2 to 4 Hex27 layers over half the thickness (converged to 0.3 % at t/D 0.5, not
+re-checked at t/D 2 or e/D 3).
