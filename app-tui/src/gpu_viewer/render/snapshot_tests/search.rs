@@ -206,6 +206,21 @@ fn search_snapshot() {
     shoot(&session, "search-results-dark", true, (1440, 900));
     shoot(&session, "search-results-light", false, (1440, 900));
     {
+        // The selected file's relationships, as pills in the detail header (identical copy, version order, inferred).
+        use search_core::catalog_edges::Reason;
+        let reason = |other: &str, text: &str, inferred| Reason { other: other.into(), text: text.into(), inferred };
+        session.related_for_snapshot(vec![
+            reason("/Archive/2024/hi-lok copy.txt", "Identical text to hi-lok copy.txt", false),
+            reason("/Work/specs/hi-lok-v1.txt", "Earlier version of the same document: hi-lok-v1.txt", false),
+            reason("/Work/specs/hi-lok-v3.txt", "Later version of the same document by modified time: hi-lok-v3.txt", false),
+            reason("/Work/notes/fasteners.txt", "Shares 2 entities with fasteners.txt, e.g. HL18", true),
+        ]);
+        shoot(&session, "search-related-dark", true, (1440, 900));
+        shoot(&session, "search-related-light", false, (1440, 900));
+        shoot(&session, "search-related-narrow", true, (860, 760));
+        session.related_for_snapshot(Vec::new());
+    }
+    {
         // The sidebar's narrowing: one type chosen, with its chip over the table.
         let mut narrowed = SearchSession::in_memory();
         narrowed.document_field(0, root.to_string_lossy().into_owned());

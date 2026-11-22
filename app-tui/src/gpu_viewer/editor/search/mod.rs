@@ -778,6 +778,11 @@ impl SearchSession {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
+    /// Give the open preview these related-file reasons (the window reads them from the user's catalog, which tests never touch).
+    #[cfg(test)]
+    pub(crate) fn related_for_snapshot(&mut self, reasons: Vec<search_core::catalog_edges::Reason>) {
+        self.preview.as_mut().expect("a selected result has a preview").related = reasons;
+    }
     /// Look for projects from `source` and wait for the answer, as the Projects popover's button does.
     #[cfg(test)]
     pub(crate) fn projects_for_snapshot(&mut self, source: fn() -> Result<Vec<ProjectSuggestion>, String>) {

@@ -2343,14 +2343,26 @@ fn related_files_note_lists_reasons_and_marks_the_inferred_ones() {
         entities: None,
     });
     let detail = view::document(&s).detail.unwrap();
-    let note = detail.notes.iter().find(|n| n.text == "Related files").expect("related note");
-    assert_eq!(note.hint, "Identical text to copy.pdf\nShares 2 entities with x.pdf, e.g. AN3-5A (inferred)");
+    let texts: Vec<&str> = detail.notes.iter().map(|n| n.text.as_str()).filter(|t| !t.starts_with("PDF")).collect();
+    assert_eq!(texts, ["Identical text to copy.pdf", "Shares 2 entities with x.pdf, e.g. AN3-5A (inferred)"], "every reason is visible, not behind a hover");
+    let inferred = detail.notes.iter().find(|n| n.text.ends_with("(inferred)")).unwrap();
+    assert_eq!(inferred.hint, "Shares 2 entities with x.pdf, e.g. AN3-5A (inferred)\nIn /w/b\nInferred from shared identifiers; not confirmed.");
+    let copy = detail.notes.iter().find(|n| n.text.starts_with("Identical")).unwrap();
+    assert_eq!(copy.hint, "Identical text to copy.pdf\nIn /w/a");
     let actions = &detail.actions;
     let labels: Vec<&str> = actions.iter().map(|a| a.label.as_str()).filter(|l| l.starts_with("Open ")).collect();
     assert_eq!(labels, ["Open copy.pdf", "Open x.pdf"]);
     s.preview.as_mut().unwrap().related.clear();
     let detail = view::document(&s).detail.unwrap();
-    assert!(detail.notes.iter().all(|n| n.text != "Related files"));
+    assert!(detail.notes.iter().all(|n| !n.text.starts_with("Identical") && !n.text.contains("entities")));
+    // A long reason is clipped on the pill and whole in the hover text.
+    let long = "Another version of the same document: ".to_string() + &"very long name ".repeat(8) + ".docx";
+    s.preview.as_mut().unwrap().related = vec![Reason { other: "/w/v.docx".into(), text: long.clone(), inferred: false }];
+    let detail = view::document(&s).detail.unwrap();
+    let note = detail.notes.iter().find(|n| n.text.starts_with("Another version")).unwrap();
+    assert_eq!(note.text.chars().count(), 64);
+    assert!(note.text.ends_with("..."));
+    assert!(note.hint.starts_with(&long));
 }
 
 #[test]

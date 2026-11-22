@@ -1449,10 +1449,7 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
     }
     let preview = s.preview.as_ref().filter(|p| p.path == r.full_name);
     let text = preview.and_then(|p| p.text.clone());
-    if let Some(related) = preview.map(|p| &p.related).filter(|r| !r.is_empty()) {
-        let lines: Vec<String> = related.iter().map(|r| if r.inferred { format!("{} (inferred)", r.text) } else { r.text.clone() }).collect();
-        notes.push(DocNote::new("Related files", lines.join("\n")));
-    }
+    notes.extend(preview.map_or(&[][..], |p| &p.related[..]).iter().map(related_note));
     let empty = preview.map_or("Loading the full document...".to_string(), |p| {
         p.status.clone()
     });
@@ -1508,6 +1505,7 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
         signals,
         notes,
         actions: {
+            #[cfg_attr(not(feature = "neural-search"), allow(unused_mut))]
             let mut actions = related_actions(preview);
             #[cfg(feature = "neural-search")]
             if s.feedback_enabled() && s.relevance_score(i).is_some() {
@@ -1528,6 +1526,22 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
         text,
         empty,
     })
+}
+
+/// One related-file reason as a visible pill (clipped to fit a narrow header; the hover text has all of it, the other
+/// file's folder, and for an inferred one that it is not confirmed).
+fn related_note(r: &search_core::catalog_edges::Reason) -> DocNote {
+    const MAX: usize = 64;
+    let full = if r.inferred { format!("{} (inferred)", r.text) } else { r.text.clone() };
+    let shown = if full.chars().count() > MAX { format!("{}...", full.chars().take(MAX - 3).collect::<String>()) } else { full.clone() };
+    let mut hint = full;
+    if let Some(folder) = std::path::Path::new(&r.other).parent().filter(|_| !r.other.is_empty()) {
+        hint.push_str(&format!("\nIn {}", folder.display()));
+    }
+    if r.inferred {
+        hint.push_str("\nInferred from shared identifiers; not confirmed.");
+    }
+    DocNote::new(shown, hint)
 }
 
 /// One "Open <name>" button per related file, labelled with its folder so a copy in another root is told apart.

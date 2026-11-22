@@ -591,3 +591,20 @@ fn knowledge_gaps_precision_and_recall_on_a_labelled_tree() {
     assert!(mr == 1.0 && dr == 1.0, "recall {mr} {dr}");
     assert!(mp >= 0.8 && dp >= 0.5, "precision {mp} {dp}");
 }
+
+#[test]
+fn reasons_from_the_catalog_say_which_version_is_earlier() {
+    let mut env = Env::new();
+    let base = body(1);
+    env.write("a/spec_v1.txt", &format!("{base}\nrelease one"));
+    env.write("a/spec_v2.txt", &format!("{base}\nrelease two"));
+    env.write("a/spec_v3.txt", &format!("{base}\nrelease three"));
+    env.refresh();
+    env.catalog.rebuild_edges().unwrap();
+    let texts = |rel: &str| env.catalog.reasons_for(&env.path(rel)).unwrap().into_iter().map(|r| r.text).collect::<Vec<_>>();
+    assert_eq!(
+        texts("a/spec_v2.txt"),
+        ["Earlier version of the same document: spec_v1.txt", "Later version of the same document: spec_v3.txt"]
+    );
+    assert_eq!(texts("a/spec_v3.txt"), ["Earlier version of the same document: spec_v1.txt", "Earlier version of the same document: spec_v2.txt"]);
+}
