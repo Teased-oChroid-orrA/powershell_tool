@@ -2121,6 +2121,7 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
 
 /// What Find found besides files, in one card on the page: a sentence's conditions with
 /// their passages, and the passages the Semantic index finds for the words. `None` when there is nothing to show.
+#[cfg_attr(not(any(feature = "semantic-search", feature = "nl-find")), allow(unused_variables))]
 pub(super) fn insight(s: &SearchSession) -> Option<DocInsight> {
     #[cfg_attr(not(feature = "semantic-search"), allow(unused_mut))]
     let mut items: Vec<DockItem> = Vec::new();

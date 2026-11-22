@@ -1166,24 +1166,45 @@ pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
 
 /// Observe actual solve stages and allow cancellation between non-interruptible numerical phases.
 pub fn solve_observed(p: &Problem, import_text: Option<&str>, observe: &dyn Fn(&'static str) -> Result<(), String>) -> Result<Solved, String> {
+    solve_observed_with(p, import_text, None, observe)
+}
+
+/// [`solve_observed`] that takes the volume mesh of a solid problem from `premeshed` instead of meshing it again: the mesh the
+/// editor already made for its preview (`preview` of the same geometry, mesh settings and material; supports and loads may differ,
+/// they are checked against it here). The caller owns the claim that the mesh matches; it is used only for a solid problem.
+pub fn solve_observed_with(p: &Problem, import_text: Option<&str>, premeshed: Option<&Mesh>, observe: &dyn Fn(&'static str) -> Result<(), String>) -> Result<Solved, String> {
     if p.cases.is_empty() {
-        return solve_resolved(p, import_text, observe);
+        return solve_resolved(p, import_text, premeshed, observe);
     }
     // A load case solves its own supports and loads; the result stays tied to the full problem (stale checks, saved files).
-    let mut solved = solve_resolved(&p.resolved(), import_text, observe)?;
+    let mut solved = solve_resolved(&p.resolved(), import_text, premeshed, observe)?;
     solved.problem = p.clone();
     Ok(solved)
 }
 
-fn solve_resolved(p: &Problem, import_text: Option<&str>, observe: &dyn Fn(&'static str) -> Result<(), String>) -> Result<Solved, String> {
+/// The first analysis mesh of a problem, whatever its geometry (adaptive passes mesh again from here).
+pub(crate) fn analysis_mesh(p: &Problem, import_text: Option<&str>, notes: &mut Vec<String>) -> Result<Mesh, String> {
+    match &p.geometry {
+        Geometry::Sketch { .. } => sketch_mesh_noted(p, None, notes),
+        Geometry::Imported { .. } => imported_mesh(p, import_text.ok_or("the mesh file has not been read")?),
+        Geometry::Solid { .. } => crate::solid::solid_mesh(p).map(|(m, _)| m),
+    }
+}
+
+fn solve_resolved(p: &Problem, import_text: Option<&str>, premeshed: Option<&Mesh>, observe: &dyn Fn(&'static str) -> Result<(), String>) -> Result<Solved, String> {
     observe("Validating analysis inputs")?;
     p.validate()?;
-    observe("Generating analysis mesh")?;
     let mut mesh_notes = Vec::new();
-    let first = match &p.geometry {
-        Geometry::Sketch { .. } => sketch_mesh_noted(p, None, &mut mesh_notes)?,
-        Geometry::Imported { .. } => imported_mesh(p, import_text.ok_or("the mesh file has not been read")?)?,
-        Geometry::Solid { .. } => crate::solid::solid_mesh(p)?.0,
+    let first = match (premeshed, &p.geometry) {
+        (Some(mesh), Geometry::Solid { .. }) => {
+            observe("Reusing the analysis mesh")?;
+            crate::solid::check_faces_resolved(p, mesh)?;
+            mesh.clone()
+        }
+        _ => {
+            observe("Generating analysis mesh")?;
+            analysis_mesh(p, import_text, &mut mesh_notes)?
+        }
     };
     observe("Assembling and solving equilibrium")?;
     let adaptive = matches!(p.geometry, Geometry::Sketch { .. }) && p.analysis != Analysis::Solid && p.mesh.adapt_passes > 0 && p.study.is_structural();
@@ -1415,11 +1436,7 @@ pub fn kinds(mesh: &Mesh) -> Vec<ElementKind> {
 /// mesh with its names so the editor can offer them.
 pub fn preview(p: &Problem, import_text: Option<&str>) -> Result<Mesh, String> {
     p.validate_geometry()?;
-    match &p.geometry {
-        Geometry::Sketch { .. } => sketch_mesh(p, None),
-        Geometry::Imported { .. } => imported_mesh(p, import_text.ok_or("the mesh file has not been read")?),
-        Geometry::Solid { .. } => crate::solid::solid_mesh(p).map(|(m, _)| m),
-    }
+    analysis_mesh(p, import_text, &mut Vec::new())
 }
 
 /// The body of an extruded, revolved or swept model as a coarse surface mesh, without its analysis mesh: what the viewer
