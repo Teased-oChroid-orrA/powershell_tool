@@ -74,7 +74,7 @@ fn selected_hole(s: &SolidSession) -> Option<usize> {
 
 impl SolidSession {
     /// Start the estimate for the selected hole on the worker (`deep`: with the contact FE).
-    pub(super) fn start_edge_check(&mut self, deep: bool) {
+    pub fn start_edge_check(&mut self, deep: bool) {
         let Some(hole) = selected_hole(self) else {
             self.status = "Select a hole first.".into();
             return;
@@ -98,6 +98,11 @@ impl SolidSession {
             Ok(()) => self.status.clear(),
             Err(why) => self.status = format!("Edge check: {why}."),
         }
+    }
+
+    /// An estimate is running.
+    pub fn edge_checking(&self) -> bool {
+        self.edge_worker.is_running()
     }
 
     /// Collect a finished estimate; true when there was one.
