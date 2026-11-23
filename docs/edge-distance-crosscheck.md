@@ -442,3 +442,142 @@ Rigid, frictionless, uniformly loaded pin (the tests' steel pin bends and has fr
 small strain; hardening only as a strength-level Ramberg-Osgood cap; collapse read at a fixed 0.1 D pin travel; one alloy for the sweeps; plate
 width and clamped far end as in the NACA specimens; 3D resolved with 2 to 4 Hex27 layers over half the thickness (converged to 0.3 % at t/D 0.5, not
 re-checked at t/D 2 or e/D 3).
+
+
+## 3D lug evaluation: does a physically complete 3D model merit replacing the 2D lug? (2026-11-22)
+
+Evidence and a recommendation only; no governing check, product code or Bushing window changed. Code:
+`lug-solver/tests/lug_3d_evaluation.rs` (`small_3d_run`, `baselines_2d`, `sensitivity_3d`, `comparison_table`, all `--ignored`).
+
+### Correction to the section above (bushed 3D)
+
+The earlier section says the kernel 3D bushed pin stage "had not finished". It did finish: after **6393 s (1 h 46 min)** it failed with
+`NoConvergence("no convergence in 25 iterations (residual 2.248e1)")` (plastic housing + friction 0.15 + bronze bushing, t/D 1.0, e/D 1.5,
+18870 dof, `Tuning::collapse`; the fit stage took 15 s). There is no 3D bushed collapse number, and the unbushed model below was not extended to a bushing.
+
+### The model (what is physically complete, and what is not)
+
+One quarter of the NACA plate (load-line plane and mid-plane symmetry; the half-symmetry request cut at `z = t/2` is this model before the load-line
+symmetry is used), the `FeaLug` 2D mesh extruded into Hex27 layers over half the thickness.
+* Lug: J2 plasticity with a **true stress - true plastic strain curve** from the bar's own tensile data (`Hardening::true_curve`: Ramberg-Osgood through
+  `Fty` / `Ftu` at the elongation, Swift beyond necking), **total-Lagrangian finite strain** (`J2::finite`).
+* Pin: a **meshed deformable 3D steel body** (E 29e6, nu 0.30, Hex27, finite-strain elastic, 3 rings, core hole 0.15 a) pressed in by prescribing the
+  displacement of its core ring (the pin load is the sum of the core reactions; the pin starts touching the loaded side with 0.0002 in clearance).
+* Two-pass **Coulomb friction** contact bore / pin, `Tuning` with 3 multiplier passes, stick-slip guard; friction reported at 0 (comparison), 0.10, 0.12, 0.15.
+* The load-travel curve is built by continuing the converged state stage by stage (`fea_core::fit::start_from`, 0.005 D of travel per stage), so the
+  state at every stage is available.
+* **Two limits side by side.** (1) **2 % offset bearing yield**: the load at which the load - pin-travel curve meets the line of the initial slope offset by 0.02 D,
+  the TN 1502 definition ("offset of 2 percent of pin diameter on bearing stress - hole elongation curves"; here the travel is the pin core displacement, so it includes
+  the pin's own elastic compliance). (2) **Fracture**: the load at which the peak equivalent plastic strain anywhere in the lug reaches the library failure strain
+  `m ln(1 + A)` (`mechanics_core::fracture`, `docs/failure-strain-library.md`; 7075 m = 1.0, 2014 m = 2.0, both "validated" **against these same tests in 2D plane strain**,
+  so this limit is not an independent check of the 2D result).
+* 2D baselines: `FeaLug` plane strain and plane stress with the same true curve in finite strain, rigid pin, same failure strain and offset rule (`finite_collapse`).
+
+### Limits of this evidence (stated, not simplified)
+
+* **No Johnson-Cook or any triaxiality-dependent fracture criterion**: the repo has only the constant calibrated failure strain; the fracture limit is "peak equivalent plastic strain
+  reaches `eps_f`", wherever it is. The stress triaxiality at the failing point could not be reported.
+* **No stress read-out of a finite-strain state**: `Model::nl_gauss_stresses` refuses it (first Piola-Kirchhoff only). The through-thickness read-out is therefore
+  bearing pressure and peak plastic strain per element layer, not a stress gradient.
+* The pin is driven through a core ring, not through a clevis: the double-shear load path and pin bending of the real tests (and of `solve_double_shear`) are not modelled.
+* Friction is unknown for the tests: 0.10 to 0.15 assumed; it is the dominant sensitivity (below).
+* The true curves come from engineering data (`Fty`, `Ftu`, elongation), not from measured true curves; the 2 % offset slope is taken from the first stage.
+* TN 1503 gives no bearing yield (not transcribed): the yield comparison uses the **TN 1502 14S-T plate** rows only (below).
+* Bushing not modelled in 3D (see the correction above).
+
+### TN 1502 data used (kept for later use)
+
+The PDF is kept (owner approval, 2026-11-22) at `/Users/nautilus/Library/Application Support/Claude/side-session-notes/local_111c8671-8453-4a3e-b516-e0ef62751f37/naca-tn1502/NACA-TN-1502.pdf`
+(NTRS 19930082185, 8.8 MB, public domain, an untrusted data file: read as page images only). Bearing yield (2 % D offset) strengths, psi, Table III averages at e/D 1.5 / 2.0,
+checked against the report's Table IV `BYS/TYS` ratios (all 24 match to rounding):
+
+| Specimen (pin) | Dir | Yield 1.5 D | Yield 2 D |
+|---|---|---|---|
+| Alclad 14S-W 0.064 in (1/4 in) | X / W | 64,800 / 66,000 | 77,000 / 78,500 |
+| Alclad 14S-T 0.064 in (1/4 in) | X / W | 85,800 / 79,500 | 104,700 / 96,900 |
+| Alclad 14S-W 0.250 in (1/2 in) | X / W | 65,300 / 66,800 | 77,300 / 80,400 |
+| Alclad 14S-T 0.250 in (1/2 in) | X / W | 87,100 / 86,300 | 98,000 / 94,500 |
+| 14S-W plate 0.250 in (1/2 in) | X / W | 68,700 / 68,900 | 83,400 / 79,500 |
+| 14S-T plate 0.250 in (1/2 in) | X / W | 84,000 / 84,400 | 100,700 / 101,100 |
+
+Table I of the same report for the 14S-T plate: X `Ftu` 70,600, `Fty` 62,800, elongation 8.3 %; W 71,600 / 63,800 / 9.8 %.
+
+### Result 1: bearing yield (2 % offset), where hardening and the fracture criterion are not in play
+
+Loads as bearing stress `P/(D t)` (psi), t/D 0.5, 3D small mesh, against the TN 1502 test yield:
+
+| Case (test yield) | 2D plane strain mu 0 / 0.12 | 2D plane stress mu 0 / 0.12 | 3D mu 0 / 0.12 |
+|---|---|---|---|
+| 14S-T plate X, e/D 1.5 (84,000) | 89,955 (+7.1 %) / 94,798 (**+12.9 %**) | none / none | 83,685 (-0.4 %) / 89,349 (+6.4 %) |
+| 14S-T plate X, e/D 2.0 (100,700) | 113,074 (+12.3 %) / 119,660 (**+18.8 %**) | none / none | none / 102,280 (+1.6 %) |
+| 14S-T plate W, e/D 1.5 (84,400) | 91,022 (+7.8 %) / 95,929 (**+13.7 %**) | none / 89,905 (+6.5 %) | 84,699 (+0.4 %) / 90,421 (+7.1 %) |
+| 14S-T plate W, e/D 2.0 (101,100) | 114,529 (+13.3 %) / 121,123 (**+19.8 %**) | none / none | none / 103,415 (+2.3 %) |
+
+("none": the load - travel curve never crossed the offset line within 0.12 D, or at mu 0 the 3D curve flattened before it.)
+**The 2D plane-strain lug over-predicts the measured bearing yield by 7 to 20 %** (13 to 20 % at the plausible friction 0.12) **and the 3D model
+is within -0.4 to +7.1 %**. The bearing-yield limit is the one where the plane-strain / 3D difference is not hidden by an ignored hardening law: here
+plane strain is unconservative against the tests, not only against 3D.
+
+### Result 2: failure-strain limit (library `eps_f`), loads as `P/(D t)` psi (% against the test ultimate)
+
+| Case (test ultimate) | plane strain mu 0 / 0.12 | plane stress mu 0 / 0.12 | 3D mu 0 / 0.12 | strain / 3D (mu 0 / 0.12) |
+|---|---|---|---|---|
+| 75S-T 1x2, e/D 1.5 (115,500) | 117,246 (+1.5) / 122,168 (+5.8) | 103,873 (-10.1) / 113,413 (-1.8) | 108,447 (-6.1) / 116,555 (+0.9) | +8.1 % / +4.8 % |
+| 75S-T 1x2, e/D 2.0 (151,900) | 149,353 (-1.7) / 155,919 (+2.6) | 108,722 (-28.4) / 119,325 (-21.4) | 115,602 (-23.9) / 134,271 (-11.6) | +29.2 % / +16.1 % |
+| 14S-T plate X, e/D 1.5 (102,400) | 92,461 (-9.7) / 96,291 (-6.0) | 80,945 (-21.0) / 88,480 (-13.6) | 85,110 (-16.9) / 91,644 (-10.5) | +8.6 % / +5.1 % |
+| 14S-T plate X, e/D 2.0 (141,000) | 117,576 (-16.6) / 122,734 (-13.0) | 83,769 (-40.6) / 92,125 (-34.7) | 90,156 (-36.1) / 104,518 (-25.9) | +30.4 % / +17.4 % |
+| 14S-T plate W, e/D 1.5 (98,900) | 94,859 (-4.1) / 98,796 (-0.1) | 83,366 (-15.7) / 91,109 (-7.9) | 87,411 (-11.6) / 94,113 (-4.8) | +8.5 % / +5.0 % |
+| 14S-T plate W, e/D 2.0 (139,800) | 120,721 (-13.6) / 125,874 (-10.0) | 87,200 (-37.6) / 95,496 (-31.7) | 93,141 (-33.4) / 108,049 (-22.7) | +29.6 % / +16.5 % |
+
+Plane stress is below 3D and plane strain above it in all 12 cells (plane stress / 3D at mu 0.12: -2.7 % to -11.9 %). The plane-strain excess over 3D is **+5 % at e/D 1.5
+and +16 to 17 % at e/D 2.0 with friction 0.12** (+8 % and +29 to 30 % frictionless): the same widening with edge distance as the bracket above, now with deformable pin,
+friction, hardening to necking and finite strain. 3D at the library failure strain is conservative against the tests (-4.8 % to -25.9 % at mu 0.12 in five of six cases; +0.9 % on 75S-T e/D 1.5);
+plane strain sits near the tests only because it is over-confined and its failure strain was set against it (see "Limits").
+
+### Friction and mesh sensitivity (75S-T 1x2, e/D 1.5, 3D)
+
+| Friction | Load at failure strain | vs test | 2 % offset load |
+|---|---|---|---|
+| 0 (comparison) | 13,556 lbf (108,447 psi) | -6.1 % | 13,028 lbf |
+| 0.10 | 14,456 lbf (115,651 psi) | +0.1 % | 13,777 lbf |
+| 0.12 | 14,569 lbf (116,555 psi) | +0.9 % | 13,909 lbf |
+| 0.15 | 14,714 lbf (117,708 psi) | +1.9 % | 14,096 lbf |
+
+Friction 0 to 0.12 changes the 3D result by 7 % at e/D 1.5 and by 16 % at e/D 2.0 (75S-T: 115,602 to 134,271 psi), more than the 0.10 to 0.15 range (+/- 1 %); the friction of the tests is unknown, so the absolute 3D numbers
+carry that uncertainty, while the ordering plane stress < 3D < plane strain does not depend on it.
+Mesh: the small mesh (24 elements around, 2 layers, Hex27, 15,390 dof) against the requested resolution (36 around with the loaded sector refined to 0.05 rad = D/40 on a, **4 layers over the half thickness**,
+72,846 dof): 14,569 lbf -> **14,418 lbf (-1.0 %)** at the failure strain, 13,909 -> 13,874 lbf (-0.3 %) at the 2 % offset: the small-mesh tables are converged to about 1 %.
+6 layers was started and stopped (more than 100k dof, hours; not completed).
+
+### Through-thickness gradient (requested mesh, mu 0.12, at the failure strain, 75S-T 1x2, e/D 1.5)
+
+| Layer (z / (t/2), mid-plane to free face) | mean bearing pressure on the bore, psi | peak equivalent plastic strain |
+|---|---|---|
+| 0.00 - 0.25 | 32,368 | 0.1061 |
+| 0.25 - 0.50 | 31,832 | 0.1064 |
+| 0.50 - 0.75 | 30,309 | 0.1063 |
+| 0.75 - 1.00 (free face) | 28,202 | 0.1059 |
+
+The bearing pressure falls **13 % from the mid-plane to the free face** (the face is not confined: plane stress there, plane strain at the middle), while the peak plastic strain is nearly
+uniform (the stage that stopped the run is the one where the peak first reaches `eps_f`). On the small mesh (2 layers, mu 0) the pressures were 25,666 and 22,795 psi. Stress and triaxiality profiles are not available (limit above).
+
+### Cost
+
+| Model | Runtime | Memory |
+|---|---|---|
+| `FeaLug` 2D (plane strain or stress), finite strain | 1 to 2 s | small |
+| 3D small mesh (15k dof, 17 stages) | 47 to 150 s alone, up to 275 s with three jobs sharing 8 cores | about 0.24 GB |
+| 3D requested resolution (73k dof) | 3,224 s (54 min) | 0.78 GB |
+| 3D 6 layers (> 100k dof) | not completed after hours | > 1 GB |
+| 3D bushed plastic frictional pin stage | failed after 1 h 46 min | - |
+
+### Recommendation (evidence, not a decision)
+
+* **Do not replace the 2D lug by the 3D model.** It costs 40 to 2,500 times more (one to a few minutes per case at the small mesh and 54 minutes at the requested resolution, on 8 cores, against 1 to 2 s), has no usable stress read-out in finite strain, has no
+  triaxiality-dependent fracture criterion, does not converge with a bushing (the toolbox's main use), and its absolute level depends on a friction value nobody measured. The 2D lug stays the interactive check.
+* **Keep the 3D model as a bracketing and calibration reference.** It explains what the 2D numbers hide: plane strain over-predicts the bearing yield measured in TN 1502 by 13 to 20 % (3D: +2 to +7 %) and over-predicts 3D at the
+  failure strain by 5 % (e/D 1.5) and 16 to 17 % (e/D 2.0) at friction 0.12. A 2D lug result should therefore be shown with its plane-stress partner as the lower edge of the bracket and with a measured 3D
+  knock-down (this section and the bracket tables above are a first map for aluminium plate at t/D 0.5, e/D 1.5 to 2.0), instead of as a single plane-strain number. This is a proposal for the owner; no product change was made.
+* If the 3D model were adopted as the reference, the failure-strain multipliers (`m` = 1.0 for 7075, 2.0 for 2014) would have to be recalibrated: they were fitted to these tests in plane strain, and in 3D the same `eps_f` gives
+  loads 5 to 26 % below the tests (mu 0.12).
+* Open items that would change the verdict: a triaxiality-dependent fracture law (Johnson-Cook) calibrated for these alloys; a measured friction; the clevis load path and pin bending; a converged 3D bushed case.
