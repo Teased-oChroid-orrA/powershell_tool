@@ -25,6 +25,9 @@ pub enum EventKind {
     StepCut,
     /// A stagnating frictional Newton solve froze its active set and went on.
     ActiveSetHeld,
+    /// A stagnating Newton solve dropped the near-contact stabilising stiffness (a pair that had released: the stiffness has no force
+    /// behind it, so it shortened every step) and went on with the exact tangent.
+    StabiliserOff,
     /// A solve was accepted on its lowest iterate under `NlOptions::stall_tol`, not on the tolerance.
     StallAccepted,
     /// The tangent was not positive definite and the indefinite factorisation was used.
@@ -44,6 +47,7 @@ impl EventKind {
         match self {
             EventKind::StepCut => "step_cut",
             EventKind::ActiveSetHeld => "active_set_held",
+            EventKind::StabiliserOff => "stabiliser_off",
             EventKind::StallAccepted => "stall_accepted",
             EventKind::IndefiniteTangent => "indefinite_tangent",
             EventKind::MarginWidened => "margin_widened",
