@@ -14,7 +14,7 @@ use std::f64::consts::PI;
 
 /// `vtk[k] = ours[PERM[k]]`: this crate's Q9 local order is `3 * b + a` (row `b`, column `a`), VTK's is
 /// corners, edge midsides, centre.
-const PERM: [usize; 9] = [0, 2, 8, 6, 1, 5, 7, 3, 4];
+pub(crate) const PERM: [usize; 9] = [0, 2, 8, 6, 1, 5, 7, 3, 4];
 
 pub struct KernelFem {
     model: Model,

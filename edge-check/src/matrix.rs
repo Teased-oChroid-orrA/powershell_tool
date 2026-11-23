@@ -68,7 +68,7 @@ pub struct MatrixCell {
 }
 
 impl MatrixCell {
-    fn new(min: EdgeMin, actual: f64) -> Self {
+    pub(crate) fn new(min: EdgeMin, actual: f64) -> Self {
         let eps = 1e-9 * actual;
         let short = match min {
             EdgeMin::Value(v) => v > actual + eps,
@@ -98,6 +98,8 @@ pub struct MatrixRow {
     pub role: Role,
     /// The model could not be evaluated; the cells are empty.
     pub error: Option<String>,
+    /// The model cannot represent this case (not an error): why. The cells are empty and no number is invented.
+    pub unavailable: Option<String>,
     /// `cells[target][level]`: `None` where the model has no number (the legacy check has no probability levels).
     pub cells: [[Option<MatrixCell>; 4]; 2],
     /// First-yield e/D at the applied load, nominal (informational, not a column).
@@ -108,6 +110,8 @@ pub struct MatrixRow {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EdgeMatrix {
+    /// What the two cell groups of a row are (the pin load case: applied load, bearing limit).
+    pub target_labels: [&'static str; 2],
     /// The housing's actual e/D.
     pub actual: f64,
     /// Best estimate first, then the governing legacy check, then the comparisons in report order.
@@ -161,6 +165,7 @@ impl EdgeMatrix {
                     label: m.label,
                     role: if m.id == BEST_ESTIMATE_MODEL { Role::BestEstimate } else { Role::Comparison },
                     error: m.error.clone(),
+                    unavailable: None,
                     cells,
                     first_yield: m.error.is_none().then(|| at("First yield").and_then(|t| cell(t.e_min))).flatten(),
                     p_fail_bearing: m.targets.get(TARGET_BEARING).and_then(|t| t.as_ref()).and_then(|t| t.mc.as_ref()).map(|mc| mc.p_fail),
@@ -172,7 +177,7 @@ impl EdgeMatrix {
             let mut cells = [[None; 4]; 2];
             cells[TARGET_APPLIED][0] = c(l.applied);
             cells[TARGET_BEARING][0] = c(l.bearing);
-            rows.push(MatrixRow { id: LEGACY_ID, label: "Legacy solver", role: Role::Governing, error: None, cells, first_yield: None, p_fail_bearing: None });
+            rows.push(MatrixRow { id: LEGACY_ID, label: "Legacy solver", role: Role::Governing, error: None, unavailable: None, cells, first_yield: None, p_fail_bearing: None });
         }
         // Stable: best estimate, governing, then the rest in report order.
         let rank = |r: &MatrixRow| match r.role {
@@ -181,7 +186,7 @@ impl EdgeMatrix {
             Role::Comparison => 2,
         };
         rows.sort_by_key(rank);
-        Self { actual, rows }
+        Self { target_labels: TARGET_LABELS, actual, rows }
     }
 
     /// The best-estimate row, if the contact FE was run (it is the deep check) and evaluated.

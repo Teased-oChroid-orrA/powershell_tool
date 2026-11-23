@@ -48,7 +48,7 @@ fn sample(src: &dyn UnitFieldSource, x: f64, y: f64) -> Option<Triple> {
 /// Gauss-Legendre nodes and weights on `[0, 1]` (weights sum to 1).
 /// The shear and hoop integrals are smooth but steep near the bore, so a
 /// Gauss rule is both cheaper and far more accurate than a trapezoid rule.
-fn gauss_legendre_unit(n: usize) -> Vec<(f64, f64)> {
+pub(crate) fn gauss_legendre_unit(n: usize) -> Vec<(f64, f64)> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         // Initial guess, then Newton on P_n.

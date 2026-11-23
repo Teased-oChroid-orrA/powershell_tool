@@ -46,6 +46,8 @@ pub enum FastenerAct {
     EdgeField(edge::EdgeField),
     /// Next plate material.
     EdgeMaterial,
+    /// The other load case (pin bearing, plate under axial load).
+    EdgeCase,
     /// Run the edge estimate (`true`: with the contact FE).
     EdgeRun(bool),
     /// Drop the running estimate.
@@ -291,6 +293,11 @@ impl FastenerSession {
             FastenerAct::EdgeMaterial => {
                 self.checkpoint();
                 self.edge.cycle_material();
+                self.changed();
+            }
+            FastenerAct::EdgeCase => {
+                self.checkpoint();
+                self.edge.case = self.edge.case.next();
                 self.changed();
             }
             FastenerAct::EdgeRun(deep) => self.start_edge(deep),
