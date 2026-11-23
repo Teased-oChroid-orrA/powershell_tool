@@ -29,22 +29,49 @@ const T: f64 = 0.25;
 const MAT: Material = Material { e_psi: 10.4e6, nu: 0.33 };
 const STEEL: Material = Material { e_psi: 29.0e6, nu: 0.30 };
 
-/// TN 1503 Table I / II averages: `(Ftu, Fty, elongation in 2 in., Fbru(1.5), Fbru(2.0))`, 75S-T 1x2 bar.
-const BAR_75S: (f64, f64, f64, f64, f64) = (87_900.0, 79_800.0, 0.112, 115_500.0, 151_900.0);
+/// One tested bar: tensile properties, test bearing ultimates and (TN 1502 only) 2 % offset bearing yields at e/D 1.5 / 2.0.
+#[derive(Clone, Copy)]
+struct Bar {
+    ftu: f64,
+    fty: f64,
+    /// Elongation in 2 in.
+    elong: f64,
+    fbru: [f64; 2],
+    /// Bearing yield (2 % of D offset) at e/D 1.5 and 2.0; 0 = not in the repo's transcriptions.
+    fbry: [f64; 2],
+    /// Material library id (failure-strain family multiplier).
+    id: &'static str,
+}
+
+impl Bar {
+    fn test_ultimate(&self, ed: f64) -> f64 {
+        if ed < 1.75 { self.fbru[0] } else { self.fbru[1] }
+    }
+    fn test_yield(&self, ed: f64) -> f64 {
+        if ed < 1.75 { self.fbry[0] } else { self.fbry[1] }
+    }
+}
+
+/// NACA TN 1503 Tables I / II, 75S-T 1x2 bar (no bearing yield transcribed).
+const BAR_75S: Bar = Bar { ftu: 87_900.0, fty: 79_800.0, elong: 0.112, fbru: [115_500.0, 151_900.0], fbry: [0.0, 0.0], id: "al7075" };
+/// NACA TN 1502 (Moore 1948) Tables I and III: 14S-T plate machined to 0.250 in, across grain (X) and with grain (W), pin 0.5 in.
+/// Bearing yield = 2 % of D offset on the bearing stress - hole elongation curve (Table III, "Yield" columns).
+const BAR_14ST_X: Bar = Bar { ftu: 70_600.0, fty: 62_800.0, elong: 0.083, fbru: [102_400.0, 141_000.0], fbry: [84_000.0, 100_700.0], id: "al2014" };
+const BAR_14ST_W: Bar = Bar { ftu: 71_600.0, fty: 63_800.0, elong: 0.098, fbru: [98_900.0, 139_800.0], fbry: [84_400.0, 101_100.0], id: "al2014" };
 
 fn plate_geometry(ed: f64) -> LugGeometry {
     LugGeometry { hole_dia: D, width: 2.0, edge: ed * D, length: 5.0, thickness: T, head_corner_radius: 0.0, far_corner_radius: 0.0 }
 }
 
 /// The 75S-T bar's true curve, to necking and beyond (Swift), up to a plastic strain of 0.6.
-fn true_law(bar: (f64, f64, f64, f64, f64)) -> Hardening {
-    Hardening::true_curve(bar.1, bar.0, bar.2, 0.6).unwrap()
+fn true_law(bar: Bar) -> Hardening {
+    Hardening::true_curve(bar.fty, bar.ftu, bar.elong, 0.6).unwrap()
 }
 
-/// The library's failure strain for the bar's alloy: 7075 m = 1.0 (validated on TN 1503), `eps_f = m ln(1 + A)`.
-fn eps_f(bar: (f64, f64, f64, f64, f64)) -> f64 {
-    let m = failure_strain("al7075").map_or(1.0, |f| f.multiplier);
-    m * (1.0 + bar.2).ln()
+/// The library's failure strain for the bar's alloy: 7075 m = 1.0, 2014 m = 2.0 (both validated on TN 1503 / TN 1502), `eps_f = m ln(1 + A)`.
+fn eps_f(bar: Bar) -> f64 {
+    let m = failure_strain(bar.id).map_or(1.0, |f| f.multiplier);
+    m * (1.0 + bar.elong).ln()
 }
 
 /// `(travel, load, max equivalent plastic strain)` after every stage.
@@ -117,7 +144,7 @@ fn ring(n_around: usize, r_pin: f64, r_core: f64, rings: usize, physics: fea_cor
 }
 
 /// The 3D model run from zero to `spec.end` D of pin travel in stages of `spec.stage` D.
-fn run_3d(spec: Spec3, bar: (f64, f64, f64, f64, f64)) -> Run3 {
+fn run_3d(spec: Spec3, bar: Bar) -> Run3 {
     let t0 = Instant::now();
     let fe = FeaLug::build(&plate_geometry(spec.ed), MAT, mesh_spec(spec.around, spec.fine), true, PlaneMode::Strain).unwrap();
     let a = 0.5 * D;
@@ -229,7 +256,7 @@ fn load_at_strain(pts: &[Pt], eps: f64) -> Option<f64> {
 
 /// 2D baseline on the kernel (`FeaLug`, rigid pin, the same true law in finite strain): the load-travel curve (travel
 /// from first touch, whole-lug load) and the load at the failure strain.
-fn run_2d(ed: f64, mode: PlaneMode, mu: f64, bar: (f64, f64, f64, f64, f64), around: usize, fine: Option<f64>) -> (Vec<(f64, f64)>, f64, f64) {
+fn run_2d(ed: f64, mode: PlaneMode, mu: f64, bar: Bar, around: usize, fine: Option<f64>) -> (Vec<(f64, f64)>, f64, f64) {
     let t0 = Instant::now();
     let mut fe = FeaLug::build(&plate_geometry(ed), MAT, mesh_spec(around, fine), true, mode).unwrap();
     let law = true_law(bar);
@@ -262,57 +289,85 @@ fn baselines_2d() {
 }
 
 
-/// Through-thickness read-out of the last converged state: per band of the half thickness (free face `z = t/2` is the last
-/// band), the mean bearing pressure on the bore, the peak equivalent plastic strain and the peak von Mises stress in the lug
-/// (Gauss points within 1.3 a of the hole centre), and the stress triaxiality `sigma_m / sigma_vm` at the point of peak strain.
-fn through_thickness(r: &Run3, mu: f64, bands: usize) -> String {
+/// Through-thickness read-out of the last converged state, per element layer from the mid-plane (`z = 0`) to the free face
+/// (`z = t/2`): the mean bearing pressure on the bore and the peak equivalent plastic strain in the lug elements within
+/// 1.4 a of the hole centre. The kernel gives no Cauchy stress of a finite-strain state (`nl_gauss_stresses` refuses it),
+/// so stress and triaxiality profiles are not available here (a limit, see the doc).
+fn through_thickness(r: &Run3, mu: f64, layers: usize) -> String {
     let (nl, model) = (r.last.as_ref().unwrap(), r.model.as_ref().unwrap());
     let half_t = 0.5 * T;
-    let band = |z: f64| (((z / half_t) * bands as f64).floor() as usize).min(bands - 1);
-    let (mut pw, mut w) = (vec![0.0; bands], vec![0.0; bands]);
+    let band = |z: f64| (((z / half_t) * layers as f64).floor() as usize).min(layers - 1);
+    let (mut pw, mut w) = (vec![0.0; layers], vec![0.0; layers]);
     for t in nl.contact_tractions(0, mu) {
         let b = band(t.x[2].abs());
         pw[b] += t.pressure * t.weight;
         w[b] += t.weight;
     }
-    let stresses = model.nl_gauss_stresses(&nl.u, &nl.state).unwrap();
-    let (mut ep, mut vm) = (vec![0.0f64; bands], vec![0.0f64; bands]);
-    let (mut best, mut tri) = (0.0, f64::NAN);
-    let mut at = 0.0;
-    for (i, (pos, s)) in stresses[0].iter().enumerate() {
-        if pos[0].hypot(pos[1]) > 1.3 * 0.5 * D {
+    let blk = &model.mesh.blocks[0];
+    let nn = blk.kind.n_nodes();
+    let ngp = blk.kind.table().ngp;
+    let mut ep = vec![0.0f64; layers];
+    for (e, conn) in blk.conn.chunks_exact(nn).enumerate() {
+        let c = conn.iter().fold([0.0; 3], |a, &n| [a[0] + model.mesh.nodes[n][0], a[1] + model.mesh.nodes[n][1], a[2] + model.mesh.nodes[n][2]]);
+        let c = [c[0] / nn as f64, c[1] / nn as f64, c[2] / nn as f64];
+        if c[0].hypot(c[1]) > 1.4 * 0.5 * D {
             continue;
         }
-        let b = band(pos[2].abs());
-        let e = nl.state.gp[0][i][6];
-        ep[b] = ep[b].max(e);
-        let v = fea_core::kernel::von_mises(s);
-        vm[b] = vm[b].max(v);
-        if e > best {
-            best = e;
-            at = pos[2].abs();
-            tri = (s[0] + s[1] + s[2]) / 3.0 / v.max(1e-9);
+        let b = band(c[2]);
+        for g in 0..ngp {
+            ep[b] = ep[b].max(nl.state.gp[0][e * ngp + g][6]);
         }
     }
-    let mut out = String::from("  band (z/(t/2) from mid-plane to free face): mean bearing pressure psi | peak ep | peak von Mises psi\n");
-    for b in 0..bands {
-        out += &format!("   {:.2}-{:.2}: {:>8.0} | {:.4} | {:>8.0}\n", b as f64 / bands as f64, (b + 1) as f64 / bands as f64, if w[b] > 0.0 { pw[b] / w[b] } else { 0.0 }, ep[b], vm[b]);
+    let mut out = String::from("  layer (z/(t/2), mid-plane to free face): mean bearing pressure psi | peak equivalent plastic strain\n");
+    for b in 0..layers {
+        out += &format!("   {:.2}-{:.2}: {:>8.0} | {:.4}\n", b as f64 / layers as f64, (b + 1) as f64 / layers as f64, if w[b] > 0.0 { pw[b] / w[b] } else { 0.0 }, ep[b]);
     }
-    out + &format!("  peak ep {best:.4} at z/(t/2) = {:.2}, stress triaxiality there {tri:.2}", at / half_t)
+    out
 }
 
-fn report(label: &str, spec: Spec3, r: &Run3, mu: f64, bar: (f64, f64, f64, f64, f64)) {
+fn report(label: &str, spec: Spec3, r: &Run3, mu: f64, bar: Bar) {
     let curve: Vec<(f64, f64)> = r.pts.iter().map(|p| (p.travel * D, p.load)).collect();
-    let test = bar.3;
+    let (tu, ty) = (bar.test_ultimate(spec.ed), bar.test_yield(spec.ed));
     let at_fail = load_at_strain(&r.pts, eps_f(bar));
     let off = offset_load(&curve, 0.02 * D);
     let psi = |l: f64| l / (D * T);
+    let vs = |l: Option<f64>, test: f64| l.map_or("-".into(), |l| format!("{l:.0} lbf = {:.0} psi{}", psi(l), if test > 0.0 { format!(" ({:+.1} %)", 100.0 * (psi(l) / test - 1.0)) } else { String::new() }));
     println!("{label}: {} dof, {:.0} s, mu {mu}; {}", r.dofs, r.secs, r.ended);
-    println!("  load at failure strain {} | 2 % offset load {} | test {:.0} psi", at_fail.map_or("-".into(), |l| format!("{l:.0} lbf = {:.0} psi ({:+.1} % vs test)", psi(l), 100.0 * (psi(l) / test - 1.0))), off.map_or("-".into(), |l| format!("{l:.0} lbf = {:.0} psi ({:+.1} %)", psi(l), 100.0 * (psi(l) / test - 1.0))), test);
+    println!("  load at failure strain {} vs test ultimate {tu:.0} psi | 2 % offset load {} vs test yield {ty:.0} psi", vs(at_fail, tu), vs(off, ty));
     if r.last.is_some() {
-        println!("{}", through_thickness(r, mu, 4));
+        println!("{}", through_thickness(r, mu, spec.layers));
     }
-    let _ = spec;
+}
+
+/// One row of the comparison: the bar at `ed`, 2D plane strain / plane stress (rigid pin, mu 0 and 0.12) and the small-mesh
+/// 3D model (deformable pin, mu 0.12), each at both limits (2 % offset and the library failure strain), against the tests.
+fn compare_row(name: &str, bar: Bar, ed: f64) {
+    let (tu, ty) = (bar.test_ultimate(ed), bar.test_yield(ed));
+    let psi = |l: f64| l / (D * T);
+    println!("{name} e/D {ed}: test ultimate {tu:.0} psi, test 2 % yield {ty:.0} psi, failure strain {:.4}", eps_f(bar));
+    for (label, mode) in [("plane strain", PlaneMode::Strain), ("plane stress", PlaneMode::Stress)] {
+        for mu in [0.0, 0.12] {
+            let (curve, at_fail, _) = run_2d(ed, mode, mu, bar, 36, None);
+            let off = offset_load(&curve, 0.02 * D);
+            println!("  2D {label:<12} mu {mu:<4}: failure strain {:>7.0} psi ({:+.1} %) | 2 % offset {}", psi(at_fail), 100.0 * (psi(at_fail) / tu - 1.0), off.map_or("none".into(), |l| format!("{:.0} psi{}", psi(l), if ty > 0.0 { format!(" ({:+.1} %)", 100.0 * (psi(l) / ty - 1.0)) } else { String::new() })));
+        }
+    }
+    let spec = Spec3 { ed, around: 24, layers: 2, rings: 3, mu: 0.12, end: 0.12, stage: 0.005, fail_ep: Some(eps_f(bar)), fine: None };
+    for mu in [0.0, 0.12] {
+        let s = Spec3 { mu, ..spec };
+        let r = run_3d(s, bar);
+        report(&format!("  3D small mesh {name} e/D {ed}"), s, &r, mu, bar);
+    }
+}
+
+#[test]
+#[ignore = "the comparison table on three bars at e/D 1.5 and 2.0; ~30-60 min"]
+fn comparison_table() {
+    for (name, bar) in [("75S-T 1x2 (TN 1503)", BAR_75S), ("14S-T plate X (TN 1502)", BAR_14ST_X), ("14S-T plate W (TN 1502)", BAR_14ST_W)] {
+        for ed in [1.5, 2.0] {
+            compare_row(name, bar, ed);
+        }
+    }
 }
 
 #[test]
