@@ -145,7 +145,8 @@ fn measures(f: &Fields, a: f64, e: f64) -> Result<(f64, f64), String> {
     Ok((ligament, peak))
 }
 
-fn validate(i: &PlateInput) -> Result<(), String> {
+/// Why the input cannot be estimated, if it cannot.
+pub fn validate(i: &PlateInput) -> Result<(), String> {
     let (a, e, w, t) = (i.bore_radius, i.edge, i.width, i.thickness);
     if !(a > 0.0 && a.is_finite() && t > 0.0 && t.is_finite() && w.is_finite() && e.is_finite()) {
         return Err("bore diameter, plate width and thickness must be finite and positive".into());

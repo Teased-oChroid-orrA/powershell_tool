@@ -189,12 +189,19 @@ impl FastenerSession {
         ]
     }
 
-    /// A pin or fastener bearing on the first hole toward the free edge: the shared edge estimate, advisory (this workbench
-    /// has no legacy edge check).
+    /// The edge strength of the first hole in one of two load cases: a pin or fastener bearing toward the free edge (the
+    /// shared edge estimate) or the plate under an axial load (the finite strip). Advisory: this workbench has no legacy
+    /// edge check.
     fn edge_card(&self) -> Card {
-        let mut items = vec![line("A pin or fastener in the first hole, pulling toward the free edge. Uses the hole's nominal diameter and the nominal Edge Distance. The contact FE meshes the pin and the plate; the stress models and the tabulated allowables run beside it.", Tone::Dim)];
+        let kind = self.edge.case;
+        let intro = match kind {
+            edge::LoadKind::PinBearing => "A pin or fastener in the first hole, pulling toward the free edge. Uses the hole's nominal diameter and the nominal Edge Distance. The contact FE meshes the pin and the plate; the stress models and the tabulated allowables run beside it.",
+            edge::LoadKind::PlateAxial => "The plate itself under an axial load along a strip of the given width, the first hole at the nominal Edge Distance from the nearer edge. The plane-stress FE computes a net-section and a first-yield criterion; the other models cannot represent a strip and show as unavailable.",
+        };
+        let mut items = vec![line(intro, Tone::Dim)];
+        items.push(DockItem::field("Load case", kind.label(), Tone::Normal, Some(act(FastenerAct::EdgeCase)), false));
         items.push(DockItem::field("Plate material", self.edge.plate().name.to_string(), Tone::Normal, Some(act(FastenerAct::EdgeMaterial)), false));
-        for f in edge::EdgeField::ALL {
+        for &f in edge::EdgeField::of(kind) {
             let editing = self.prompt.as_ref().filter(|p| p.target == super::Target::Edge(f));
             let text = editing.map_or_else(|| format!("{}{}", model::format_for_edit(f.get(&self.edge)), f.unit()), |p| format!("{}_", p.text));
             items.push(DockItem::field(f.label(), text, if editing.is_some() { Tone::Warn } else { Tone::Normal }, Some(act(FastenerAct::EdgeField(f))), editing.is_some()));
@@ -204,11 +211,13 @@ impl FastenerSession {
             }
         }
         if let Some(j) = &self.edge_job {
-            items.push(line(format!("running: {} ({:.0} s)", if j.deep { "quick set + contact FE" } else { "quick set" }, j.started.elapsed().as_secs_f32()), Tone::Warn));
+            items.push(line(format!("running ({:.0} s)", j.started.elapsed().as_secs_f32()), Tone::Warn));
             items.push(DockItem::row("Cancel", Tone::Warn, Some(act(FastenerAct::EdgeCancel)), false));
         } else {
             items.push(DockItem::row("Run quick check", Tone::Title, Some(act(FastenerAct::EdgeRun(false))), false));
-            items.push(DockItem::row("Run with contact FE (about 3 s)", Tone::Title, Some(act(FastenerAct::EdgeRun(true))), false));
+            if kind == edge::LoadKind::PinBearing {
+                items.push(DockItem::row("Run with contact FE (about 3 s)", Tone::Title, Some(act(FastenerAct::EdgeRun(true))), false));
+            }
         }
         let tag = match (&self.edge_run, self.edge_job.is_some(), self.edge_current()) {
             (_, true, _) => "running",
@@ -217,14 +226,20 @@ impl FastenerSession {
             (Some(_), false, false) => "stale",
         };
         match &self.edge_run {
-            None => items.push(line("Not run. Enter an Edge Distance under Hole Layout, then run the quick check, or add the contact FE for the best estimate.", Tone::Dim)),
+            None => items.push(line("Not run. Enter an Edge Distance under Hole Layout, then run the check.", Tone::Dim)),
             Some(run) => {
                 if !self.edge_current() {
                     items.push(line("Inputs changed since this run; run it again.", Tone::Warn));
                 }
-                let r = &run.estimate.report;
-                items.push(line(format!("e/D {:.2}  load {:.0} lbf  bearing limit {:.0} lbf", r.edge / r.bore_diameter, r.applied_load, r.bearing_limit_load), Tone::Dim));
-                items.extend(super::super::edge_matrix::items(&run.estimate.matrix, r));
+                match (&run.result, &run.input) {
+                    (edge::EdgeResult::Pin(est), _) => {
+                        let r = &est.report;
+                        items.push(line(format!("e/D {:.2}  load {:.0} lbf  bearing limit {:.0} lbf", r.edge / r.bore_diameter, r.applied_load, r.bearing_limit_load), Tone::Dim));
+                        items.extend(super::super::edge_matrix::items(&est.matrix, r));
+                    }
+                    (edge::EdgeResult::Plate(est), edge::EdgeCase::Plate(input)) => items.extend(super::super::edge_matrix::plate_items(est, input)),
+                    _ => {}
+                }
             }
         }
         let card = Card::new("fastener-edge-estimate", "Edge strength (advisory)", Relevance::Context, items).for_steps(&["Inputs"]).tag(tag);

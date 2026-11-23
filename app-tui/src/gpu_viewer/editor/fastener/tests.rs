@@ -338,3 +338,78 @@ fn edge_inputs_out_of_range_are_refused_and_the_material_cycles_by_id() {
     s.edge.material = "no-such-material".into();
     assert_eq!(s.edge.plate().id, "al7075", "an unknown material falls back to the default");
 }
+
+fn type_edge(s: &mut FastenerSession, f: edge::EdgeField, v: &str) {
+    act(s, FastenerAct::EdgeField(f));
+    type_text(s, v);
+    s.key(Key::Enter, Mods::default());
+}
+fn cell_text(c: &crate::gpu_viewer::page::Cell) -> String {
+    use crate::gpu_viewer::page::Cell;
+    match c {
+        Cell::Text { text, .. } | Cell::Chip { text, .. } | Cell::Wall { text, .. } => text.clone(),
+        Cell::Button { .. } => String::new(),
+    }
+}
+
+#[test]
+fn the_plate_case_computes_two_criteria_in_the_fe_row_and_marks_every_other_model_unavailable() {
+    let mut s = session("edge-plate");
+    with_edge_distance(&mut s, 0.75);
+    act(&mut s, FastenerAct::EdgeCase);
+    assert_eq!(s.edge.case, edge::LoadKind::PlateAxial);
+    let t = texts(&[edge_card(&s)]);
+    assert!(t.contains("Plate width") && t.contains("Load angle to the strip axis") && !t.contains("Pin-hole friction"), "{t}");
+    assert!(!t.contains("Run with contact FE"), "the contact FE has no plate case");
+    type_edge(&mut s, edge::EdgeField::Load, "5000");
+    act(&mut s, FastenerAct::EdgeRun(false));
+    wait_edge(&mut s);
+    let c = edge_card(&s);
+    assert_eq!(c.tag, "current");
+    let ts = tables(&c);
+    assert_eq!(ts.len(), 1);
+    assert_eq!(ts[0].columns.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(), ["Model", "Net section", "First yield"]);
+    let row = |name: &str| ts[0].rows.iter().find(|r| first_cell(r) == name).unwrap_or_else(|| panic!("no row {name}"));
+    let fe = row("Plane-stress FE");
+    assert!(fe.cells[1..].iter().all(|c| cell_text(c) != "n/a"), "both criteria are computed");
+    for name in ["Superposition", "Allowables", "Contact FE"] {
+        assert!(row(name).cells[1..].iter().all(|c| cell_text(c) == "n/a"), "{name} has no number");
+    }
+    assert!(ts[0].rows.iter().all(|r| !r.governing));
+    let t = texts(&[c]);
+    assert!(t.contains("Advisory: no legacy edge check exists for a plate load"), "{t}");
+    assert!(t.contains("Superposition: unavailable, the half-plane stress superposition has one free edge"), "{t}");
+    assert!(t.contains("Contact FE: unavailable") && t.contains("Allowables: unavailable"), "{t}");
+    assert!(t.contains("limiting cases only, no test data"), "{t}");
+}
+
+#[test]
+fn a_plate_load_at_an_angle_is_unavailable_not_computed_and_an_off_centre_hole_is_refused() {
+    let mut s = session("edge-plate-angle");
+    with_edge_distance(&mut s, 0.75);
+    act(&mut s, FastenerAct::EdgeCase);
+    type_edge(&mut s, edge::EdgeField::Angle, "30");
+    act(&mut s, FastenerAct::EdgeRun(false));
+    wait_edge(&mut s);
+    let c = edge_card(&s);
+    let t = &tables(&c)[0];
+    assert!(t.rows.iter().all(|r| r.cells[1..].iter().all(|c| cell_text(c) == "n/a")), "no model has a number at an angle");
+    assert!(texts(&[c]).contains("a load at an angle to a strip with free edges needs its boundary conditions stated"));
+    // The edge named must be the nearer one.
+    with_edge_distance(&mut s, 3.0);
+    act(&mut s, FastenerAct::EdgeRun(false));
+    assert!(s.edge_job.is_none() && s.status().contains("half the plate width"), "{}", s.status());
+}
+
+#[test]
+fn the_load_case_and_plate_inputs_are_saved_in_the_case_file() {
+    let mut s = session("edge-plate-file");
+    act(&mut s, FastenerAct::EdgeCase);
+    type_edge(&mut s, edge::EdgeField::Width, "6");
+    let f = FastenerFile::from_json(&s.snapshot().to_json()).unwrap();
+    assert_eq!((f.edge.case, f.edge.width), (edge::LoadKind::PlateAxial, 6.0));
+    s.undo();
+    assert_eq!(s.edge.width, 4.0);
+    s.undo();
+    assert_eq!(s.edge.case, edge::LoadKind::PinBearing);
+}

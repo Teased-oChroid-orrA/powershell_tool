@@ -7,7 +7,8 @@ use crate::gpu_viewer::{
     page::{Cell, Column, DockTable, TableRow},
     ui::DockItem,
 };
-use edge_check::matrix::{EdgeMatrix, MatrixRow, Role, BRACKET_3D, LEVELS, TARGET_LABELS, VALIDATION};
+use edge_check::matrix::{EdgeMatrix, MatrixRow, Role, BRACKET_3D, LEVELS, VALIDATION};
+use edge_check::plate::{PlateEstimate, PlateInput};
 use edge_check::runner::EdgeReport;
 
 fn text(t: impl Into<String>, tone: Tone) -> Cell {
@@ -32,6 +33,7 @@ fn table(m: &EdgeMatrix, t: usize) -> DockItem {
         .map(|r| {
             let mut cells = vec![name_cell(r)];
             cells.extend(r.cells[t].iter().map(|c| match c {
+                None if r.unavailable.is_some() => text("n/a", Tone::Dim),
                 Some(c) => Cell::Chip { text: c.text(), tone: if c.short { Tone::Warn } else { Tone::On } },
                 None => text("-", Tone::Dim),
             }));
@@ -55,7 +57,7 @@ fn table(m: &EdgeMatrix, t: usize) -> DockItem {
 pub(in crate::gpu_viewer::editor) fn items(m: &EdgeMatrix, r: &EdgeReport) -> Vec<DockItem> {
     let dim = |s: String| DockItem::text(s, Tone::Dim);
     let mut out = vec![dim(format!("Minimum e/D to carry the load. Nominal is the check as stated; P90, P95 and P99 are the e/D at which the chance of failing falls to 10, 5 and 1 % over the fit-pressure band, strength scatter and each model's own error. Applied load {:.0} lbf; bearing limit {:.0} lbf.", r.applied_load, r.bearing_limit_load))];
-    for (t, label) in TARGET_LABELS.iter().enumerate() {
+    for (t, label) in m.target_labels.iter().enumerate() {
         out.push(DockItem::Heading(label.to_string()));
         out.push(table(m, t));
     }
@@ -84,5 +86,45 @@ pub(in crate::gpu_viewer::editor) fn items(m: &EdgeMatrix, r: &EdgeReport) -> Ve
     if !pf.is_empty() {
         out.push(dim(format!("Chance of failing the bearing-limit load at the actual e/D: {}.", pf.join(", "))));
     }
+    out
+}
+
+/// The plate-under-axial-load matrix: one table, a row per model and a column per criterion (nominal minimum e/D), the
+/// capacities of the model that can compute them, why each other model cannot, and what the numbers rest on.
+pub(in crate::gpu_viewer::editor) fn plate_items(est: &PlateEstimate, input: &PlateInput) -> Vec<DockItem> {
+    let m = &est.matrix;
+    let dim = |s: String| DockItem::text(s, Tone::Dim);
+    let rows: Vec<TableRow> = m
+        .rows
+        .iter()
+        .map(|r| {
+            let mut cells = vec![name_cell(r)];
+            for t in 0..2 {
+                cells.push(match r.cells[t][0] {
+                    Some(c) => Cell::Chip { text: c.text(), tone: if c.short { Tone::Warn } else { Tone::On } },
+                    None => text("n/a", Tone::Dim),
+                });
+            }
+            TableRow { cells, governing: false }
+        })
+        .collect();
+    let short = m.rows.iter().any(|r| r.cells.iter().flatten().flatten().any(|c| c.short));
+    let mut out = vec![dim(format!("Minimum e/D that carries {:.0} lbf along a strip {:.3} in wide, at the nominal geometry. The edge named is the nearer one (e at most half the width).", input.load, input.width))];
+    out.push(DockItem::Table(Box::new(DockTable {
+        columns: vec![Column::new("Model", 3.4), Column::new("Net section", 1.7).right(), Column::new("First yield", 1.7).right()],
+        rows,
+        add: None,
+        footer: format!("Actual e/D {:.2}. {}", m.actual, if short { "Amber: that check asks for more edge distance than the actual e/D." } else { "Every available check is met at the actual edge distance." }),
+        footer_tone: Some(if short { Tone::Warn } else { Tone::On }),
+        hint: String::new(),
+    })));
+    for r in m.rows.iter().filter(|r| r.unavailable.is_some()) {
+        out.push(DockItem::text(format!("{}: unavailable, {}.", r.name(), r.unavailable.as_deref().unwrap_or("")), Tone::Warn));
+    }
+    if let Some(n) = &est.numbers {
+        out.push(dim(format!("Plane-stress FE carries {:.0} lbf before the ligament's mean stress reaches Ftu (net section) and {:.0} lbf before the peak stress at the hole edge reaches the yield strength; the peak is {:.2} times the gross stress.", n.net_section_capacity, n.first_yield_capacity, n.kt_gross)));
+    }
+    out.push(dim("Advisory: no legacy edge check exists for a plate load, so no row is governing and none decides a pass or fail. Net section is the mean stress across the ligament between the hole and the edge against Ftu; first yield is the peak elastic von Mises stress on the bore and the free edge against Sy.".into()));
+    out.push(dim("What the plane-stress FE has been checked against: limiting cases only, no test data. A hole far from every edge gives the open-hole stress concentration of 3 within 3 %, a centred hole in a finite strip matches the published net-section stress concentration within 3 %, and the net-section stress of a centred hole equals the section equilibrium within 1 %. Elastic, small strain, plane stress: no hardening, no fracture, no bearing.".into()));
     out
 }

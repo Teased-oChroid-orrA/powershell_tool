@@ -1,32 +1,55 @@
-# gpu_viewer/editor/fastener/ - the Fastener Hole workbench in the native window
+# edge-check
 
-> TL;DR: `FastenerSession` is an `Authoring` over the terminal toolbox's own `FastenerHoleState` (the same model, form rows, results and report), plus a to-scale three-quarter-section drawing of the hole. No dimension is computed here.
+> TL;DR: Independent cross-checks of the bushing edge-distance requirement (stress superposition / tabulated allowables / bushing-and-housing contact FE; the plane-stress FE is kept for validation tests) behind one `EdgeModel` trait. Pure function of an `EdgeInput`; zero dependency on `bushing-solver`; zero external crates (the plane-stress FE check depends on the workspace's `fea-core`). Full write-up: `docs/edge-distance-crosscheck.md`.
 
 ## Purpose
-Owns: the window front end of Fastener Hole (inspector cards, tree, ribbon, menus, typed edits, undo, the case file) and `drawing.rs`, the picture of the nominal hole.
-Does not own: any fit, countersink, area or tolerance formula (`toolboxes/fastener_hole/domain/`, reached only through `FastenerHoleModel::commit_number` / `recompute`), the form's rows and labels (`model::field_rows`, `view::row_label`, `view::display_value`), the report text (`view::build_report_text`), the window or the cards' drawing (`gpu_viewer/gui`).
+Owns: the edge-distance models, the runner (margins, minimum edge distance, Monte Carlo, report), the small FE and least-squares solvers they need.
+Does not own: the legacy `Fbru + 0.8 p` check (stays in `bushing-solver/src/solve.rs`, untouched) or any UI (`app-tui/src/toolboxes/bushing/edge_check.rs` adapts the bushing model to `EdgeInput` and renders the report).
 
 ## Code Map
 | Looking for... | Go to |
 |---|---|
-| Session, `FastenerAct`, `Authoring` impl, typed edits, undo / save / export | `mod.rs` |
-| Inspector cards (one per form section, results, drawing note), tree, ribbon, menus, status verdict | `cards.rs` |
-| The picture: revolved wall profile per part, plate size, colour codes and key labels (the mesh builder is `editor/drawing.rs`) | `drawing.rs` |
-| The saved case (JSON: choices by label, each dimension `[min, nominal, max]`) | `file.rs` |
-| Input-level test (click a dimension, type, switch hole type) | `gpu_viewer/window/tests/workbenches.rs` `the_fastener_hole_workbench_*` |
-| GPU snapshots (regular, countersink dark / light-wireframe, Report step) | `gpu_viewer/render/snapshot_tests/fit_workbenches.rs` `fastener_snapshot` (`FEA_SNAPSHOT_FASTENER_OUT=dir`, ignored) |
+| The trait every model implements (`EdgeModel` -> `Response`) | `src/model.rs` |
+| Registry (add/remove a model here) | `src/models/mod.rs::default_models` |
+| Elastic analytic field (complex potentials + collocation) | `src/analytic.rs` |
+| Plane-stress FE check on the general kernel (`fea-core`): same O-grid and unit load cases, point stress by the kernel locator | `src/kfem.rs` (model: `src/models/fem_model.rs`) |
+| FE solver (Q9, banded Cholesky, point stress recovery): kept for the contact and plastic collapse solvers, which reuse its factorisation, and as the differential reference of `kfem.rs` | `src/fem.rs`, `src/linalg.rs` |
+| Failure modes from any stress field (shear-out / splitting / first yield) | `src/field.rs` |
+| Tabulated allowables | `src/models/allowable.rs` |
+| Bushing + housing contact FE (penalty contact, friction, fit-then-pin, J2 housing) and its edge-distance/fit table | `src/contact.rs`, `src/models/contact_model.rs` |
+| Elastic-plastic limit load (J2, plane strain, displacement control, Anderson-accelerated initial stress) and its parallel edge-distance profile | `src/plastic.rs`, `src/models/plastic_model.rs` |
+| Run, min-edge search, Monte Carlo, report types | `src/runner.rs`, `src/mc.rs` |
+| The shared estimate every workbench calls (`EstimateInput` -> `EdgeEstimate`; bare pin / bushing; advisory or governing) | `src/estimate.rs` (`tests/estimate.rs`) |
+| Plate with a hole near an edge under an axial load (finite strip, net-section and first-yield criteria; other models unavailable with reasons) | `src/plate.rs` |
+| Model-by-target matrix with roles (best estimate / governing / comparison) for a UI | `src/matrix.rs` (`tests/matrix.rs`) |
+| Proof the models are right | `tests/verification.rs`, unit tests in `analytic.rs`/`fem.rs` |
 
 ## Contracts
-- **One model for both heads.** Rows come from `model::field_rows` (only input dimensions; the solved countersink dimension is never a row), choices cycle through `FastenerHoleState::toggle_selected`, numbers go through `FastenerHoleModel::commit_number`. Never re-implement a row, a cycle or a formula here. Every calculated value is shown `nominal -minus/+plus` (`model::format_*_band`), labelled with its origin (calculated / derived / transferred / preserved) as the terminal readout tags it.
-- A typed value equal to the current one is not an edit (no undo step). A value that parses but makes no valid band (`commit_number` leaves the dimension unchanged) is reported in the status bar and leaves no undo step.
-- **The drawing is the nominal hole, to scale; its plate thickness is illustrative.** Regular: two stacked parts (Hole 1 above, Hole 2 below, a small gap). Countersunk: the solved primary countersink over its straight hole. The separate Plate Thickness input drives the knife-edge check, not the picture. The secondary countersink is not drawn; the Drawing card explicitly points to its calculated card. A case that cannot be drawn shows an empty scene (`drawing::empty`), never the last picture, and the Drawing card says why.
-- The quarter cut faces the opening Isometric view (`editor/drawing.rs` `SWEEP_START`, shared with Pressure Vessel); change the two together. Surfaces are shared-vertex grids (`drawing::Mesh::grid`) so the window's feature edges are only the real outlines; separate quads per facet would draw every facet edge.
-- Colour codes 0..3 map to `key_labels` per hole type. Code 0 (the parts) is not painted in the Wireframe / hidden-line styles (`fs_highlight`), by the viewer's design.
-- `bench()` is `Static`, `benches()` is empty. Export writes `view::build_report_text` beside the case (`<case>.report.txt`), the same text as the terminal toolbox's `e`.
-- Send to Bushing / Preload writes a unique new case beside the Fastener Hole source and opens it; it transfers the primary nominal straight-hole diameter and only supported context. Source and existing target files remain untouched. Review bolt, bushing fit and omitted tolerances in the target.
+- Free edge is `x = 0`, bore centre `(edge, 0)`, load acts along `-x`; stresses in psi, lengths in inches, per-unit-thickness loads divide by `thickness`.
+- `FieldResponse` caches unit-load stress tensors at fixed probe points; `margins(loads, strength_scale)` must stay a cheap linear recombination (Monte Carlo calls it thousands of times).
+- Every model must charge the fit pressure at 100% against the edge-failure modes (allowables: `P + p D t` in shear-out; bearing is deliberately not reduced). `TargetResult::capacity_lbf` (bisection on pin load, model-agnostic) is the load a check can carry; keep it consistent with `margin` (`margin >= 0` iff `capacity >= load`). Audit table in `docs/edge-distance-crosscheck.md`.
+- Shear-out is the mean tangent-plane shear (a limit load assuming full redistribution), not an elastic peak. Do not add an elastic-peak bound at the bearing-limit load: it is dominated by the bearing stress and fails at every edge distance (tried).
+- A model that cannot evaluate a case returns `Err`; the runner reports it and the rest still run. Never silently drop a model.
 
-- **Edge strength card (advisory)** (`edge.rs`, `cards.rs::edge_card`, owner decision 2026-11-22): a pin or fastener bearing on the first hole toward the free edge, run through the shared `edge_check::estimate` on a worker thread (quick set about 0.3 s, with the contact FE about 3 s). The inputs (plate material by id, thickness, pin load, pin friction) belong to the window and the case file (`FastenerFile::edge`, `#[serde(default)]`, older files open on the defaults), **not** to the terminal toolbox's model, so the terminal form is unchanged; the hole diameter and edge distance are the toolbox's own nominal values. This workbench has **no legacy edge check**, so the matrix is advisory: no row is governing (`EdgeMatrix::is_advisory`), the contact FE row is labelled best estimate, and the text says so. The tables are the shared `editor/edge_matrix.rs`. A run is stale as soon as the live `EstimateInput` differs from the one it was made for. The plate-under-axial-load case is not built (see `docs/edge-distance-crosscheck.md`).
+- `fem::{shape1, shape_q9, GAUSS3, element_stiffness}` and `linalg::BandedSpd` are `pub` because **`lug-solver` builds on them**: changing their conventions (local node order `3*b + a`, per-unit-thickness stiffness, lower-triangle band storage) breaks that crate. The bearing-allowable rule `Fbru(e/D)` lives in `mechanics_core::materials::fbru_at_edge_ratio` (shared with Lug Analysis).
+
+- **Roles are the owner's decision, not a property of the numbers** (`matrix.rs`): the legacy solver check is *governing*, the contact FE (`BEST_ESTIMATE_MODEL`) is the *best estimate*, the rest are comparison. `EdgeMatrix::build` only reads a report and the legacy numbers it is given; it must never feed a verdict, and nothing here may be promoted to governing until the evidence in `docs/edge-distance-crosscheck.md` exists (test-data correlation and a 3D bracket of plane strain). `matrix::VALIDATION` quotes the NACA numbers; a test keeps it equal to the doc.
+
+- **One estimate API for every workbench** (`estimate.rs`): add a workbench by building an `EstimateInput`, not by calling the models. The bare-pin configuration (`pin_spec`) must stay the one the NACA validation runs (`tests/estimate.rs` compares them); a workbench with no legacy check passes `legacy: None` and must present the result as advisory.
+
+- **The plate case (`plate.rs`) never produces a number a model cannot honestly compute**: only the plane-stress FE has cells; the others carry `MatrixRow::unavailable` (a reason, not an error), and any load angle other than 0 makes every row unavailable. A uniform end traction on a free-edge strip needs no strip length (exact uniform state); a long strip made the mesh degenerate. Keep the minimum edge search from e/D 0.75: a thinner ligament is a mesh sliver and the locator misses its points. Its tests are limiting cases (open-hole Kt 3, published finite-width Kt, section equilibrium), not test data.
 
 ## Pitfalls
-- The inspector's cards are rebuilt every frame: use `drawing::layout` (no mesh) for the Drawing card, never `drawing::scene`.
-- The terminal toolbox's `NumberPart` rows depend on the tolerance mode; a test that edits a `TolPlus` row must be in Nominal +/-Tol mode, a `Min` row in Min / Max mode.
+- Recommended edge distances (`runner::search_levels`) share `margin_sample` with the Monte-Carlo pass: any new random factor goes there once. Tests that need a deterministic result must set `strength_cv: 0.0, model_error: false` (and a collapsed fit band). `EdgeModel::model_cv` must come from validation or be flagged as judgement where it is set.
+- The contact FE is validated against NACA TN 1503 pin-bearing tests (`tests/validation_naca_tn1503.rs`, runs in the default suite, ~10 s): keep `contact_model::flow_stress` and the solver changes inside its -20 % / +8 % / 10 % bands; the transcribed test values are the report's, not ours to adjust. `cargo test -p edge-check --test validation_naca_tn1503 -- --ignored --nocapture` prints the comparison table.
+- 3D bracket and second test set (2026-11-22, `docs/edge-distance-crosscheck.md` last section): `lug-solver/tests/edge_3d_bracket.rs` shows plane strain 12-14 % above 3D at e/D 1.5 and 35-36 % above at e/D 2.0 (t/D 0.5), plane stress below, so the contact FE's agreement with tests is partly compensation; `tests/validation_naca_tn1502.rs` (24 points, t/D 0.256 and 0.5) reads -18.9 % mean, none high. The legacy check stays governing; promotion criteria are in the doc.
+- Contact FE (`contact.rs`): keep the penalty at ~100 E/a (1000 E/a makes the Newton iteration cycle between contact sets and the factorisation ill-conditioned); keep the constraint penalty only ~1e4x the largest stiffness (1e9x loses digits); the far-face reaction is a follower load of the (stiff) pin contact, so its derivative must stay in the iteration matrix (Sherman-Morrison) or the iteration cannot converge; the pin only exists after the fit step (before it the closing bore would press on it). Friction slip limits lag one load step. Reuse a factorisation across steps while at most `REUSE_DIFF` contact points changed. The collapse load is the load at a fixed pin displacement (`COLLAPSE_D_OVER_D` x D), NOT a detected plateau: the load never plateaus (the contact arc keeps growing) and a plateau rule scattered it +-3 % between edge distances, which made a recommended edge distance move when applied. The profile table in `contact_model.rs` must not depend on the edge being checked (fixed reference edge for the interference levels) and is read through a monotone cubic; `the_recommended_edge_distance_is_a_fixed_point_of_applying_it` guards both.
+- Plastic collapse under *load* control is ambiguous (no equilibrium past the limit looks like slow convergence): `plastic.rs` prescribes the loaded-point displacement and watches the load plateau. Its limit load varies ~1-2 % with the convergence tolerances; do not tighten asserts below that.
+- The plastic model is plane strain on purpose (plane-stress bearing crush masks the edge); raising the flow stress in a "bearing zone" was tried and rejected (result tracked the zone size).
+- Q9 midside nodes must sit at element midpoints; a graded (quarter-point-like) midside node makes the Jacobian vanish at the bore and the stress there is garbage (found the hard way: `fem.rs` grades element *boundaries* only).
+- Compare FE and analytic on a half-plane-sized plate with a mesh fine enough for that plate; on a huge plate with the default mesh the FE is under-resolved and the gap is discretisation, not physics.
+- The half-cosine pin load has a slope kink at +-90 degrees: the analytic fit converges only algebraically for it (~0.5 % of peak stress at the default `FitSpec`); fit and full-cosine cases are exact to machine precision.
+- Build the crate optimised even in dev (`[profile.dev.package.edge-check]` in the root `Cargo.toml`): the TUI runs it synchronously on a key press.
+
+## Navigation
+Consumer: `app-tui/src/toolboxes/bushing/AGENTS.md`. History/validation: `docs/edge-distance-crosscheck.md`.

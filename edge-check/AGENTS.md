@@ -20,6 +20,7 @@ Does not own: the legacy `Fbru + 0.8 p` check (stays in `bushing-solver/src/solv
 | Elastic-plastic limit load (J2, plane strain, displacement control, Anderson-accelerated initial stress) and its parallel edge-distance profile | `src/plastic.rs`, `src/models/plastic_model.rs` |
 | Run, min-edge search, Monte Carlo, report types | `src/runner.rs`, `src/mc.rs` |
 | The shared estimate every workbench calls (`EstimateInput` -> `EdgeEstimate`; bare pin / bushing; advisory or governing) | `src/estimate.rs` (`tests/estimate.rs`) |
+| Plate with a hole near an edge under an axial load (finite strip, net-section and first-yield criteria; other models unavailable with reasons) | `src/plate.rs` |
 | Model-by-target matrix with roles (best estimate / governing / comparison) for a UI | `src/matrix.rs` (`tests/matrix.rs`) |
 | Proof the models are right | `tests/verification.rs`, unit tests in `analytic.rs`/`fem.rs` |
 
@@ -35,6 +36,8 @@ Does not own: the legacy `Fbru + 0.8 p` check (stays in `bushing-solver/src/solv
 - **Roles are the owner's decision, not a property of the numbers** (`matrix.rs`): the legacy solver check is *governing*, the contact FE (`BEST_ESTIMATE_MODEL`) is the *best estimate*, the rest are comparison. `EdgeMatrix::build` only reads a report and the legacy numbers it is given; it must never feed a verdict, and nothing here may be promoted to governing until the evidence in `docs/edge-distance-crosscheck.md` exists (test-data correlation and a 3D bracket of plane strain). `matrix::VALIDATION` quotes the NACA numbers; a test keeps it equal to the doc.
 
 - **One estimate API for every workbench** (`estimate.rs`): add a workbench by building an `EstimateInput`, not by calling the models. The bare-pin configuration (`pin_spec`) must stay the one the NACA validation runs (`tests/estimate.rs` compares them); a workbench with no legacy check passes `legacy: None` and must present the result as advisory.
+
+- **The plate case (`plate.rs`) never produces a number a model cannot honestly compute**: only the plane-stress FE has cells; the others carry `MatrixRow::unavailable` (a reason, not an error), and any load angle other than 0 makes every row unavailable. A uniform end traction on a free-edge strip needs no strip length (exact uniform state); a long strip made the mesh degenerate. Keep the minimum edge search from e/D 0.75: a thinner ligament is a mesh sliver and the locator misses its points. Its tests are limiting cases (open-hole Kt 3, published finite-width Kt, section equilibrium), not test data.
 
 ## Pitfalls
 - Recommended edge distances (`runner::search_levels`) share `margin_sample` with the Monte-Carlo pass: any new random factor goes there once. Tests that need a deterministic result must set `strength_cv: 0.0, model_error: false` (and a collapsed fit band). `EdgeModel::model_cv` must come from validation or be flagged as judgement where it is set.

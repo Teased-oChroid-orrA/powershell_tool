@@ -365,28 +365,33 @@ fn fastener_edge_snapshot() {
     let mut model = FastenerHoleModel::default();
     model.commit_number(NumberTarget::EdgeDistance, NumberPart::Nominal, 0.5);
     let mut session = FastenerSession::new(&FastenerFile::capture(&model, "Edge estimate"), std::env::temp_dir().join("fastener-edge-snapshot.json"));
-    session.act(EditorAction::Fastener(FastenerAct::EdgeRun(true)));
     let t = std::time::Instant::now();
-    while session.solving() {
-        session.poll();
-        assert!(t.elapsed().as_secs() < 180);
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    // The pin case with the contact FE, then the plate under axial load.
+    for (name, setup) in [("fastener-edge", vec![FastenerAct::EdgeRun(true)]), ("fastener-edge-plate", vec![FastenerAct::EdgeCase, FastenerAct::EdgeRun(false)])] {
+        for a in setup {
+            session.act(EditorAction::Fastener(a));
+        }
+        while session.solving() {
+            session.poll();
+            assert!(t.elapsed().as_secs() < 180);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let (w, h) = (1360u32, 2600u32);
+            let scene = session.scene().unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = target(&r, w, h);
+            let mut gui = Gui::new();
+            gui.ctx().set_theme(egui::Theme::Dark);
+            let view = ViewState::new(&scene);
+            let scenes = [scene];
+            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+            draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+            std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+        });
     }
-    pollster::block_on(async {
-        let adapter = test_adapter().await.expect("adapter required");
-        let (w, h) = (1360u32, 2600u32);
-        let scene = session.scene().unwrap();
-        let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
-        let texture = target(&r, w, h);
-        let mut gui = Gui::new();
-        gui.ctx().set_theme(egui::Theme::Dark);
-        let view = ViewState::new(&scene);
-        let scenes = [scene];
-        let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
-        draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
-        draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
-        std::fs::write(format!("{dir}/fastener-edge.rgba"), read_back(&r, &texture)).unwrap();
-    });
 }
 
 /// The Bushing fit section when the bore band is wider than the interference band: Advanced settings open, the
