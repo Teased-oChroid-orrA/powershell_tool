@@ -24,6 +24,10 @@ pub const TARGET_LABELS: [&str; 2] = ["Applied load", "Bearing limit"];
 /// `docs/edge-distance-crosscheck.md` (a test there keeps them equal): NACA TN 1503, a plain steel pin, no bushing.
 pub const VALIDATION: &str = "Contact FE validation, NACA TN 1503 pin-bearing tests (plain pin, no bushing): 12 test points predicted 0.6 to 20 % low, mean -9.9 %, sd 6.9 %. Not validated: the interference fit and the bushing, t/D other than 0.5, e/D outside 1.5 to 2.0.";
 
+/// The 3D bracket of the plane-strain contact FE, from `docs/edge-distance-crosscheck.md` ("3D bracket", NACA TN 1503
+/// bar, 15 cells over e/D 1.0 to 3.0 and t/D 0.1 to 2): a test keeps the numbers equal to the doc.
+pub const BRACKET_3D: &str = "Against a 3D solution of the same pin-in-plate problem, the plane-strain contact FE reads 3 to 57 % above it and the plane-stress version 1.5 to 32 % below, the gap growing with e/D and falling with thickness: the two 2D idealisations bracket 3D, they do not replace it.";
+
 /// How much a row's numbers count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -108,6 +112,20 @@ pub struct EdgeMatrix {
     pub actual: f64,
     /// Best estimate first, then the governing legacy check, then the comparisons in report order.
     pub rows: Vec<MatrixRow>,
+}
+
+impl MatrixRow {
+    /// The row's short display name.
+    pub fn name(&self) -> &'static str {
+        match self.id {
+            LEGACY_ID => "Legacy solver",
+            "analytic" => "Superposition",
+            "allowable" => "Allowables",
+            "plastic" => "Plastic FE",
+            "contact" => "Contact FE",
+            _ => self.label,
+        }
+    }
 }
 
 impl EdgeMatrix {
@@ -196,6 +214,12 @@ mod tests {
             assert!(VALIDATION.contains(n), "the window text lost {n:?}");
         }
         assert!(doc.contains("**Not validated**: the interference fit and the bushing"));
+        for n in ["+3.0 %", "+57.5 %", "-1.5 %", "-31.6 %"] {
+            assert!(doc.contains(n), "the 3D bracket table of the doc no longer has {n:?}");
+        }
+        for n in ["3 to 57 %", "1.5 to 32 %"] {
+            assert!(BRACKET_3D.contains(n), "the window text lost {n:?}");
+        }
     }
 
     #[test]

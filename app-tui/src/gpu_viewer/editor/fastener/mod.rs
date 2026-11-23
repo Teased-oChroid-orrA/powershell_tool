@@ -6,6 +6,7 @@
 //! toolbox's `domain/` does, through `FastenerHoleModel::recompute`.
 mod cards;
 pub mod drawing;
+mod edge;
 pub mod file;
 mod transfer;
 
@@ -41,10 +42,25 @@ pub enum FastenerAct {
     Export,
     SendToBushing,
     SendToPreload,
+    /// An edge-strength input: type the number.
+    EdgeField(edge::EdgeField),
+    /// Next plate material.
+    EdgeMaterial,
+    /// Run the edge estimate (`true`: with the contact FE).
+    EdgeRun(bool),
+    /// Drop the running estimate.
+    EdgeCancel,
+}
+
+/// What is being typed.
+#[derive(Clone, Copy, PartialEq)]
+enum Target {
+    Row(FieldRow),
+    Edge(edge::EdgeField),
 }
 
 struct Prompt {
-    row: FieldRow,
+    target: Target,
     text: String,
     /// Nothing typed yet: the first character replaces the value instead of extending it.
     fresh: bool,
@@ -63,6 +79,10 @@ pub struct FastenerSession {
     saved_revision: Option<String>,
     /// The picture is rebuilt only after an edit.
     drawn: bool,
+    /// The edge-strength inputs, the last finished estimate and the one running.
+    edge: edge::EdgeInputs,
+    edge_run: Option<edge::EdgeRun>,
+    edge_job: Option<edge::EdgeJob>,
 }
 
 const UNDO_LIMIT: usize = 100;
@@ -85,6 +105,9 @@ impl FastenerSession {
             status,
             step: "Inputs",
             drawn: false,
+            edge: file.edge.clone(),
+            edge_run: None,
+            edge_job: None,
         }
     }
 
@@ -101,7 +124,7 @@ impl FastenerSession {
     // ------------------------------------------------------------------ editing
 
     fn snapshot(&self) -> FastenerFile {
-        FastenerFile::capture(&self.st.model, &self.name)
+        FastenerFile::capture(&self.st.model, &self.name).with_edge(self.edge.clone())
     }
     /// Record the state before an edit so Undo can return to it.
     fn checkpoint(&mut self) {
@@ -121,6 +144,7 @@ impl FastenerSession {
         if !skipped.is_empty() {
             self.status = format!("Not applied: {}.", skipped.join("; "));
         }
+        self.edge = file.edge.clone();
         self.prompt = None;
         self.changed();
     }
@@ -170,7 +194,7 @@ impl FastenerSession {
             FieldRow::Header(_) => {}
             FieldRow::Number(target, part, _) => {
                 let text = model::format_for_edit(model::part_value(&self.st.model.get_toleranced(target), part));
-                self.prompt = Some(Prompt { row, text, fresh: true });
+                self.prompt = Some(Prompt { target: Target::Row(row), text, fresh: true });
             }
             _ => {
                 let Some(i) = self.rows().iter().position(|r| *r == row) else { return };
@@ -184,8 +208,12 @@ impl FastenerSession {
     }
     fn commit_prompt(&mut self) {
         let Some(p) = self.prompt.take() else { return };
-        let FieldRow::Number(target, part, _) = p.row else { return };
-        let label = view::row_label(p.row);
+        let row = match p.target {
+            Target::Edge(field) => return self.commit_edge(field, &p.text),
+            Target::Row(row) => row,
+        };
+        let FieldRow::Number(target, part, _) = row else { return };
+        let label = view::row_label(row);
         let before = self.st.model.get_toleranced(target);
         let before_optional = self.st.model.optional_input(target);
         match p.text.trim().parse::<f64>() {
@@ -203,6 +231,39 @@ impl FastenerSession {
             }
             _ => self.status = format!("{label} not changed: {:?} is not a number.", p.text.trim()),
         }
+    }
+    /// Typed value of an edge-strength input.
+    fn commit_edge(&mut self, field: edge::EdgeField, text: &str) {
+        let Ok(v) = text.trim().parse::<f64>() else {
+            self.status = format!("{} not changed: {:?} is not a number.", field.label(), text.trim());
+            return;
+        };
+        if v == field.get(&self.edge) {
+            return;
+        }
+        let mut next = self.edge.clone();
+        match field.set(&mut next, v) {
+            Ok(()) => {
+                self.checkpoint();
+                self.edge = next;
+                self.changed();
+            }
+            Err(why) => self.status = why,
+        }
+    }
+    /// Start the edge estimate on a worker thread.
+    fn start_edge(&mut self, deep: bool) {
+        if self.edge_job.is_some() {
+            return;
+        }
+        match edge::start(&self.st.model, &self.edge, deep) {
+            Ok(job) => self.edge_job = Some(job),
+            Err(why) => self.status = format!("Edge estimate: {why}."),
+        }
+    }
+    /// The last estimate was made for exactly the live inputs.
+    fn edge_current(&self) -> bool {
+        self.edge_run.as_ref().is_some_and(|r| edge::estimate_input(&self.st.model, &self.edge).is_ok_and(|i| i == r.input))
     }
     fn prompt_char(&mut self, c: char) {
         let Some(p) = &mut self.prompt else { return };
@@ -224,6 +285,16 @@ impl FastenerSession {
             FastenerAct::Redo => self.redo(),
             FastenerAct::Save => self.save(),
             FastenerAct::Export => self.export(),
+            FastenerAct::EdgeField(f) => {
+                self.prompt = Some(Prompt { target: Target::Edge(f), text: model::format_for_edit(f.get(&self.edge)), fresh: true });
+            }
+            FastenerAct::EdgeMaterial => {
+                self.checkpoint();
+                self.edge.cycle_material();
+                self.changed();
+            }
+            FastenerAct::EdgeRun(deep) => self.start_edge(deep),
+            FastenerAct::EdgeCancel => self.edge_job = None,
             FastenerAct::SendToBushing => self.status = transfer::send(&self.st.model, &self.path, &self.name, crate::gpu_viewer::EditorKind::Bushing).unwrap_or_else(|e| format!("Bushing transfer failed: {e}")),
             FastenerAct::SendToPreload => self.status = transfer::send(&self.st.model, &self.path, &self.name, crate::gpu_viewer::EditorKind::Preload).unwrap_or_else(|e| format!("Preload transfer failed: {e}")),
         }
@@ -295,13 +366,24 @@ impl Authoring for FastenerSession {
         !self.drawn
     }
     fn poll(&mut self) -> bool {
-        false
+        let Some(job) = &self.edge_job else { return false };
+        match edge::poll(job) {
+            None => false,
+            Some(run) => {
+                self.edge_job = None;
+                match run {
+                    Some(run) => self.edge_run = Some(run),
+                    None => self.status = "The edge estimate failed.".into(),
+                }
+                true
+            }
+        }
     }
     fn prompting(&self) -> bool {
         self.prompt.is_some()
     }
     fn solving(&self) -> bool {
-        false
+        self.edge_job.is_some()
     }
     fn status(&self) -> String {
         if !self.status.is_empty() {

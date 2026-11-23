@@ -350,6 +350,45 @@ fn bushing_edge_matrix_snapshot() {
     }
 }
 
+/// The Fastener Hole edge-strength card after a contact FE run (advisory matrix): one tall dark shot,
+/// `FEA_SNAPSHOT_FASTENER_OUT=/dir cargo test ... fastener_edge_snapshot -- --ignored`.
+#[test]
+#[ignore = "needs a graphics adapter and FEA_SNAPSHOT_FASTENER_OUT"]
+fn fastener_edge_snapshot() {
+    use crate::gpu_viewer::editor::fastener::{file::FastenerFile, FastenerAct, FastenerSession};
+    use crate::gpu_viewer::editor::session::EditorAction;
+    use crate::toolboxes::fastener_hole::model::{FastenerHoleModel, NumberPart, NumberTarget};
+    let Ok(dir) = std::env::var("FEA_SNAPSHOT_FASTENER_OUT") else {
+        return;
+    };
+    let _guard = headless_guard();
+    let mut model = FastenerHoleModel::default();
+    model.commit_number(NumberTarget::EdgeDistance, NumberPart::Nominal, 0.5);
+    let mut session = FastenerSession::new(&FastenerFile::capture(&model, "Edge estimate"), std::env::temp_dir().join("fastener-edge-snapshot.json"));
+    session.act(EditorAction::Fastener(FastenerAct::EdgeRun(true)));
+    let t = std::time::Instant::now();
+    while session.solving() {
+        session.poll();
+        assert!(t.elapsed().as_secs() < 180);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    pollster::block_on(async {
+        let adapter = test_adapter().await.expect("adapter required");
+        let (w, h) = (1360u32, 2600u32);
+        let scene = session.scene().unwrap();
+        let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+        let texture = target(&r, w, h);
+        let mut gui = Gui::new();
+        gui.ctx().set_theme(egui::Theme::Dark);
+        let view = ViewState::new(&scene);
+        let scenes = [scene];
+        let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+        draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+        draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+        std::fs::write(format!("{dir}/fastener-edge.rgba"), read_back(&r, &texture)).unwrap();
+    });
+}
+
 /// The Bushing fit section when the bore band is wider than the interference band: Advanced settings open, the
 /// tolerance bands entered, and the fit routes card showing: `FEA_SNAPSHOT_BUSHING_OUT=/dir cargo test ... bushing_fit_snapshot -- --ignored`.
 #[test]

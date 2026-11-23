@@ -1,7 +1,7 @@
 //! What the Fastener Hole workbench shows: the inspector's cards, the tree, the ribbon and the menus. Plain data built from
 //! the model; the window draws it. Row labels and values are the terminal form's (`view::row_label` / `display_value`),
 //! every calculated value is shown as `nominal -minus/+plus` (`model::format_*_band`) with where it came from.
-use super::{drawing, FastenerAct, FastenerSession};
+use super::{drawing, edge, FastenerAct, FastenerSession};
 use crate::gpu_viewer::{
     controller::UiAction,
     editor::{
@@ -90,6 +90,7 @@ impl FastenerSession {
         });
         cards.push(Card::new("fastener-layout", "Edge / pitch geometry", Relevance::Context,
             view::layout_text(&self.st.model).lines().skip(1).map(|s| line(s, if s.contains("BREAKOUT") || s.contains("OVERLAP") { Tone::Warn } else { Tone::Normal })).collect()));
+        cards.push(self.edge_card());
         cards.push(self.drawing_card());
         cards
     }
@@ -103,7 +104,7 @@ impl FastenerSession {
                 sections.push((h.to_string(), Vec::new()));
                 continue;
             }
-            let editing = self.prompt.as_ref().filter(|p| p.row == row);
+            let editing = self.prompt.as_ref().filter(|p| p.target == super::Target::Row(row));
             let text = editing.map_or_else(|| view::display_value(m, row), |p| format!("{}_", p.text));
             // The window draws a Warn value as an edit box: only the row being typed is one.
             let tone = if editing.is_some() { Tone::Warn } else { Tone::Normal };
@@ -186,6 +187,48 @@ impl FastenerSession {
             Card::new("fastener-primary", "Primary countersink", Relevance::Primary, primary),
             Card::new("fastener-secondary", format!("Secondary countersink ({})", method.label()), Relevance::Context, secondary),
         ]
+    }
+
+    /// A pin or fastener bearing on the first hole toward the free edge: the shared edge estimate, advisory (this workbench
+    /// has no legacy edge check).
+    fn edge_card(&self) -> Card {
+        let mut items = vec![line("A pin or fastener in the first hole, pulling toward the free edge. Uses the hole's nominal diameter and the nominal Edge Distance. The contact FE meshes the pin and the plate; the stress models and the tabulated allowables run beside it.", Tone::Dim)];
+        items.push(DockItem::field("Plate material", self.edge.plate().name.to_string(), Tone::Normal, Some(act(FastenerAct::EdgeMaterial)), false));
+        for f in edge::EdgeField::ALL {
+            let editing = self.prompt.as_ref().filter(|p| p.target == super::Target::Edge(f));
+            let text = editing.map_or_else(|| format!("{}{}", model::format_for_edit(f.get(&self.edge)), f.unit()), |p| format!("{}_", p.text));
+            items.push(DockItem::field(f.label(), text, if editing.is_some() { Tone::Warn } else { Tone::Normal }, Some(act(FastenerAct::EdgeField(f))), editing.is_some()));
+            if editing.is_some() {
+                items.push(line(f.hint(), Tone::Dim));
+                items.push(line("Type a value, Enter applies, Esc cancels.", Tone::Dim));
+            }
+        }
+        if let Some(j) = &self.edge_job {
+            items.push(line(format!("running: {} ({:.0} s)", if j.deep { "quick set + contact FE" } else { "quick set" }, j.started.elapsed().as_secs_f32()), Tone::Warn));
+            items.push(DockItem::row("Cancel", Tone::Warn, Some(act(FastenerAct::EdgeCancel)), false));
+        } else {
+            items.push(DockItem::row("Run quick check", Tone::Title, Some(act(FastenerAct::EdgeRun(false))), false));
+            items.push(DockItem::row("Run with contact FE (about 3 s)", Tone::Title, Some(act(FastenerAct::EdgeRun(true))), false));
+        }
+        let tag = match (&self.edge_run, self.edge_job.is_some(), self.edge_current()) {
+            (_, true, _) => "running",
+            (None, false, _) => "not run",
+            (Some(_), false, true) => "current",
+            (Some(_), false, false) => "stale",
+        };
+        match &self.edge_run {
+            None => items.push(line("Not run. Enter an Edge Distance under Hole Layout, then run the quick check, or add the contact FE for the best estimate.", Tone::Dim)),
+            Some(run) => {
+                if !self.edge_current() {
+                    items.push(line("Inputs changed since this run; run it again.", Tone::Warn));
+                }
+                let r = &run.estimate.report;
+                items.push(line(format!("e/D {:.2}  load {:.0} lbf  bearing limit {:.0} lbf", r.edge / r.bore_diameter, r.applied_load, r.bearing_limit_load), Tone::Dim));
+                items.extend(super::super::edge_matrix::items(&run.estimate.matrix, r));
+            }
+        }
+        let card = Card::new("fastener-edge-estimate", "Edge strength (advisory)", Relevance::Context, items).for_steps(&["Inputs"]).tag(tag);
+        if self.edge_run.is_some() { card } else { card.folded() }
     }
 
     fn drawing_card(&self) -> Card {

@@ -7,7 +7,6 @@
 //! check" solves it here as a check on the closed-form pressure, and "Send joint to FEM" opens it in the FEA Workbench
 //! (`handoff`). Nothing here computes engineering results: `bushing-solver`, `edge-check` and the FE kernel do.
 mod cards;
-mod edge_matrix;
 pub mod drawing;
 pub mod fe;
 pub mod file;
