@@ -661,6 +661,9 @@ pub struct Problem {
     /// (see `ties`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ties: Vec<crate::ties::Tie>,
+    /// Preloaded bolts through the bodies of a STEP assembly (see `fastener`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fasteners: Vec<crate::fastener::Fastener>,
     /// What a solve computes: stresses, a steady temperature field, or the thermal stress of that field.
     #[serde(default)]
     pub study: crate::thermal::Study,
@@ -818,6 +821,7 @@ impl Problem {
         self.bushings.clear();
         self.contacts.clear();
         self.ties.clear();
+        self.fasteners.clear();
     }
 
     /// Everything needed to mesh the problem (no supports or loads yet).
@@ -1013,6 +1017,7 @@ impl Problem {
         self.validate_geometry()?;
         self.validate_contacts()?;
         self.validate_ties()?;
+        self.validate_fasteners()?;
         self.validate_plasticity()?;
         if self.study.is_thermal() {
             self.thermal.validate()?;

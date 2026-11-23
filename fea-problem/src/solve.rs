@@ -101,6 +101,8 @@ pub struct Summary {
     pub interfaces: Vec<InterfaceResult>,
     /// What every contact pair transmits (empty without contact pairs).
     pub contacts: Vec<ContactResult>,
+    /// What every fastener's bolt carries (empty without fasteners).
+    pub fasteners: Vec<crate::fastener::FastenerResult>,
     /// What the heat solve found (thermal studies).
     pub heat: Option<crate::thermal::HeatSummary>,
     /// The plastic state of an elastic-plastic result.
@@ -530,6 +532,7 @@ struct Pass {
     strain_energy: f64,
     interfaces: Vec<InterfaceResult>,
     contacts: Vec<ContactResult>,
+    fasteners: Vec<crate::fastener::FastenerResult>,
     /// Model-check warnings (the solve ran, but the result needs a caveat), shown with the summary's notes.
     warnings: Vec<String>,
     /// Temperature at every node and the heat balance (thermal studies).
@@ -601,7 +604,7 @@ fn solve_thermal_only(mesh: Mesh, setup: &crate::thermal::Setup) -> Result<Pass,
     let (n, d) = (model.mesh.nodes.len(), model.mesh.dim());
     let zz = fea_core::recover::ZzEstimate { eta: Vec::new(), total: 0.0, norm: 0.0 };
     let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
-    Ok(Pass { model, u: vec![0.0; n * d], nodal: vec![[0.0; 6]; n], zz, reaction: [0.0; 3], applied: [0.0; 3], force_scale: 0.0, solve_ms, strain_energy: 0.0, interfaces: Vec::new(), contacts: Vec::new(), warnings: Vec::new(), heat: Some((heat.temperature, summary)), plastic: None })
+    Ok(Pass { model, u: vec![0.0; n * d], nodal: vec![[0.0; 6]; n], zz, reaction: [0.0; 3], applied: [0.0; 3], force_scale: 0.0, solve_ms, strain_energy: 0.0, interfaces: Vec::new(), contacts: Vec::new(), fasteners: Vec::new(), warnings: Vec::new(), heat: Some((heat.temperature, summary)), plastic: None })
 }
 
 /// What a linear static solve gives the checks and post-processing of `solve_mesh`, whichever solver made it.
@@ -622,7 +625,7 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     }
     let bc = apply_supports(&mesh, &p.supports)?;
     let mut loads = build_loads(&mut mesh, p)?;
-    if !p.bushings.is_empty() || !p.contacts.is_empty() || p.ties.iter().any(crate::ties::Tie::is_contact) {
+    if !p.bushings.is_empty() || !p.contacts.is_empty() || !p.fasteners.is_empty() || p.ties.iter().any(crate::ties::Tie::is_contact) {
         attach_plasticity(&mut mesh, p)?;
         return solve_mesh_contact(p, mesh, loads, bc);
     }
@@ -709,7 +712,7 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
         zz = equilibrated_estimate(&model, &loads, &bc, &sol.u, &zz, &mut warnings)?;
     }
     let strain_energy = model.strain_energy(&sol.u)?;
-    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces: Vec::new(), contacts: Vec::new(), warnings, heat, plastic: None })
+    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces: Vec::new(), contacts: Vec::new(), fasteners: Vec::new(), warnings, heat, plastic: None })
 }
 
 /// Nodal stresses by SPR recovery with patches that never span two materials. A node on a material interface has a stress from
@@ -888,7 +891,8 @@ fn pair_setup(p: &Problem, mesh: &Mesh, bc: &Dirichlet, couplings: &[fea_core::C
     let extent = pairs.iter().map(|(_, a, b)| span(a).min(span(b))).fold(f64::INFINITY, f64::min);
     let tune = if joints.iter().any(|c| c.friction > 0.0) { Tuning { newton_tol: 1e-6, max_outer: 40, outer_tol: 5e-4, ..Tuning::friction() } } else { Tuning { newton_tol: 1e-6, ..Tuning::frictionless() } };
     let e_min = std::iter::once(p.material.e).chain(p.region_materials.iter().flatten().map(|m| m.e)).fold(f64::INFINITY, f64::min);
-    let eps_n = tune.eps_n(e_min, (0.5 * extent).max(1e-12));
+    // no contact pair (a bolt clamping bonded bodies): no interface to size the penalty to, and none uses it
+    let eps_n = tune.eps_n(e_min, (0.5 * if extent.is_finite() { extent } else { 1.0 }).max(1e-12));
     // A body that no support holds is held only by contact and friction: weak springs keep a sliding or lifting-off body from
     // being a free body (a body is a piece of the mesh joined by its elements).
     let n = mesh.nodes.len();
@@ -1048,18 +1052,34 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     let t0 = std::time::Instant::now();
     let plastic = model.mesh.blocks.iter().any(|b| b.plasticity.is_some());
     let has_loads = !loads.nodal.is_empty() || !loads.faces.is_empty() || !loads.field_faces.is_empty() || loads.body.is_some() || loads.delta_t != 0.0;
+    let bolts = p.fasteners.iter().enumerate().map(|(i, f)| f.resolve(p, &model.mesh, i)).collect::<Result<Vec<_>, _>>()?;
+    warnings.extend(bolts.iter().flat_map(|b| b.notes.iter().cloned()));
+    let mut offsets: Vec<f64> = Vec::new();
     let sol = if p.bushings.is_empty() {
         // Contact pairs alone: the loads are applied in steps on the touching bodies.
-        if !has_loads {
+        if !has_loads && bolts.is_empty() {
             return Err("nothing is applied: add a load, the bodies only touch".into());
         }
-        let full = Loads { ground: ground.clone(), couplings: couplings.clone(), ..loads.clone() };
         let mut opts = tune.options(if plastic { CONTACT_PLASTIC_STEPS } else { 4 });
         opts.first_step = 0.5;
         if plastic {
             opts.ep_step = CONTACT_EP_STEP;
         }
-        let start = (!pairs.shift.is_empty()).then(|| fea_core::Start { u: pairs.shift.clone(), contact: Vec::new(), gp: None, lambda: 0.0 });
+        let mut start = (!pairs.shift.is_empty()).then(|| fea_core::Start { u: pairs.shift.clone(), contact: Vec::new(), gp: None, lambda: 0.0 });
+        let mut couplings = couplings.clone();
+        if !bolts.is_empty() {
+            // Stage 1, the bolts cut: the clamp force on the head and nut faces. The members compress; each bolt's span has then the
+            // elongation `delta_P` and the unloaded length that makes the bolt carry exactly its preload there.
+            let clamp = Loads { ground: ground.clone(), couplings: couplings.clone(), nodal: bolts.iter().flat_map(|b| b.clamp_loads()).collect(), ..Loads::default() };
+            let s1 = model.solve_nonlinear_contact_from(&clamp, &bc, specs(), &opts, start.as_ref()).map_err(|e| format!("the preload could not be applied: {e}"))?;
+            if !s1.complete() {
+                return Err(format!("the preload could not be applied: {:?}", s1.stop));
+            }
+            offsets = bolts.iter().map(|b| b.offset(b.elongation(&s1.u))).collect();
+            couplings.extend(bolts.iter().zip(&offsets).map(|(b, &o)| b.coupling(o)));
+            start = Some(start_from(&s1, 0.0));
+        }
+        let full = Loads { ground: ground.clone(), couplings, ..loads.clone() };
         let sol = model.solve_nonlinear_contact_from(&full, &bc, specs(), &opts, start.as_ref()).map_err(|e| format!("the contact could not be solved: {e}"))?;
         if !sol.complete() {
             let hint = if p.ties.iter().any(crate::ties::Tie::is_contact) { ": a contact between assembly bodies carries only a load that presses the bodies together, and a body that a pull leaves loose is not held" } else { "" };
@@ -1091,6 +1111,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         sol
     };
     let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
+    let fasteners: Vec<crate::fastener::FastenerResult> = bolts.iter().zip(&offsets).zip(&p.fasteners).map(|((b, &o), f)| b.result(&f.size, &sol.u, o)).collect();
     let contacts: Vec<ContactResult> = pairs.joints.iter().enumerate().map(|(k, c)| contact_result(&sol, 2 * p.bushings.len() + 2 * k, &c.a, &c.b, c.friction)).collect();
     if plastic {
         // the stress is that of the converged plastic state, not the elastic law of the displacements
@@ -1111,8 +1132,9 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     let zz = model.zz_error(&sol.u, p.delta_t)?;
     let strain_energy = model.strain_energy(&sol.u)?;
     let interfaces = p.bushings.iter().enumerate().map(|(i, b)| interface_result(&sol, 2 * i, b.hole, b.friction, p.hole_at(b.hole).map_or([0.0, 0.0], |(s, ..)| s.centre()))).collect();
-    let scale = force_scale(&f, &sol.reactions);
-    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces, contacts, warnings, heat: None, plastic: None })
+    // A bolt's preload is a force in play that no reaction shows (it closes on the nut's own nodes): it belongs to the yardstick.
+    let scale = force_scale(&f, &sol.reactions).max(bolts.iter().map(|b| b.preload).sum());
+    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces, contacts, fasteners, warnings, heat: None, plastic: None })
 }
 
 /// The fit interface of one bushing (its two contact passes, indices `first` and `first + 1`) from the tractions.
@@ -1215,6 +1237,7 @@ fn summarize(p: &Problem, pass: &Pass) -> Summary {
         notes: notes(p, mesh).into_iter().chain(pass.warnings.iter().cloned()).collect(),
         interfaces: pass.interfaces.clone(),
         contacts: pass.contacts.clone(),
+        fasteners: pass.fasteners.clone(),
         heat: pass.heat.as_ref().map(|h| h.1.clone()),
         plastic: pass.plastic.as_ref().map(|q| q.summary.clone()),
     }
@@ -1401,7 +1424,7 @@ fn plastic_pass(p: &Problem, model: Model, loads: &Loads, sol: fea_core::nonline
     let scale = force_scale(&f, &sol.reactions);
     let warnings = vec!["Elastic-plastic result: small strain, J2 yield with linear hardening; the strain energy shown is the external work f.u / 2, and the nodal stresses are recovered from the converged stress state.".to_string()];
     let _ = p;
-    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy: 0.5 * work, interfaces: Vec::new(), contacts: Vec::new(), warnings, heat: None, plastic: Some(PlasticPass { nodal: ep, summary }) })
+    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy: 0.5 * work, interfaces: Vec::new(), contacts: Vec::new(), fasteners: Vec::new(), warnings, heat: None, plastic: Some(PlasticPass { nodal: ep, summary }) })
 }
 
 /// Adaptive remeshing of an elastic-plastic problem (`adaptivity::run_amr_nonlinear`): a recovery-based indicator of the

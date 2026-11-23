@@ -783,3 +783,195 @@ fn a_pull_after_the_gap_still_opens_the_contact_and_is_refused() {
     let err = solve(&p, None).unwrap_err();
     assert!(err.contains("contact could not be solved") && err.contains("presses the bodies together"), "{err}");
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Preloaded fasteners (Phase C follow-up 4): the bolt is a spring between the head's and the nut's bearing faces
+// ---------------------------------------------------------------------------------------------------------------------------
+
+use fea_problem::{Fastener, Preload};
+
+/// Two unit bars (`E` and `ratio E`) stacked, bar 0 fixed at its base: that base is the nut's bearing plane (z = 0), the top of bar 1 the
+/// head's (z = 2). Every bearing face is inside the bearing diameter, so the bolt acts on the whole face and the state stays uniform.
+fn bolted(interface: Option<f64>, ratio: f64, size: &str, preload: Preload) -> (Problem, [f64; 2]) {
+    let list = [(0.0, 0.0), (0.0, 1.0)];
+    let mut p = bars(&list);
+    scaled(&mut p, &[ratio]);
+    p.ties = vec![joint(&list, 0, 1, interface)];
+    p.supports = vec![Support::fixed(&bottom(0))];
+    let mut f = Fastener::new([0.5, 0.5, 0.0], [0.0, 0.0, 1.0], 0.0, 2.0, size, preload);
+    f.head_diameter = Some(100.0);
+    f.nut_diameter = Some(100.0);
+    p.fasteners = vec![f];
+    let e = p.material.e;
+    (p, [e, ratio * e])
+}
+
+/// The bolt's axial stiffness from first principles for `size` and a grip of `grip`: `1 / sum(L / (E A))` over the head's additional
+/// length (0.4 d at d), the shank and the thread's (0.4 d3 at the root diameter d3), in the problem's units.
+fn bolt_stiffness(p: &Problem, size: &str, grip: f64, e_bolt: f64) -> f64 {
+    let (d, pitch) = match size {
+        "M6" => (6.0, 1.0),
+        "M10" => (10.0, 1.5),
+        _ => unreachable!(),
+    };
+    let mm = 1e-3 / p.units.length_m();
+    let (d, d3) = (d * mm, (d - 1.082_532 * pitch) * mm);
+    let area = |x: f64| std::f64::consts::FRAC_PI_4 * x * x;
+    1.0 / ((0.4 * d + grip) / (e_bolt * area(d)) + 0.4 * d3 / (e_bolt * area(d3)))
+}
+
+/// Closed forms of a two-bar stack under a bolt (`k_m` the members' series stiffness): preload `P`, then a pull `F` on the head.
+struct Bolted {
+    k_b: f64,
+    k_m: f64,
+}
+
+impl Bolted {
+    fn phi(&self) -> f64 {
+        self.k_b / (self.k_b + self.k_m)
+    }
+}
+
+fn bolted_case(interface: Option<f64>, ratio: f64, size: &str, preload: f64, bolt_scale: f64, element: ElementChoice) -> (Problem, Bolted) {
+    let (mut p, e) = bolted(interface, ratio, size, Preload::Force(preload));
+    p.mesh.element = element;
+    let e_bolt = bolt_scale * 200e9 / p.units.stress_pa();
+    p.fasteners[0].bolt_modulus = Some(e_bolt);
+    let k_m = 1.0 / (1.0 / e[0] + 1.0 / e[1]);
+    let k_b = bolt_stiffness(&p, size, 2.0, e_bolt);
+    (p, Bolted { k_b, k_m })
+}
+
+#[test]
+fn a_preload_alone_clamps_the_members_by_the_closed_form_and_the_bolt_carries_it() {
+    let preload = 1.0e4;
+    for interface in [None, Some(0.0)] {
+        for element in [ElementChoice::Tri3, ElementChoice::Tri6] {
+            let (p, c) = bolted_case(interface, 0.5, "M6", preload, 10.0, element);
+            let s = solve(&p, None).unwrap();
+            // the members shorten by P / k_m (series of the two bars), the bolt carries P
+            let (lo, hi) = uz_at(&s, 2.0);
+            let want = -preload / c.k_m;
+            let tol = if interface.is_none() { 1e-5 } else { 1e-6 };
+            assert!(rel("head", lo, want) < tol && rel("head", hi, want) < tol, "{interface:?} {element:?}");
+            let f = &s.summary.fasteners[0];
+            assert!(rel("preload", f.preload, preload) < 1e-12 && rel("stiffness", f.stiffness, c.k_b) < 1e-12, "{f:?}");
+            assert!(rel("tension", f.tension, preload) < tol, "{f:?}");
+            assert!(s.summary.equilibrium_error < 1e-6, "{}", s.summary.equilibrium_error);
+        }
+    }
+}
+
+#[test]
+fn a_pull_adds_phi_of_itself_to_the_bolt_and_takes_the_rest_from_the_clamp() {
+    // T = P + Phi F, clamp = P - (1 - Phi) F, head u = -P / k_m + F / (k_b + k_m): below the separation load F = P / (1 - Phi) = P (1 + k_b / k_m), where the clamp reaches zero.
+    let preload = 1.0e4;
+    for (scale, size) in [(10.0, "M6"), (50.0, "M10")] {
+        for interface in [None, Some(0.0)] {
+            for element in [ElementChoice::Tri3, ElementChoice::Tri6] {
+                let (mut p, c) = bolted_case(interface, 2.0, size, preload, scale, element);
+                let pull = 0.8 * preload * (1.0 + c.k_b / c.k_m);
+                p.loads = vec![Load::Traction { edge: top(1), tx: 0.0, ty: 0.0, tz: pull }];
+                let s = solve(&p, None).unwrap();
+                // the contact solve's own tolerance (1e-6 of the force scale) over a clamp of 0.2 P, the bonded penalty's error 1e-5
+                let tol = if interface.is_none() { 1e-5 } else { 1e-5 };
+                let tension = preload + c.phi() * pull;
+                let f = &s.summary.fasteners[0];
+                assert!(rel("tension", f.tension, tension) < tol, "{size} {interface:?} {element:?}: {f:?} vs {tension:e} (Phi {:.3})", c.phi());
+                let (lo, hi) = uz_at(&s, 2.0);
+                let head = -preload / c.k_m + pull / (c.k_b + c.k_m);
+                // the head is the small difference of two larger terms (P / k_m and F / (k_b + k_m)): the solve's 1e-6 of the force scale
+                // is a bound on its error relative to those terms, not to the difference
+                let scale = preload / c.k_m + pull / (c.k_b + c.k_m);
+                eprintln!("head, relative to its terms: {:.2e} {:.2e}", (lo - head).abs() / scale, (hi - head).abs() / scale);
+                assert!((lo - head).abs() < tol * scale && (hi - head).abs() < tol * scale, "{size} {interface:?} {element:?}");
+                if interface.is_some() {
+                    let n = s.summary.contacts[0].normal_force;
+                    let clamp = preload - (1.0 - c.phi()) * pull;
+                    eprintln!("clamp: {n:e} vs {clamp:e}, error {:.2e} of the preload", (n - clamp).abs() / preload);
+                    assert!((n - clamp).abs() < tol * preload, "{size} {element:?}");
+                }
+                assert!(s.summary.equilibrium_error < 1e-6);
+            }
+        }
+    }
+}
+
+#[test]
+fn just_below_the_separation_load_the_clamp_is_nearly_gone_and_the_bolt_carries_almost_all_of_the_pull() {
+    // Separation is F = P / (1 - Phi): the clamp P - (1 - Phi) F reaches zero and the bolt carries the whole pull (T = F). At 0.95 of
+    // it the closed forms still hold (the clamp is 5 % of P). Past it the contact would have to release mid-solve: the contact driver
+    // does not converge through that release (`docs/epic-assembly-feature-advice.md`, follow-up 4), so a pull past it is refused.
+    let preload = 1.0e4;
+    let (mut p, c) = bolted_case(Some(0.0), 1.0, "M6", preload, 10.0, ElementChoice::Tri3);
+    let sep = preload / (1.0 - c.phi());
+    let pull = 0.95 * sep;
+    p.loads = vec![Load::Traction { edge: top(1), tx: 0.0, ty: 0.0, tz: pull }];
+    let s = solve(&p, None).unwrap();
+    let f = &s.summary.fasteners[0];
+    assert!(rel("tension", f.tension, preload + c.phi() * pull) < 1e-6, "{f:?}");
+    let clamp = preload - (1.0 - c.phi()) * pull;
+    assert!((s.summary.contacts[0].normal_force - clamp).abs() < 1e-5 * preload, "{:?} vs {clamp:e}", s.summary.contacts[0]);
+    assert!(clamp > 0.04 * preload && clamp < 0.06 * preload);
+}
+
+#[test]
+fn a_torque_gives_the_preload_the_joint_solver_finds_and_the_two_modes_agree() {
+    let (p, _) = bolted(Some(0.0), 1.0, "M6", Preload::Force(1.0e4));
+    let by_force = solve(&p, None).unwrap().summary.fasteners[0].clone();
+    // the torque the joint solver needs for that force, given back as the input, returns the force
+    let (mut q, _) = bolted(Some(0.0), 1.0, "M6", Preload::Torque(by_force.torque));
+    q.fasteners[0].friction = p.fasteners[0].friction;
+    let by_torque = solve(&q, None).unwrap().summary.fasteners[0].clone();
+    assert!(rel("preload", by_torque.preload, 1.0e4) < 1e-6, "{by_torque:?}");
+    assert!(rel("stiffness", by_torque.stiffness, by_force.stiffness) < 1e-12);
+    // Shigley's closed form of the same equilibrium, T = P [ d2/2 (l + pi mu d2 sec a) / (pi d2 - mu l sec a) + mu r_m ], with the thread
+    // half angle a = 30 deg, lead l = pitch and the mean bearing radius of a uniform pressure on the annulus (the solver's default).
+    let mm = 1e-3 / p.units.length_m();
+    let (d, pitch, mu) = (6.0 * mm, 1.0 * mm, 0.15);
+    let d2 = d - 0.649_519 * pitch;
+    let sec = 1.0 / 30f64.to_radians().cos();
+    let (ri, ro) = (0.5 * 6.6 * mm, 0.5 * p.fasteners[0].nut_diameter.unwrap());
+    let r_m = 2.0 / 3.0 * (ro.powi(3) - ri.powi(3)) / (ro * ro - ri * ri);
+    let want = 1.0e4 * (0.5 * d2 * (pitch + std::f64::consts::PI * mu * d2 * sec) / (std::f64::consts::PI * d2 - mu * pitch * sec) + mu * r_m);
+    assert!(rel("torque", by_force.torque, want) < 1e-3, "{} vs {want}", by_force.torque);
+    // a rougher bolt needs more torque for the same preload
+    let (mut rough, _) = bolted(Some(0.0), 1.0, "M6", Preload::Force(1.0e4));
+    rough.fasteners[0].friction = 0.3;
+    assert!(solve(&rough, None).unwrap().summary.fasteners[0].torque > by_force.torque);
+}
+
+#[test]
+fn fasteners_are_validated_saved_and_scaled_with_the_units() {
+    let (p, _) = bolted(Some(0.0), 1.0, "M6", Preload::Force(1.0e4));
+    assert!(p.validate().is_ok(), "{:?}", p.validate());
+    let refused = |edit: &dyn Fn(&mut Problem), what: &str| {
+        let mut q = p.clone();
+        edit(&mut q);
+        let err = q.validate().unwrap_err();
+        assert!(err.contains(what), "{err}");
+    };
+    refused(&|q| q.fasteners[0].size = "M7".into(), "not a size of the tables");
+    refused(&|q| q.fasteners[0].preload = Preload::Force(0.0), "preload must be positive");
+    refused(&|q| q.fasteners[0].head = -1.0, "head plane must lie beyond");
+    refused(&|q| q.fasteners[0].head_diameter = Some(-1.0), "bearing diameter must be positive");
+    refused(&|q| q.fasteners[0].axis = [0.0; 3], "nonzero axis");
+    refused(&|q| q.material.plastic = true, "linear-elastic");
+    // a plane that no outer face lies on is named, not ignored
+    let mut off = p.clone();
+    off.fasteners[0].head = 1.5;
+    let err = solve(&off, None).unwrap_err();
+    assert!(err.contains("fastener 1 head") && err.contains("no outer face"), "{err}");
+    // JSON keeps the fastener, and a unit change scales the lengths, the force and the stiffness consistently: the same physical bolt
+    let back: Problem = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    assert_eq!(back.fasteners, p.fasteners);
+    let inch = solve(&p, None).unwrap().summary.fasteners[0].clone();
+    let mut mm = p.clone();
+    mm.convert_units(UnitSystem::MmMpa).unwrap();
+    let si = solve(&mm, None).unwrap().summary.fasteners[0].clone();
+    let newtons_per_lbf = UnitSystem::InchPsi.force_n() / UnitSystem::MmMpa.force_n();
+    assert!(rel("preload", si.preload, inch.preload * newtons_per_lbf) < 1e-9, "{si:?} {inch:?}");
+    assert!(rel("tension", si.tension, inch.tension * newtons_per_lbf) < 1e-6, "{si:?} {inch:?}");
+    let per_length = newtons_per_lbf / (UnitSystem::InchPsi.length_m() / UnitSystem::MmMpa.length_m());
+    assert!(rel("stiffness", si.stiffness, inch.stiffness * per_length) < 1e-9);
+}

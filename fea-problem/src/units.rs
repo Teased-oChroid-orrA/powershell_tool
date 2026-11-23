@@ -225,6 +225,9 @@ impl Problem {
                 s.area *= f * f;
             }
         }
+        for f in &mut self.fasteners {
+            f.scale(k.length, k.force, k.stress);
+        }
         // Energy = force * length; temperatures are absolute, expansion uses differences.
         let offset = match (self.units, to) {
             (UnitSystem::InchPsi, _) => -32.0 * k.temperature,
