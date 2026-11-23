@@ -421,6 +421,8 @@ impl std::fmt::Debug for StepObserver {
 
 /// Newton iterations without a 3 % gain of the best residual after which a contact solve is called stagnated.
 const STAGNATION_ITERATIONS: usize = 8;
+/// Iterations in a row with less than a tenth of the residual taken off (a creep) before the near-contact stabiliser is dropped.
+const CREEP_ITERATIONS: usize = 4;
 /// Step cuts a stagnating load step gets under `stick_slip_guard`: halving the step released none of the stick-slip cycles
 /// seen (a failing first attempt cost 59 s with all 12 cuts, 13 s with 3), and the caller has other attempts to try.
 const STAGNATION_CUTS: usize = 3;
@@ -1278,9 +1280,10 @@ impl Ctx<'_> {
     /// Newton iterations at load factor `lambda` from the converged `(u, state)`.
     fn newton(&self, lambda_prev: f64, lambda: f64, u0: &[f64], state0: &NlState) -> Result<(Vec<f64>, NlState, Vec<f64>), String> {
         let result = self.newton_iterations(lambda_prev, lambda, u0, state0);
-        // A held active set belongs to the one solve that asked for it.
+        // A held active set, and a dropped stabiliser, belong to the one solve that asked for them.
         if let Some(cs) = &self.contacts {
             cs.release_active_set();
+            cs.set_stabilise(true);
         }
         result
     }
@@ -1336,6 +1339,9 @@ impl Ctx<'_> {
         // Stagnation: the best residual so far and the iterations since it last improved by 3 %. Frictional contact can
         // cycle between stick and slip at a residual far above the tolerance; 8 iterations without progress is that.
         let (mut best_rn, mut since_best) = (f64::INFINITY, 0usize);
+        // Iterations in a row that took off less than a tenth of the residual: a creep, which the 3 % rule above misses (a 1 % fall per
+        // iteration passes it every third iteration).
+        let mut creeping = 0usize;
         // With `stall_tol` the iterate of the lowest residual is kept, to be accepted when the iteration stalls.
         let mut lowest: Option<(f64, Vec<f64>, Vec<f64>, NlState)> = None;
         // Only a frictional contact cycles between stick and slip: `NlOptions::stick_slip_guard` is for it.
@@ -1362,6 +1368,7 @@ impl Ctx<'_> {
             } else {
                 since_best += 1;
             }
+            creeping = if rn > 0.9 * last_rn { creeping + 1 } else { 0 };
             // First remedy for a chattering patch edge: hold the active set (points of ~zero pressure entering and leaving
             // the contact were what the residual alternated on) and iterate on with the smooth branch.
             // (Frictional contact only: holding every stagnating contact solve was tried and broke
@@ -1398,6 +1405,30 @@ impl Ctx<'_> {
                     self.stalled.set(self.stalled.get() + 1);
                     self.note(EventKind::StallAccepted, lambda, residuals.last().copied().unwrap_or(f64::NAN), "stagnated; lowest iterate accepted under stall_tol");
                     return Ok((lu, lst, residuals));
+                }
+            }
+            // A pair that has released stays near its master: the stabilising stiffness of merely-near points is in the tangent but has
+            // no force in the residual, so where the solution keeps points near and open every step is short by k_e / (k_e + k_s) and
+            // the residual creeps down by a fixed small factor per iteration (a bolted clamp pair pulled past its separation load:
+            // 1 % per iteration, 0 points in contact). Without it the tangent is the exact one of the open state. Tried only after the
+            // other remedies, and only for this solve (`newton` switches it back on).
+            if since_best >= STAGNATION_ITERATIONS || creeping >= CREEP_ITERATIONS {
+                if let Some(cs) = self.contacts.as_ref().filter(|cs| cs.stabilising()) {
+                    cs.set_stabilise(false);
+                    self.note(EventKind::StabiliserOff, lambda, rn, format!("no 3 % gain of the best residual {best_rn:.3e} in {STAGNATION_ITERATIONS} iterations: tangent without the near-contact stabiliser"));
+                    if std::env::var("NL_DEBUG").is_ok() {
+                        eprintln!("STABILISER OFF at lambda {lambda:.4} (residual {rn:.3e}, best {best_rn:.3e})");
+                    }
+                    budget += HOLD_EXTRA_ITERATIONS;
+                    ev = self.eval(&u, &q, state0, lambda, true)?;
+                    r = self.residual(&ev, lambda);
+                    rn = norm(&r);
+                    residuals.push(rn);
+                    (best_rn, since_best, creeping) = (rn, 0, 0);
+                    lowest = None;
+                    prev = None;
+                    chord = None;
+                    continue;
                 }
             }
             if frictional && since_best >= STAGNATION_ITERATIONS {

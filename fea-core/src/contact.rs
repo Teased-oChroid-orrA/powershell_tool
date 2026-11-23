@@ -772,6 +772,11 @@ fn slave_points(mesh: &Mesh, faces: &[Vec<usize>], rule: ContactRule) -> Result<
 }
 
 impl ContactSet {
+    /// Whether the stabilising stiffness of near points is on.
+    pub fn stabilising(&self) -> bool {
+        self.stabilise.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Switch the stabilising stiffness of near points on or off for the following evaluations.
     pub fn set_stabilise(&self, on: bool) {
         self.stabilise.store(on, std::sync::atomic::Ordering::Relaxed);
