@@ -10,6 +10,7 @@ pub mod matrix;
 pub mod mc;
 pub mod model;
 pub mod plastic;
+pub mod plate;
 pub mod models;
 pub mod runner;
 pub mod types;
