@@ -86,6 +86,8 @@ Does not own: any UI (`app-tui/src/toolboxes/lug_analysis/`), material data (`me
 - Build is optimised even in dev (`[profile.dev.package.lug-solver]` and all dependencies): the TUI runs it on a key press.
 - **Legacy solvers**: `LugModel` / `FiniteLug` are retained as a user-selectable comparison and a fallback, not extended; new features go into `FeaLug`.
 
+- **3D edge bracket (`tests/edge_3d_bracket.rs`, evidence only, 2026-11-22).** One driver for 2D plane strain / plane stress and an extruded Hex27 3D plate with a rigid cylinder pin; proofs in the default suite (uz-locked 3D == plane strain to 0.003 %, driver == `limit_load_axial`, thin plate -> plane stress, fit pressure == `edge-check`), long runs `--ignored` (`naca_table`, `thickness_sweep`, `edge_distance_extension`, `hardened_comparison`, `bushed_3d`). The kernel's plane-stress bushed collapse (`explore_bushed`, 2D stress row) did not converge in over an hour; 3D bushed pin stage is hours. The two contact passes of a fit each carry about half the pressure: sum them.
+
 ## Boundaries
 ### Always
 - Add or extend an exact-solution or consistency test for every numerical change (`tests/lug_fem.rs`).
