@@ -41,6 +41,9 @@ pub struct FastenerFile {
     /// `[min, nominal, max]` per dimension.
     #[serde(default)]
     pub dimensions: BTreeMap<String, [f64; 3]>,
+    /// The edge-strength inputs of the window (plate material, thickness, pin load, friction).
+    #[serde(default)]
+    pub edge: super::edge::EdgeInputs,
 }
 
 /// The value after cycling `start` until its label reads `want` (`None`: no such choice in this build).
@@ -79,7 +82,13 @@ impl FastenerFile {
                 (key.to_string(), [v.min, v.nominal, v.max])
             })
             .collect();
-        Self { version: FORMAT_VERSION, name: name.to_string(), choices, dimensions }
+        Self { version: FORMAT_VERSION, name: name.to_string(), choices, dimensions, edge: Default::default() }
+    }
+
+    /// The same file with the window's edge-strength inputs.
+    pub fn with_edge(mut self, edge: super::edge::EdgeInputs) -> Self {
+        self.edge = edge;
+        self
     }
 
     /// Put the file's inputs into `m` and recompute. Returns what could not be applied (a choice this build does not

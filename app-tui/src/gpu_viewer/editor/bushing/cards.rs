@@ -463,7 +463,7 @@ impl BushingSession {
                     items.push(line("Inputs changed since this run; it re-runs when they settle.", Tone::Warn));
                 }
                 items.push(line(format!("e/D {:.2}  load {:.0} lbf  bearing limit {:.0} lbf  fit {:.0} psi", r.edge / r.bore_diameter, r.applied_load, r.bearing_limit_load, r.fit_pressure), Tone::Dim));
-                items.extend(super::edge_matrix::items(&edge_check::matrix(run, m), run));
+                items.extend(super::super::edge_matrix::items(&edge_check::matrix(run, m), &run.report));
                 for l in edge_check::completion_lines(run).into_iter().skip(1).filter(|l| l.starts_with("Recommended")) {
                     items.push(line(plain(&l), Tone::Dim));
                 }

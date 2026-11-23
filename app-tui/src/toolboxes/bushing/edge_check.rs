@@ -546,15 +546,6 @@ pub fn matrix(run: &EdgeCheckRun, model: &BushingModel) -> edge_check::matrix::E
     edge_check::matrix::EdgeMatrix::build(&run.report, estimate_input(model).legacy)
 }
 
-/// Short row name of a matrix row.
-pub fn matrix_name(row: &edge_check::matrix::MatrixRow) -> &'static str {
-    if row.id == edge_check::matrix::LEGACY_ID {
-        "Legacy solver"
-    } else {
-        short_name(row.id)
-    }
-}
-
 /// "This run" paragraphs for a tooltip: the numbers behind a table row.
 pub fn detail_lines(topic: EdgeTopic, run: Option<&EdgeCheckRun>, model: &BushingModel) -> Vec<String> {
     if topic == EdgeTopic::Legacy {

@@ -43,7 +43,7 @@ fn it_opens_on_the_terminal_forms_inputs_with_the_fit_and_a_drawing() {
     assert!(s.benches().is_empty());
     assert_eq!(s.ribbon().into_iter().map(|t| t.title).collect::<Vec<_>>(), ["Inputs", "Report"]);
     let cards = s.inspector();
-    assert_eq!(ids(&cards), ["fastener-hole-setup", "fastener-regular-hole-dimensions", "fastener-hole-layout", "fastener-fit", "fastener-companion", "fastener-layout", "fastener-drawing"]);
+    assert_eq!(ids(&cards), ["fastener-hole-setup", "fastener-regular-hole-dimensions", "fastener-hole-layout", "fastener-fit", "fastener-companion", "fastener-layout", "fastener-edge-estimate", "fastener-drawing"]);
     let t = texts(&cards);
     // The rows are the terminal form's labels and values.
     assert!(t.contains("Hole Type  Regular") && t.contains("Hole 1 Diameter Nominal  0.2500 in"), "{t}");
@@ -225,4 +225,116 @@ fn a_file_with_an_unknown_choice_or_an_impossible_band_applies_the_rest_and_says
     assert!(s.model().edge_distance.is_none());
     assert!(s.status().contains("solve for: Volume") && s.status().contains("countersink depth"), "{}", s.status());
     assert!(FastenerFile::from_json("{\"version\": 99}").unwrap_err().contains("newer version"));
+}
+
+fn edge_card(s: &FastenerSession) -> Card {
+    s.inspector().into_iter().find(|c| c.id == "fastener-edge-estimate").expect("the edge card")
+}
+fn tables(c: &Card) -> Vec<crate::gpu_viewer::page::DockTable> {
+    c.items.iter().filter_map(|i| if let DockItem::Table(t) = i { Some((**t).clone()) } else { None }).collect()
+}
+fn first_cell(r: &crate::gpu_viewer::page::TableRow) -> String {
+    if let crate::gpu_viewer::page::Cell::Text { text, .. } = &r.cells[0] { text.clone() } else { String::new() }
+}
+fn with_edge_distance(s: &mut FastenerSession, e: f64) {
+    s.st.model.commit_number(NumberTarget::EdgeDistance, NumberPart::Nominal, e);
+}
+fn wait_edge(s: &mut FastenerSession) {
+    let t = std::time::Instant::now();
+    while s.edge_job.is_some() {
+        s.poll();
+        assert!(t.elapsed().as_secs() < 300, "timed out waiting for the edge estimate");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn the_edge_card_is_folded_until_run_and_a_run_without_an_edge_distance_says_what_is_missing() {
+    let mut s = session("edge-missing");
+    let c = edge_card(&s);
+    assert!(c.folded && c.tag == "not run" && texts(&[c]).contains("Not run."));
+    act(&mut s, FastenerAct::EdgeRun(false));
+    assert!(s.edge_job.is_none(), "nothing to run");
+    assert!(s.status().contains("Edge Distance"), "{}", s.status());
+}
+
+#[test]
+fn a_quick_run_is_advisory_nothing_is_governing_and_there_is_no_best_estimate_yet() {
+    let mut s = session("edge-quick");
+    with_edge_distance(&mut s, 0.5);
+    act(&mut s, FastenerAct::EdgeRun(false));
+    assert!(s.solving());
+    wait_edge(&mut s);
+    let c = edge_card(&s);
+    assert!(!c.folded && c.tag == "current");
+    let ts = tables(&c);
+    assert_eq!(ts.len(), 2, "applied load and bearing limit");
+    for t in &ts {
+        assert_eq!(t.columns.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(), ["Model", "Nominal", "P90", "P95", "P99"]);
+        assert!(t.rows.iter().all(|r| !r.governing), "no legacy check, so no governing row");
+        assert!(!t.rows.iter().any(|r| first_cell(r).contains("governing") || first_cell(r).contains("best estimate")));
+        assert!(t.rows.iter().any(|r| first_cell(r) == "Superposition") && t.rows.iter().any(|r| first_cell(r) == "Allowables"));
+    }
+    let text = texts(&[c]);
+    assert!(text.contains("Advisory: this workbench has no legacy edge check"), "{text}");
+    assert!(text.contains("Best estimate: not run"), "{text}");
+    assert!(!text.contains("Governing: the legacy solver check"), "{text}");
+}
+
+#[test]
+fn the_contact_fe_run_is_the_best_estimate_in_the_first_row_and_stays_advisory() {
+    let mut s = session("edge-deep");
+    with_edge_distance(&mut s, 0.5);
+    act(&mut s, FastenerAct::EdgeRun(true));
+    wait_edge(&mut s);
+    let c = edge_card(&s);
+    for t in tables(&c) {
+        assert_eq!(first_cell(&t.rows[0]), "Contact FE \u{b7} best estimate");
+        assert!(t.rows.iter().all(|r| !r.governing));
+    }
+    assert!(texts(&[c]).contains("Best estimate (contact FE): bearing limit needs e/D"));
+}
+
+#[test]
+fn editing_an_edge_input_makes_the_run_stale_undo_restores_it_and_the_case_file_keeps_it() {
+    let mut s = session("edge-edit");
+    with_edge_distance(&mut s, 0.5);
+    act(&mut s, FastenerAct::EdgeRun(false));
+    wait_edge(&mut s);
+    assert_eq!(edge_card(&s).tag, "current");
+    act(&mut s, FastenerAct::EdgeField(edge::EdgeField::Load));
+    assert!(s.prompting());
+    type_text(&mut s, "2500");
+    s.key(Key::Enter, Mods::default());
+    assert_eq!(s.edge.load, 2500.0);
+    assert_eq!(edge_card(&s).tag, "stale");
+    assert!(texts(&[edge_card(&s)]).contains("Inputs changed since this run"));
+    // The case file carries the edge inputs; an older file without them opens on the defaults.
+    let json = s.snapshot().to_json();
+    assert_eq!(FastenerFile::from_json(&json).unwrap().edge.load, 2500.0);
+    let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
+    old.as_object_mut().unwrap().remove("edge");
+    assert_eq!(FastenerFile::from_json(&old.to_string()).unwrap().edge, edge::EdgeInputs::default());
+    s.undo();
+    assert_eq!(s.edge.load, 1000.0);
+    assert_eq!(edge_card(&s).tag, "current", "back to the inputs the run was made for");
+}
+
+#[test]
+fn edge_inputs_out_of_range_are_refused_and_the_material_cycles_by_id() {
+    let mut s = session("edge-range");
+    let (before, undo) = (s.edge.clone(), s.undo.len());
+    for (f, v) in [(edge::EdgeField::Thickness, "0"), (edge::EdgeField::Load, "-5"), (edge::EdgeField::Friction, "1.5")] {
+        act(&mut s, FastenerAct::EdgeField(f));
+        type_text(&mut s, v);
+        s.key(Key::Enter, Mods::default());
+        assert!(s.status().contains("out of range"), "{}", s.status());
+    }
+    assert_eq!((s.edge.clone(), s.undo.len()), (before.clone(), undo), "nothing changed, no undo step");
+    act(&mut s, FastenerAct::EdgeMaterial);
+    assert_ne!(s.edge.material, before.material);
+    assert_eq!(s.undo.len(), undo + 1);
+    assert_eq!(FastenerFile::from_json(&s.snapshot().to_json()).unwrap().edge.material, s.edge.material);
+    s.edge.material = "no-such-material".into();
+    assert_eq!(s.edge.plate().id, "al7075", "an unknown material falls back to the default");
 }

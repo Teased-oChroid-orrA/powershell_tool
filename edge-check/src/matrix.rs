@@ -114,6 +114,20 @@ pub struct EdgeMatrix {
     pub rows: Vec<MatrixRow>,
 }
 
+impl MatrixRow {
+    /// The row's short display name.
+    pub fn name(&self) -> &'static str {
+        match self.id {
+            LEGACY_ID => "Legacy solver",
+            "analytic" => "Superposition",
+            "allowable" => "Allowables",
+            "plastic" => "Plastic FE",
+            "contact" => "Contact FE",
+            _ => self.label,
+        }
+    }
+}
+
 impl EdgeMatrix {
     /// The matrix of a finished run. `legacy` is the solver's own check (omit it and there is no governing row).
     pub fn build(report: &EdgeReport, legacy: Option<LegacyEdge>) -> Self {
