@@ -382,7 +382,8 @@ fn sensitivity_3d() {
         report(&format!("small mesh (around 24, 2 layers) mu {mu}"), s, &r, mu, BAR_75S);
     }
     // Requested resolution: 4 layers over the half thickness, bearing arc element <= D/40 (0.05 rad on a = D/2 is 0.0125 in).
-    for (name, around, layers, fine) in [("layers 4, around 36, arc D/40", 36, 4, Some(0.05)), ("layers 6, around 36, arc D/40", 36, 6, Some(0.05))] {
+    // (6 layers was started and stopped after hours: more than 100k dof; 4 layers took 54 min, 73k dof, 0.78 GB.)
+    for (name, around, layers, fine) in [("layers 4, around 36, arc D/40", 36, 4, Some(0.05))] {
         let s = Spec3 { around, layers, fine, ..coarse };
         let r = run_3d(s, BAR_75S);
         report(name, s, &r, 0.12, BAR_75S);
