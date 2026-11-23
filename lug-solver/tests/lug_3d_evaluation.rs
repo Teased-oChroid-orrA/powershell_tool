@@ -81,6 +81,13 @@ struct Spec3 {
     stage: f64,
     /// Stop when the peak equivalent plastic strain reaches this (`None`: run to `end`).
     fail_ep: Option<f64>,
+    /// Angular element step (rad) over the loaded sector (half width 60 degrees) of the 2D mesh; `None`: uniform.
+    fine: Option<f64>,
+}
+
+fn mesh_spec(around: usize, fine: Option<f64>) -> MeshSpec {
+    let refine = fine.map(|f| Refinement { centre: std::f64::consts::PI, half_width: 60f64.to_radians(), fine_step: f });
+    MeshSpec { elements_around: around, refine, ..MeshSpec::default() }
 }
 
 /// Half ring of Quad9 elements (the pin, `y >= 0`) matching `n_around` angular divisions; surface `rim` = outer edges.
@@ -112,7 +119,7 @@ fn ring(n_around: usize, r_pin: f64, r_core: f64, rings: usize, physics: fea_cor
 /// The 3D model run from zero to `spec.end` D of pin travel in stages of `spec.stage` D.
 fn run_3d(spec: Spec3, bar: (f64, f64, f64, f64, f64)) -> Run3 {
     let t0 = Instant::now();
-    let fe = FeaLug::build(&plate_geometry(spec.ed), MAT, MeshSpec { elements_around: spec.around, ..MeshSpec::default() }, true, PlaneMode::Strain).unwrap();
+    let fe = FeaLug::build(&plate_geometry(spec.ed), MAT, mesh_spec(spec.around, spec.fine), true, PlaneMode::Strain).unwrap();
     let a = 0.5 * D;
     let half_t = 0.5 * T;
     let levels: Vec<f64> = (0..=spec.layers).map(|i| half_t * i as f64 / spec.layers as f64).collect();
@@ -222,9 +229,9 @@ fn load_at_strain(pts: &[Pt], eps: f64) -> Option<f64> {
 
 /// 2D baseline on the kernel (`FeaLug`, rigid pin, the same true law in finite strain): the load-travel curve (travel
 /// from first touch, whole-lug load) and the load at the failure strain.
-fn run_2d(ed: f64, mode: PlaneMode, mu: f64, bar: (f64, f64, f64, f64, f64), around: usize) -> (Vec<(f64, f64)>, f64, f64) {
+fn run_2d(ed: f64, mode: PlaneMode, mu: f64, bar: (f64, f64, f64, f64, f64), around: usize, fine: Option<f64>) -> (Vec<(f64, f64)>, f64, f64) {
     let t0 = Instant::now();
-    let mut fe = FeaLug::build(&plate_geometry(ed), MAT, MeshSpec { elements_around: around, ..MeshSpec::default() }, true, mode).unwrap();
+    let mut fe = FeaLug::build(&plate_geometry(ed), MAT, mesh_spec(around, fine), true, mode).unwrap();
     let law = true_law(bar);
     fe.set_plasticity(law, true).unwrap();
     let case = LoadCase { load_lbf: 1000.0, angle_deg: 0.0 };
@@ -235,7 +242,7 @@ fn run_2d(ed: f64, mode: PlaneMode, mu: f64, bar: (f64, f64, f64, f64, f64), aro
 #[test]
 #[ignore = "first deliverable: small-mesh frictional finite-strain deformable-pin 3D run; minutes to hours"]
 fn small_3d_run() {
-    let spec = Spec3 { ed: 1.5, around: 24, layers: 2, rings: 3, mu: 0.12, end: 0.12, stage: 0.005, fail_ep: Some(eps_f(BAR_75S)) };
+    let spec = Spec3 { ed: 1.5, around: 24, layers: 2, rings: 3, mu: 0.12, end: 0.12, stage: 0.005, fail_ep: Some(eps_f(BAR_75S)), fine: None };
     let r = run_3d(spec, BAR_75S);
     let curve: Vec<(f64, f64)> = r.pts.iter().map(|p| (p.travel * D, p.load)).collect();
     println!("3D ({} dof, {:.0} s): {}", r.dofs, r.secs, r.ended);
@@ -248,8 +255,81 @@ fn small_3d_run() {
 fn baselines_2d() {
     for (name, mode) in [("plane strain", PlaneMode::Strain), ("plane stress", PlaneMode::Stress)] {
         for mu in [0.0, 0.12] {
-            let (curve, at_fail, secs) = run_2d(1.5, mode, mu, BAR_75S, 36);
+            let (curve, at_fail, secs) = run_2d(1.5, mode, mu, BAR_75S, 36, None);
             println!("{name} mu {mu}: 2 % offset {:?} lbf, at failure strain {at_fail:.0} lbf ({:.0} psi), {secs:.1} s, curve {} pts", offset_load(&curve, 0.02 * D), at_fail / (D * T), curve.len());
         }
+    }
+}
+
+
+/// Through-thickness read-out of the last converged state: per band of the half thickness (free face `z = t/2` is the last
+/// band), the mean bearing pressure on the bore, the peak equivalent plastic strain and the peak von Mises stress in the lug
+/// (Gauss points within 1.3 a of the hole centre), and the stress triaxiality `sigma_m / sigma_vm` at the point of peak strain.
+fn through_thickness(r: &Run3, mu: f64, bands: usize) -> String {
+    let (nl, model) = (r.last.as_ref().unwrap(), r.model.as_ref().unwrap());
+    let half_t = 0.5 * T;
+    let band = |z: f64| (((z / half_t) * bands as f64).floor() as usize).min(bands - 1);
+    let (mut pw, mut w) = (vec![0.0; bands], vec![0.0; bands]);
+    for t in nl.contact_tractions(0, mu) {
+        let b = band(t.x[2].abs());
+        pw[b] += t.pressure * t.weight;
+        w[b] += t.weight;
+    }
+    let stresses = model.nl_gauss_stresses(&nl.u, &nl.state).unwrap();
+    let (mut ep, mut vm) = (vec![0.0f64; bands], vec![0.0f64; bands]);
+    let (mut best, mut tri) = (0.0, f64::NAN);
+    let mut at = 0.0;
+    for (i, (pos, s)) in stresses[0].iter().enumerate() {
+        if pos[0].hypot(pos[1]) > 1.3 * 0.5 * D {
+            continue;
+        }
+        let b = band(pos[2].abs());
+        let e = nl.state.gp[0][i][6];
+        ep[b] = ep[b].max(e);
+        let v = fea_core::kernel::von_mises(s);
+        vm[b] = vm[b].max(v);
+        if e > best {
+            best = e;
+            at = pos[2].abs();
+            tri = (s[0] + s[1] + s[2]) / 3.0 / v.max(1e-9);
+        }
+    }
+    let mut out = String::from("  band (z/(t/2) from mid-plane to free face): mean bearing pressure psi | peak ep | peak von Mises psi\n");
+    for b in 0..bands {
+        out += &format!("   {:.2}-{:.2}: {:>8.0} | {:.4} | {:>8.0}\n", b as f64 / bands as f64, (b + 1) as f64 / bands as f64, if w[b] > 0.0 { pw[b] / w[b] } else { 0.0 }, ep[b], vm[b]);
+    }
+    out + &format!("  peak ep {best:.4} at z/(t/2) = {:.2}, stress triaxiality there {tri:.2}", at / half_t)
+}
+
+fn report(label: &str, spec: Spec3, r: &Run3, mu: f64, bar: (f64, f64, f64, f64, f64)) {
+    let curve: Vec<(f64, f64)> = r.pts.iter().map(|p| (p.travel * D, p.load)).collect();
+    let test = bar.3;
+    let at_fail = load_at_strain(&r.pts, eps_f(bar));
+    let off = offset_load(&curve, 0.02 * D);
+    let psi = |l: f64| l / (D * T);
+    println!("{label}: {} dof, {:.0} s, mu {mu}; {}", r.dofs, r.secs, r.ended);
+    println!("  load at failure strain {} | 2 % offset load {} | test {:.0} psi", at_fail.map_or("-".into(), |l| format!("{l:.0} lbf = {:.0} psi ({:+.1} % vs test)", psi(l), 100.0 * (psi(l) / test - 1.0))), off.map_or("-".into(), |l| format!("{l:.0} lbf = {:.0} psi ({:+.1} %)", psi(l), 100.0 * (psi(l) / test - 1.0))), test);
+    if r.last.is_some() {
+        println!("{}", through_thickness(r, mu, 4));
+    }
+    let _ = spec;
+}
+
+#[test]
+#[ignore = "3D at the requested resolution and the friction / mesh sensitivity; hours"]
+fn sensitivity_3d() {
+    let ef = Some(eps_f(BAR_75S));
+    let coarse = Spec3 { ed: 1.5, around: 24, layers: 2, rings: 3, mu: 0.12, end: 0.12, stage: 0.005, fail_ep: ef, fine: None };
+    // Friction at the small mesh (cheap): 0 (comparison), 0.10, 0.12, 0.15.
+    for mu in [0.0, 0.10, 0.12, 0.15] {
+        let s = Spec3 { mu, ..coarse };
+        let r = run_3d(s, BAR_75S);
+        report(&format!("small mesh (around 24, 2 layers) mu {mu}"), s, &r, mu, BAR_75S);
+    }
+    // Requested resolution: 4 layers over the half thickness, bearing arc element <= D/40 (0.05 rad on a = D/2 is 0.0125 in).
+    for (name, around, layers, fine) in [("layers 4, around 36, arc D/40", 36, 4, Some(0.05)), ("layers 6, around 36, arc D/40", 36, 6, Some(0.05))] {
+        let s = Spec3 { around, layers, fine, ..coarse };
+        let r = run_3d(s, BAR_75S);
+        report(name, s, &r, 0.12, BAR_75S);
     }
 }
