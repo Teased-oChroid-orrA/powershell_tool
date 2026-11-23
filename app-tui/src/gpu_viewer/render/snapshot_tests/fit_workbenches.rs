@@ -364,13 +364,15 @@ fn fastener_edge_snapshot() {
     let _guard = headless_guard();
     let mut model = FastenerHoleModel::default();
     model.commit_number(NumberTarget::EdgeDistance, NumberPart::Nominal, 0.5);
-    let mut session = FastenerSession::new(&FastenerFile::capture(&model, "Edge estimate"), std::env::temp_dir().join("fastener-edge-snapshot.json"));
+    let pin = FastenerFile::capture(&model, "Edge estimate");
+    // The plate under an inclined end load (30 degrees).
+    let mut plate = FastenerFile::capture(&model, "Edge estimate");
+    plate.edge.case = plate.edge.case.next();
+    plate.edge.angle_deg = 30.0;
     let t = std::time::Instant::now();
-    // The pin case with the contact FE, then the plate under axial load.
-    for (name, setup) in [("fastener-edge", vec![FastenerAct::EdgeRun(true)]), ("fastener-edge-plate", vec![FastenerAct::EdgeCase, FastenerAct::EdgeRun(false)])] {
-        for a in setup {
-            session.act(EditorAction::Fastener(a));
-        }
+    for (name, file, deep) in [("fastener-edge", pin, true), ("fastener-edge-plate", plate, false)] {
+        let mut session = FastenerSession::new(&file, std::env::temp_dir().join(format!("{name}-snapshot.json")));
+        session.act(EditorAction::Fastener(FastenerAct::EdgeRun(deep)));
         while session.solving() {
             session.poll();
             assert!(t.elapsed().as_secs() < 180);
@@ -392,6 +394,47 @@ fn fastener_edge_snapshot() {
             std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
         });
     }
+}
+
+/// The FEA Workbench's edge check card for a selected hole (contact FE run), one tall dark shot:
+/// `FEA_SNAPSHOT_FEA_EDGE_OUT=/dir cargo test ... fea_edge_snapshot -- --ignored`.
+#[test]
+#[ignore = "needs a graphics adapter and FEA_SNAPSHOT_FEA_EDGE_OUT"]
+fn fea_edge_snapshot() {
+    use crate::gpu_viewer::editor::solid::SolidSession;
+    let Ok(dir) = std::env::var("FEA_SNAPSHOT_FEA_EDGE_OUT") else {
+        return;
+    };
+    let _guard = headless_guard();
+    let mut p = fea_problem::templates::templates().remove(0).1;
+    p.supports.clear();
+    p.loads.clear();
+    crate::toolboxes::fea_workbench::model::apply_material(&mut p, mechanics_core::materials::get_material("al7075"));
+    p.loads.push(fea_problem::Load::Bearing { hole: 1, fx: -800.0, fy: 0.0 });
+    let mut session = SolidSession::new(p, std::env::temp_dir().join("fea-edge-snapshot.json"));
+    session.selected = Some("hole1".into());
+    session.start_edge_check(true);
+    let t = std::time::Instant::now();
+    while session.edge_checking() {
+        session.poll();
+        assert!(t.elapsed().as_secs() < 180);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    pollster::block_on(async {
+        let adapter = test_adapter().await.expect("adapter required");
+        let (w, h) = (1360u32, 2600u32);
+        let scene = session.scene().unwrap();
+        let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+        let texture = target(&r, w, h);
+        let mut gui = Gui::new();
+        gui.ctx().set_theme(egui::Theme::Dark);
+        let view = ViewState::new(&scene);
+        let scenes = [scene];
+        let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+        draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+        draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+        std::fs::write(format!("{dir}/fea-edge.rgba"), read_back(&r, &texture)).unwrap();
+    });
 }
 
 /// The Bushing fit section when the bore band is wider than the interference band: Advanced settings open, the

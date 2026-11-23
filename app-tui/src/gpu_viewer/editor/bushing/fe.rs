@@ -13,7 +13,7 @@ const G_INCH: f64 = 386.089;
 
 pub(crate) fn material(m: &mechanics_core::materials::Material) -> MaterialSpec {
     let density = m.extra.map_or(0.1, |x| if x.density_lb_in3 > 0.0 { x.density_lb_in3 } else { 0.1 });
-    MaterialSpec { name: m.name.to_string(), e: m.e_ksi * 1000.0, nu: m.nu, alpha: m.alpha_u_f * 1e-6, yield_stress: Some(m.sy_ksi * 1000.0), density: density / G_INCH, plastic: false, hardening: 0.0 }
+    MaterialSpec { name: m.name.to_string(), e: m.e_ksi * 1000.0, nu: m.nu, alpha: m.alpha_u_f * 1e-6, yield_stress: Some(m.sy_ksi * 1000.0), density: density / G_INCH, plastic: false, hardening: 0.0, ftu: (m.ftu_ksi > 0.0).then(|| m.ftu_ksi * 1000.0), fsu: (m.fsu_ksi > 0.0).then(|| m.fsu_ksi * 1000.0), fbru: (m.fbru_ksi > 0.0).then(|| m.fbru_ksi * 1000.0) }
 }
 
 /// Where the model's parts sit, in inches: the housing rectangle `[0, length] x [0, height]` with its free edge at `x = 0`

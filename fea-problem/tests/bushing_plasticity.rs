@@ -12,7 +12,7 @@ const B: f64 = 2.0;
 const RI: f64 = 0.1;
 
 fn material(yield_stress: Option<f64>) -> MaterialSpec {
-    MaterialSpec { name: "test".into(), e: E, nu: NU, alpha: 0.0, yield_stress, density: 0.0, plastic: yield_stress.is_some(), hardening: 0.0 }
+    MaterialSpec { name: "test".into(), e: E, nu: NU, alpha: 0.0, yield_stress, density: 0.0, plastic: yield_stress.is_some(), hardening: 0.0, ftu: None, fsu: None, fbru: None }
 }
 
 /// Round plate `A..B` (free outside) with a concentric bushing of bore `RI`, plane strain. The supports remove the rigid motions

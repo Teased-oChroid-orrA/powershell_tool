@@ -180,6 +180,9 @@ fn scale_sketch(sk: &mut Sketch, f: f64) {
 fn scale_material(m: &mut MaterialSpec, k: Factors) {
     m.e *= k.stress;
     m.yield_stress = m.yield_stress.map(|y| y * k.stress);
+    m.ftu = m.ftu.map(|v| v * k.stress);
+    m.fsu = m.fsu.map(|v| v * k.stress);
+    m.fbru = m.fbru.map(|v| v * k.stress);
     m.hardening *= k.stress;
     m.density *= k.density;
     // Expansion is a strain per degree: a degree of the new scale is `1 / temperature` of the old one.
