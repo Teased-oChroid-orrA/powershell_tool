@@ -759,7 +759,7 @@ pub fn new_bushing(p: &Problem) -> Option<fea_problem::Bushing> {
         Shape::Circle { r, .. } if !p.bushings.iter().any(|b| b.hole == i + 1) => Some((i, *r)),
         _ => None,
     })?;
-    Some(fea_problem::Bushing { hole: i + 1, inner_diameter: 1.5 * r, offset: [0.0, 0.0], interference: 0.008 * r, friction: 0.15, material: fea_problem::MaterialSpec { name: "Steel (bushing)".into(), e: 29.0e6, nu: 0.3, alpha: 6.5e-6, yield_stress: None, density: 0.283 / 386.089, plastic: false, hardening: 0.0 } })
+    Some(fea_problem::Bushing { hole: i + 1, inner_diameter: 1.5 * r, offset: [0.0, 0.0], interference: 0.008 * r, friction: 0.15, material: fea_problem::MaterialSpec { name: "Steel (bushing)".into(), e: 29.0e6, nu: 0.3, alpha: 6.5e-6, yield_stress: None, density: 0.283 / 386.089, plastic: false, hardening: 0.0, ftu: None, fsu: None, fbru: None } })
 }
 
 /// A default contact pair for a sketch with several regions: the facing surfaces of the first two bodies (the pair of
@@ -1081,6 +1081,10 @@ fn set_material(mat: &mut fea_problem::MaterialSpec, m: &mechanics_core::materia
     mat.nu = m.nu;
     mat.alpha = units.from_microstrain_per_f(m.alpha_u_f);
     mat.yield_stress = (m.sy_ksi > 0.0).then(|| units.from_ksi(m.sy_ksi));
+    // The strengths the edge-distance estimate reads (a zero is "not tabulated").
+    mat.ftu = (m.ftu_ksi > 0.0).then(|| units.from_ksi(m.ftu_ksi));
+    mat.fsu = (m.fsu_ksi > 0.0).then(|| units.from_ksi(m.fsu_ksi));
+    mat.fbru = (m.fbru_ksi > 0.0).then(|| units.from_ksi(m.fbru_ksi));
 }
 
 /// Next selectable (non-header) row from `selected` in direction `delta`, wrapping.

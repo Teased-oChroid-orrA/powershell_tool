@@ -132,8 +132,8 @@ fn two_materials() -> Problem {
         regions: vec![SketchRegion { outer: Shape::Rect { x0: 6.0, y0: 0.0, x1: 12.0, y1: 2.0 }, holes: Vec::new() }],
     };
     p.thickness = 1.0;
-    p.material = MaterialSpec { name: "stiff".into(), e: 30.0e6, nu: 0.3, alpha: 0.0, yield_stress: Some(50_000.0), density: 0.0, plastic: false, hardening: 0.0 };
-    p.region_materials = vec![Some(MaterialSpec { name: "soft".into(), e: 10.0e6, nu: 0.3, alpha: 0.0, yield_stress: Some(30_000.0), density: 0.0, plastic: false, hardening: 0.0 })];
+    p.material = MaterialSpec { name: "stiff".into(), e: 30.0e6, nu: 0.3, alpha: 0.0, yield_stress: Some(50_000.0), density: 0.0, plastic: false, hardening: 0.0, ftu: None, fsu: None, fbru: None };
+    p.region_materials = vec![Some(MaterialSpec { name: "soft".into(), e: 10.0e6, nu: 0.3, alpha: 0.0, yield_stress: Some(30_000.0), density: 0.0, plastic: false, hardening: 0.0, ftu: None, fsu: None, fbru: None })];
     p.supports = vec![Support::roller("left", 0), Support::Point { x: 0.0, y: 1.0, z: 0.0, ux: None, uy: Some(0.0), uz: None }];
     p.loads = vec![Load::Traction { edge: "r2/right".into(), tx: 1000.0, ty: 0.0, tz: 0.0 }];
     p.mesh.size = 0.4;
@@ -216,7 +216,7 @@ fn plastic_bar() -> Problem {
     let mut p = templates::templates()[0].1.clone();
     p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 10.0, y1: 1.0 }, holes: Vec::new(), depth: 1.0, layers: 1, regions: Vec::new() };
     p.thickness = 1.0;
-    p.material = MaterialSpec { name: "bilinear".into(), e: 10.0e6, nu: 0.3, alpha: 0.0, yield_stress: Some(20_000.0), density: 0.0, plastic: true, hardening: 1.0e6 };
+    p.material = MaterialSpec { name: "bilinear".into(), e: 10.0e6, nu: 0.3, alpha: 0.0, yield_stress: Some(20_000.0), density: 0.0, plastic: true, hardening: 1.0e6, ftu: None, fsu: None, fbru: None };
     p.supports = vec![Support::roller("left", 0), Support::Point { x: 0.0, y: 0.5, z: 0.0, ux: None, uy: Some(0.0), uz: None }];
     p.loads = vec![Load::Traction { edge: "right".into(), tx: 30_000.0, ty: 0.0, tz: 0.0 }];
     p.mesh.size = 0.5;

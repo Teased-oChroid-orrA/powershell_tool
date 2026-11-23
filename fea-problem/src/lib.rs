@@ -9,6 +9,7 @@ pub mod conversion;
 pub mod diagnose;
 pub mod facts;
 pub mod dynamics;
+pub mod hole_edge;
 pub mod history;
 pub mod joint;
 pub mod member_checks;

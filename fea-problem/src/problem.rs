@@ -97,6 +97,15 @@ pub struct MaterialSpec {
     /// Tangent modulus after yield (stress per unit plastic strain); `0` is perfectly plastic.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub hardening: f64,
+    /// Strengths from the material library, in the problem's stress unit: tensile ultimate, shear ultimate and bearing
+    /// ultimate (the edge-distance estimate reads them; nothing in the solve does). `None` when the material did not come
+    /// from the library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ftu: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fsu: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fbru: Option<f64>,
 }
 
 fn is_zero(v: &f64) -> bool {
