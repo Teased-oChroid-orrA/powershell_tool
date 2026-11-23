@@ -1412,8 +1412,12 @@ impl Ctx<'_> {
             // the residual creeps down by a fixed small factor per iteration (a bolted clamp pair pulled past its separation load:
             // 1 % per iteration, 0 points in contact). Without it the tangent is the exact one of the open state. Tried only after the
             // other remedies, and only for this solve (`newton` switches it back on).
-            if since_best >= STAGNATION_ITERATIONS || creeping >= CREEP_ITERATIONS {
-                if let Some(cs) = self.contacts.as_ref().filter(|cs| cs.stabilising()) {
+            // Only while no point is in contact: a frictional patch converges linearly by design and its near-open edge points are real
+            // (`contact_sweep` lost 0.4 % of its normal force to this remedy), and with free rigid translations the stabiliser keeps the
+            // translation block non-singular until the master touches.
+            let all_open = ev.state.contact.iter().flatten().all(|c| !c.active);
+            if (since_best >= STAGNATION_ITERATIONS || creeping >= CREEP_ITERATIONS) && all_open {
+                if let Some(cs) = self.contacts.as_ref().filter(|cs| cs.stabilising() && cs.n_extra() == 0) {
                     cs.set_stabilise(false);
                     self.note(EventKind::StabiliserOff, lambda, rn, format!("no 3 % gain of the best residual {best_rn:.3e} in {STAGNATION_ITERATIONS} iterations: tangent without the near-contact stabiliser"));
                     if std::env::var("NL_DEBUG").is_ok() {

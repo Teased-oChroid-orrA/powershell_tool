@@ -1124,6 +1124,16 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     }
     let f = loads::assemble(&model.mesh, &loads)?;
     let (reaction, applied) = totals(d, &sol.reactions, &f);
+    if p.bushings.is_empty() {
+        // The weak grounding springs only keep an unheld body from being a free body. A solution that leans on them (a loose body a
+        // pull has carried away, held by a spring of 1e-9 E) is not a held body, however well Newton converged on it: refuse it.
+        let one_dof = couplings.iter().filter(|c| c.terms.len() == 1).map(|c| c.k * (c.terms[0].1 * sol.u[c.terms[0].0] - c.offset).abs());
+        let leak: f64 = ground.iter().map(|&(dof, k)| k * sol.u[dof].abs()).chain(one_dof).sum();
+        let carried = force_scale(&f, &sol.reactions).max(bolts.iter().map(|b| b.preload).sum());
+        if leak > 1e-3 * carried {
+            return Err(format!("the contact could not be solved: the weak grounding of a body that nothing holds carries {:.2} % of the forces: a contact between assembly bodies carries only a load that presses the bodies together, and a body that a pull leaves loose is not held", 100.0 * leak / carried));
+        }
+    }
     let gauss = model.gauss_stresses(&sol.u, p.delta_t)?;
     let nodal = match model.recover_spr(&gauss) {
         Ok(v) => v,
