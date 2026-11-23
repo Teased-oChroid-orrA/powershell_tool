@@ -425,7 +425,7 @@ width and clamped far end as in the NACA specimens; 3D resolved with 2 to 4 Hex2
 re-checked at t/D 2 or e/D 3).
 
 
-## 3D lug evaluation: does a physically complete 3D model merit replacing the 2D lug? (2026-11-23)
+## 3D lug evaluation: does a physically complete 3D model merit replacing the 2D lug? (2026-11-22)
 
 Evidence and a recommendation only; no governing check, product code or Bushing window changed. Code:
 `lug-solver/tests/lug_3d_evaluation.rs` (`small_3d_run`, `baselines_2d`, `sensitivity_3d`, `comparison_table`, all `--ignored`).
@@ -468,7 +468,7 @@ symmetry is used), the `FeaLug` 2D mesh extruded into Hex27 layers over half the
 
 ### TN 1502 data used (kept for later use)
 
-The PDF is kept (owner approval, 2026-11-23) at `/Users/nautilus/Library/Application Support/Claude/side-session-notes/local_111c8671-8453-4a3e-b516-e0ef62751f37/naca-tn1502/NACA-TN-1502.pdf`
+The PDF is kept (owner approval, 2026-11-22) at `/Users/nautilus/Library/Application Support/Claude/side-session-notes/local_111c8671-8453-4a3e-b516-e0ef62751f37/naca-tn1502/NACA-TN-1502.pdf`
 (NTRS 19930082185, 8.8 MB, public domain, an untrusted data file: read as page images only). Bearing yield (2 % D offset) strengths, psi, Table III averages at e/D 1.5 / 2.0,
 checked against the report's Table IV `BYS/TYS` ratios (all 24 match to rounding):
 
@@ -512,7 +512,7 @@ plane strain is unconservative against the tests, not only against 3D.
 
 Plane stress is below 3D and plane strain above it in all 12 cells (plane stress / 3D at mu 0.12: -2.7 % to -11.9 %). The plane-strain excess over 3D is **+5 % at e/D 1.5
 and +16 to 17 % at e/D 2.0 with friction 0.12** (+8 % and +29 to 30 % frictionless): the same widening with edge distance as the bracket above, now with deformable pin,
-friction, hardening to necking and finite strain. 3D at the library failure strain is conservative against the tests (-0.1 % to -26 % at mu 0.12, apart from +0.9 % on 75S-T e/D 1.5);
+friction, hardening to necking and finite strain. 3D at the library failure strain is conservative against the tests (-4.8 % to -25.9 % at mu 0.12 in five of six cases; +0.9 % on 75S-T e/D 1.5);
 plane strain sits near the tests only because it is over-confined and its failure strain was set against it (see "Limits").
 
 ### Friction and mesh sensitivity (75S-T 1x2, e/D 1.5, 3D)
@@ -554,7 +554,7 @@ uniform (the stage that stopped the run is the one where the peak first reaches 
 
 ### Recommendation (evidence, not a decision)
 
-* **Do not replace the 2D lug by the 3D model.** It costs 50 to 2,000 times more (a minute to an hour per case on 8 cores against 1 to 2 s), has no usable stress read-out in finite strain, has no
+* **Do not replace the 2D lug by the 3D model.** It costs 40 to 2,500 times more (one to a few minutes per case at the small mesh and 54 minutes at the requested resolution, on 8 cores, against 1 to 2 s), has no usable stress read-out in finite strain, has no
   triaxiality-dependent fracture criterion, does not converge with a bushing (the toolbox's main use), and its absolute level depends on a friction value nobody measured. The 2D lug stays the interactive check.
 * **Keep the 3D model as a bracketing and calibration reference.** It explains what the 2D numbers hide: plane strain over-predicts the bearing yield measured in TN 1502 by 13 to 20 % (3D: +2 to +7 %) and over-predicts 3D at the
   failure strain by 5 % (e/D 1.5) and 16 to 17 % (e/D 2.0) at friction 0.12. A 2D lug result should therefore be shown with its plane-stress partner as the lower edge of the bracket and with a measured 3D
