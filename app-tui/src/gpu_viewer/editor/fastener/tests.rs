@@ -384,18 +384,29 @@ fn the_plate_case_computes_two_criteria_in_the_fe_row_and_marks_every_other_mode
 }
 
 #[test]
-fn a_plate_load_at_an_angle_is_unavailable_not_computed_and_an_off_centre_hole_is_refused() {
+fn an_inclined_plate_load_is_computed_with_its_reactions_stated_and_a_near_arm_or_off_centre_hole_is_refused() {
     let mut s = session("edge-plate-angle");
     with_edge_distance(&mut s, 0.75);
     act(&mut s, FastenerAct::EdgeCase);
+    act(&mut s, FastenerAct::EdgeRun(false));
+    wait_edge(&mut s);
+    let axial = texts(&[edge_card(&s)]);
+    assert!(axial.contains("a uniform axial load on the strip's ends, no shear and no moment"), "{axial}");
+    let capacity = |t: &str| t.split("Plane-stress FE carries ").nth(1).and_then(|r| r.split(" lbf").next()).and_then(|n| n.parse::<f64>().ok()).unwrap_or_else(|| panic!("no capacity in {t}"));
     type_edge(&mut s, edge::EdgeField::Angle, "30");
     act(&mut s, FastenerAct::EdgeRun(false));
     wait_edge(&mut s);
     let c = edge_card(&s);
-    let t = &tables(&c)[0];
-    assert!(t.rows.iter().all(|r| r.cells[1..].iter().all(|c| cell_text(c) == "n/a")), "no model has a number at an angle");
-    assert!(texts(&[c]).contains("a load at an angle to a strip with free edges needs its boundary conditions stated"));
-    // The edge named must be the nearer one.
+    let t = texts(&[c.clone()]);
+    let fe = tables(&c)[0].rows.iter().find(|r| first_cell(r) == "Plane-stress FE").cloned().unwrap();
+    assert!(fe.cells[1..].iter().all(|c| cell_text(c) != "n/a"), "an inclined load is computed");
+    assert!(t.contains("its transverse part 500 lbf is a parabolic shear") && t.contains("moment 2000 lbf in") && t.contains("both are computed and the worse is shown"), "{t}");
+    assert!(capacity(&t) < 29000.0 && capacity(&t) > 1000.0, "capacity falls with the angle: {}", capacity(&t));
+    // The far-field rules.
+    type_edge(&mut s, edge::EdgeField::Arm, "2");
+    act(&mut s, FastenerAct::EdgeRun(false));
+    assert!(s.edge_job.is_none() && s.status().contains("at least one plate width"), "{}", s.status());
+    type_edge(&mut s, edge::EdgeField::Arm, "4");
     with_edge_distance(&mut s, 3.0);
     act(&mut s, FastenerAct::EdgeRun(false));
     assert!(s.edge_job.is_none() && s.status().contains("half the plate width"), "{}", s.status());
