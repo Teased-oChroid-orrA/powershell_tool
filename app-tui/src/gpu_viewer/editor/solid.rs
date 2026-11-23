@@ -28,6 +28,7 @@ mod advising;
 mod bench_support;
 mod cards;
 mod corpus;
+mod edge;
 mod glyphs;
 mod guidance;
 mod inspect;
@@ -113,6 +114,8 @@ pub enum SolidAction {
     Advice(usize),
     /// Apply remedy `.1` of finding `.0` of `fea_problem::diagnose` (failure guidance, ADR-020).
     Remedy(usize, usize),
+    /// Run the edge check of the selected hole (`true`: with the contact FE).
+    EdgeCheck(bool),
     /// Ask for the size of a hole / boss / fillet on the STEP solid.
     SolidOp(stepops::PromptOp),
     /// Answer question `.1` of finding `.0` with its option `.2`.
@@ -364,6 +367,9 @@ pub struct SolidSession {
     /// Colour the bushings' own material as "selected" so the bushing and its housing read apart (the Bushing workbench).
     pub highlight_bushings: bool,
     handoff_beat: Option<std::time::Instant>,
+    /// The edge check of a selected hole (`edge`): the last finished estimate and the job running.
+    edge_run: Option<edge::EdgeOut>,
+    edge_worker: Worker<edge::EdgeOut>,
 }
 
 impl Drop for SolidSession {
@@ -439,6 +445,8 @@ impl SolidSession {
             fix_preview: None,
             highlight_bushings: false,
             handoff_beat: None,
+            edge_run: None,
+            edge_worker: Worker::new("fea-edge-check"),
         }
     }
 
@@ -1013,6 +1021,7 @@ impl SolidSession {
                 super::handoff::beat(&self.path);
             }
         }
+        changed |= self.poll_edge_check();
         if let Some((_, answer)) = self.preview_worker.poll() {
             self.mesh_requested = false;
             match answer {
@@ -1369,6 +1378,7 @@ impl SolidSession {
             SolidAction::Advice(i) => self.do_advice(i),
             SolidAction::Remedy(f, r) => self.do_remedy(f, r),
             SolidAction::SolidOp(op) => self.begin_solid_op(op),
+            SolidAction::EdgeCheck(deep) => self.start_edge_check(deep),
             SolidAction::Answer(f, q, o) => self.do_answer(f, q, o),
             SolidAction::BoundaryKind(k) => self.add_boundary_kind(k),
             SolidAction::ConvertLoad(i, kind) => self.convert_load(i, kind),
@@ -1750,6 +1760,8 @@ pub fn surfaces_in_box(mesh: &Mesh, positions: &[[f32; 3]], cam: &Camera, a: [f3
 mod advising_tests;
 #[cfg(test)]
 mod corpus_tests;
+#[cfg(test)]
+mod edge_tests;
 #[cfg(test)]
 mod guidance_tests;
 #[cfg(test)]

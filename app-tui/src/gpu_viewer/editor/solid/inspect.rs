@@ -203,6 +203,7 @@ impl SolidSession {
             result.clear();
         }
         one("result", result, Relevance::Info, &["Simulation"]);
+        cards.extend(self.edge_card());
         cards
     }
 
