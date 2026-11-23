@@ -135,6 +135,12 @@ fn bolted_case(interface: Option<f64>, ratio: f64, size: &str, preload: f64, bol
 }
 
 
+/// The z displacement of the nodes at height `z`, as (smallest, largest).
+fn uz_at(s: &fea_problem::solve::Solved, z: f64) -> (f64, f64) {
+    let uz = s.model.mesh.nodes.iter().enumerate().filter(|(_, x)| (x[2] - z).abs() < 1e-9).map(|(i, _)| s.u[3 * i + 2]);
+    uz.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| (lo.min(v), hi.max(v)))
+}
+
 /// Solve under a wall-clock guard: the release case must fail fast, not hang.
 fn guarded(p: Problem, secs: u64) -> Result<fea_problem::solve::Solved, String> {
     let (tx, rx) = mpsc::channel();
@@ -144,16 +150,52 @@ fn guarded(p: Problem, secs: u64) -> Result<fea_problem::solve::Solved, String> 
     rx.recv_timeout(Duration::from_secs(secs)).unwrap_or_else(|_| Err(format!("TIMEOUT after {secs} s")))
 }
 
+/// Past `F = P / (1 - Phi)` the interface opens and the bolt alone carries the pull: `T = F`, the upper bar unstressed (it moves as a
+/// rigid body by `F / k_b - P / k_m - P / k_b`), the lower bar unstressed, no contact force.
 #[test]
-fn release_reproducer() {
+fn a_pull_past_the_separation_load_is_carried_by_the_bolt_alone() {
     let preload = 1.0e4;
-    for factor in std::env::var("RELEASE_FACTORS").map(|v| v.split(',').map(|x| x.parse().unwrap()).collect()).unwrap_or(vec![0.95, 1.02]) {
-        let (mut p, c) = bolted_case(Some(0.0), 1.0, "M6", preload, 10.0, ElementChoice::Tri3);
-        let sep = preload / (1.0 - c.phi());
-        p.loads = vec![Load::Traction { edge: top(1), tx: 0.0, ty: 0.0, tz: factor * sep }];
-        let t0 = std::time::Instant::now();
-        let secs = std::env::var("RELEASE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
-        let r = guarded(p, secs);
-        eprintln!("RELEASE factor {factor}: {:?} in {:.1} s", r.as_ref().map(|s| s.summary.fasteners[0].tension).map_err(|e| e.chars().take(140).collect::<String>()), t0.elapsed().as_secs_f64());
+    for mu in [0.0, 0.3] {
+        for element in [ElementChoice::Tri3, ElementChoice::Tri6] {
+            for factor in [1.02, 1.2, 3.0] {
+                let (mut p, c) = bolted_case(Some(mu), 1.0, "M6", preload, 10.0, element);
+                let sep = preload / (1.0 - c.phi());
+                let pull = factor * sep;
+                p.loads = vec![Load::Traction { edge: top(1), tx: 0.0, ty: 0.0, tz: pull }];
+                let s = guarded(p, 120).unwrap_or_else(|e| panic!("mu {mu} {element:?} {factor} x separation: {e}"));
+                let what = format!("mu {mu} {element:?} {factor} x separation");
+                let f = &s.summary.fasteners[0];
+                // the contact solve stops at 1e-6 of its force scale, which is the size of the pull here: the measured error is 1.3e-6 at worst
+                assert!(rel(&format!("{what}: tension"), f.tension, pull) < 1e-5, "{what}: {f:?}");
+                // the upper bar is a rigid body moved by the bolt's elongation; the bolt is the small difference of terms of the same size
+                // A frictional pair carries an engaging overlap (`PairSetup::touch`, 5e-6 in these unit stacks, documented in `fea-problem/AGENTS.md`):
+                // its faces stay in contact until the gap reaches it, so the released bar sits that much farther out.
+                let overlap = if mu > 0.0 { 5.0e-6 } else { 0.0 };
+                let head = pull / c.k_b - preload / c.k_m - preload / c.k_b + overlap;
+                let (lo, hi) = uz_at(&s, 2.0);
+                let scale = pull / c.k_b;
+                eprintln!("{what}: head error {:.2e} / {:.2e} of F/k_b", (lo - head).abs() / scale, (hi - head).abs() / scale);
+                assert!((lo - head).abs() < 1e-5 * scale && (hi - head).abs() < 1e-5 * scale, "{what}: {lo:e} {hi:e} vs {head:e}");
+                let (lo, hi) = uz_at(&s, 1.0);
+                // z = 1 holds the lower bar's top (unstressed, at rest) and the upper bar's bottom (moved with it: a rigid body)
+                assert!(lo.abs() < 1e-5 * scale && (hi - head).abs() < 1e-5 * scale, "{what}: the lower bar's top is unstressed, the upper bar rigid: {lo:e} {hi:e} vs {head:e}");
+                let n = s.summary.contacts[0].normal_force;
+                assert!(n < 1e-6 * pull, "{what}: contact force {n:e}");
+                // the solve's own 1e-6 residual against a force scale (the pull) it is not exactly measured on: 1.3e-6 at worst
+                assert!(s.summary.equilibrium_error < 3e-6, "{what}: {}", s.summary.equilibrium_error);
+            }
+        }
     }
+}
+
+/// A bonded interface never separates: the bolt carries `P + Phi F` at any pull (the bonded penalty carries the rest).
+#[test]
+fn a_bonded_interface_carries_a_pull_past_the_separation_load_with_the_bolt_sharing_it() {
+    let preload = 1.0e4;
+    let (mut p, c) = bolted_case(None, 1.0, "M6", preload, 10.0, ElementChoice::Tri3);
+    let pull = 3.0 * preload / (1.0 - c.phi());
+    p.loads = vec![Load::Traction { edge: top(1), tx: 0.0, ty: 0.0, tz: pull }];
+    let s = guarded(p, 120).unwrap();
+    let f = &s.summary.fasteners[0];
+    assert!(rel("tension", f.tension, preload + c.phi() * pull) < 1e-5, "{f:?}");
 }
