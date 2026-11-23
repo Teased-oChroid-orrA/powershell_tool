@@ -9,9 +9,11 @@
 
 use super::model::BushingModel;
 use crate::theme::{StatusTone, Theme};
+use edge_check::estimate::{self, BoreFit, EstimateInput, EstimateOptions, LoadCase};
+use edge_check::matrix::LegacyEdge;
 use edge_check::models::default_models;
 use edge_check::runner::{run, Case, EdgeConfig, EdgeInput, EdgeMin, EdgeReport, TargetResult, TARGETS, TARGET_APPLIED, TARGET_BEARING};
-use edge_check::types::{BushingSpec, Geometry, Strengths};
+use edge_check::types::{BushingSpec, Strengths};
 use ratatui::text::{Line, Span};
 
 /// What a hover/click tooltip is about: one per check the Results pane shows.
@@ -242,34 +244,29 @@ pub fn is_stale_with(model: &BushingModel, settings: &EdgeSettings, run: &EdgeCh
     live_signature_with(model, settings, run.deep).as_ref() != Some(&(run.input.clone(), run.bushing, run.settings.clone()))
 }
 
-/// Builds the cross-check input from the live model, or says why it can't.
-pub fn build_input(model: &BushingModel) -> Result<EdgeInput, String> {
+/// The live model as the shared edge estimate wants it (`edge_check::estimate`).
+fn estimate_input(model: &BushingModel) -> EstimateInput {
     let out = &model.output;
     let a = out.bore_tol.nominal / 2.0;
-    let e = model.edge_dist;
     let t = if out.t_eff_seq > 0.0 { out.t_eff_seq } else { model.housing_len };
-    if a.is_nan() || a <= 0.0 || !out.pressure.is_finite() || !model.load.is_finite() {
-        return Err("bore diameter, contact pressure and load must be finite and positive".to_string());
+    EstimateInput {
+        bore_radius: a,
+        edge: model.edge_dist,
+        thickness: t,
+        plane_angle_deg: model.edge_load_angle_deg,
+        material: Strengths::from_material(model.housing_material()),
+        fit: bushing_spec(model).map_or(BoreFit::PressureOnly, BoreFit::Bushing),
+        load: LoadCase::PinTowardEdge { load: model.load },
+        fit_pressure: out.pressure,
+        fit_pressure_min: out.pressure_range.min,
+        fit_pressure_max: out.pressure_range.max,
+        legacy: Some(LegacyEdge { applied: out.ed_min_strength, bearing: out.ed_min_sequence }),
     }
-    if e.is_nan() || e <= a {
-        return Err("edge distance must exceed the bore radius".to_string());
-    }
-    if t.is_nan() || t <= 0.0 {
-        return Err("housing length must be positive".to_string());
-    }
-    // The stress models assume a plate wide enough that its other edges do
-    // not matter (the half-plane analytic model has none at all); the FE
-    // plate is sized to match: 3 e or 10 bore radii, whichever is larger.
-    let reach = (3.0 * e).max(10.0 * a);
-    let (p_lo, p_hi) = (out.pressure_range.min.max(0.0), out.pressure_range.max.max(0.0));
-    Ok(EdgeInput {
-        geom: Geometry { bore_radius: a, edge: e, thickness: t, plate_far: reach, plate_half_height: reach, plane_angle_deg: model.edge_load_angle_deg },
-        strengths: Strengths::from_material(model.housing_material()),
-        applied_load: model.load,
-        fit_pressure: out.pressure.max(0.0),
-        fit_pressure_min: p_lo,
-        fit_pressure_max: p_hi,
-    })
+}
+
+/// Builds the cross-check input from the live model, or says why it can't.
+pub fn build_input(model: &BushingModel) -> Result<EdgeInput, String> {
+    estimate::prepare(&estimate_input(model), &EstimateOptions::default()).map(|(input, _)| input)
 }
 
 /// The bushing as the contact model needs it, or `None` if the inputs do not
@@ -289,9 +286,8 @@ pub fn prepare(model: &BushingModel, deep: bool) -> Result<(EdgeInput, EdgeConfi
 }
 
 pub fn prepare_with(model: &BushingModel, settings: &EdgeSettings, deep: bool) -> Result<(EdgeInput, EdgeConfig), String> {
-    let input = build_input(model)?;
-    let cfg = EdgeConfig { include_plastic: deep, bushing: bushing_spec(model), strength_cv: settings.strength_cv, model_cvs: settings.model_cvs.clone(), ..EdgeConfig::default() };
-    Ok((input, cfg))
+    let opts = EstimateOptions { deep, strength_cv: Some(settings.strength_cv), model_cvs: settings.model_cvs.clone() };
+    estimate::prepare(&estimate_input(model), &opts)
 }
 
 /// Runs the models: ~0.3 s quick, ~3 s with the contact FE (`edge-check` is
@@ -547,8 +543,7 @@ pub fn section_lines_with<'a>(theme: &Theme, run: Option<&EdgeCheckRun>, stale: 
 /// The model-by-target matrix of a run: the contact FE as the best estimate, the solver's legacy check (which stays governing),
 /// the rest for comparison. Reads the run and the solver's output; changes neither.
 pub fn matrix(run: &EdgeCheckRun, model: &BushingModel) -> edge_check::matrix::EdgeMatrix {
-    let out = &model.output;
-    edge_check::matrix::EdgeMatrix::build(&run.report, Some(edge_check::matrix::LegacyEdge { applied: out.ed_min_strength, bearing: out.ed_min_sequence }))
+    edge_check::matrix::EdgeMatrix::build(&run.report, estimate_input(model).legacy)
 }
 
 /// Short row name of a matrix row.

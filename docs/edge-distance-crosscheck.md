@@ -133,6 +133,25 @@ beside the table. The matrix only reads the report; a test (`bushing/tests.rs`) 
 numbers and the margins are identical before and after a run. The native Bushing window draws it (`editor/bushing/edge_matrix.rs`);
 the window text quotes the validation numbers of the section below (a unit test keeps them equal to this doc).
 
+## The shared estimate (`edge_check::estimate`) and a bare pin in a hole
+
+One input, one output for every workbench with a hole near a free edge: `EstimateInput` (bore radius, edge distance, thickness, material strengths, the fit, the load case, the fit-pressure band, and the workbench's own legacy check if it has one) in, `EdgeEstimate { report, matrix }` out (`estimate()`; `prepare` / `execute` are the split the windows use to run on a worker thread). The Bushing window builds its input through it (`toolboxes/bushing/edge_check.rs::estimate_input`).
+
+* **`BoreFit::Pin`**: a pin or fastener in a bare hole, no bushing and no interference. The contact FE meshes the pin as the NACA TN 1503 validation does (`estimate::pin_spec`: a steel cylinder E 29e6, nu 0.30, loaded through a core of 0.4 a, no interference, friction 0 by default because the tests agree best with a frictionless pin). A test (`tests/estimate.rs`) checks the pin estimate at e/D 2.0 equals that validated solve to 1 %. A bare hole has no fit pressure: the stress models run with `p = 0`.
+* **`BoreFit::Bushing`** (the contact FE meshes the bushing; the fit is validated analytically only) and **`PressureOnly`** (the bushing is not described: no contact FE, the dead-load plastic plate model stands in on a deep run).
+* **Governing or advisory.** A workbench with its own legacy check passes it in and that row is governing. With none (`legacy: None`) every row is advisory (`EdgeMatrix::is_advisory()`), and a window must say so.
+* **Load case.** `LoadCase::PinTowardEdge`: a pin bearing on the bore, pulling toward the nearest free edge (worst case). A plate with a hole under remote tension is not supported yet (see the Fastener Hole work).
+
+## Fastener Hole and plate tension (plan and open question, 2026-11-22)
+
+**Case (a), a pin or fastener bearing toward the edge**, is what the shared estimate does today (`BoreFit::Pin`, `LoadCase::PinTowardEdge`). The Fastener Hole workbench has no load or material inputs and no plate thickness for a regular hole, so wiring it needs: an edge-strength section (housing material, plate thickness, pin load, pin-hole friction), the estimate run on a worker with the same stale / cancel behaviour as the Bushing window, and the shared matrix tables (`gpu_viewer/editor/bushing/edge_matrix.rs` to move to a shared place). Fastener Hole has no legacy edge check, so its matrix is **advisory** (`EdgeMatrix::is_advisory`): no row is governing, and the window says so.
+
+**Case (b), a plate with a hole near an edge under an axial plate load** (owner decisions, 2026-11-22):
+* **Geometry and load.** A finite plate or strip: inputs are plate width, edge distance, hole size, thickness, material and the **load angle (any angle)**.
+* **Two failure criteria, each its own labelled row of the matrix:** net-section strength across the ligament against `Ftu`, and first yield at the hole edge. A model that cannot compute one criterion shows that cell as *unavailable*, never a number.
+* **Which models can carry it.** The half-plane stress superposition (`analytic.rs`: one free edge, no far field) and the tabulated allowables (pin bearing and shear-out only) **cannot represent a finite strip at an angle**; they are shown as unavailable. The candidates are the plane-stress FE (`kfem.rs`, the same O-grid on `fea-core` with far and top faces, so a remote traction is possible) and the contact FE (an elastic-plastic plate with a hole when there is no pin: a different use of it, unvalidated). What each is checked against is stated when it is built; the planned limiting check is the open-hole finite-width stress-concentration factor `Kt(d/W)` as the width grows and the edge distance goes to infinity (`Kt` to 3 for a hole in a wide plate, tension across it).
+* **Labels.** Fastener Hole has no legacy edge check: its matrix is advisory, no row governing.
+
 ## UI: advisory, tooltips, material data
 
 * **Advisory, not governing.** After a run, any non-stress model (tabulated allowables, plastic FE) whose

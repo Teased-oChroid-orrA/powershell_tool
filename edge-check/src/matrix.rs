@@ -171,6 +171,11 @@ impl EdgeMatrix {
         self.rows.iter().find(|r| r.role == Role::BestEstimate && r.error.is_none())
     }
 
+    /// No governing row: the workbench has no legacy check of its own, so every number here is advisory.
+    pub fn is_advisory(&self) -> bool {
+        self.governing().is_none()
+    }
+
     /// The governing row (the legacy check).
     pub fn governing(&self) -> Option<&MatrixRow> {
         self.rows.iter().find(|r| r.role == Role::Governing)
