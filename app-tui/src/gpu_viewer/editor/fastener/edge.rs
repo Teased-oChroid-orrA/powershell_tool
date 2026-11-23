@@ -53,13 +53,15 @@ pub struct EdgeInputs {
     pub case: LoadKind,
     /// Plate case: the strip's width, edge to edge, in.
     pub width: f64,
-    /// Plate case: the load direction against the strip axis, degrees; only 0 is defined.
+    /// Plate case: the load direction against the strip axis, degrees (0 along the strip, 90 all shear).
     pub angle_deg: f64,
+    /// Plate case: distance from the hole centre to the loaded end of the strip, in (at least the width).
+    pub arm: f64,
 }
 
 impl Default for EdgeInputs {
     fn default() -> Self {
-        Self { material: "al7075".into(), thickness: 0.125, load: 1000.0, friction: 0.0, case: LoadKind::PinBearing, width: 4.0, angle_deg: 0.0 }
+        Self { material: "al7075".into(), thickness: 0.125, load: 1000.0, friction: 0.0, case: LoadKind::PinBearing, width: 4.0, angle_deg: 0.0, arm: 4.0 }
     }
 }
 
@@ -70,6 +72,7 @@ pub enum EdgeField {
     Friction,
     Width,
     Angle,
+    Arm,
 }
 
 impl EdgeField {
@@ -77,7 +80,7 @@ impl EdgeField {
     pub fn of(case: LoadKind) -> &'static [EdgeField] {
         match case {
             LoadKind::PinBearing => &[EdgeField::Thickness, EdgeField::Load, EdgeField::Friction],
-            LoadKind::PlateAxial => &[EdgeField::Thickness, EdgeField::Load, EdgeField::Width, EdgeField::Angle],
+            LoadKind::PlateAxial => &[EdgeField::Thickness, EdgeField::Load, EdgeField::Width, EdgeField::Angle, EdgeField::Arm],
         }
     }
 
@@ -88,6 +91,7 @@ impl EdgeField {
             EdgeField::Friction => "Pin-hole friction",
             EdgeField::Width => "Plate width",
             EdgeField::Angle => "Load angle to the strip axis",
+            EdgeField::Arm => "Load distance from the hole",
         }
     }
     pub fn unit(self) -> &'static str {
@@ -97,6 +101,7 @@ impl EdgeField {
             EdgeField::Friction => "",
             EdgeField::Width => " in",
             EdgeField::Angle => " deg",
+            EdgeField::Arm => " in",
         }
     }
     pub fn hint(self) -> &'static str {
@@ -105,7 +110,8 @@ impl EdgeField {
             EdgeField::Load => "Pin case: the load the pin puts on the hole, pulling toward the nearest free edge (the worst case). Plate case: the axial load on the strip. Must not be negative.",
             EdgeField::Friction => "Coulomb coefficient between pin and hole, 0 to 1. The validation tests agree best with 0.",
             EdgeField::Width => "Strip width, edge to edge. The Edge Distance must not exceed half of it (the edge named is the nearer one).",
-            EdgeField::Angle => "Direction of the plate load against the strip axis. Only 0 (along the strip, parallel to the free edges) is defined; any other angle is reported as unavailable, not computed.",
+            EdgeField::Angle => "Direction of the plate load against the strip axis: 0 is along the strip (parallel to the free edges), 90 is all shear. The load is an inclined end load: its axial part is uniform, its transverse part parabolic, and the far end reacts both with the shear and the end moment. Both transverse directions are computed and the worse is shown.",
+            EdgeField::Arm => "Distance from the hole centre to the loaded end of the strip (the far, reacting end is as far on the other side). At least the plate width; it sets the moment at the hole, shear times this distance.",
         }
     }
     pub fn get(self, e: &EdgeInputs) -> f64 {
@@ -115,6 +121,7 @@ impl EdgeField {
             EdgeField::Friction => e.friction,
             EdgeField::Width => e.width,
             EdgeField::Angle => e.angle_deg,
+            EdgeField::Arm => e.arm,
         }
     }
     /// Sets the value, or says why it is not one.
@@ -124,7 +131,8 @@ impl EdgeField {
             EdgeField::Load => v.is_finite() && v >= 0.0,
             EdgeField::Friction => v.is_finite() && (0.0..=1.0).contains(&v),
             EdgeField::Width => v.is_finite() && v > 0.0,
-            EdgeField::Angle => v.is_finite() && v.abs() <= 90.0,
+            EdgeField::Angle => v.is_finite() && (0.0..=90.0).contains(&v),
+            EdgeField::Arm => v.is_finite() && v > 0.0,
         };
         if !ok {
             return Err(format!("{} not changed: {v} is out of range. {}", self.label(), self.hint()));
@@ -135,6 +143,7 @@ impl EdgeField {
             EdgeField::Friction => e.friction = v,
             EdgeField::Width => e.width = v,
             EdgeField::Angle => e.angle_deg = v,
+            EdgeField::Arm => e.arm = v,
         }
         Ok(())
     }
@@ -174,7 +183,7 @@ pub fn estimate_input(m: &FastenerHoleModel, e: &EdgeInputs) -> Result<EdgeCase,
             fit_pressure_max: 0.0,
             legacy: None,
         }),
-        LoadKind::PlateAxial => EdgeCase::Plate(PlateInput { bore_radius: diameter / 2.0, edge, width: e.width, thickness: e.thickness, material: Strengths::from_material(e.plate()), load: e.load, angle_deg: e.angle_deg }),
+        LoadKind::PlateAxial => EdgeCase::Plate(PlateInput { bore_radius: diameter / 2.0, edge, width: e.width, thickness: e.thickness, material: Strengths::from_material(e.plate()), load: e.load, angle_deg: e.angle_deg, arm: e.arm }),
     })
 }
 

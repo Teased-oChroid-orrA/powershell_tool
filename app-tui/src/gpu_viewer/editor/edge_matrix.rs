@@ -109,7 +109,7 @@ pub(in crate::gpu_viewer::editor) fn plate_items(est: &PlateEstimate, input: &Pl
         })
         .collect();
     let short = m.rows.iter().any(|r| r.cells.iter().flatten().flatten().any(|c| c.short));
-    let mut out = vec![dim(format!("Minimum e/D that carries {:.0} lbf along a strip {:.3} in wide, at the nominal geometry. The edge named is the nearer one (e at most half the width).", input.load, input.width))];
+    let mut out = vec![dim(format!("Minimum e/D that carries {:.0} lbf at {:.1} deg to a strip {:.3} in wide, at the nominal geometry. The edge named is the nearer one (e at most half the width).", input.load, input.angle_deg, input.width))];
     out.push(DockItem::Table(Box::new(DockTable {
         columns: vec![Column::new("Model", 3.4), Column::new("Net section", 1.7).right(), Column::new("First yield", 1.7).right()],
         rows,
@@ -124,7 +124,12 @@ pub(in crate::gpu_viewer::editor) fn plate_items(est: &PlateEstimate, input: &Pl
     if let Some(n) = &est.numbers {
         out.push(dim(format!("Plane-stress FE carries {:.0} lbf before the ligament's mean stress reaches Ftu (net section) and {:.0} lbf before the peak stress at the hole edge reaches the yield strength; the peak is {:.2} times the gross stress.", n.net_section_capacity, n.first_yield_capacity, n.kt_gross)));
     }
+    out.push(dim(if input.angle_deg > 1e-9 {
+        format!("Load and reactions: the load acts on the strip's end {:.2} in from the hole: its axial part {:.0} lbf is uniform, its transverse part {:.0} lbf is a parabolic shear. The far end, as far on the other side, reacts both and the end moment that balances the couple of the two shears, so the section through the hole carries the axial part, the shear and the moment {:.0} lbf in. The transverse direction toward or away from the near edge is not given: both are computed and the worse is shown.", input.arm, input.load * input.angle_deg.to_radians().cos(), input.load * input.angle_deg.to_radians().sin(), input.load * input.angle_deg.to_radians().sin() * input.arm)
+    } else {
+        "Load and reactions: a uniform axial load on the strip's ends, no shear and no moment (0 degrees).".to_string()
+    }));
     out.push(dim("Advisory: no legacy edge check exists for a plate load, so no row is governing and none decides a pass or fail. Net section is the mean stress across the ligament between the hole and the edge against Ftu; first yield is the peak elastic von Mises stress on the bore and the free edge against Sy.".into()));
-    out.push(dim("What the plane-stress FE has been checked against: limiting cases only, no test data. A hole far from every edge gives the open-hole stress concentration of 3 within 3 %, a centred hole in a finite strip matches the published net-section stress concentration within 3 %, and the net-section stress of a centred hole equals the section equilibrium within 1 %. Elastic, small strain, plane stress: no hardening, no fracture, no bearing.".into()));
+    out.push(dim("What the plane-stress FE has been checked against: limiting cases only, no test data. A hole far from every edge gives the open-hole stress concentration of 3 within 3 %, a centred hole in a finite strip matches the published net-section stress concentration within 3 %, the net-section stress of a centred hole equals the section equilibrium within 1 %, and a tiny hole under the shear and moment gives the beam bending and shear stresses of the section within 5 %. Elastic, small strain, plane stress: no hardening, no fracture, no bearing.".into()));
     out
 }
