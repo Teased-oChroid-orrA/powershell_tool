@@ -9,7 +9,7 @@ use crate::gpu_viewer::{
     ui::DockItem,
 };
 use crate::toolboxes::bushing::edge_check::{matrix_name, EdgeCheckRun};
-use edge_check::matrix::{EdgeMatrix, MatrixRow, Role, LEVELS, TARGET_LABELS, VALIDATION};
+use edge_check::matrix::{EdgeMatrix, MatrixRow, Role, BRACKET_3D, LEVELS, TARGET_LABELS, VALIDATION};
 
 fn text(t: impl Into<String>, tone: Tone) -> Cell {
     Cell::Text { text: t.into(), tone, action: None, editing: false }
@@ -73,6 +73,7 @@ pub(super) fn items(m: &EdgeMatrix, run: &EdgeCheckRun) -> Vec<DockItem> {
     }
     out.push(dim("Governing: the legacy solver check decides PASS / REVIEW. This table never changes it. Best estimate: the contact FE is the closest to what the joint does, but it stays advisory until it is correlated with edge-distance test data and the plane-strain assumption is bracketed by a 3D check.".into()));
     out.push(dim(format!("{VALIDATION} Further validation and its limits: docs/edge-distance-crosscheck.md.")));
+    out.push(dim(BRACKET_3D.into()));
     let fy: Vec<String> = m.rows.iter().filter_map(|r| r.first_yield.map(|c| format!("{} {}", matrix_name(r), c.text()))).collect();
     if !fy.is_empty() {
         out.push(dim(format!("First yield at the applied load (informational), e/D: {}.", fy.join(", "))));
