@@ -45,7 +45,7 @@ fn table(m: &EdgeMatrix, t: usize) -> DockItem {
         columns,
         rows,
         add: None,
-        footer: format!("Actual e/D {:.2}. {}", m.actual, if short { "Amber: that check asks for more edge distance than the housing has." } else { "Every check is met at the actual edge distance." }),
+        footer: format!("Actual e/D {:.2}. {}", m.actual, if short { "Amber: that check asks for more edge distance than the actual e/D." } else { "Every check is met at the actual edge distance." }),
         footer_tone: Some(if short { Tone::Warn } else { Tone::On }),
         hint: String::new(),
     }))
@@ -65,7 +65,7 @@ pub(in crate::gpu_viewer::editor) fn items(m: &EdgeMatrix, r: &EdgeReport) -> Ve
     match m.best_estimate() {
         Some(b) => {
             let cell = |t: usize, l: usize| b.cells[t][l].map(|c| c.text()).unwrap_or_else(|| "-".into());
-            out.push(DockItem::text(format!("Best estimate (contact FE): bearing limit needs e/D {} nominal, {} at P99; applied load {} nominal, {} at P99. The housing has {:.2}.", cell(1, 0), cell(1, 3), cell(0, 0), cell(0, 3), m.actual), Tone::Title));
+            out.push(DockItem::text(format!("Best estimate (contact FE): bearing limit needs e/D {} nominal, {} at P99; applied load {} nominal, {} at P99. The actual e/D is {:.2}.", cell(1, 0), cell(1, 3), cell(0, 0), cell(0, 3), m.actual), Tone::Title));
         }
         None => out.push(dim("Best estimate: not run. Use \"Run with contact FE\" below; the contact FE meshes the pin or bushing and the plate together.".into())),
     }

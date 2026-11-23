@@ -193,7 +193,7 @@ impl FastenerSession {
     /// has no legacy edge check).
     fn edge_card(&self) -> Card {
         let mut items = vec![line("A pin or fastener in the first hole, pulling toward the free edge. Uses the hole's nominal diameter and the nominal Edge Distance. The contact FE meshes the pin and the plate; the stress models and the tabulated allowables run beside it.", Tone::Dim)];
-        items.push(DockItem::field("Plate material", format!("{} (click for the next)", self.edge.plate().name), Tone::Normal, Some(act(FastenerAct::EdgeMaterial)), false));
+        items.push(DockItem::field("Plate material", self.edge.plate().name.to_string(), Tone::Normal, Some(act(FastenerAct::EdgeMaterial)), false));
         for f in edge::EdgeField::ALL {
             let editing = self.prompt.as_ref().filter(|p| p.target == super::Target::Edge(f));
             let text = editing.map_or_else(|| format!("{}{}", model::format_for_edit(f.get(&self.edge)), f.unit()), |p| format!("{}_", p.text));
