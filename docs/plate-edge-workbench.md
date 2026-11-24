@@ -51,7 +51,7 @@ edge (about two hole diameters past the hole, two above and two below the load l
 same frame (`scene::Frame`), so the view does not jump when a result replaces the picture. Before a run the plate carries the
 pin, the free edge, both dashed shear-out planes (tangents to the hole toward the edge), the edge dimension `e` under the hole
 and labels for `e`, `D`, the planes and the free edge; the load arrow `P` (pin toward the free edge) runs along the middle
-before and after. The result is drawn with the deformation to scale (the automatic gain exaggerated it about five times, which
+before and after. In a result the pin is drawn as a filled disc in the key's pin colour at its travelled position (`OverlayKind::Disc`: the contour's colours have no neutral one), with the caption "pin travel 0.1 D: the hole elongates toward the edge", so the deformed hole reads as the pin plus the open crescent behind it and not as a second hole. The result is drawn with the deformation to scale (the automatic gain exaggerated it about five times, which
 made the hole look larger than in the picture); the gain keys still scale it. The frame is fitted to the viewport height, so a
 viewport narrower than about 0.6 of its height crops the sides: the snapshots use a 1500 x 1500 window. Snapshots:
 `plate_edge_snapshot` in `render/snapshot_tests/fit_workbenches.rs`. The live window was not run in this environment (a screen

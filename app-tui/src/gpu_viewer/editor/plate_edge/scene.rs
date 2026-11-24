@@ -168,18 +168,30 @@ fn picture(inputs: &PlateEdgeInputs, name: &str) -> Result<Scene, String> {
     Ok(scene)
 }
 
-/// Flat shapes in front of the plate, appended to the scene (one frame: a sample per vertex).
+/// Flat shapes in front of the plate, appended to the scene. Their vertices do not move: `finish` gives each a zero
+/// displacement and its colour code in every frame of the scene (samples are frame-major).
 struct Ink<'a> {
     scene: &'a mut Scene,
     f: &'a Frame,
+    /// Colour code of each appended vertex.
+    codes: Vec<f32>,
 }
 
-impl Ink<'_> {
+impl<'a> Ink<'a> {
+    fn new(scene: &'a mut Scene, f: &'a Frame) -> Self {
+        Self { scene, f, codes: Vec::new() }
+    }
     fn vertex(&mut self, p: [f64; 2], code: f32) -> u32 {
         let [x, y] = self.f.xy(p[0], p[1]);
         self.scene.positions.push([x, y, -LIFT]);
-        self.scene.samples.push([0.0, 0.0, 0.0, code]);
+        self.codes.push(code);
         (self.scene.positions.len() - 1) as u32
+    }
+    fn finish(self) {
+        let (scene, k) = (self.scene, self.codes.len());
+        let n = scene.positions.len() - k;
+        let old = std::mem::take(&mut scene.samples);
+        scene.samples = (0..scene.times.len()).flat_map(|f| old[f * n..(f + 1) * n].iter().copied().chain(self.codes.iter().map(|&c| [0.0, 0.0, 0.0, c])).collect::<Vec<_>>()).collect();
     }
     fn triangle(&mut self, a: [f64; 2], b: [f64; 2], c: [f64; 2], code: f32) {
         let ids = [self.vertex(a, code), self.vertex(b, code), self.vertex(c, code)];
@@ -234,7 +246,7 @@ fn draw_annotations(scene: &mut Scene, f: &Frame, inputs: &PlateEdgeInputs) {
     let r = 0.5 * d;
     let (rp, cx) = f.pin(inputs.pin_diameter());
     let top = 2.2 * d;
-    let mut ink = Ink { scene, f };
+    let mut ink = Ink::new(scene, f);
     ink.disc([cx, 0.0], rp, PIN);
     ink.bar([-e, -top], [-e, top], EDGE);
     for side in [r, -r] {
@@ -248,6 +260,15 @@ fn draw_annotations(scene: &mut Scene, f: &Frame, inputs: &PlateEdgeInputs) {
     let head = (0.3 * d).min(0.4 * e);
     ink.arrow_head([-e, y], [-1.0, 0.0], head, EDGE);
     ink.arrow_head([0.0, y], [1.0, 0.0], head, EDGE);
+    ink.finish();
+}
+
+/// The pin of a result as the window draws it (an `OverlayKind::Disc`, the contour's colours cannot show a neutral one): it
+/// started touching the loaded side of the hole and moved `0.1 D` toward the free edge, so the deformed hole reads as the pin
+/// and the open crescent behind it, not as a second hole. Its centre on the load line (model x) and its radius.
+pub fn pin_disc(f: &Frame, pin_dia: f64) -> (f64, f64) {
+    let (rp, cx) = f.pin(pin_dia);
+    (cx - lug_solver::bracket::D_OVER_D * f.d, rp)
 }
 
 /// Where the edge dimension runs: under the hole.

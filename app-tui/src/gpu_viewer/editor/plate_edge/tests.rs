@@ -433,3 +433,42 @@ fn the_drawing_mirrors_the_half_model_into_a_whole_plate_with_a_circular_hole() 
     }
     assert!(after.validate().is_ok());
 }
+
+/// The result shows the pin: a filled disc of the pin's radius at its travelled position (the hole's centre moved 0.1 D toward
+/// the free edge), so the deformed hole reads as pin plus open crescent, not as a second hole.
+#[test]
+fn the_result_draws_the_pin_at_its_travelled_position() {
+    use crate::gpu_viewer::editor::authoring::OverlayKind;
+    use crate::gpu_viewer::editor::camera::Camera;
+    let (mut s, _) = after_a_2d_run();
+    let _ = s.scene().unwrap();
+    let f = scene::Frame::of(&s.inputs);
+    let pin_dia = s.inputs.pin_diameter();
+    let (centre, radius) = scene::pin_disc(&f, pin_dia);
+    let (r_start, c_start) = f.pin(pin_dia);
+    assert!((radius - 0.5 * pin_dia).abs() < 1e-12 && (radius - r_start).abs() < 1e-12, "the radius is the pin's");
+    assert!(((c_start - centre) - 0.1 * f.d).abs() < 1e-12, "the pin moved 0.1 D from its start, toward the edge");
+    // The drawn disc: centred on the travelled position and as large as the pin, in the window's pixels.
+    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.5, pan: [0.0, 0.0] };
+    let size = [900.0, 600.0];
+    let px = |x: f64| {
+        let (ndc, _) = cam.project(f.point(x, 0.0));
+        Camera::pixel(ndc, size[0], size[1])
+    };
+    let discs: Vec<_> = Authoring::overlay(&s, &cam, size).into_iter().filter(|o| o.kind == OverlayKind::Disc).collect();
+    assert_eq!(discs.len(), 1, "one pin");
+    let (d, tip) = (&discs[0], discs[0].tip.unwrap());
+    assert!((d.px[0] - px(centre)[0]).abs() < 1e-3 && (d.px[1] - px(centre)[1]).abs() < 1e-3, "centred on the travelled pin: {:?}", d.px);
+    let r_px = (tip[0] - d.px[0]).hypot(tip[1] - d.px[1]);
+    assert!((r_px - (px(centre + radius)[0] - px(centre)[0]).abs()).abs() < 1e-3, "the radius is the pin's: {r_px}");
+    // Against the original hole centre it is offset by the clearance and the travel: (r - rp) + 0.1 D toward the edge.
+    let offset = px(0.0)[0] - d.px[0];
+    let want = px(0.0)[0] - px(-(0.5 * f.d - radius) - 0.1 * f.d)[0];
+    assert!((offset - want).abs() < 1e-3 && offset > 0.0, "offset {offset} px, expected {want}");
+    // The picture before a run draws no travelled pin (its pin is in the scene), and the captions follow the state.
+    let open = session();
+    assert!(Authoring::overlay(&open, &cam, size).iter().all(|o| o.kind != OverlayKind::Disc));
+    let texts = |v: &[crate::gpu_viewer::editor::authoring::Overlay]| v.iter().filter(|o| o.kind == OverlayKind::Dimension).map(|o| o.text.clone()).collect::<Vec<_>>();
+    assert!(texts(&Authoring::overlay(&s, &cam, size)).iter().any(|t| t == PIN_TRAVEL));
+    assert!(!texts(&Authoring::overlay(&open, &cam, size)).iter().any(|t| t == PIN_TRAVEL));
+}

@@ -26,6 +26,8 @@ use crate::gpu_viewer::{
 use inputs::{Field, PlateEdgeInputs};
 
 /// The caption of the picture: the solve is on half the plate, the drawing mirrors it.
+/// The result's caption: what the picture shows of the pin and the hole.
+pub(crate) const PIN_TRAVEL: &str = "pin travel 0.1 D: the hole elongates toward the edge";
 pub(crate) const HALF_MODEL: &str = "solved on half, mirrored about the load line";
 use std::path::{Path, PathBuf};
 
@@ -398,13 +400,22 @@ impl Authoring for PlateEdgeSession {
         };
         let below = |p: [f32; 2], dy: f32| [p[0], p[1] + dy];
         let r = 0.5 * f.d;
-        let (_, cx) = f.pin(self.inputs.pin_diameter());
+        // The pin as drawn: at its start before a result, at its travelled position after one.
+        let cx = if self.shows_result() { scene::pin_disc(&f, self.inputs.pin_diameter()).0 } else { f.pin(self.inputs.pin_diameter()).1 };
         // The load: the pin is pulled along the load line toward the free edge.
         let reach = (r + 0.9 * f.d).min(0.85 * f.e);
-        let mut out = vec![Overlay { px: px(cx, 0.0), text: "P".into(), kind: OverlayKind::Load, tip: Some(px(-reach, 0.0)) }];
+        let mut out = Vec::new();
+        if self.shows_result() {
+            // Under the load arrow: the pin as a filled disc at its travelled position.
+            let (centre, rp) = scene::pin_disc(&f, self.inputs.pin_diameter());
+            out.push(Overlay { px: px(centre, 0.0), text: String::new(), kind: OverlayKind::Disc, tip: Some(px(centre + rp, 0.0)) });
+        }
+        out.push(Overlay { px: px(cx, 0.0), text: "P".into(), kind: OverlayKind::Load, tip: Some(px(-reach, 0.0)) });
         // The solve is on half the plate; the drawing mirrors it: say so.
         out.push(Overlay { px: below(px(-0.5 * f.e, scene::dimension_y(f.d)), 52.0), text: HALF_MODEL.into(), kind: OverlayKind::Dimension, tip: None });
-        if !self.shows_result() {
+        if self.shows_result() {
+            out.push(Overlay { px: below(px(-0.5 * f.e, scene::dimension_y(f.d)), 82.0), text: PIN_TRAVEL.into(), kind: OverlayKind::Dimension, tip: None });
+        } else {
             let boxed = |p: [f32; 2], text: String| Overlay { px: p, text, kind: OverlayKind::Dimension, tip: None };
             out.push(boxed(below(px(-0.5 * f.e, scene::dimension_y(f.d)), 22.0), format!("e = {:.3} in   e/D {:.2}", f.e, f.e / f.d)));
             out.push(boxed(below(px(0.0, r), -20.0), format!("D {:.4} in", f.d)));
