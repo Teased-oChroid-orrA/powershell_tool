@@ -20,6 +20,11 @@ toolbench-debug.log*
 *.fea.previous.json
 *.fea.link.json
 *.json.open
+# Autosave, backup, lock and report files the workbenches write beside the case file
+*.recovery.json
+*.previous.json
+*.window.lock
+/fastener-hole-case.report.txt
 
 # Local release qualification evidence
 /qualification.json
