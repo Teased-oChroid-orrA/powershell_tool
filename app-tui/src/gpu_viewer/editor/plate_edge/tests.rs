@@ -550,7 +550,9 @@ fn the_result_draws_the_pin_at_its_travelled_position() {
 
 /// Every text and circle the window painted in one frame at 1500 x 1000 with the editor's overlays on: `(text, right edge, y)`
 /// of each text, `(centre, radius, colour)` of each circle.
+#[cfg(feature = "gpu-viewer")]
 type Painted = (Vec<(String, f32, f32)>, Vec<(egui::Pos2, f32, egui::Color32)>);
+#[cfg(feature = "gpu-viewer")]
 fn paint_window(s: &mut PlateEdgeSession) -> Painted {
     use crate::gpu_viewer::{controller::ViewState, editor::camera::Camera, gui::Gui, results::GuiInput};
     use egui::epaint::Shape;
@@ -582,6 +584,7 @@ fn paint_window(s: &mut PlateEdgeSession) -> Painted {
     out
 }
 
+#[cfg(feature = "gpu-viewer")]
 #[test]
 fn the_workbench_window_paints_the_pin_disc_and_the_plate_captions_over_the_view() {
     let (mut s, _) = after_a_2d_run();
@@ -595,6 +598,7 @@ fn the_workbench_window_paints_the_pin_disc_and_the_plate_captions_over_the_view
     assert!(circles.iter().any(|(_, r, _)| *r > 8.0), "no pin disc painted: {circles:?}");
 }
 
+#[cfg(feature = "gpu-viewer")]
 #[test]
 fn the_allowables_heads_sit_over_the_right_edge_of_their_figures() {
     let (mut s, _) = after_a_2d_run();
