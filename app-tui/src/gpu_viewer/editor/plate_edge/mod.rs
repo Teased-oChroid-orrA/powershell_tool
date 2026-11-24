@@ -12,7 +12,7 @@ pub mod run;
 mod scene;
 
 use super::{
-    authoring::{Authoring, Card},
+    authoring::{Authoring, Card, Overlay, OverlayKind},
     camera::Camera,
     session::{EditorAction, Key, KeyResult, Mods},
 };
@@ -386,6 +386,27 @@ impl Authoring for PlateEdgeSession {
     }
     fn needs_scene(&self) -> bool {
         !self.drawn
+    }
+    fn overlay(&self, cam: &Camera, size: [f32; 2]) -> Vec<Overlay> {
+        let f = scene::Frame::of(&self.inputs);
+        let px = |x: f64, y: f64| {
+            let (ndc, _) = cam.project(f.point(x, y));
+            Camera::pixel(ndc, size[0], size[1])
+        };
+        let below = |p: [f32; 2], dy: f32| [p[0], p[1] + dy];
+        let r = 0.5 * f.d;
+        let (_, cx) = f.pin(self.inputs.pin_diameter());
+        // The load: the pin is pulled along the load line toward the free edge.
+        let reach = (r + 0.9 * f.d).min(0.85 * f.e);
+        let mut out = vec![Overlay { px: px(cx, 0.0), text: "P".into(), kind: OverlayKind::Load, tip: Some(px(-reach, 0.0)) }];
+        if !self.shows_result() {
+            let boxed = |p: [f32; 2], text: String| Overlay { px: p, text, kind: OverlayKind::Dimension, tip: None };
+            out.push(boxed(below(px(-0.5 * f.e, scene::dimension_y(f.d)), 22.0), format!("e = {:.3} in   e/D {:.2}", f.e, f.e / f.d)));
+            out.push(boxed(below(px(0.0, r), -20.0), format!("D {:.4} in", f.d)));
+            out.push(boxed(below(px(-0.5 * f.e, r), -14.0), "shear-out planes".into()));
+            out.push(boxed(below(px(-f.e, 2.0 * f.d), 0.0), "free edge".into()));
+        }
+        out
     }
     fn geometry_view(&self) -> bool {
         !self.shows_result()

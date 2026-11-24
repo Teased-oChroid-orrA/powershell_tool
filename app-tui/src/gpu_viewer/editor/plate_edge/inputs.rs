@@ -521,6 +521,7 @@ impl PlateEdgeInputs {
         Ok(Case {
             dia: d,
             pin_clearance: (d - self.pin_diameter()).max(0.0),
+            pin_mu: self.friction,
             ed: self.edge / d,
             td: self.thickness / d,
             width: 2.0 * reach,

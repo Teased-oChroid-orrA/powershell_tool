@@ -40,7 +40,7 @@ fn run(case: Case, ideal: Idealisation) -> Out {
 fn naca(ftu: f64, fty: f64, fbru_15: f64, fbru_20: f64, ed: f64, td: f64, around: usize) -> Case {
     let (e, nu) = (10.4e6, 0.33);
     let flow = flow_stress(&Strengths { e, nu, sy: fty, fsu: 0.6 * ftu, ftu, fbru: fbru_20, fbru_e15: fbru_15 });
-    Case { dia: D, pin_clearance: NACA_PIN_CLEARANCE, ed, td, width: 2.0, length: 5.0, around, housing: Housing { e, nu, flow, law: None }, bush: None }
+    Case { dia: D, pin_clearance: NACA_PIN_CLEARANCE, pin_mu: 0.0, ed, td, width: 2.0, length: 5.0, around, housing: Housing { e, nu, flow, law: None }, bush: None }
 }
 
 /// The same specimen with the bar's own hardening: Ramberg-Osgood through `Fty` and `Ftu` at the uniform elongation
@@ -64,6 +64,7 @@ fn default_bushing(ed: f64, td: f64, around: usize) -> Case {
     Case {
         dia: D,
         pin_clearance: NACA_PIN_CLEARANCE,
+        pin_mu: 0.0,
         ed,
         td,
         width: 2.0 * reach,
@@ -105,6 +106,18 @@ fn the_2d_driver_equals_fealugs_limit_load_run() {
     let ours = run(c, Idealisation::Strain).at_limit();
     eprintln!("FeaLug limit_load_axial {theirs:.1} lbf, this driver {ours:.1} lbf ({:+.4} %)", pct(ours, theirs));
     assert!((ours / theirs - 1.0).abs() < 1e-3);
+}
+
+/// Pin-hole friction reaches the pin contact of an unbushed case: it raises the load at the same travel (the pin drags the
+/// bore material along as well as pushing it), and `pin_mu = 0` is the frictionless run of every recorded number.
+#[test]
+fn pin_hole_friction_raises_the_collapse_load_and_zero_friction_is_unchanged() {
+    let c = naca_75s(1.5, 0.5, 36);
+    let free = run(c, Idealisation::Strain).at_limit();
+    let rough = run(Case { pin_mu: 0.12, ..c }, Idealisation::Strain).at_limit();
+    eprintln!("plane strain collapse: frictionless {free:.1} lbf, friction 0.12 {rough:.1} lbf ({:+.2} %)", pct(rough, free));
+    assert!(rough > free * 1.01, "friction must carry load: {rough:.0} vs {free:.0}");
+    assert!(rough < free * 1.15, "friction {rough:.0} vs {free:.0} is out of the expected few-percent range");
 }
 
 /// A thin plate has no through-thickness constraint: the 3D answer approaches plane stress as `t/D -> 0`.

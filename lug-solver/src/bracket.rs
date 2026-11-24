@@ -54,6 +54,8 @@ pub struct Case {
     pub dia: f64,
     /// Diametral clearance of an unbushed pin (its diameter is `dia - pin_clearance`; the NACA tests used 0.0004 in on a 0.5 in hole).
     pub pin_clearance: f64,
+    /// Coulomb friction of the rigid pin on the bore of an unbushed hole (0 = frictionless; a bushed case uses the bushing's `mu` for its fit and keeps its pin frictionless).
+    pub pin_mu: f64,
     /// Edge distance over hole diameter.
     pub ed: f64,
     /// Thickness over hole diameter.
@@ -383,7 +385,11 @@ pub fn try_run(case: Case, ideal: Idealisation, cancel: Option<Arc<AtomicBool>>)
     let master = RigidMaster { shift: [-(r_left - r_pin), 0.0, 0.0], ..RigidMaster::new(shape).with_travel([-cap, 0.0, 0.0]) };
     let tune = Tuning::collapse();
     let eps_n = tune.eps_n(case.housing.e, a_contact);
-    let mut specs = vec![ContactSpec::rigid("pin", model.mesh.surfaces["bore"].clone(), master, eps_n).with_rule(ContactRule::Reduced)];
+    let mut pin_spec = ContactSpec::rigid("pin", model.mesh.surfaces["bore"].clone(), master, eps_n).with_rule(ContactRule::Reduced);
+    if case.pin_mu > 0.0 && !bushed {
+        pin_spec = pin_spec.with_friction(case.pin_mu, fea_core::fit::EPS_T_RATIO * eps_n);
+    }
+    let mut specs = vec![pin_spec];
     specs.extend(fit_specs(eps_n));
     let steps = ((cap / (tune.step_fraction * a_contact)).ceil() as usize).clamp(6, 80);
     let start = fit_nl.as_ref().map(|nl| start_after_fit(nl, 1));
