@@ -33,5 +33,8 @@ fn picture(inputs: &PlateEdgeInputs, name: &str) -> Result<Scene, String> {
     let r = 0.5 * case.dia;
     let values: Vec<f64> = mesh.nodes.iter().map(|p| if p[0].hypot(p[1]) < r * (1.0 + 1e-6) { 1.0 } else { 0.0 }).collect();
     let n = mesh.nodes.len();
-    SceneSource { mesh: Arc::new(mesh), displacement: vec![0.0; 3 * n], values, period: None, label: format!("{name} | a quarter of the plate, hole {:.4} in, edge {:.3} in", case.dia, inputs.edge), field_label: "part (see color key)".into(), fields: Vec::new() }.build()
+    let mut scene = SceneSource { mesh: Arc::new(mesh), displacement: vec![0.0; 3 * n], values, period: None, label: format!("{name} | a quarter of the plate, hole {:.4} in, edge {:.3} in", case.dia, inputs.edge), field_label: "part (see color key)".into(), fields: Vec::new() }.build()?;
+    // The geometry view reads the values as the colour key's codes 0..3 (plate, hole wall, ...), not as a contour.
+    scene.range = [0.0, 3.0];
+    Ok(scene)
 }

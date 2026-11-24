@@ -22,6 +22,7 @@ Does not own: the legacy `Fbru + 0.8 p` check (stays in `bushing-solver/src/solv
 | The shared estimate every workbench calls (`EstimateInput` -> `EdgeEstimate`; bare pin / bushing; advisory or governing) | `src/estimate.rs` (`tests/estimate.rs`) |
 | Plate with a hole near an edge under an axial load (finite strip, net-section and first-yield criteria; other models unavailable with reasons) | `src/plate.rs` |
 | Model-by-target matrix with roles (best estimate / governing / comparison) for a UI | `src/matrix.rs` (`tests/matrix.rs`) |
+| Load allowables by failure mode for a pin near a free edge (bearing onset / ultimate, shear-out, tear-out, pin shear / bearing / bending, solid-pin fit pressure) for the Plate Edge workbench; per-mode capacities from `runner::mode_capacities` | `src/modes.rs` (`tests/modes.rs`) |
 | Proof the models are right | `tests/verification.rs`, unit tests in `analytic.rs`/`fem.rs` |
 
 ## Contracts

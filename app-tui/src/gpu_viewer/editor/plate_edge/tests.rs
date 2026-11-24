@@ -150,13 +150,11 @@ fn a_saved_case_reopens_with_its_inputs_and_the_report_is_written_beside_it() {
 fn a_two_d_run_adds_the_fe_and_goes_stale_when_an_input_changes() {
     let mut s = session();
     wait(&mut s);
-    s.act(EditorAction::PlateEdge(PlateEdgeAct::Cycle(Choice::Fit)));
-    s.act(EditorAction::PlateEdge(PlateEdgeAct::Cycle(Choice::Fit)));
-    s.act(EditorAction::PlateEdge(PlateEdgeAct::Cycle(Choice::Fit)));
-    s.act(EditorAction::PlateEdge(PlateEdgeAct::Cycle(Choice::Fit)));
-    assert_eq!(s.inputs.fit, inputs::FitKind::PressFit, "four cycles return to the start");
-    s.act(EditorAction::PlateEdge(PlateEdgeAct::Cycle(Choice::Fit)));
-    s.act(EditorAction::PlateEdge(PlateEdgeAct::Cycle(Choice::Fit))); // Interference, then Custom
+    // Four presses of the fit choice come back to the start.
+    for _ in 0..4 {
+        s.act(EditorAction::PlateEdge(PlateEdgeAct::Cycle(Choice::Fit)));
+    }
+    assert_eq!(s.inputs.fit, inputs::FitKind::PressFit);
     s.inputs.fit = inputs::FitKind::Clearance;
     s.inputs.fit_value = 0.002;
     s.changed();
@@ -213,4 +211,36 @@ fn ribbon_tree_menus_and_cards_exist() {
         assert!(ids.iter().any(|i| i == want), "{want} in {ids:?}");
     }
     assert!(s.scene().is_ok(), "the plate is drawn before any run");
+}
+
+#[test]
+fn the_picture_is_a_filled_plate_spanning_the_geometry_and_the_hole() {
+    let mut s = session();
+    let scene = s.scene().unwrap();
+    let ext = |a: usize| scene.positions.iter().map(|p| p[a]).fold(f32::NEG_INFINITY, f32::max) - scene.positions.iter().map(|p| p[a]).fold(f32::INFINITY, f32::min);
+    eprintln!("tris {} positions {} extents {} {} {} samples range {:?}", scene.triangles.len() / 3, scene.positions.len(), ext(0), ext(1), ext(2), scene.range);
+    assert!(scene.triangles.len() >= 3 * 100, "a graded plate has hundreds of faces, got {}", scene.triangles.len() / 3);
+    assert!(ext(2) > 0.0, "the plate has thickness");
+}
+
+/// 2D plus the 3D solid end to end (about three minutes): the 3D line exists, is below plane strain (the recorded bracket),
+/// and its deformed model is what the window draws.
+#[test]
+#[ignore = "minutes: the 3D solid"]
+fn a_three_d_run_adds_the_solid_below_plane_strain_and_draws_it() {
+    let mut s = session();
+    s.inputs.fit = inputs::FitKind::Clearance;
+    s.inputs.fit_value = 0.002;
+    s.changed();
+    wait(&mut s);
+    s.act(EditorAction::PlateEdge(PlateEdgeAct::Run(run::Kind::ThreeD)));
+    wait(&mut s);
+    let o = s.outcome.as_ref().unwrap();
+    assert!(o.fe_note.is_none(), "{:?}", o.fe_note);
+    let get = |label: &str| o.lines.iter().find(|l| l.label == label).unwrap_or_else(|| panic!("no {label} line")).last().collapse;
+    let (strain, stress, solid) = (get("2D plane strain"), get("2D plane stress"), get("3D solid"));
+    eprintln!("plane strain {strain:.0}, plane stress {stress:.0}, 3D {solid:.0}");
+    assert!(stress < solid && solid < strain, "the 2D idealisations bracket the 3D answer");
+    assert_eq!(super::scene::pick_fields(o).map(|l| l.label), Some("3D solid"));
+    assert!(s.scene().is_ok() && s.shows_result());
 }

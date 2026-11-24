@@ -38,6 +38,14 @@ fn lb(v: f64) -> String {
 fn opt(v: Option<f64>) -> String {
     v.map_or_else(|| "-".into(), lb)
 }
+/// `s` cut to `n` characters with an ellipsis (the inspector clips a long value at its edge).
+fn short(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        format!("{}...", s.chars().take(n - 3).collect::<String>())
+    }
+}
 fn pct(v: f64) -> String {
     format!("{:.2} %", 100.0 * v)
 }
@@ -63,7 +71,7 @@ impl PlateEdgeSession {
     /// A library material row: a click types part of its name; Enter picks the first match, Enter again the next.
     fn material_row(&self, items: &mut Vec<DockItem>, label: &str, m: &mechanics_core::materials::Material, pick: Pick) {
         let editing = self.editing(Target::Search(pick));
-        let text = editing.map_or_else(|| m.name.to_string(), |p| format!("{}_", p.text));
+        let text = editing.map_or_else(|| short(m.name, 26), |p| format!("{}_", p.text));
         items.push(DockItem::field(label, text, if editing.is_some() { Tone::Warn } else { Tone::Normal }, Some(act(PlateEdgeAct::Search(pick))), editing.is_some()));
         if editing.is_some() {
             items.push(line("Type part of an alloy, temper or id (7075, 4340, T651), Enter picks the first match, Enter again the next.", Tone::Dim));
@@ -73,7 +81,7 @@ impl PlateEdgeSession {
     }
 
     pub(super) fn inspector_cards(&self) -> Vec<Card> {
-        let mut cards = vec![self.plate_card(), self.pin_card(), self.fit_card(), self.geometry_card(), self.mesh_card(), self.run_card()];
+        let mut cards = vec![self.plate_card(), self.pin_card(), self.fit_card(), self.geometry_card(), self.mesh_card(), self.run_card(), self.summary_card()];
         cards.extend(self.result_cards());
         cards
     }
@@ -210,6 +218,31 @@ impl PlateEdgeSession {
 
     // ------------------------------------------------------------------ results
 
+    /// The answer in one glance on the Inputs step: the governing mode and each FE collapse load (the full tables are on Results).
+    fn summary_card(&self) -> Card {
+        let mut items = Vec::new();
+        match self.outcome.as_ref().filter(|_| self.current()) {
+            None => items.push(line(if self.job.is_some() { "Computing..." } else { "Not computed yet." }, Tone::Dim)),
+            Some(o) => {
+                match o.modes.as_ref().ok().and_then(|m| m.governing.map(|g| &m.rows[g])) {
+                    Some(r) => {
+                        items.push(DockItem::field("Governing", r.label, Tone::On, None, false));
+                        items.push(DockItem::field("Allowable load", opt(r.lowest()), Tone::On, None, false));
+                    }
+                    None => items.push(line("No mode has a number: see Results.", Tone::Warn)),
+                }
+                for l in &o.lines {
+                    items.push(DockItem::field(l.label, format!("collapse {}", lb(l.last().collapse)), Tone::Normal, None, false));
+                }
+                if let Some(note) = &o.fe_note {
+                    items.push(line(format!("FE not run: {note}."), Tone::Warn));
+                }
+                items.push(line("Tables and the FE detail are on the Results step.", Tone::Dim));
+            }
+        }
+        Card::new("plate-edge-summary", "Answer", Relevance::Info, items).for_steps(&["Inputs"])
+    }
+
     fn result_cards(&self) -> Vec<Card> {
         let Some(o) = &self.outcome else {
             return vec![Card::new("plate-edge-allowables", "Allowable loads", Relevance::Info, vec![line("Not computed yet: enter a valid case.", Tone::Dim)]).for_steps(&["Results"])];
@@ -236,7 +269,10 @@ impl PlateEdgeSession {
             items.push(line("Inputs changed since this result; it is being recomputed.", Tone::Warn));
         }
         match m.governing.map(|g| &m.rows[g]) {
-            Some(r) => items.push(DockItem::field("Governing", format!("{}: {}", r.label, opt(r.lowest())), Tone::On, None, false)),
+            Some(r) => {
+                items.push(DockItem::field("Governing", r.label, Tone::On, None, false));
+                items.push(DockItem::field("Allowable load", opt(r.lowest()), Tone::On, None, false));
+            }
             None => items.push(line("No mode has a number: see the reasons below.", Tone::Warn)),
         }
         for group in [Group::Plate, Group::Pin] {

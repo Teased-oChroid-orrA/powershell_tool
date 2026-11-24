@@ -677,3 +677,57 @@ fn assembly_snapshot() {
         shoot(&mut r, &mut session, "assembly-unmated", true);
     });
 }
+
+/// The Plate Edge window after a 2D run (clearance fit): the inspector with the allowables and the solved model by
+/// plastic strain, wide and dark, plus the graded plate before any run in light:
+/// `FEA_SNAPSHOT_PLATE_EDGE_OUT=/dir cargo test ... plate_edge_snapshot -- --ignored`.
+#[test]
+#[ignore = "needs a graphics adapter and FEA_SNAPSHOT_PLATE_EDGE_OUT"]
+fn plate_edge_snapshot() {
+    use crate::gpu_viewer::editor::plate_edge::{inputs::{FitKind, PlateEdgeInputs}, run::Kind, PlateEdgeAct, PlateEdgeSession};
+    use crate::gpu_viewer::editor::session::EditorAction;
+    let Ok(dir) = std::env::var("FEA_SNAPSHOT_PLATE_EDGE_OUT") else {
+        return;
+    };
+    let _guard = headless_guard();
+    let wait = |s: &mut PlateEdgeSession| {
+        let t = std::time::Instant::now();
+        loop {
+            s.poll();
+            if !s.solving() && s.status() != "Computing the allowables..." {
+                break;
+            }
+            assert!(t.elapsed().as_secs() < 300);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    let mut inputs = PlateEdgeInputs::default();
+    inputs.fit = FitKind::Clearance;
+    inputs.fit_value = 0.002;
+    inputs.edge = 0.5;
+    for (name, run, dark) in [("plate-edge-run", true, true), ("plate-edge-light", false, false)] {
+        let mut session = PlateEdgeSession::new(inputs.clone(), "Plate edge".into(), std::env::temp_dir().join(format!("{name}-snapshot.json")));
+        wait(&mut session);
+        if run {
+            session.act(EditorAction::PlateEdge(PlateEdgeAct::Run(Kind::TwoD)));
+            wait(&mut session);
+        }
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let (w, h) = (1500u32, 1500u32);
+            let scene = session.scene().unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = target(&r, w, h);
+            let mut gui = Gui::new();
+            gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+            let mut view = ViewState::new(&scene);
+            view.style = crate::gpu_viewer::display::DisplayStyle::ShadedEdges;
+            view.show_mesh = true;
+            let scenes = [scene];
+            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+            draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+            std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+        });
+    }
+}

@@ -158,9 +158,9 @@ pub struct PinClass {
 
 /// Specification ratings (verify against the allowables of the program).
 pub const PIN_CLASSES: [PinClass; 3] = [
-    PinClass { label: "Alloy steel bolt, 160 ksi (NAS6200 series)", e_ksi: 29000.0, nu: 0.30, ftu_ksi: 160.0, fsu_ksi: 95.0 },
-    PinClass { label: "Alloy steel bolt, 180 ksi", e_ksi: 29000.0, nu: 0.30, ftu_ksi: 180.0, fsu_ksi: 108.0 },
-    PinClass { label: "A286 CRES bolt, 160 ksi (NAS6300 series)", e_ksi: 29100.0, nu: 0.31, ftu_ksi: 160.0, fsu_ksi: 95.0 },
+    PinClass { label: "Alloy steel 160 ksi (NAS6200)", e_ksi: 29000.0, nu: 0.30, ftu_ksi: 160.0, fsu_ksi: 95.0 },
+    PinClass { label: "Alloy steel 180 ksi", e_ksi: 29000.0, nu: 0.30, ftu_ksi: 180.0, fsu_ksi: 108.0 },
+    PinClass { label: "A286 CRES 160 ksi (NAS6300)", e_ksi: 29100.0, nu: 0.31, ftu_ksi: 160.0, fsu_ksi: 95.0 },
 ];
 
 /// Where the pin's strengths come from.
@@ -238,7 +238,7 @@ impl Default for PlateEdgeInputs {
     fn default() -> Self {
         Self {
             plate_source: Source::Library,
-            plate_material: "al7075".into(),
+            plate_material: "mh5:3.7.6.0b1#5".into(),
             plate_custom: CustomMaterial::default(),
             pin_source: PinSource::Class,
             pin_class: 0,
@@ -425,7 +425,9 @@ impl PlateEdgeInputs {
     /// The fastener size's designation and diameter (library pins).
     pub fn size_entry(&self) -> (&'static str, f64) {
         let all: Vec<_> = sizes().collect();
-        all[self.size.min(all.len() - 1)]
+        let (designation, dia) = all[self.size.min(all.len() - 1)];
+        // "NAS62xx/63xx/13xx-04 (.2500-28 UNJF-3A)": the thread is what a person reads.
+        (designation.split_once('(').map_or(designation, |(_, t)| t.trim_end_matches(')')), dia)
     }
     /// Pin diameter, in.
     pub fn pin_diameter(&self) -> f64 {

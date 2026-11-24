@@ -387,6 +387,9 @@ impl Authoring for PlateEdgeSession {
     fn needs_scene(&self) -> bool {
         !self.drawn
     }
+    fn geometry_view(&self) -> bool {
+        !self.shows_result()
+    }
     fn shows_result(&self) -> bool {
         self.current() && self.outcome.as_ref().is_some_and(|o| scene::pick_fields(o).is_some())
     }

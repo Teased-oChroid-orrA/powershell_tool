@@ -133,6 +133,7 @@ Per-toolbox nodes (read the one for the toolbox you are changing):
 |---|---|
 | Search Files | `src/toolboxes/search/AGENTS.md` |
 | Fastener Holes | `src/toolboxes/fastener_hole/AGENTS.md` |
+| Plate Edge (window-only: pin near a free edge, allowables by failure mode, 2D and 3D FE) | `src/gpu_viewer/editor/plate_edge/AGENTS.md` |
 | Bushing Workbench model (window-only) | `src/toolboxes/bushing/AGENTS.md`; window `src/gpu_viewer/editor/bushing/AGENTS.md` |
 | Pressure Vessel model (window-only) | `src/toolboxes/pressure_vessel/AGENTS.md`; window `src/gpu_viewer/editor/vessel/AGENTS.md` |
 | Preload Analysis model (window-only) | `src/toolboxes/preload_analysis/AGENTS.md`; window `src/gpu_viewer/editor/preload/AGENTS.md` |
