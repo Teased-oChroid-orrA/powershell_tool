@@ -179,7 +179,7 @@ pub struct Plot {
 pub struct Series {
     pub label: String,
     pub points: Vec<[f64; 2]>,
-    /// Which of the plot colours (0: accent, 1: warning, 2: good).
+    /// Which of the plot colours (0: accent, 1: warning, 2: good, 3: link, 4: bad).
     pub color: u8,
     pub dashed: bool,
 }

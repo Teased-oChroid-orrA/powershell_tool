@@ -26,8 +26,10 @@ Does not own: any mechanics (`edge-check/AGENTS.md`, `lug-solver/AGENTS.md`), th
 - Library strengths are read from `mechanics_core::materials`; `Fbry` comes from `MaterialExtras` (handbook entries only), so the curated typicals have no bearing-onset row until typed.
 
 - **Both views share one framing** (`scene::Frame::of(inputs)`: hole, ligament and free edge, about 2 D beyond the hole, `FILL` of the view). `reframe` maps the result scene onto it (positions, displacement samples and `gain`), so the camera does not jump when a result replaces the picture, and the overlay positions (`Frame::point`) stay valid for both.
+- **The result is drawn to scale** (`scene.gain = 1`): the automatic gain exaggerates the displacement several times and made the hole look larger than the picture's. The frame fits the viewport height (`Camera::project` divides x by the aspect), so tests and snapshots use a landscape camera or a 1500 x 1500 window, not a tall one. The caption `HALF_MODEL` (overlay) says only the upper half is modelled.
 - **Two collapse numbers, two names.** The allowables row "Collapse (contact FE, plane strain)" is `edge-check`'s own contact FE; the FE lines are "(FE bracket)" (`lug-solver`). They agree on the physics (rigid pin, `contact_model::flow_stress`, friction `PlateEdgeInputs::friction`, load at 0.1 D) and differ by discretisation and contact algorithm: measured gap in `docs/plate-edge-workbench.md`. Never merge them into one row.
 - **The pin-hole friction reaches the bracket** through `Case::pin_mu` (`picture_case` / `bracket_case` set it from the input). Before 2026-11-23 the bracket was frictionless although the input said 0.12.
+- **The plot's three lines use three palette colours** (`line_color`: accent, bad, good; the warm theme's other colours are too close) and plane stress is dashed; onset is a dot without a label, the key names the lines.
 - **Every FE line keeps its load-travel curve** (`Refinement::curve`); the plot and the "onset" marks read it. Do not recompute a curve in the cards.
 
 ## Pitfalls

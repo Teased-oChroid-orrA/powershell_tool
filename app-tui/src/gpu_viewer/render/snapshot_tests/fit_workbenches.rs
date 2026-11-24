@@ -732,6 +732,6 @@ fn plate_edge_snapshot() {
     wait(&mut session);
     shot(&mut session, "plate-edge-inputs-3d-dark", true, 1500);
     session.act(EditorAction::PlateEdge(PlateEdgeAct::Step("Results")));
-    shot(&mut session, "plate-edge-results-3d-dark", true, 2400);
-    shot(&mut session, "plate-edge-results-3d-light", false, 2400);
+    shot(&mut session, "plate-edge-results-3d-dark", true, 1500);
+    shot(&mut session, "plate-edge-results-3d-light", false, 1500);
 }

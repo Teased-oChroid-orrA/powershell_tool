@@ -299,7 +299,7 @@ impl PlateEdgeSession {
         if !o.lines.is_empty() {
             items.push(curve_plot(o));
             items.push(DockItem::Table(Box::new(line_table(o))));
-            items.push(line("Pin load toward the edge. Onset: where the load-travel line has lost 5 % of its initial stiffness. Yield: its 2 % D offset. Collapse: the load at 0.1 D of pin travel. The housing is elastic-perfectly-plastic, so yield and collapse sit close together: the table's bearing-onset row is the handbook Fbry, not this.", Tone::Dim));
+            items.push(line("Pin load toward the edge. Onset: where the load-travel line has lost 5 % of its initial stiffness. Yield: its 2 % D offset. Collapse: the load at 0.1 D of pin travel. Dots on the curves: onset. The housing is elastic-perfectly-plastic, so yield and collapse sit close together: the table's bearing-onset row is the handbook Fbry, not this.", Tone::Dim));
             items.push(line(FE_MODELS_NOTE, Tone::Dim));
         }
         if let Some(c2) = o.modes.as_ref().ok().and_then(|m| m.rows.iter().find(|r| r.id == "collapse")).and_then(|r| r.contact) {
@@ -491,6 +491,15 @@ fn text(t: impl Into<String>, tone: Tone) -> Cell {
     Cell::Text { text: t.into(), tone, action: None, editing: false }
 }
 
+/// The plot colour of an FE line: three different palette colours (accent, bad, good: the amber, salmon and olive of the warm theme are the furthest apart).
+fn line_color(label: &str) -> u8 {
+    match label {
+        "2D plane stress" => 4,
+        "3D solid" => 2,
+        _ => 0,
+    }
+}
+
 /// A FE line's column title: "2D strain", "2D stress", "3D solid".
 fn short_title(label: &str) -> String {
     label.replace(" plane", "")
@@ -518,16 +527,17 @@ fn travel_at(curve: &[(f64, f64)], load: f64) -> Option<f64> {
 /// where the allowables have it.
 fn curve_plot(o: &Outcome) -> DockItem {
     let mut plot = Plot { x_label: "Pin travel / D".into(), y_label: "Load, lbf".into(), ..Plot::default() };
-    for (k, l) in o.lines.iter().enumerate() {
+    for l in &o.lines {
         let r = l.last();
-        let color = (k % 3) as u8;
+        let color = line_color(l.label);
         plot.series.push(Series { label: l.label.to_string(), points: r.curve.iter().map(|&(t, p)| [t, p]).collect(), color, dashed: l.label.starts_with("2D plane stress") });
+        // The onset of yielding as a dot in the line's colour; the key below names the lines, so the dots carry no label.
         if let Some(at) = r.departure.and_then(|d| travel_at(&r.curve, d).map(|t| [t, d])) {
-            plot.marks.push(Mark { at, text: if plot.marks.is_empty() { "onset of yielding".into() } else { String::new() }, color });
+            plot.marks.push(Mark { at, text: String::new(), color });
         }
     }
     if let Some(c) = o.modes.as_ref().ok().and_then(|m| m.rows.iter().find(|r| r.id == "collapse")).and_then(|r| r.contact) {
-        plot.marks.push(Mark { at: [lug_solver::bracket::D_OVER_D, c], text: "edge-check contact FE".into(), color: 0 });
+        plot.marks.push(Mark { at: [lug_solver::bracket::D_OVER_D, c], text: "edge-check contact FE".into(), color: 1 });
     }
     DockItem::Plot(plot)
 }

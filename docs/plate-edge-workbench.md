@@ -38,7 +38,7 @@ housing elastic-perfectly-plastic at `contact_model::flow_stress`. Each gives th
 onset of yielding (secant stiffness 5 % below its initial value), the 2 % D offset load, and the collapse load at 0.1 D of
 travel, plus the deformed model coloured by equivalent plastic strain. The Results step shows them as a load against pin
 travel plot (one curve per idealisation, onset marked, and the contact FE collapse as a point), a table with one column per
-idealisation (onset, yield, collapse, spread against plane strain, mesh, dof, seconds) and a mesh table (one row per mesh,
+idealisation (the three lines in three palette colours, plane stress dashed, onset as a dot on each curve) (onset, yield, collapse, spread against plane strain, mesh, dof, seconds) and a mesh table (one row per mesh,
 with the change from the previous one; a single graded mesh says it has no convergence check).
 
 ## The picture
@@ -47,7 +47,7 @@ The viewport is framed on the hole, the ligament and the free edge (about two ho
 model is mapped onto the same frame (`scene::Frame`), so the view does not jump when a result replaces the picture. Before a
 run the plate carries the pin (half disc), the free edge, the dashed shear-out planes (tangents to the hole toward the edge),
 the edge dimension `e` and labels for `e`, `D`, the planes and the free edge; the load arrow `P` (pin toward the free edge) is
-there before and after. Snapshots: `plate_edge_snapshot` in `render/snapshot_tests/fit_workbenches.rs`. The live window was not
+there before and after, with a caption "half model, symmetric about the load line" (only the upper half of the plate is modelled, so the one dashed shear-out line is the other's mirror image). The result is drawn with the deformation to scale (the automatic gain exaggerated it about five times, which made the hole look larger than in the picture); the gain keys still scale it. The frame is fitted to the viewport height, so a viewport narrower than about 0.6 of its height crops the sides: the snapshots use a 1500 x 1500 window. Snapshots: `plate_edge_snapshot` in `render/snapshot_tests/fit_workbenches.rs`. The live window was not
 run in this environment (a screen capture showed only the desktop), so rendering evidence is the headless GPU snapshots.
 
 ## Mesh

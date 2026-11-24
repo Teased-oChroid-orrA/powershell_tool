@@ -24,6 +24,9 @@ use crate::gpu_viewer::{
     Scene,
 };
 use inputs::{Field, PlateEdgeInputs};
+
+/// The caption of the half-plate picture.
+pub(crate) const HALF_MODEL: &str = "half model, symmetric about the load line";
 use std::path::{Path, PathBuf};
 
 /// What a click in the Plate Edge workbench asks for (carried by `EditorAction::PlateEdge`).
@@ -399,6 +402,8 @@ impl Authoring for PlateEdgeSession {
         // The load: the pin is pulled along the load line toward the free edge.
         let reach = (r + 0.9 * f.d).min(0.85 * f.e);
         let mut out = vec![Overlay { px: px(cx, 0.0), text: "P".into(), kind: OverlayKind::Load, tip: Some(px(-reach, 0.0)) }];
+        // Only the upper half is modelled (symmetric about the load line): say so, so one shear-out plane is not misread.
+        out.push(Overlay { px: below(px(-0.5 * f.e, scene::dimension_y(f.d)), 52.0), text: HALF_MODEL.into(), kind: OverlayKind::Dimension, tip: None });
         if !self.shows_result() {
             let boxed = |p: [f32; 2], text: String| Overlay { px: p, text, kind: OverlayKind::Dimension, tip: None };
             out.push(boxed(below(px(-0.5 * f.e, scene::dimension_y(f.d)), 22.0), format!("e = {:.3} in   e/D {:.2}", f.e, f.e / f.d)));

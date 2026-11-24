@@ -250,6 +250,7 @@ fn a_three_d_run_adds_the_solid_below_plane_strain_and_draws_it() {
     let fe = s.inspector().into_iter().find(|c| c.id == "plate-edge-fe").unwrap();
     let plot = fe.items.iter().find_map(|i| if let DockItem::Plot(p) = i { Some(p) } else { None }).expect("a load-travel plot");
     assert_eq!(plot.series.len(), 3);
+    assert_eq!(plot.series.iter().map(|s| s.color).collect::<std::collections::BTreeSet<_>>().len(), 3, "three colours for three lines");
     let table = fe.items.iter().find_map(|i| if let DockItem::Table(t) = i { Some(t) } else { None }).expect("the lines side by side");
     assert_eq!(table.columns.len(), 4, "a label column and one column per FE line");
     assert_eq!(super::scene::pick_fields(o).map(|l| l.label), Some("3D solid"));
@@ -309,6 +310,16 @@ fn the_picture_and_the_result_share_one_framing_on_the_hole_ligament_and_edge() 
         assert!(has_point(&before, at, tol), "the picture has no point at model ({x}, {y}) = scene {at:?}");
         assert!(has_point(&after, at, tol), "the result has no point at model ({x}, {y}) = scene {at:?}");
     }
+    // Same scale: the result's deformation is drawn to scale (the automatic gain made the hole look larger than the picture's),
+    // and under an ordinary landscape camera the free edge, the whole hole and the ligament are in view, before and after.
+    assert_eq!((before.gain, after.gain), (1.0, 1.0));
+    let cam = crate::gpu_viewer::editor::camera::Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.5, pan: [0.0, 0.0] };
+    for scene in [&before, &after] {
+        for (x, y) in [(-f.e, 0.0), (-f.e, 2.0 * f.d), (0.5 * f.d, 0.0), (2.0 * f.d, 0.0)] {
+            let (ndc, _) = cam.project(f.point(x, y));
+            assert!(ndc[0].abs() < 0.95 && ndc[1].abs() < 0.95, "model ({x}, {y}) is out of view: {ndc:?} ({})", scene.label);
+        }
+    }
     // The framed region fits the unit span: the hole, the ligament and the edge are in view.
     for (x, y) in [(-f.e, 0.0), (2.0 * f.d, 2.0 * f.d)] {
         let [a, b] = f.xy(x, y);
@@ -348,6 +359,11 @@ fn the_load_arrow_is_always_there_and_the_dimensions_only_before_a_result() {
     for want in ["e = ", "D ", "shear-out", "free edge"] {
         assert!(named(&before, want) && !named(&after, want), "{want}: before {}, after {}", named(&before, want), named(&after, want));
     }
+    // The half-model caption is there before and after a run.
+    for v in [&before, &after] {
+        assert!(v.iter().any(|o| o.text == HALF_MODEL && o.kind == OverlayKind::Dimension), "caption missing");
+    }
+    assert!(HALF_MODEL.contains("symmetric about the load line"));
     // The arrow runs from the pin toward the free edge and stays on screen.
     let a = before.iter().find(|o| o.kind == OverlayKind::Load).unwrap();
     let tip = a.tip.unwrap();
@@ -376,6 +392,9 @@ fn the_results_step_names_each_collapse_number_by_its_model_and_shows_plot_and_t
         assert!((end[1] - line.last().collapse).abs() < 1e-6 * line.last().collapse && (end[0] - last(line).0).abs() < 1e-12, "the curve ends at the collapse load");
     }
     assert!(plot.marks.iter().any(|m| m.text.contains("edge-check")), "the contact FE collapse is marked on the curve");
+    let colours: std::collections::BTreeSet<u8> = plot.series.iter().map(|s| s.color).collect();
+    assert_eq!(colours.len(), plot.series.len(), "every line has its own colour");
+    assert!(plot.marks.iter().filter(|m| m.text.is_empty()).count() == 2 && plot.marks.iter().all(|m| m.text.is_empty() || m.text.contains("edge-check")), "onset dots carry no overlapping labels");
     // The lines side by side: a label column and one column per line, the collapse row and the spread against plane strain.
     let table = fe.items.iter().find_map(|i| if let DockItem::Table(t) = i { Some(t) } else { None }).expect("a 2D | 3D table");
     assert_eq!(table.columns.len(), 3);

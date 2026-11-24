@@ -87,15 +87,16 @@ fn reframe(scene: &mut Scene, mesh: &Mesh, f: &Frame) {
             s[a] = (f64::from(s[a]) * k) as f32;
         }
     }
-    // The drawn deformation stays the same fraction of the view.
-    scene.gain /= k as f32;
+    // Deformation drawn to scale (the scene's automatic gain exaggerates it several times, which made the hole look larger
+    // than the picture's); the gain keys still scale it.
+    scene.gain = 1.0;
 }
 
 pub fn build(inputs: &PlateEdgeInputs, name: &str, outcome: Option<&Outcome>) -> Result<Scene, String> {
     if let Some(line) = outcome.and_then(pick_fields) {
         let f = line.fields.as_ref().expect("picked for its fields");
         let last = line.last();
-        let label = format!("{name} | {} | {} elements around, {} dof | pin load at 0.1 D travel {:.0} lbf", line.label, last.around, last.dofs, last.collapse);
+        let label = format!("{name} | {} | {} elements around, {} dof | pin load at 0.1 D travel {:.0} lbf | deformation to scale", line.label, last.around, last.dofs, last.collapse);
         let mut scene = SceneSource { mesh: Arc::new(f.mesh.clone()), displacement: f.u.clone(), values: f.plastic.clone(), period: None, label, field_label: "Equivalent plastic strain".into(), fields: Vec::new() }.build()?;
         reframe(&mut scene, &f.mesh, &Frame::of(inputs));
         return Ok(scene);
@@ -112,7 +113,7 @@ fn picture(inputs: &PlateEdgeInputs, name: &str) -> Result<Scene, String> {
     let r = 0.5 * case.dia;
     let values: Vec<f64> = mesh.nodes.iter().map(|p| if p[0].hypot(p[1]) < r * (1.0 + 1e-6) { f64::from(HOLE) } else { f64::from(PLATE) }).collect();
     let n = mesh.nodes.len();
-    let label = format!("{name} | half of the plate (symmetric about the load line), hole {:.4} in, edge {:.3} in", case.dia, inputs.edge);
+    let label = format!("{name} | half model, symmetric about the load line, hole {:.4} in, edge {:.3} in", case.dia, inputs.edge);
     let mut scene = SceneSource { mesh: Arc::new(mesh.clone()), displacement: vec![0.0; 3 * n], values, period: None, label, field_label: "part (see color key)".into(), fields: Vec::new() }.build()?;
     // The geometry view reads the values as the colour key's codes 0..3 (`KEY_LABELS`), not as a contour.
     scene.range = [0.0, 3.0];
