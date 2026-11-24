@@ -1,6 +1,7 @@
 //! Pin-loaded lug finite-element analysis. See `Cargo.toml`.
 pub mod affdl;
 mod affdl_data;
+pub mod bracket;
 pub mod contact;
 pub mod fe;
 pub mod fea;
