@@ -99,6 +99,34 @@ pub struct Out {
     pub fit_pressure: Option<f64>,
     pub secs: f64,
     pub dofs: usize,
+    /// The solved model at the collapse travel, for a picture (`None` for a curve built by hand).
+    pub fields: Option<Fields>,
+}
+
+/// The deformed model of a finished run: the mesh, the displacement of every node and the equivalent plastic strain
+/// averaged to the nodes (where the housing has yielded).
+pub struct Fields {
+    pub mesh: Mesh,
+    pub u: Vec<f64>,
+    pub plastic: Vec<f64>,
+}
+
+/// Equivalent plastic strain of the Gauss points, averaged over each element and then over the elements at a node.
+fn nodal_plastic_strain(mesh: &Mesh, state: &fea_core::nonlinear::NlState) -> Vec<f64> {
+    let mut sum = vec![0.0; mesh.nodes.len()];
+    let mut count = vec![0u32; mesh.nodes.len()];
+    for (b, block) in mesh.blocks.iter().enumerate() {
+        let Some(gp) = state.gp.get(b).filter(|g| !g.is_empty()) else { continue };
+        let (ngp, nn) = (block.kind.table().ngp, block.kind.n_nodes());
+        for e in 0..block.n_elems() {
+            let mean = (0..ngp).map(|g| gp[e * ngp + g][6]).sum::<f64>() / ngp as f64;
+            for &n in &block.conn[e * nn..(e + 1) * nn] {
+                sum[n] += mean;
+                count[n] += 1;
+            }
+        }
+    }
+    sum.iter().zip(&count).map(|(s, c)| if *c > 0 { s / *c as f64 } else { 0.0 }).collect()
 }
 
 impl Out {
@@ -204,18 +232,23 @@ fn schedule(case: &Case, ideal: Idealisation, max: usize) -> Vec<(usize, usize)>
 /// every mesh. The elastic-plastic contact stage is not remeshed adaptively (the kernel's contact AMR is 2D only and was
 /// not exposed); this refines the graded mesh by a fixed rule and stops on the measured change, not on a count.
 pub fn converge(case: Case, ideal: Idealisation, tol: f64, max_meshes: usize, cancel: Option<Arc<AtomicBool>>, progress: &mut dyn FnMut(&Refinement)) -> Result<Converged, String> {
+    converge_with(case, ideal, tol, max_meshes, cancel, &mut |r, _| progress(r))
+}
+
+/// [`converge`] that also hands each mesh's deformed model to `progress` (for a picture of the result so far).
+pub fn converge_with(case: Case, ideal: Idealisation, tol: f64, max_meshes: usize, cancel: Option<Arc<AtomicBool>>, progress: &mut dyn FnMut(&Refinement, Option<Fields>)) -> Result<Converged, String> {
     let mut steps: Vec<Refinement> = Vec::new();
     for (around, layers) in schedule(&case, ideal, max_meshes.max(1)) {
         let ideal_k = match ideal {
             Idealisation::Solid { lock_z, .. } => Idealisation::Solid { layers, lock_z },
             other => other,
         };
-        let out = try_run(Case { around, ..case }, ideal_k, cancel.clone())?;
+        let mut out = try_run(Case { around, ..case }, ideal_k, cancel.clone())?;
         let (collapse, onset) = (out.at_limit(), out.offset_load(OFFSET_FRACTION));
         let rel = |a: f64, b: f64| ((a - b) / b).abs();
         let prev = steps.last();
         let r = Refinement { around, layers, collapse, onset, departure: out.departure_load(DEPARTURE_DROP), secs: out.secs, dofs: out.dofs, collapse_change: prev.map(|p| rel(collapse, p.collapse)), onset_change: prev.and_then(|p| Some(rel(onset?, p.onset?))) };
-        progress(&r);
+        progress(&r, out.fields.take());
         let done = r.collapse_change.is_some_and(|c| c < tol) && r.onset_change.is_none_or(|c| c < tol);
         steps.push(r);
         if done {
@@ -361,5 +394,6 @@ pub fn try_run(case: Case, ideal: Idealisation, cancel: Option<Arc<AtomicBool>>)
     // Whole-plate force: x2 for the load-line symmetry, x2 again for the mid-plane in 3D.
     let share = if solid { 4.0 } else { 2.0 };
     let pts: Vec<(f64, f64)> = nl.steps.iter().map(|s| (s.lambda * cap / case.dia, share * s.master_force[0][0])).collect();
-    Ok(Out { pts, fit_pressure, secs: t0.elapsed().as_secs_f64(), dofs: model.mesh.n_dofs() })
+    let plastic = nodal_plastic_strain(&model.mesh, &nl.state);
+    Ok(Out { pts, fit_pressure, secs: t0.elapsed().as_secs_f64(), dofs: model.mesh.n_dofs(), fields: Some(Fields { u: nl.u.clone(), plastic, mesh: model.mesh.clone() }) })
 }

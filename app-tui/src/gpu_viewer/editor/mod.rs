@@ -17,6 +17,7 @@ pub mod edge_matrix;
 pub mod bushing;
 pub mod eccentric;
 pub mod fastener;
+pub mod plate_edge;
 pub mod assembly;
 pub mod handoff;
 pub mod materials;

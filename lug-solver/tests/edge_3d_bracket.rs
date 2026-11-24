@@ -314,10 +314,10 @@ fn the_offset_load_lies_between_the_first_step_and_the_collapse_load() {
     eprintln!("2D strain: bearing yield {onset:.0} lbf, collapse {:.0} lbf", o.at_limit());
     assert!(onset > o.pts[0].1 && onset <= o.at_limit() * 1.0001, "{onset}");
     // A straight line through the origin never crosses its own offset.
-    let linear = Out { pts: (1..=10).map(|i| (0.01 * i as f64, 1000.0 * i as f64)).collect(), fit_pressure: None, secs: 0.0, dofs: 0 };
+    let linear = Out { pts: (1..=10).map(|i| (0.01 * i as f64, 1000.0 * i as f64)).collect(), fit_pressure: None, secs: 0.0, dofs: 0, fields: None };
     assert_eq!(linear.offset_load(0.02), None);
     // An ideal elastic-perfectly-plastic curve with k = 100000 and yield 1000 crosses its offset at 1000 (a flat top).
-    let epp = Out { pts: (1..=10).map(|i| (0.01 * i as f64, (100_000.0 * 0.01 * i as f64).min(1000.0))).collect(), fit_pressure: None, secs: 0.0, dofs: 0 };
+    let epp = Out { pts: (1..=10).map(|i| (0.01 * i as f64, (100_000.0 * 0.01 * i as f64).min(1000.0))).collect(), fit_pressure: None, secs: 0.0, dofs: 0, fields: None };
     let x = epp.offset_load(0.02).unwrap();
     assert!((x - 1000.0).abs() < 1e-6 * 1000.0, "{x}");
 }
@@ -327,10 +327,10 @@ fn the_offset_load_lies_between_the_first_step_and_the_collapse_load() {
 #[test]
 fn the_departure_load_is_where_the_stiffness_falls() {
     // k = 100000, yield 1000 at travel 0.01: the secant is 0.95 k where P = 1000 and t = 1000 / (0.95 k).
-    let epp = Out { pts: (1..=40).map(|i| (0.0025 * i as f64, (100_000.0 * 0.0025 * i as f64).min(1000.0))).collect(), fit_pressure: None, secs: 0.0, dofs: 0 };
+    let epp = Out { pts: (1..=40).map(|i| (0.0025 * i as f64, (100_000.0 * 0.0025 * i as f64).min(1000.0))).collect(), fit_pressure: None, secs: 0.0, dofs: 0, fields: None };
     let d = epp.departure_load(0.05).unwrap();
     assert!((d - 1000.0).abs() < 1.0, "{d}");
-    let linear = Out { pts: (1..=10).map(|i| (0.01 * i as f64, 1000.0 * i as f64)).collect(), fit_pressure: None, secs: 0.0, dofs: 0 };
+    let linear = Out { pts: (1..=10).map(|i| (0.01 * i as f64, 1000.0 * i as f64)).collect(), fit_pressure: None, secs: 0.0, dofs: 0, fields: None };
     assert_eq!(linear.departure_load(0.05), None);
     let o = run(naca_75s(1.5, 0.5, 36), Idealisation::Strain);
     let (dep, off) = (o.departure_load(0.05).unwrap(), o.offset_load(0.02).unwrap());
