@@ -363,7 +363,7 @@ fn the_load_arrow_is_always_there_and_the_dimensions_only_before_a_result() {
     for v in [&before, &after] {
         assert!(v.iter().any(|o| o.text == HALF_MODEL && o.kind == OverlayKind::Dimension), "caption missing");
     }
-    assert!(HALF_MODEL.contains("symmetric about the load line"));
+    assert!(HALF_MODEL.contains("mirrored about the load line"));
     // The arrow runs from the pin toward the free edge and stays on screen.
     let a = before.iter().find(|o| o.kind == OverlayKind::Load).unwrap();
     let tip = a.tip.unwrap();
@@ -405,4 +405,31 @@ fn the_results_step_names_each_collapse_number_by_its_model_and_shows_plot_and_t
     let DockItem::Table(ct) = &conv.items[0] else { panic!("a table") };
     assert_eq!(ct.rows.len(), 2);
     assert!(ct.footer.contains("no convergence check"), "{}", ct.footer);
+}
+
+/// The drawing is the whole plate: the solved half is mirrored about the load line, so the box is symmetric about it and the
+/// hole outline closes into a circle of the hole's radius, before and after a run.
+#[test]
+fn the_drawing_mirrors_the_half_model_into_a_whole_plate_with_a_circular_hole() {
+    let (mut s, mut before) = after_a_2d_run();
+    let after = s.scene().unwrap();
+    let f = scene::Frame::of(&s.inputs);
+    let [cx, y0] = f.xy(0.0, 0.0);
+    let r = f.xy(0.5 * f.d, 0.0)[0] - cx;
+    for (name, scene) in [("picture", &mut before), ("result", &mut s.scene().unwrap())] {
+        // The plate's own vertices (annotations sit in front of it, z < 0).
+        let plate: Vec<[f32; 3]> = scene.positions.iter().copied().filter(|p| p[2] >= 0.0).collect();
+        let (lo, hi) = plate.iter().fold((f32::MAX, f32::MIN), |(l, h), p| (l.min(p[1]), h.max(p[1])));
+        assert!((lo + hi - 2.0 * y0).abs() < 1e-5, "{name}: the box [{lo}, {hi}] is not symmetric about the load line {y0}");
+        let tris = scene.triangles.chunks_exact(3).filter(|t| t.iter().all(|&i| scene.positions[i as usize][2] >= 0.0)).count();
+        assert!(tris > 0 && tris % 2 == 0, "{name}: {tris} plate triangles are not a mirrored pair of halves");
+        // The hole wall: nodes at the hole's radius from its centre, all the way round.
+        let mut angles: Vec<f32> = plate.iter().filter(|p| ((p[0] - cx).hypot(p[1] - y0) - r).abs() < 1e-4).map(|p| (p[1] - y0).atan2(p[0] - cx)).collect();
+        angles.sort_by(f32::total_cmp);
+        assert!(angles.len() >= 36, "{name}: only {} hole-wall nodes", angles.len());
+        let gap = angles.windows(2).map(|w| w[1] - w[0]).fold(angles[0] + 2.0 * std::f32::consts::PI - angles[angles.len() - 1], f32::max);
+        assert!(gap < 0.35, "{name}: the hole outline has a {gap} rad gap, it does not close into a circle");
+        assert!(angles.iter().any(|a| *a > 1.4 && *a < 1.7) && angles.iter().any(|a| *a < -1.4 && *a > -1.7), "{name}: the hole is missing its top or bottom");
+    }
+    assert!(after.validate().is_ok());
 }

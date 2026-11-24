@@ -43,12 +43,19 @@ with the change from the previous one; a single graded mesh says it has no conve
 
 ## The picture
 
-The viewport is framed on the hole, the ligament and the free edge (about two hole diameters past the hole), and the solved
-model is mapped onto the same frame (`scene::Frame`), so the view does not jump when a result replaces the picture. Before a
-run the plate carries the pin (half disc), the free edge, the dashed shear-out planes (tangents to the hole toward the edge),
-the edge dimension `e` and labels for `e`, `D`, the planes and the free edge; the load arrow `P` (pin toward the free edge) is
-there before and after, with a caption "half model, symmetric about the load line" (only the upper half of the plate is modelled, so the one dashed shear-out line is the other's mirror image). The result is drawn with the deformation to scale (the automatic gain exaggerated it about five times, which made the hole look larger than in the picture); the gain keys still scale it. The frame is fitted to the viewport height, so a viewport narrower than about 0.6 of its height crops the sides: the snapshots use a 1500 x 1500 window. Snapshots: `plate_edge_snapshot` in `render/snapshot_tests/fit_workbenches.rs`. The live window was not
-run in this environment (a screen capture showed only the desktop), so rendering evidence is the headless GPU snapshots.
+The solve is on half the plate (symmetric about the load line); the drawing mirrors the half model about the load line
+(`scene::mirror`: nodes, triangles with reversed winding, every frame's displacement and scalar samples; nodes on the line are
+shared, so the seam draws no line), so the hole and the pin are whole circles and the plastic-strain contour is symmetric. The
+caption "solved on half, mirrored about the load line" says so. The viewport is framed on the hole, the ligament and the free
+edge (about two hole diameters past the hole, two above and two below the load line), and the solved model is mapped onto the
+same frame (`scene::Frame`), so the view does not jump when a result replaces the picture. Before a run the plate carries the
+pin, the free edge, both dashed shear-out planes (tangents to the hole toward the edge), the edge dimension `e` under the hole
+and labels for `e`, `D`, the planes and the free edge; the load arrow `P` (pin toward the free edge) runs along the middle
+before and after. The result is drawn with the deformation to scale (the automatic gain exaggerated it about five times, which
+made the hole look larger than in the picture); the gain keys still scale it. The frame is fitted to the viewport height, so a
+viewport narrower than about 0.6 of its height crops the sides: the snapshots use a 1500 x 1500 window. Snapshots:
+`plate_edge_snapshot` in `render/snapshot_tests/fit_workbenches.rs`. The live window was not run in this environment (a screen
+capture showed only the desktop), so rendering evidence is the headless GPU snapshots.
 
 ## Mesh
 
