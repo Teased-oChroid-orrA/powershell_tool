@@ -1810,6 +1810,11 @@ impl Gui {
             DockItem::Pills(pills) => self.pills(ui, pills, p, out),
             DockItem::Run(d) => self.line_drawing(ui, d, p),
             DockItem::Table(t) => self.dock_table(ui, t, p, out),
+            DockItem::Segmented(entries) => {
+                let width = ui.available_width();
+                self.segmented_equal(ui, entries, width, p, out);
+            }
+            DockItem::Compare(c) => self.compare_ui(ui, c, p),
             DockItem::Chips { label, chips } => {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(label).size(12.0).color(p.dim));

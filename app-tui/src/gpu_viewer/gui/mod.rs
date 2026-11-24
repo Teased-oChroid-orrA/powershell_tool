@@ -582,6 +582,8 @@ impl Gui {
             self.workbench(ui, wb, &p, out, hint);
             self.floating_list(ui.ctx(), &p, out, hint);
             if wb.dialog.is_none() && !matches!(wb.show, crate::gpu_viewer::ui::WorkbenchView::Sketch(_)) {
+                // What the editor drew on the model (a load arrow, a pin disc, dimension captions) belongs to the views.
+                self.model_labels(ui.ctx(), input, &p);
                 self.contour_legend(ui.ctx(), input, &p, out);
             }
             self.value_card(ui.ctx(), input, &p, out, hint);
