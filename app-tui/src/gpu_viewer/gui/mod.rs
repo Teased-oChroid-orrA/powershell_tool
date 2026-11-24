@@ -824,6 +824,12 @@ impl Gui {
                     );
                     back.galley(rect.center() - galley.size() / 2.0, galley, p.text);
                 }
+                OverlayKind::Disc => {
+                    let Some(tip) = o.tip else { continue };
+                    let tip = Pos2::new(origin.x + tip[0] / ppp, origin.y + tip[1] / ppp);
+                    let [kr, kg, kb] = input.view.key_colours[2];
+                    back.circle(at, (tip - at).length(), Color32::from_rgb(kr, kg, kb), egui::Stroke::new(1.5, p.text));
+                }
                 OverlayKind::Support => {
                     let out = o
                         .tip

@@ -106,6 +106,15 @@ pub(super) fn paint(painter: &Painter, rect: Rect, id: &str, p: &Palette, surfac
             pen.line(&[(6.0, 37.0), (6.0, 43.0)], d);
             pen.line(&[(22.0, 37.0), (22.0, 43.0)], d);
         }
+        "plate-edge" => {
+            // A plate with a hole near its left edge, the pin load arrow pointing at the edge.
+            pen.rect((6.0, 8.0, 36.0, 32.0), 2.0, d, None);
+            pen.circle((19.0, 24.0), 6.0, a, None);
+            pen.line(&[(19.0, 24.0), (9.0, 24.0)], a);
+            pen.line(&[(12.0, 21.0), (9.0, 24.0), (12.0, 27.0)], a);
+            pen.dashed(&[(6.0, 17.0), (19.0, 17.0)], d);
+            pen.dashed(&[(6.0, 31.0), (19.0, 31.0)], d);
+        }
         "assembly" => {
             pen.rect((5.0, 8.0, 30.0, 10.0), 2.0, d, None);
             pen.rect((13.0, 28.0, 30.0, 10.0), 2.0, d, None);

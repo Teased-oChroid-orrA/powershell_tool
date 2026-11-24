@@ -40,6 +40,9 @@ pub enum OverlayKind {
     Load,
     /// A support: a symbol on the face at `px` (held directions as text).
     Support,
+    /// A filled disc in the key's pin colour centred at `px` and passing through `tip` (a body drawn over the model, the
+    /// pin of a result); `text` is not drawn.
+    Disc,
 }
 
 /// How much a card of the inspector matters right now.

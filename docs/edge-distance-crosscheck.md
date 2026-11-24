@@ -304,7 +304,7 @@ is made to fit the post-fit bore, as `edge-check` does. Proofs (default test sui
 | a very thin 3D plate (t/D 0.05) approaches plane stress | +2.26 % |
 | kernel fit pressure of the default bushing equals `edge-check`'s contact FE | 9927 vs 9897 psi (+0.30 %; the two contact passes each carry about half the pressure, so the physical pressure is their sum) |
 | 2D mesh, 36 to 72 elements around | plane strain -0.8 %, plane stress -1.9 % |
-| 3D mesh, layers 2 / 3 / 4 over half the thickness | 12234 / 12227 / 12224 lbf (-0.08 %); 54 elements around, 2 layers: 12203 (-0.25 %) |
+| 3D mesh, layers 2 / 3 / 4 over half the thickness | 12234 / 12227 / 12224 lbf (-0.08 %); 54 elements around, 2 layers: 12203 (-0.25 %). Cost, re-run 2026-11-23 (`explore` + `convergence`, 1065 s in all, same loads): 36 around, 2 / 3 / 4 layers 148 / 207 / 480 s at 17205 / 24087 / 30969 dof; 54 around, 2 layers 196 s at 30525 dof; 3D with every `uz` locked 31.8 s at 10323 dof; 2D plane strain / stress at 36 around 0.7 s / 1.6 s at 2294 dof (36 / 54 / 72 around: plane strain 13728 / 13645 / 13624 lbf, plane stress 10907 / 10791 / 10704 lbf at 2294 / 4070 / 5402 dof) |
 
 ### NACA TN 1503, all 12 points (t/D 0.5, 2 in wide, 3D 2 layers; bearing stress P/(D t), psi)
 

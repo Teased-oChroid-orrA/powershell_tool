@@ -12,5 +12,6 @@ pub mod model;
 pub mod plastic;
 pub mod plate;
 pub mod models;
+pub mod modes;
 pub mod runner;
 pub mod types;

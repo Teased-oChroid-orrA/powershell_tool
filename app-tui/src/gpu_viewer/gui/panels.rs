@@ -1886,6 +1886,8 @@ fn plot_color(p: &Palette, k: u8) -> Color32 {
     match k {
         1 => p.warn,
         2 => p.good,
+        3 => p.link,
+        4 => p.bad,
         _ => p.accent,
     }
 }

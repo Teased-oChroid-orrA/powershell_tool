@@ -245,6 +245,47 @@ impl EdgeReport {
     }
 }
 
+/// The pin load at which one failure mode of one model reaches margin zero.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModeCapacity {
+    pub model: &'static str,
+    pub mode: Mode,
+    /// Pin load, lbf, with the input's fit pressure charged (`0` = fails at any load, infinite = never fails).
+    pub capacity_lbf: f64,
+}
+
+fn single_mode(mode: Mode) -> &'static [Mode] {
+    match mode {
+        Mode::FirstYield => &[Mode::FirstYield],
+        Mode::ShearOut => &[Mode::ShearOut],
+        Mode::Splitting => &[Mode::Splitting],
+        Mode::Collapse => &[Mode::Collapse],
+        Mode::Bearing => &[Mode::Bearing],
+    }
+}
+
+/// Every failure mode every model can evaluate at `input`, one by one (the report's targets only keep the lowest of
+/// several): the load each mode alone can carry. A model that cannot evaluate the geometry is left out, as
+/// [`run`] reports it as an error.
+pub fn mode_capacities(models: &[Box<dyn EdgeModel>], input: &EdgeInput) -> Vec<ModeCapacity> {
+    let mut out = Vec::new();
+    for model in models {
+        let Ok(resp) = model.respond(&input.geom, &input.strengths, input.fit_pressure) else { continue };
+        let probe = Loads { fit_pressure: input.fit_pressure, pin_load: 1.0 };
+        let mut modes: Vec<Mode> = Vec::new();
+        for m in resp.margins(&probe, 1.0) {
+            if !modes.contains(&m.mode) {
+                modes.push(m.mode);
+            }
+        }
+        for mode in modes {
+            let target = Target { label: mode.label(), case: Case::Applied, modes: single_mode(mode) };
+            out.push(ModeCapacity { model: model.id(), mode, capacity_lbf: capacity(&*resp, &target, input.fit_pressure, 1.0, input.applied_load) });
+        }
+    }
+    out
+}
+
 /// Pin load at which the target's lowest margin reaches zero for a fixed fit
 /// pressure: bracket by doubling, then bisect (margins fall as the load
 /// rises; where contact retention switches off they step down, which the

@@ -65,6 +65,7 @@ pub(super) fn build_workbench(kind: EditorKind, path: &std::path::Path) -> Resul
         }
         EditorKind::Eccentric => model(ed::eccentric::EccentricSession::open(path)?),
         EditorKind::FastenerHole => model(ed::fastener::FastenerSession::open(path)?),
+        EditorKind::PlateEdge => model(ed::plate_edge::PlateEdgeSession::open(path)?),
         EditorKind::Assembly => model(ed::assembly::AssemblySession::open(path)?),
         EditorKind::Search => {
             // The search and index stages are logged like the terminal toolbox's (no paths or terms, see debug_log).

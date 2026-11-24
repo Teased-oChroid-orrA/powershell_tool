@@ -20,86 +20,27 @@
 
 use edge_check::models::contact_model::flow_stress;
 use edge_check::types::Strengths;
-use fea_core::contact::{ContactRule, ContactSpec, RigidMaster, RigidShape};
-use fea_core::fit::{interference_contacts, start_after_fit, Tuning};
-use fea_core::material::J2;
-use fea_core::sweep::extrude;
-use fea_core::{Loads, Mesh, Model};
-use lug_solver::fea::FeaLug;
+use lug_solver::bracket::{try_run, Bush, Case, Housing, Idealisation, Out, D_OVER_D};
+use fea_core::fit::Tuning;
 use lug_solver::*;
 use std::time::Instant;
 
 /// Hole (bore) diameter of every case.
 const D: f64 = 0.5;
-/// The collapse load is read at this pin travel from first touch, in hole diameters.
-const D_OVER_D: f64 = edge_check::contact::COLLAPSE_D_OVER_D;
 /// Pin clearance of `kernel_naca.rs` and `validation_naca_tn1503.rs` (an unbushed pin: diameter `D - 0.0004`).
-const NACA_PIN_DIA: f64 = D - 0.0004;
+const NACA_PIN_CLEARANCE: f64 = 0.0004;
+const NACA_PIN_DIA: f64 = D - NACA_PIN_CLEARANCE;
 
-#[derive(Clone, Copy, Debug)]
-struct Housing {
-    e: f64,
-    nu: f64,
-    /// Perfectly plastic flow stress, psi.
-    flow: f64,
-    /// A hardening law instead (small strain, flat beyond its last point); `None` = perfectly plastic at `flow`.
-    law: Option<Hardening>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Bush {
-    inner_dia: f64,
-    e: f64,
-    nu: f64,
-    /// Diametral interference.
-    interference_dia: f64,
-    mu: f64,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Case {
-    /// Edge distance over hole diameter.
-    ed: f64,
-    /// Thickness over hole diameter.
-    td: f64,
-    /// Plate width (y extent) and the distance from the hole centre to the clamped far end.
-    width: f64,
-    length: f64,
-    /// Elements around the full bore circle of the 2D mesh.
-    around: usize,
-    housing: Housing,
-    bush: Option<Bush>,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Idealisation {
-    Stress,
-    Strain,
-    /// `layers` Hex27 layers over half the thickness; `lock_z` pins `uz = 0` everywhere (plane strain in 3D).
-    Solid { layers: usize, lock_z: bool },
-}
-
-impl Case {
-    fn thickness(&self) -> f64 {
-        self.td * D
-    }
-
-    fn geometry(&self) -> LugGeometry {
-        LugGeometry { hole_dia: D, width: self.width, edge: self.ed * D, length: self.length, thickness: self.thickness(), head_corner_radius: 0.0, far_corner_radius: 0.0 }
-    }
-
-    fn lug(&self, mode: PlaneMode) -> FeaLug {
-        let bushing = self.bush.map(|b| BushingSpec { inner_dia: b.inner_dia, material: Material { e_psi: b.e, nu: b.nu }, interference_dia: b.interference_dia, friction: b.mu });
-        let spec = MeshSpec { elements_around: self.around, ..MeshSpec::default() };
-        FeaLug::build_bushed(&self.geometry(), Material { e_psi: self.housing.e, nu: self.housing.nu }, spec, true, mode, bushing).unwrap()
-    }
+/// The driver lives in `lug_solver::bracket` (the Plate Edge Workbench runs it); these tests panic on a failed run.
+fn run(case: Case, ideal: Idealisation) -> Out {
+    try_run(case, ideal, None).unwrap()
 }
 
 /// NACA TN 1503 specimen: 2 in wide, hole centred, steel pin (rigid here), no bushing.
 fn naca(ftu: f64, fty: f64, fbru_15: f64, fbru_20: f64, ed: f64, td: f64, around: usize) -> Case {
     let (e, nu) = (10.4e6, 0.33);
     let flow = flow_stress(&Strengths { e, nu, sy: fty, fsu: 0.6 * ftu, ftu, fbru: fbru_20, fbru_e15: fbru_15 });
-    Case { ed, td, width: 2.0, length: 5.0, around, housing: Housing { e, nu, flow, law: None }, bush: None }
+    Case { dia: D, pin_clearance: NACA_PIN_CLEARANCE, pin_mu: 0.0, ed, td, width: 2.0, length: 5.0, around, housing: Housing { e, nu, flow, law: None }, bush: None }
 }
 
 /// The same specimen with the bar's own hardening: Ramberg-Osgood through `Fty` and `Ftu` at the uniform elongation
@@ -121,6 +62,9 @@ fn default_bushing(ed: f64, td: f64, around: usize) -> Case {
     let s = Strengths::from_material(m);
     let reach = (3.0 * ed * D).max(10.0 * 0.5 * D);
     Case {
+        dia: D,
+        pin_clearance: NACA_PIN_CLEARANCE,
+        pin_mu: 0.0,
         ed,
         td,
         width: 2.0 * reach,
@@ -130,162 +74,6 @@ fn default_bushing(ed: f64, td: f64, around: usize) -> Case {
         bush: Some(Bush { inner_dia: 0.375, e: 17.0e6, nu: 0.33, interference_dia: 0.0015, mu: 0.15 }),
     }
 }
-
-/// Result of one run.
-struct Out {
-    /// `(travel / D, load lbf)` after every step.
-    pts: Vec<(f64, f64)>,
-    /// Mean bushing/housing fit pressure, psi (bushed cases).
-    fit_pressure: Option<f64>,
-    secs: f64,
-    dofs: usize,
-}
-
-impl Out {
-    /// Load at the collapse travel (the run ends there).
-    fn at_limit(&self) -> f64 {
-        let (t, p) = *self.pts.last().unwrap();
-        assert!((t - D_OVER_D).abs() < 1e-9, "the curve ends at {t} D, not {D_OVER_D} D");
-        p
-    }
-
-    fn peak(&self) -> f64 {
-        self.pts.iter().fold(0.0, |m, p| m.max(p.1))
-    }
-}
-
-fn plasticity(h: &Housing) -> J2 {
-    J2::small(h.law.unwrap_or_else(|| Hardening::linear(h.flow, 0.0, 1.0).unwrap()))
-}
-
-fn run(case: Case, ideal: Idealisation) -> Out {
-    let t0 = Instant::now();
-    let fe = case.lug(if matches!(ideal, Idealisation::Stress) { PlaneMode::Stress } else { PlaneMode::Strain });
-    let mut mesh2 = fe.model.mesh.clone();
-    let bushed = case.bush.is_some();
-    if bushed {
-        mesh2.surfaces.insert("fit_lug".into(), fe.iface.iter().map(|(_, l)| l.clone()).collect());
-        mesh2.surfaces.insert("fit_bush".into(), fe.iface.iter().map(|(b, _)| b.clone()).collect());
-    }
-    let solid = matches!(ideal, Idealisation::Solid { .. });
-    let mut mesh: Mesh = match ideal {
-        Idealisation::Solid { layers, .. } => {
-            let half_t = 0.5 * case.thickness();
-            let levels: Vec<f64> = (0..=layers).map(|i| half_t * i as f64 / layers as f64).collect();
-            extrude(&mesh2, &levels).unwrap()
-        }
-        _ => mesh2,
-    };
-    mesh.set_plasticity(0, plasticity(&case.housing)).unwrap();
-    let dim = mesh.dim();
-    let lock_z = matches!(ideal, Idealisation::Solid { lock_z: true, .. });
-    let model = Model::new(mesh).unwrap();
-    let mut bc = model.dirichlet();
-    for &n in model.mesh.node_set("far").unwrap() {
-        bc.fix(n, 0, 0.0);
-        bc.fix(n, 1, 0.0);
-    }
-    for (i, p) in model.mesh.nodes.iter().enumerate() {
-        if p[1].abs() < 1e-12 {
-            bc.fix(i, 1, 0.0);
-        }
-        if solid && (lock_z || p[2].abs() < 1e-12) {
-            bc.fix(i, 2, 0.0);
-        }
-    }
-    // The bushing touches the housing only through the interface: hold it weakly (it leaks `k u` of force).
-    let mut ground = Vec::new();
-    if let Some(b) = case.bush {
-        let k = 1e-9 * b.e * case.thickness() / if solid { 4.0 } else { 1.0 };
-        let mut seen = vec![false; model.mesh.nodes.len()];
-        for &n in &model.mesh.blocks[1].conn {
-            seen[n] = true;
-        }
-        for n in (0..seen.len()).filter(|&n| seen[n]) {
-            for c in 0..dim {
-                ground.push((dim * n + c, k));
-            }
-        }
-    }
-    let loads = Loads { ground, ..Default::default() };
-    let a_contact = fe.bore_radius;
-    let trace = std::env::var_os("BRACKET_TRACE").is_some();
-    if trace {
-        eprintln!("[{:.1}s] model built: {} nodes, {} dof", t0.elapsed().as_secs_f64(), model.mesh.nodes.len(), model.mesh.n_dofs());
-    }
-
-    // Stage 1: the interference fit.
-    let overlap = case.bush.map_or(0.0, |b| 0.5 * b.interference_dia);
-    let fit_specs = |eps_n: f64| -> Vec<ContactSpec> {
-        let Some(b) = case.bush else { return Vec::new() };
-        let fl = model.mesh.surfaces["fit_lug"].clone();
-        let fb = model.mesh.surfaces["fit_bush"].clone();
-        let face = fl
-            .iter()
-            .map(|f| {
-                let mut m = 0.0f64;
-                for &p in f {
-                    for &q in f {
-                        let (u, v) = (model.mesh.nodes[p], model.mesh.nodes[q]);
-                        m = m.max((u[0] - v[0]).hypot(u[1] - v[1]));
-                    }
-                }
-                m
-            })
-            .fold(0.0f64, f64::max);
-        let margin = if solid { 2.0 * face } else { 6.0 * face };
-        interference_contacts("fit", fl, fb, eps_n, b.mu, overlap, margin).to_vec()
-    };
-    let (mut fit_nl, mut fit_pressure) = (None, None);
-    if bushed {
-        let tune = Tuning::friction();
-        let specs = fit_specs(tune.eps_n(case.housing.e, a_contact));
-        let nl = model.solve_nonlinear_contact(&loads, &bc, specs, &tune.options(1)).unwrap();
-        assert!(nl.complete(), "the fit stopped early: {:?}", nl.stop);
-        // The two passes (each body the slave of the other) carry about half of the physical pressure each: it is their sum.
-        fit_pressure = Some((0..2).map(|k| {
-            let (pf, wt) = nl.state.contact[k].iter().zip(&nl.contact_weights[k]).fold((0.0, 0.0), |(a, b), (s, w)| (a + s.p * w, b + w));
-            pf / wt
-        }).sum());
-        if trace {
-            eprintln!("[{:.1}s] fit done: pressure {:.0} psi, {} factorisations", t0.elapsed().as_secs_f64(), fit_pressure.unwrap(), nl.factorisations);
-        }
-        fit_nl = Some(nl);
-    }
-
-    // The pin: an unbushed one is `NACA_PIN_DIA`; a bushed one is made to fit the post-fit bore (zero gap on the
-    // loaded side; `edge-check` conforms it everywhere).
-    let bore_nodes: Vec<usize> = {
-        let mut v: Vec<usize> = model.mesh.surfaces["bore"].iter().flatten().copied().collect();
-        v.sort_unstable();
-        v.dedup();
-        v
-    };
-    let (r_pin, r_left) = match &fit_nl {
-        Some(nl) => {
-            let r = |n: usize| (model.mesh.nodes[n][0] + nl.u[dim * n]).hypot(model.mesh.nodes[n][1] + nl.u[dim * n + 1]);
-            let r_min = bore_nodes.iter().map(|&n| r(n)).fold(f64::MAX, f64::min);
-            (r_min, r_min)
-        }
-        None => (0.5 * NACA_PIN_DIA, a_contact),
-    };
-    let cap = D_OVER_D * D;
-    let shape = if solid { RigidShape::Cylinder { p: [0.0; 3], a: [0.0, 0.0, 1.0], r: r_pin } } else { RigidShape::Circle { c: [0.0; 2], r: r_pin } };
-    let master = RigidMaster { shift: [-(r_left - r_pin), 0.0, 0.0], ..RigidMaster::new(shape).with_travel([-cap, 0.0, 0.0]) };
-    let tune = Tuning::collapse();
-    let eps_n = tune.eps_n(case.housing.e, a_contact);
-    let mut specs = vec![ContactSpec::rigid("pin", model.mesh.surfaces["bore"].clone(), master, eps_n).with_rule(ContactRule::Reduced)];
-    specs.extend(fit_specs(eps_n));
-    let steps = ((cap / (tune.step_fraction * a_contact)).ceil() as usize).clamp(6, 80);
-    let start = fit_nl.as_ref().map(|nl| start_after_fit(nl, 1));
-    let nl = model.solve_nonlinear_contact_from(&loads, &bc, specs, &tune.options(steps), start.as_ref()).unwrap();
-    assert!(nl.complete(), "the pin run stopped early: {:?}", nl.stop);
-    // Whole-plate force: x2 for the load-line symmetry, x2 again for the mid-plane in 3D.
-    let share = if solid { 4.0 } else { 2.0 };
-    let pts: Vec<(f64, f64)> = nl.steps.iter().map(|s| (s.lambda * cap / D, share * s.master_force[0][0])).collect();
-    Out { pts, fit_pressure, secs: t0.elapsed().as_secs_f64(), dofs: model.mesh.n_dofs() }
-}
-
 fn pct(a: f64, b: f64) -> f64 {
     100.0 * (a / b - 1.0)
 }
@@ -318,6 +106,35 @@ fn the_2d_driver_equals_fealugs_limit_load_run() {
     let ours = run(c, Idealisation::Strain).at_limit();
     eprintln!("FeaLug limit_load_axial {theirs:.1} lbf, this driver {ours:.1} lbf ({:+.4} %)", pct(ours, theirs));
     assert!((ours / theirs - 1.0).abs() < 1e-3);
+}
+
+/// Pin-hole friction reaches the pin contact of an unbushed case: it raises the load at the same travel (the pin drags the
+/// bore material along as well as pushing it), and `pin_mu = 0` is the frictionless run of every recorded number.
+#[test]
+fn pin_hole_friction_raises_the_collapse_load_and_zero_friction_is_unchanged() {
+    let c = naca_75s(1.5, 0.5, 36);
+    let free = run(c, Idealisation::Strain).at_limit();
+    let rough = run(Case { pin_mu: 0.12, ..c }, Idealisation::Strain).at_limit();
+    eprintln!("plane strain collapse: frictionless {free:.1} lbf, friction 0.12 {rough:.1} lbf ({:+.2} %)", pct(rough, free));
+    assert!(rough > free * 1.01, "friction must carry load: {rough:.0} vs {free:.0}");
+    assert!(rough < free * 1.15, "friction {rough:.0} vs {free:.0} is out of the expected few-percent range");
+}
+
+/// Friction in 3D is the same contact law as in 2D: with every `uz` locked the 3D model is plane strain, with friction too.
+/// (The unlocked 3D collapse load gains more from friction than plane strain does, 15 % against 7 % on the Plate Edge
+/// window's default case, `docs/plate-edge-workbench.md`: through-thickness yielding lets the drag add to the bearing load.)
+#[test]
+fn friction_in_a_3d_model_with_uz_locked_is_the_2d_plane_strain_friction() {
+    let c = Case { pin_mu: 0.12, ..naca_75s(1.5, 0.5, 36) };
+    let e2 = run(c, Idealisation::Strain);
+    let e3 = run(c, Idealisation::Solid { layers: 1, lock_z: true });
+    eprintln!("friction 0.12: plane strain {:.1} lbf, 3D with uz = 0 {:.1} lbf ({:+.3} %)", e2.at_limit(), e3.at_limit(), pct(e3.at_limit(), e2.at_limit()));
+    assert!((e3.at_limit() / e2.at_limit() - 1.0).abs() < 2e-3);
+    // The first steps are the contact settling, where stick and slip are decided by the last digit of the load: compare the
+    // curve once it carries real load.
+    for (a, b) in e2.pts.iter().zip(&e3.pts).filter(|(a, _)| a.1 > 0.2 * e2.at_limit()) {
+        assert!((b.1 / a.1 - 1.0).abs() < 2e-3, "travel {:.4} D: 2D {:.1}, 3D {:.1}", a.0, a.1, b.1);
+    }
 }
 
 /// A thin plate has no through-thickness constraint: the 3D answer approaches plane stress as `t/D -> 0`.
@@ -514,4 +331,66 @@ fn bushed_3d() {
         let o = run(c, Idealisation::Solid { layers, lock_z: false });
         println!("3D {layers} layers {:.0} lbf ({:+.1} % vs plane strain), fit {:.0} psi, {:.0} s, {} dof", o.at_limit(), pct(o.at_limit(), strain.at_limit()), o.fit_pressure.unwrap(), o.secs, o.dofs);
     }
+}
+
+// ------------------------------------------------------------------------------------- bearing yield and convergence
+
+/// The 2 % offset load is on the curve between the first step and the collapse load, and a curve that never leaves its
+/// initial line has none.
+#[test]
+fn the_offset_load_lies_between_the_first_step_and_the_collapse_load() {
+    let o = run(naca_75s(1.5, 0.5, 36), Idealisation::Strain);
+    let onset = o.offset_load(lug_solver::bracket::OFFSET_FRACTION).expect("a plastic plate yields within 0.1 D");
+    eprintln!("2D strain: bearing yield {onset:.0} lbf, collapse {:.0} lbf", o.at_limit());
+    assert!(onset > o.pts[0].1 && onset <= o.at_limit() * 1.0001, "{onset}");
+    // A straight line through the origin never crosses its own offset.
+    let linear = Out { pts: (1..=10).map(|i| (0.01 * i as f64, 1000.0 * i as f64)).collect(), fit_pressure: None, secs: 0.0, dofs: 0, fields: None };
+    assert_eq!(linear.offset_load(0.02), None);
+    // An ideal elastic-perfectly-plastic curve with k = 100000 and yield 1000 crosses its offset at 1000 (a flat top).
+    let epp = Out { pts: (1..=10).map(|i| (0.01 * i as f64, (100_000.0 * 0.01 * i as f64).min(1000.0))).collect(), fit_pressure: None, secs: 0.0, dofs: 0, fields: None };
+    let x = epp.offset_load(0.02).unwrap();
+    assert!((x - 1000.0).abs() < 1e-6 * 1000.0, "{x}");
+}
+
+/// The departure load is where the secant stiffness has lost 5 %: exactly the yield of an elastic-perfectly-plastic curve
+/// shifted by that loss, before the collapse load, and none for a straight line.
+#[test]
+fn the_departure_load_is_where_the_stiffness_falls() {
+    // k = 100000, yield 1000 at travel 0.01: the secant is 0.95 k where P = 1000 and t = 1000 / (0.95 k).
+    let epp = Out { pts: (1..=40).map(|i| (0.0025 * i as f64, (100_000.0 * 0.0025 * i as f64).min(1000.0))).collect(), fit_pressure: None, secs: 0.0, dofs: 0, fields: None };
+    let d = epp.departure_load(0.05).unwrap();
+    assert!((d - 1000.0).abs() < 1.0, "{d}");
+    let linear = Out { pts: (1..=10).map(|i| (0.01 * i as f64, 1000.0 * i as f64)).collect(), fit_pressure: None, secs: 0.0, dofs: 0, fields: None };
+    assert_eq!(linear.departure_load(0.05), None);
+    let o = run(naca_75s(1.5, 0.5, 36), Idealisation::Strain);
+    let (dep, off) = (o.departure_load(0.05).unwrap(), o.offset_load(0.02).unwrap());
+    eprintln!("2D strain: departure {dep:.0}, 2 % offset {off:.0}, collapse {:.0}", o.at_limit());
+    assert!(dep < off && off <= o.at_limit() * 1.0001);
+}
+
+/// The convergence loop stops on the measured change: the three 2D meshes of the recorded study (36, 54, 72 around) change the
+/// collapse load by -0.6 % and -0.15 %, so a 0.5 % tolerance stops at the third, and a loose one at the second.
+#[test]
+fn the_convergence_loop_stops_when_the_load_stops_moving() {
+    let mut seen = Vec::new();
+    let c = lug_solver::bracket::converge(naca_75s(1.5, 0.5, 36), Idealisation::Strain, 0.005, 5, None, &mut |r| seen.push(r.clone())).unwrap();
+    for r in &c.steps {
+        eprintln!("around {:>3}: collapse {:.0} ({:?}), onset {:?} ({:?}), {} dof", r.around, r.collapse, r.collapse_change, r.onset, r.onset_change, r.dofs);
+    }
+    assert!(c.converged && (2..=3).contains(&c.steps.len()), "{} meshes", c.steps.len());
+    assert_eq!(seen.len(), c.steps.len(), "progress is reported after every mesh");
+    assert!(c.steps[0].collapse_change.is_none() && c.last().collapse_change.unwrap() < 0.005);
+    assert!(c.steps.windows(2).all(|w| w[1].around > w[0].around && w[1].dofs > w[0].dofs), "each mesh is finer");
+    // A tolerance no mesh can meet runs out the meshes and says it did not converge.
+    let tight = lug_solver::bracket::converge(naca_75s(1.5, 0.5, 36), Idealisation::Strain, 1e-9, 2, None, &mut |_| {}).unwrap();
+    assert!(!tight.converged && tight.steps.len() == 2);
+}
+
+/// A cancel request stops a run with an error instead of a result.
+#[test]
+fn a_cancel_request_stops_the_run() {
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let err = try_run(naca_75s(1.5, 0.5, 36), Idealisation::Strain, Some(cancel)).err().expect("cancelled");
+    eprintln!("cancelled run: {err}");
+    assert!(!err.is_empty());
 }
