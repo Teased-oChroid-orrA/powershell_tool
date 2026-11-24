@@ -120,6 +120,23 @@ fn pin_hole_friction_raises_the_collapse_load_and_zero_friction_is_unchanged() {
     assert!(rough < free * 1.15, "friction {rough:.0} vs {free:.0} is out of the expected few-percent range");
 }
 
+/// Friction in 3D is the same contact law as in 2D: with every `uz` locked the 3D model is plane strain, with friction too.
+/// (The unlocked 3D collapse load gains more from friction than plane strain does, 15 % against 7 % on the Plate Edge
+/// window's default case, `docs/plate-edge-workbench.md`: through-thickness yielding lets the drag add to the bearing load.)
+#[test]
+fn friction_in_a_3d_model_with_uz_locked_is_the_2d_plane_strain_friction() {
+    let c = Case { pin_mu: 0.12, ..naca_75s(1.5, 0.5, 36) };
+    let e2 = run(c, Idealisation::Strain);
+    let e3 = run(c, Idealisation::Solid { layers: 1, lock_z: true });
+    eprintln!("friction 0.12: plane strain {:.1} lbf, 3D with uz = 0 {:.1} lbf ({:+.3} %)", e2.at_limit(), e3.at_limit(), pct(e3.at_limit(), e2.at_limit()));
+    assert!((e3.at_limit() / e2.at_limit() - 1.0).abs() < 2e-3);
+    // The first steps are the contact settling, where stick and slip are decided by the last digit of the load: compare the
+    // curve once it carries real load.
+    for (a, b) in e2.pts.iter().zip(&e3.pts).filter(|(a, _)| a.1 > 0.2 * e2.at_limit()) {
+        assert!((b.1 / a.1 - 1.0).abs() < 2e-3, "travel {:.4} D: 2D {:.1}, 3D {:.1}", a.0, a.1, b.1);
+    }
+}
+
 /// A thin plate has no through-thickness constraint: the 3D answer approaches plane stress as `t/D -> 0`.
 #[test]
 fn a_thin_3d_plate_approaches_the_plane_stress_model() {

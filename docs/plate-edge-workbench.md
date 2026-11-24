@@ -36,7 +36,19 @@ FE bearing response (`lug_solver::bracket`, the driver of the 3D bracket study m
 the edge in a clearance or line-to-line hole, as 2D plane strain, 2D plane stress and a 3D Hex27 solid (quarter model), the
 housing elastic-perfectly-plastic at `contact_model::flow_stress`. Each gives three loads from its load-travel curve: the
 onset of yielding (secant stiffness 5 % below its initial value), the 2 % D offset load, and the collapse load at 0.1 D of
-travel, plus the deformed model coloured by equivalent plastic strain.
+travel, plus the deformed model coloured by equivalent plastic strain. The Results step shows them as a load against pin
+travel plot (one curve per idealisation, onset marked, and the contact FE collapse as a point), a table with one column per
+idealisation (onset, yield, collapse, spread against plane strain, mesh, dof, seconds) and a mesh table (one row per mesh,
+with the change from the previous one; a single graded mesh says it has no convergence check).
+
+## The picture
+
+The viewport is framed on the hole, the ligament and the free edge (about two hole diameters past the hole), and the solved
+model is mapped onto the same frame (`scene::Frame`), so the view does not jump when a result replaces the picture. Before a
+run the plate carries the pin (half disc), the free edge, the dashed shear-out planes (tangents to the hole toward the edge),
+the edge dimension `e` and labels for `e`, `D`, the planes and the free edge; the load arrow `P` (pin toward the free edge) is
+there before and after. Snapshots: `plate_edge_snapshot` in `render/snapshot_tests/fit_workbenches.rs`. The live window was not
+run in this environment (a screen capture showed only the desktop), so rendering evidence is the headless GPU snapshots.
 
 ## Mesh
 
@@ -56,6 +68,25 @@ contact AMR is 2D only and was deliberately not exposed (`docs/hybrid-meshing-am
   t = 0.125 in, t/D 0.50, friction 0.12, the plate sized as the Bushing window's contact FE sizes it): collapse 3841 lbf plane strain,
   2304 lbf plane stress, 2754 lbf in 3D, so the 2D idealisations bracket the 3D solid (end to end through the window, 104 s,
   `a_three_d_run_adds_the_solid_below_plane_strain_and_draws_it`, ignored by default).
+* **Friction in the bracket (2026-11-23).** The window's "Pin-hole friction" (0.12) reached `edge-check`'s contact FE but not the
+  FE bracket: its rigid pin contact was frictionless, so the 3841 / 2304 / 2754 lbf above are frictionless numbers for the
+  bracket (the "friction 0.12" in the case description was true only for the contact FE). `lug_solver::bracket::Case::pin_mu`
+  now applies Coulomb friction to the rigid pin of an unbushed hole (a bushed case keeps a frictionless pin and uses the
+  bushing's `mu` for its fit); the window sets it from its input. Same case, friction 0.12 (clearance fit 0.002 in, graded
+  36 around, 2 layers in 3D): plane strain 4110 lbf (+7.0 % on 3841), plane stress 2679 lbf (+16.3 % on 2304), 3D 3176 lbf
+  (+15.3 % on 2754; 120.6 s at 17205 dof, 99 to 105 s without friction). The bracket still holds: plane stress < 3D < plane
+  strain. The 3D run with friction converges; it only needs a little over two minutes, so the window test that waits for it
+  has a 600 s limit (a 120 s limit had made it look like a stall). Proofs in `lug-solver/tests/edge_3d_bracket.rs`: NACA 75S
+  e/D 1.5 plane strain 13728.3 -> 14547.2 lbf (+5.97 %) with friction 0.12, `pin_mu = 0` unchanged, and a 3D model with every
+  `uz` locked equals plane strain with friction (14547.4 vs 14547.2 lbf). The reason the friction gain is larger in plane
+  stress and 3D than in plane strain was not investigated: the numbers are measured, the cause is not claimed.
+* **The two 2D collapse numbers.** The allowables table's "Collapse (contact FE, plane strain)" is `edge-check`'s own
+  contact FE (its Q9 lattice, penalty contact, the pin as a conformed core): 4248 lbf on this case. The FE bracket's "2D plane
+  strain (FE bracket)" is `lug-solver` on the general `fea-core` kernel: 4110 lbf, **-3.2 %** against it. Before the friction fix
+  the gap was -9.6 % (3841 against 4248), mostly the missing friction. Both read the load at 0.1 D of travel with the same
+  flow stress (`contact_model::flow_stress`), the same friction and a rigid pin; what is left is two independent
+  discretisations and contact algorithms, which is the size a mesh and a contact law move a collapse load. No cause beyond
+  that is claimed. The window names each number by its model and plots the contact FE value on the bracket's load-travel curves.
 * With the perfectly plastic housing the curve is flat by about 0.05 D, so the 2 % offset load is within about 1 % of the
   collapse load. The housing law has no hardening: the FE cannot separate bearing yield from ultimate the way the tabulated
   `Fbry` and `Fbru` do, which is why the bearing-onset row is the handbook number and the FE shows onset, yield and collapse

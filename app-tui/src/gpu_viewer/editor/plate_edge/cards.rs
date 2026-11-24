@@ -10,7 +10,8 @@ use crate::gpu_viewer::{
         session::{EditorAction, Tone},
     },
     menu::{Entry, Item, Menu},
-    ui::{DockItem, RibbonTab, TreeNode},
+    page::{Cell, Column, DockTable, TableRow},
+    ui::{DockItem, Mark, Plot, RibbonTab, Series, TreeNode},
 };
 use crate::toolboxes::fastener_hole::model::format_for_edit;
 use edge_check::modes::{Group, ModeRow, ModesResult};
@@ -232,7 +233,7 @@ impl PlateEdgeSession {
                     None => items.push(line("No mode has a number: see Results.", Tone::Warn)),
                 }
                 for l in &o.lines {
-                    items.push(DockItem::field(l.label, format!("collapse {}", lb(l.last().collapse)), Tone::Normal, None, false));
+                    items.push(DockItem::field(fe_name(l.label), format!("collapse {}", lb(l.last().collapse)), Tone::Normal, None, false));
                 }
                 if let Some(note) = &o.fe_note {
                     items.push(line(format!("FE not run: {note}."), Tone::Warn));
@@ -256,7 +257,7 @@ impl PlateEdgeSession {
         if o.kind != Kind::Quick || !o.lines.is_empty() {
             cards.push(self.fe_card(o, stale));
         }
-        if o.lines.iter().any(|l| l.meshes.len() > 1) {
+        if !o.lines.is_empty() {
             cards.push(self.convergence_card(o));
         }
         cards.push(self.notes_card());
@@ -295,34 +296,51 @@ impl PlateEdgeSession {
         if let Some(note) = &o.fe_note {
             items.push(line(format!("FE not run: {note}."), Tone::Warn));
         }
-        for l in &o.lines {
-            items.extend(fe_items(l));
-        }
         if !o.lines.is_empty() {
+            items.push(curve_plot(o));
+            items.push(DockItem::Table(Box::new(line_table(o))));
             items.push(line("Pin load toward the edge. Onset: where the load-travel line has lost 5 % of its initial stiffness. Yield: its 2 % D offset. Collapse: the load at 0.1 D of pin travel. The housing is elastic-perfectly-plastic, so yield and collapse sit close together: the table's bearing-onset row is the handbook Fbry, not this.", Tone::Dim));
+            items.push(line(FE_MODELS_NOTE, Tone::Dim));
         }
         if let Some(c2) = o.modes.as_ref().ok().and_then(|m| m.rows.iter().find(|r| r.id == "collapse")).and_then(|r| r.contact) {
-            items.push(DockItem::field("Contact FE collapse (plane strain, advisory)", lb(c2), Tone::Normal, None, false));
+            items.push(DockItem::field("Collapse, edge-check contact FE (plane strain)", lb(c2), Tone::Normal, None, false));
+            if let Some(b) = o.lines.iter().find(|l| l.label == "2D plane strain") {
+                items.push(line(format!("The FE bracket's plane strain collapse is {:+.1} % against it.", 100.0 * (b.last().collapse / c2 - 1.0)), Tone::Dim));
+            }
         }
         Card::new("plate-edge-fe", "FE bearing response", Relevance::Info, items).for_steps(&["Results"]).tag(if o.lines.iter().any(|l| l.label.starts_with("3D")) { "2D + 3D" } else { "2D" })
     }
 
+    /// Every mesh of every FE line: its collapse load and how much it moved from the previous mesh. One mesh (the graded
+    /// mode) has no change to show; the card says so.
     fn convergence_card(&self, o: &Outcome) -> Card {
-        let mut items = Vec::new();
-        for l in o.lines.iter().filter(|l| l.meshes.len() > 1) {
-            items.push(line(l.label, Tone::Title));
+        let mut rows = Vec::new();
+        for l in &o.lines {
             for r in &l.meshes {
-                items.push(DockItem::field(
-                    format!("{} around, {} layers", r.around, r.layers),
-                    format!("{}  {}", lb(r.collapse), r.collapse_change.map_or_else(|| "first mesh".to_string(), |c| format!("change {}", pct(c)))),
-                    Tone::Normal,
-                    None,
-                    false,
-                ));
+                rows.push(TableRow {
+                    cells: vec![text(short_title(l.label), Tone::Normal), text(format!("{} x {}", r.around, r.layers), Tone::Normal), text(lb(r.collapse), Tone::Normal), text(r.dofs.to_string(), Tone::Dim), text(r.collapse_change.map_or_else(|| "first mesh".to_string(), |c| pct(c)), Tone::Normal)],
+                    governing: false,
+                });
             }
-            items.push(line(if l.converged { "Converged: the last change is under the tolerance." } else { "Not converged within the meshes allowed: the last change is above the tolerance." }, if l.converged { Tone::On } else { Tone::Warn }));
         }
-        Card::new("plate-edge-convergence", "Mesh convergence", Relevance::Info, items).for_steps(&["Results"])
+        let multi = o.lines.iter().any(|l| l.meshes.len() > 1);
+        let all_converged = o.lines.iter().all(|l| l.converged);
+        let (footer, tone) = if !multi {
+            ("One mesh per model: no convergence check. Choose Mesh: Graded + converge to repeat on finer meshes.".to_string(), Tone::Dim)
+        } else if all_converged {
+            ("Converged: the last change of every model is under the tolerance.".to_string(), Tone::On)
+        } else {
+            ("Not converged within the meshes allowed: the last change of a model is above the tolerance.".to_string(), Tone::Warn)
+        };
+        let table = DockTable {
+            columns: vec![Column::new("Model", 2.0), Column::new("Mesh", 1.3), Column::new("Collapse", 1.4).right(), Column::new("Dof", 1.0).right().optional(), Column::new("Change", 1.8).right()],
+            rows,
+            add: None,
+            footer,
+            footer_tone: Some(tone),
+            hint: String::new(),
+        };
+        Card::new("plate-edge-convergence", "Mesh convergence", Relevance::Info, vec![DockItem::Table(Box::new(table))]).for_steps(&["Results"])
     }
 
     fn notes_card(&self) -> Card {
@@ -347,7 +365,7 @@ impl PlateEdgeSession {
             Ok(m) => {
                 let gov = m.governing.map(|g| &m.rows[g]).map_or_else(|| "no mode has a number".to_string(), |r| format!("governing {}: {}", r.label.to_lowercase(), opt(r.lowest())));
                 match o.lines.iter().find(|l| l.label.starts_with("3D")).or_else(|| o.lines.first()) {
-                    Some(l) => format!("{gov}. FE {} collapse {}.", l.label, lb(l.last().collapse)),
+                    Some(l) => format!("{gov}. FE {} collapse {}.", fe_name(l.label), lb(l.last().collapse)),
                     None => format!("{gov}."),
                 }
             }
@@ -388,7 +406,7 @@ impl PlateEdgeSession {
                     t += &format!("\nFE not run: {n}.\n");
                 }
                 for l in &o.lines {
-                    t += &format!("\n{}\n", l.label);
+                    t += &format!("\n{}\n", fe_name(l.label));
                     for r in &l.meshes {
                         t += &format!("  {} around, {} layers, {} dof: onset {}, yield {}, collapse {}, {:.1} s\n", r.around, r.layers, r.dofs, opt(r.departure), opt(r.onset), lb(r.collapse), r.secs);
                     }
@@ -466,13 +484,77 @@ fn row_items(r: &ModeRow, governing: bool) -> Vec<DockItem> {
     items
 }
 
-/// One FE idealisation: its last mesh's three loads and size.
-fn fe_items(l: &FeLine) -> Vec<DockItem> {
-    let r = l.last();
-    vec![
-        DockItem::field(l.label, format!("collapse {}", lb(r.collapse)), Tone::Normal, None, false),
-        line(format!("onset {}  |  yield (2 % D) {}  |  {} dof, {:.1} s", opt(r.departure), opt(r.onset), r.dofs, r.secs), Tone::Dim),
-    ]
+/// What the FE lines are and how they differ from the contact FE row of the allowables table.
+const FE_MODELS_NOTE: &str = "FE bracket: lug-solver on the general kernel, a rigid pin, the plate's flow stress, friction, load read at 0.1 D. The contact FE row of the allowables is edge-check's own independent plane strain solver; the two share the physics but not the mesh or the contact algorithm, so they differ by their discretisation.";
+
+fn text(t: impl Into<String>, tone: Tone) -> Cell {
+    Cell::Text { text: t.into(), tone, action: None, editing: false }
+}
+
+/// A FE line's column title: "2D strain", "2D stress", "3D solid".
+fn short_title(label: &str) -> String {
+    label.replace(" plane", "")
+}
+
+/// A FE line's name where both FE solvers appear: "2D plane strain (FE bracket)".
+fn fe_name(label: &str) -> String {
+    format!("{label} (FE bracket)")
+}
+
+/// Pin travel (in D) at which a curve first reaches `load`, by linear interpolation.
+fn travel_at(curve: &[(f64, f64)], load: f64) -> Option<f64> {
+    let mut prev = (0.0, 0.0);
+    for &(t, p) in curve {
+        if p >= load {
+            let w = if p > prev.1 { (load - prev.1) / (p - prev.1) } else { 1.0 };
+            return Some(prev.0 + w * (t - prev.0));
+        }
+        prev = (t, p);
+    }
+    None
+}
+
+/// Load against pin travel of every FE line (last mesh), the onset of yielding marked on each, and the contact FE's collapse
+/// where the allowables have it.
+fn curve_plot(o: &Outcome) -> DockItem {
+    let mut plot = Plot { x_label: "Pin travel / D".into(), y_label: "Load, lbf".into(), ..Plot::default() };
+    for (k, l) in o.lines.iter().enumerate() {
+        let r = l.last();
+        let color = (k % 3) as u8;
+        plot.series.push(Series { label: l.label.to_string(), points: r.curve.iter().map(|&(t, p)| [t, p]).collect(), color, dashed: l.label.starts_with("2D plane stress") });
+        if let Some(at) = r.departure.and_then(|d| travel_at(&r.curve, d).map(|t| [t, d])) {
+            plot.marks.push(Mark { at, text: if plot.marks.is_empty() { "onset of yielding".into() } else { String::new() }, color });
+        }
+    }
+    if let Some(c) = o.modes.as_ref().ok().and_then(|m| m.rows.iter().find(|r| r.id == "collapse")).and_then(|r| r.contact) {
+        plot.marks.push(Mark { at: [lug_solver::bracket::D_OVER_D, c], text: "edge-check contact FE".into(), color: 0 });
+    }
+    DockItem::Plot(plot)
+}
+
+/// The FE lines side by side: one column per idealisation, the three loads, the size and the spread against plane strain.
+fn line_table(o: &Outcome) -> DockTable {
+    let mut columns = vec![Column::new("", 2.4)];
+    columns.extend(o.lines.iter().map(|l| Column::new(&short_title(l.label), 1.2).right()));
+    let per = |f: &dyn Fn(&FeLine) -> String| -> Vec<Cell> { o.lines.iter().map(|l| text(f(l), Tone::Normal)).collect() };
+    let row = |title: &str, tone: Tone, cells: Vec<Cell>, governing: bool| {
+        let mut all = vec![text(title, tone)];
+        all.extend(cells);
+        TableRow { cells: all, governing }
+    };
+    let base = o.lines.iter().find(|l| l.label == "2D plane strain").map(|l| l.last().collapse);
+    let mut rows = vec![
+        row("Onset (5 % loss)", Tone::Normal, per(&|l| opt(l.last().departure)), false),
+        row("Yield (2 % D)", Tone::Normal, per(&|l| opt(l.last().onset)), false),
+        row("Collapse (0.1 D)", Tone::Title, per(&|l| lb(l.last().collapse)), true),
+    ];
+    if let Some(b) = base.filter(|_| o.lines.len() > 1) {
+        rows.push(row("vs plane strain", Tone::Dim, per(&|l| if l.label == "2D plane strain" { "-".into() } else { format!("{:+.1} %", 100.0 * (l.last().collapse / b - 1.0)) }), false));
+    }
+    rows.push(row("Mesh", Tone::Dim, per(&|l| format!("{} x {}", l.last().around, l.last().layers)), false));
+    rows.push(row("Dof", Tone::Dim, per(&|l| l.last().dofs.to_string()), false));
+    rows.push(row("Time", Tone::Dim, per(&|l| format!("{:.1} s", l.last().secs)), false));
+    DockTable { columns, rows, add: None, footer: String::new(), footer_tone: None, hint: String::new() }
 }
 
 #[allow(dead_code)]

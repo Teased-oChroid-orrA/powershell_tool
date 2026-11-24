@@ -257,7 +257,7 @@ pub fn analyse(i: &ModesInput) -> Result<ModesResult, String> {
         },
         ModeRow {
             id: "collapse",
-            label: "Collapse (ultimate, 2D FE)",
+            label: "Collapse (contact FE, plane strain)",
             basis: "elastic-plastic contact FE, pin driven to 0.1 D travel (plane strain, advisory)",
             group: Group::Plate,
             handbook: None,

@@ -544,7 +544,7 @@ fn fastener_snapshot() {
                 view: &view,
                 scenes: &scenes,
                 selected: 0,
-                editor: Some(session as &dyn Authoring),
+                editor: Some(&*session as &dyn Authoring),
                 error: None,
                 box_drag: None,
                 overlay: &[],
@@ -618,7 +618,7 @@ fn assembly_snapshot() {
                 view: &view,
                 scenes: &scenes,
                 selected: 0,
-                editor: Some(session as &dyn Authoring),
+                editor: Some(&*session as &dyn Authoring),
                 error: None,
                 box_drag: None,
                 overlay: &[],
@@ -678,8 +678,8 @@ fn assembly_snapshot() {
     });
 }
 
-/// The Plate Edge window after a 2D run (clearance fit): the inspector with the allowables and the solved model by
-/// plastic strain, wide and dark, plus the graded plate before any run in light:
+/// The Plate Edge window: the picture before any run (light and dark), then after a 2D + 3D run (about four minutes) the
+/// Inputs step with the solved model and the Results step, dark and light:
 /// `FEA_SNAPSHOT_PLATE_EDGE_OUT=/dir cargo test ... plate_edge_snapshot -- --ignored`.
 #[test]
 #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_PLATE_EDGE_OUT"]
@@ -697,24 +697,14 @@ fn plate_edge_snapshot() {
             if !s.solving() && s.status() != "Computing the allowables..." {
                 break;
             }
-            assert!(t.elapsed().as_secs() < 300);
+            assert!(t.elapsed().as_secs() < 900, "the run did not finish");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     };
-    let mut inputs = PlateEdgeInputs::default();
-    inputs.fit = FitKind::Clearance;
-    inputs.fit_value = 0.002;
-    inputs.edge = 0.5;
-    for (name, run, dark) in [("plate-edge-run", true, true), ("plate-edge-light", false, false)] {
-        let mut session = PlateEdgeSession::new(inputs.clone(), "Plate edge".into(), std::env::temp_dir().join(format!("{name}-snapshot.json")));
-        wait(&mut session);
-        if run {
-            session.act(EditorAction::PlateEdge(PlateEdgeAct::Run(Kind::TwoD)));
-            wait(&mut session);
-        }
+    let shot = |session: &mut PlateEdgeSession, name: &str, dark: bool, h: u32| {
         pollster::block_on(async {
             let adapter = test_adapter().await.expect("adapter required");
-            let (w, h) = (1500u32, 1500u32);
+            let w = 1500u32;
             let scene = session.scene().unwrap();
             let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
             let texture = target(&r, w, h);
@@ -724,10 +714,24 @@ fn plate_edge_snapshot() {
             view.style = crate::gpu_viewer::display::DisplayStyle::ShadedEdges;
             view.show_mesh = true;
             let scenes = [scene];
-            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&*session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
             draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
             draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
             std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
         });
-    }
+    };
+    let mut inputs = PlateEdgeInputs::default();
+    inputs.fit = FitKind::Clearance;
+    inputs.fit_value = 0.002;
+    inputs.edge = 0.5;
+    let mut session = PlateEdgeSession::new(inputs, "Plate edge".into(), std::env::temp_dir().join("plate-edge-snapshot.json"));
+    wait(&mut session);
+    shot(&mut session, "plate-edge-picture-light", false, 1500);
+    shot(&mut session, "plate-edge-picture-dark", true, 1500);
+    session.act(EditorAction::PlateEdge(PlateEdgeAct::Run(Kind::ThreeD)));
+    wait(&mut session);
+    shot(&mut session, "plate-edge-inputs-3d-dark", true, 1500);
+    session.act(EditorAction::PlateEdge(PlateEdgeAct::Step("Results")));
+    shot(&mut session, "plate-edge-results-3d-dark", true, 2400);
+    shot(&mut session, "plate-edge-results-3d-light", false, 2400);
 }

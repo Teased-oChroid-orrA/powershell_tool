@@ -202,6 +202,8 @@ pub struct Refinement {
     /// Relative change of the collapse load and of the onset load against the previous mesh.
     pub collapse_change: Option<f64>,
     pub onset_change: Option<f64>,
+    /// The load-travel curve of this mesh: `(pin travel / D, load lbf)` after every step.
+    pub curve: Vec<(f64, f64)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -249,7 +251,7 @@ pub fn converge_with(case: Case, ideal: Idealisation, tol: f64, max_meshes: usiz
         let (collapse, onset) = (out.at_limit(), out.offset_load(OFFSET_FRACTION));
         let rel = |a: f64, b: f64| ((a - b) / b).abs();
         let prev = steps.last();
-        let r = Refinement { around, layers, collapse, onset, departure: out.departure_load(DEPARTURE_DROP), secs: out.secs, dofs: out.dofs, collapse_change: prev.map(|p| rel(collapse, p.collapse)), onset_change: prev.and_then(|p| Some(rel(onset?, p.onset?))) };
+        let r = Refinement { around, layers, collapse, onset, departure: out.departure_load(DEPARTURE_DROP), secs: out.secs, dofs: out.dofs, collapse_change: prev.map(|p| rel(collapse, p.collapse)), onset_change: prev.and_then(|p| Some(rel(onset?, p.onset?))), curve: std::mem::take(&mut out.pts) };
         progress(&r, out.fields.take());
         let done = r.collapse_change.is_some_and(|c| c < tol) && r.onset_change.is_none_or(|c| c < tol);
         steps.push(r);

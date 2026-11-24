@@ -8,13 +8,18 @@ fn session() -> PlateEdgeSession {
 }
 
 fn wait(s: &mut PlateEdgeSession) {
+    wait_up_to(s, 120);
+}
+
+/// `wait` with a longer limit (a 3D run with friction takes about two minutes by itself).
+fn wait_up_to(s: &mut PlateEdgeSession, secs: u64) {
     let t = Instant::now();
     loop {
         s.poll();
         if s.job.is_none() && !s.quick_due {
             return;
         }
-        assert!(t.elapsed() < Duration::from_secs(120), "the run did not finish");
+        assert!(t.elapsed() < Duration::from_secs(secs), "the run did not finish");
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -234,13 +239,151 @@ fn a_three_d_run_adds_the_solid_below_plane_strain_and_draws_it() {
     s.changed();
     wait(&mut s);
     s.act(EditorAction::PlateEdge(PlateEdgeAct::Run(run::Kind::ThreeD)));
-    wait(&mut s);
+    wait_up_to(&mut s, 600);
     let o = s.outcome.as_ref().unwrap();
     assert!(o.fe_note.is_none(), "{:?}", o.fe_note);
     let get = |label: &str| o.lines.iter().find(|l| l.label == label).unwrap_or_else(|| panic!("no {label} line")).last().collapse;
     let (strain, stress, solid) = (get("2D plane strain"), get("2D plane stress"), get("3D solid"));
     eprintln!("plane strain {strain:.0}, plane stress {stress:.0}, 3D {solid:.0}");
     assert!(stress < solid && solid < strain, "the 2D idealisations bracket the 3D answer");
+    // The results step has the load-travel plot with a curve per line, and the lines side by side.
+    let fe = s.inspector().into_iter().find(|c| c.id == "plate-edge-fe").unwrap();
+    let plot = fe.items.iter().find_map(|i| if let DockItem::Plot(p) = i { Some(p) } else { None }).expect("a load-travel plot");
+    assert_eq!(plot.series.len(), 3);
+    let table = fe.items.iter().find_map(|i| if let DockItem::Table(t) = i { Some(t) } else { None }).expect("the lines side by side");
+    assert_eq!(table.columns.len(), 4, "a label column and one column per FE line");
     assert_eq!(super::scene::pick_fields(o).map(|l| l.label), Some("3D solid"));
     assert!(s.scene().is_ok() && s.shows_result());
+}
+
+/// Exploration of the window's default case (clearance fit) in the bracket, 2D plane strain and 3D, without and with pin-hole friction
+/// (`BRACKET_TRACE=1` prints the solver's progress). Minutes: `-- --ignored --nocapture`.
+#[test]
+#[ignore = "exploration: minutes"]
+fn explore_default_case_friction() {
+    use lug_solver::bracket::{try_run, Idealisation};
+    let mut inputs = PlateEdgeInputs::default();
+    inputs.fit = inputs::FitKind::Clearance;
+    inputs.fit_value = 0.002;
+    let case = inputs.bracket_case().unwrap();
+    for (name, ideal) in [("2D strain", Idealisation::Strain), ("2D stress", Idealisation::Stress), ("3D", inputs.solid())] {
+        for mu in [0.0, inputs.friction] {
+            let t = Instant::now();
+            let r = try_run(lug_solver::bracket::Case { pin_mu: mu, ..case }, ideal, None);
+            match r {
+                Ok(o) => println!("{name} mu {mu}: collapse {:.0} lbf, {} dof, {:.1} s", o.at_limit(), o.dofs, t.elapsed().as_secs_f64()),
+                Err(e) => println!("{name} mu {mu}: FAILED after {:.1} s: {e}", t.elapsed().as_secs_f64()),
+            }
+        }
+    }
+}
+
+/// A 2D run on the clearance fit (seconds), used by the result-step tests: the scene before the run, and the session after it.
+fn after_a_2d_run() -> (PlateEdgeSession, Scene) {
+    let mut s = session();
+    s.inputs.fit = inputs::FitKind::Clearance;
+    s.inputs.fit_value = 0.002;
+    s.changed();
+    wait(&mut s);
+    let before = s.scene().unwrap();
+    s.act(EditorAction::PlateEdge(PlateEdgeAct::Run(run::Kind::TwoD)));
+    wait(&mut s);
+    assert!(s.shows_result());
+    (s, before)
+}
+
+/// A scene vertex within `tol` scene units of `at`.
+fn has_point(scene: &Scene, at: [f32; 2], tol: f32) -> bool {
+    scene.positions.iter().any(|p| (p[0] - at[0]).hypot(p[1] - at[1]) < tol)
+}
+
+#[test]
+fn the_picture_and_the_result_share_one_framing_on_the_hole_ligament_and_edge() {
+    let (mut s, before) = after_a_2d_run();
+    let after = s.scene().unwrap();
+    let f = scene::Frame::of(&s.inputs);
+    // The free edge on the load line and the top of the hole wall sit where the one frame puts them, before and after.
+    // (Within a mesh spacing: the hole wall has a node every 10 degrees, so not exactly at its top.)
+    for (x, y, tol) in [(-f.e, 0.0, 1e-4), (0.0, 0.5 * f.d, 0.02), (0.5 * f.d, 0.0, 0.02)] {
+        let at = f.xy(x, y);
+        assert!(has_point(&before, at, tol), "the picture has no point at model ({x}, {y}) = scene {at:?}");
+        assert!(has_point(&after, at, tol), "the result has no point at model ({x}, {y}) = scene {at:?}");
+    }
+    // The framed region fits the unit span: the hole, the ligament and the edge are in view.
+    for (x, y) in [(-f.e, 0.0), (2.0 * f.d, 2.0 * f.d)] {
+        let [a, b] = f.xy(x, y);
+        assert!(a.abs() <= 0.5 && b.abs() <= 0.5, "({x}, {y}) maps outside the view: {a}, {b}");
+    }
+}
+
+#[test]
+fn the_picture_draws_the_pin_the_free_edge_and_the_planes_in_front_of_the_plate() {
+    let mut s = session();
+    let scene = s.scene().unwrap();
+    assert!(scene.validate().is_ok());
+    let code = |c: f32| scene.samples.iter().filter(|v| v[3] == c).count();
+    assert!(code(2.0) >= 3 * 40, "the pin half-disc: {} vertices", code(2.0));
+    assert!(code(3.0) >= 3 * 10, "the free edge, the planes and the edge dimension: {} vertices", code(3.0));
+    // Annotations sit in front of the plate (smaller scene z) and are the only vertices there.
+    let front = scene.positions.iter().filter(|p| p[2] < 0.0).count();
+    assert_eq!(front, code(2.0) + code(3.0));
+    assert_eq!(scene::KEY_LABELS, ["Plate", "Hole wall", "Pin", "Free edge, planes"]);
+}
+
+#[test]
+fn the_load_arrow_is_always_there_and_the_dimensions_only_before_a_result() {
+    use crate::gpu_viewer::editor::authoring::OverlayKind;
+    use crate::gpu_viewer::editor::camera::Camera;
+    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] };
+    let size = [800.0, 800.0];
+    let (done, _) = after_a_2d_run();
+    let mut open = session();
+    open.inputs.fit = inputs::FitKind::Clearance;
+    open.inputs.fit_value = 0.002;
+    let before = Authoring::overlay(&open, &cam, size);
+    let after = Authoring::overlay(&done, &cam, size);
+    let arrow = |v: &[crate::gpu_viewer::editor::authoring::Overlay]| v.iter().filter(|o| o.kind == OverlayKind::Load).count();
+    assert_eq!((arrow(&before), arrow(&after)), (1, 1));
+    let named = |v: &[crate::gpu_viewer::editor::authoring::Overlay], start: &str| v.iter().any(|o| o.text.starts_with(start));
+    for want in ["e = ", "D ", "shear-out", "free edge"] {
+        assert!(named(&before, want) && !named(&after, want), "{want}: before {}, after {}", named(&before, want), named(&after, want));
+    }
+    // The arrow runs from the pin toward the free edge and stays on screen.
+    let a = before.iter().find(|o| o.kind == OverlayKind::Load).unwrap();
+    let tip = a.tip.unwrap();
+    assert!(tip[0] < a.px[0], "the load points toward the free edge, at the left");
+    for v in [a.px, tip] {
+        assert!(v[0] >= 0.0 && v[0] <= size[0] && v[1] >= 0.0 && v[1] <= size[1], "{v:?} off screen");
+    }
+}
+
+#[test]
+fn the_results_step_names_each_collapse_number_by_its_model_and_shows_plot_and_tables() {
+    let (s, _) = after_a_2d_run();
+    let t = texts(&s).join("\n");
+    assert!(t.contains("Collapse (contact FE, plane strain)") || t.contains("Collapse, edge-check contact FE (plane strain)"), "{t}");
+    assert!(t.contains("2D plane strain (FE bracket)") && t.contains("2D plane stress (FE bracket)"), "{t}");
+    assert!(!t.contains("ultimate, 2D FE"));
+    let cards = s.inspector();
+    let fe = cards.iter().find(|c| c.id == "plate-edge-fe").unwrap();
+    let plot = fe.items.iter().find_map(|i| if let DockItem::Plot(p) = i { Some(p) } else { None }).expect("a load-travel plot");
+    assert_eq!(plot.series.len(), 2);
+    let last = |l: &run::FeLine| *l.last().curve.last().unwrap();
+    let o = s.outcome.as_ref().unwrap();
+    for (series, line) in plot.series.iter().zip(&o.lines) {
+        assert!(series.points.len() >= 6, "{} points", series.points.len());
+        let end = series.points.last().unwrap();
+        assert!((end[1] - line.last().collapse).abs() < 1e-6 * line.last().collapse && (end[0] - last(line).0).abs() < 1e-12, "the curve ends at the collapse load");
+    }
+    assert!(plot.marks.iter().any(|m| m.text.contains("edge-check")), "the contact FE collapse is marked on the curve");
+    // The lines side by side: a label column and one column per line, the collapse row and the spread against plane strain.
+    let table = fe.items.iter().find_map(|i| if let DockItem::Table(t) = i { Some(t) } else { None }).expect("a 2D | 3D table");
+    assert_eq!(table.columns.len(), 3);
+    let rows = DockItem::Table(table.clone()).plain_text().unwrap();
+    assert!(rows.contains("Collapse (0.1 D)") && rows.contains("vs plane strain") && rows.contains("Dof"), "{rows}");
+    // The convergence table exists for one mesh too, and says there is no convergence check.
+    let conv = cards.iter().find(|c| c.id == "plate-edge-convergence").expect("a convergence card after any FE run");
+    let DockItem::Table(ct) = &conv.items[0] else { panic!("a table") };
+    assert_eq!(ct.rows.len(), 2);
+    assert!(ct.footer.contains("no convergence check"), "{}", ct.footer);
 }

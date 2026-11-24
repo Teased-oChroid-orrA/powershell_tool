@@ -13,7 +13,9 @@ Does not own: any mechanics (`edge-check/AGENTS.md`, `lug-solver/AGENTS.md`), th
 | Inputs, `Field`/`Prop` numeric rows with validation, library search, fit kinds, `modes_input` / `bracket_case` / `picture_case`, the case file | `inputs.rs` |
 | `Job` (worker thread, cancel flag, per-mesh progress), `Outcome`, `FeLine`, which lines a run makes | `run.rs` |
 | Cards (plate, pin, fit, geometry, mesh, run, allowables, FE, convergence, limits), status line, report text, tree, ribbon, menus | `cards.rs` |
-| The plate before a run (graded quarter plate) and the solved model by equivalent plastic strain | `scene.rs` |
+| The picture: `Frame` (the one framing), the plate before a run with pin, free edge, shear-out planes and edge dimension drawn on it, the solved model by equivalent plastic strain | `scene.rs` |
+| The viewport labels (`Authoring::overlay`): load arrow P always, `e = ..`, `D`, planes and free-edge labels only before a result | `mod.rs` |
+| Results step: the load-travel plot, the 2D / 3D columns table, the convergence table | `cards.rs` (`curve_plot`, `line_table`, `convergence_card`) |
 
 ## Contracts
 - **A result is fresh only for the exact inputs it ran for** (`Outcome::inputs == inputs`, `current()`); a stale one is labelled, not drawn.
@@ -23,6 +25,13 @@ Does not own: any mechanics (`edge-check/AGENTS.md`, `lug-solver/AGENTS.md`), th
 - A cancel (`Esc`, Cancel) sets the solver's interrupt flag: the run ends at the next Newton step with the lines finished so far.
 - Library strengths are read from `mechanics_core::materials`; `Fbry` comes from `MaterialExtras` (handbook entries only), so the curated typicals have no bearing-onset row until typed.
 
+- **Both views share one framing** (`scene::Frame::of(inputs)`: hole, ligament and free edge, about 2 D beyond the hole, `FILL` of the view). `reframe` maps the result scene onto it (positions, displacement samples and `gain`), so the camera does not jump when a result replaces the picture, and the overlay positions (`Frame::point`) stay valid for both.
+- **Two collapse numbers, two names.** The allowables row "Collapse (contact FE, plane strain)" is `edge-check`'s own contact FE; the FE lines are "(FE bracket)" (`lug-solver`). They agree on the physics (rigid pin, `contact_model::flow_stress`, friction `PlateEdgeInputs::friction`, load at 0.1 D) and differ by discretisation and contact algorithm: measured gap in `docs/plate-edge-workbench.md`. Never merge them into one row.
+- **The pin-hole friction reaches the bracket** through `Case::pin_mu` (`picture_case` / `bracket_case` set it from the input). Before 2026-11-23 the bracket was frictionless although the input said 0.12.
+- **Every FE line keeps its load-travel curve** (`Refinement::curve`); the plot and the "onset" marks read it. Do not recompute a curve in the cards.
+
 ## Pitfalls
+- Annotations in the picture are flat triangles at scene z = `-LIFT` (in front of the plate), vertices coded 2 (pin) and 3 (edge, planes, dimension); the geometry view reads codes 0..3 (`KEY_LABELS`), so the scene range must stay `[0, 3]`.
+- A 3D run with friction is about two minutes by itself (115 s at the default mesh vs 99 s frictionless): tests that wait for one need a limit above 120 s (`wait_up_to`).
 - A full `Run 2D + 3D` is minutes (the 3D solid alone is about 150 s at the default mesh); tests that run it must cancel or use the 2D run.
 - The scene colours the solved model by nodal-averaged equivalent plastic strain (`bracket::Fields::plastic`), not stress.
