@@ -62,6 +62,8 @@ What the mockup shows that the engines do not back (not added, nothing made up):
   rows show "-". The 2D FE column is plane strain; plane stress stays in the plot, the FE card and the convergence card.
 * A Library | Custom pin switch: the engine distinguishes a specification class from a material, so the pin has three sources.
 
+In a result the plate's own annotations are overlays (`OverlayKind::Line` / `Dashes`): the dashed shear-out planes from the free edge to the hole on both sides, the e dimension with end ticks, each label on its geometry, and one caption line along the bottom of the view.
+
 Overlay bug found on the way: the workbench branch of `Gui::build` returns before the common path, so `model_labels` was never
 called and the load arrow, the pin disc and every caption were dropped (the hole drew black). Fixed by calling it in that
 branch; a headless test runs the real `Gui` and checks the painted disc and captions.
@@ -71,7 +73,7 @@ branch; a headless test runs the real `Gui` and checks the painted disc and capt
 The solve is on half the plate (symmetric about the load line); the drawing mirrors the half model about the load line
 (`scene::mirror`: nodes, triangles with reversed winding, every frame's displacement and scalar samples; nodes on the line are
 shared, so the seam draws no line), so the hole and the pin are whole circles and the plastic-strain contour is symmetric. The
-caption "solved on half, mirrored about the load line" says so. The viewport is framed on the hole, the ligament and the free
+caption "half model, mirrored about the load line" says so. The viewport is framed on the hole, the ligament and the free
 edge (about two hole diameters past the hole, two above and two below the load line), and the solved model is mapped onto the
 same frame (`scene::Frame`), so the view does not jump when a result replaces the picture. Before a run the plate carries the
 pin, the free edge, both dashed shear-out planes (tangents to the hole toward the edge), the edge dimension `e` under the hole

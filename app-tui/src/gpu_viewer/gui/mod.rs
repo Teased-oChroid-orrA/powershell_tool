@@ -832,6 +832,17 @@ impl Gui {
                     let [kr, kg, kb] = input.view.key_colours[2];
                     back.circle(at, (tip - at).length(), Color32::from_rgb(kr, kg, kb), egui::Stroke::new(1.5, p.text));
                 }
+                OverlayKind::Line | OverlayKind::Dashes => {
+                    let Some(tip) = o.tip else { continue };
+                    let tip = Pos2::new(origin.x + tip[0] / ppp, origin.y + tip[1] / ppp);
+                    let [kr, kg, kb] = input.view.key_colours[3];
+                    let stroke = egui::Stroke::new(2.0, Color32::from_rgb(kr, kg, kb));
+                    if o.kind == OverlayKind::Dashes {
+                        back.extend(egui::Shape::dashed_line(&[at, tip], stroke, 8.0, 6.0));
+                    } else {
+                        back.line_segment([at, tip], stroke);
+                    }
+                }
                 OverlayKind::Support => {
                     let out = o
                         .tip

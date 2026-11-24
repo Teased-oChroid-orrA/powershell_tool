@@ -27,9 +27,9 @@ use crate::gpu_viewer::{
 use inputs::{Field, FitKind, MeshMode, PinSource, PlateEdgeInputs, Source};
 
 /// The caption of the picture: the solve is on half the plate, the drawing mirrors it.
-/// The result's caption: what the picture shows of the pin and the hole.
-pub(crate) const PIN_TRAVEL: &str = "pin travel 0.1 D: the hole elongates toward the edge";
-pub(crate) const HALF_MODEL: &str = "solved on half, mirrored about the load line";
+pub(crate) const HALF_MODEL: &str = "half model, mirrored about the load line";
+/// The result's caption, the one line under the view: the half model, then what the picture shows of the pin.
+pub(crate) const PIN_TRAVEL: &str = "half model, mirrored; pin travel 0.1 D";
 use std::path::{Path, PathBuf};
 
 /// What a click in the Plate Edge workbench asks for (carried by `EditorAction::PlateEdge`).
@@ -459,7 +459,6 @@ impl Authoring for PlateEdgeSession {
             Camera::pixel(ndc, size[0], size[1])
         };
         let below = |p: [f32; 2], dy: f32| [p[0], p[1] + dy];
-        let beside = |p: [f32; 2], dx: f32| [p[0] + dx, p[1]];
         let r = 0.5 * f.d;
         // The pin as drawn: at its start before a result, at its travelled position after one.
         let cx = if self.shows_result() { scene::pin_disc(&f, self.inputs.pin_diameter()).0 } else { f.pin(self.inputs.pin_diameter()).1 };
@@ -472,19 +471,29 @@ impl Authoring for PlateEdgeSession {
             out.push(Overlay { px: px(centre, 0.0), text: String::new(), kind: OverlayKind::Disc, tip: Some(px(centre + rp, 0.0)) });
         }
         out.push(Overlay { px: px(cx, 0.0), text: "P".into(), kind: OverlayKind::Load, tip: Some(px(-reach, 0.0)) });
-        // The solve is on half the plate; the drawing mirrors it: say so.
-        // The captions sit in the empty top of the view, clear of the colour legend that takes the bottom left.
-        let top = px(-0.5 * f.e, 2.6 * f.d);
-        out.push(Overlay { px: top, text: HALF_MODEL.into(), kind: OverlayKind::Dimension, tip: None });
+        // One caption line along the bottom of the view says what the drawing is.
+        let caption = if self.shows_result() { PIN_TRAVEL } else { HALF_MODEL };
+        out.push(Overlay { px: [0.5 * size[0], size[1] - 16.0], text: caption.into(), kind: OverlayKind::Dimension, tip: None });
         let boxed = |p: [f32; 2], text: String| Overlay { px: p, text, kind: OverlayKind::Dimension, tip: None };
-        // The plate's own dimensions stay with the contour: the edge distance, the free edge and the shear-out planes.
-        out.push(boxed(below(px(-0.5 * f.e, scene::dimension_y(f.d)), 22.0), format!("e = {:.3} in   e/D {:.2}", f.e, f.e / f.d)));
-        out.push(boxed(below(px(-0.5 * f.e, r), -14.0), "shear-out planes".into()));
-        // Inside the plate against the edge it names (a label is centred on its point).
-        out.push(boxed(beside(px(-f.e, 2.0 * f.d), 48.0), "free edge".into()));
+        let line = |a: [f32; 2], b: [f32; 2], kind: OverlayKind| Overlay { px: a, text: String::new(), kind, tip: Some(b) };
+        let dim_y = scene::dimension_y(f.d);
+        // The plate's own dimensions stay with the contour: the edge distance, the free edge and the shear-out planes. A result's
+        // scene has none of them drawn, so the lines come with their labels; the label sits on what it names.
         if self.shows_result() {
-            out.push(boxed(below(top, 30.0), PIN_TRAVEL.into()));
+            for side in [r, -r] {
+                out.push(line(px(-f.e, side), px(0.0, side), OverlayKind::Dashes));
+            }
+            out.push(line(px(-f.e, dim_y), px(0.0, dim_y), OverlayKind::Line));
+            for x in [-f.e, 0.0] {
+                out.push(line(px(x, dim_y - 0.15 * f.d), px(x, dim_y + 0.15 * f.d), OverlayKind::Line));
+            }
+            out.push(boxed(px(-0.5 * f.e, dim_y), format!("e = {:.3} in   e/D {:.2}", f.e, f.e / f.d)));
         } else {
+            out.push(boxed(below(px(-0.5 * f.e, dim_y), 22.0), format!("e = {:.3} in   e/D {:.2}", f.e, f.e / f.d)));
+        }
+        out.push(boxed(px(-0.5 * f.e, r), "shear-out planes".into()));
+        out.push(boxed(px(-f.e, 2.0 * f.d), "free edge".into()));
+        if !self.shows_result() {
             // The undeformed bore has a diameter to name.
             out.push(boxed(below(px(0.0, r), -20.0), format!("D {:.4} in", f.d)));
         }

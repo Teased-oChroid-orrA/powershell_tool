@@ -43,6 +43,10 @@ pub enum OverlayKind {
     /// A filled disc in the key's pin colour centred at `px` and passing through `tip` (a body drawn over the model, the
     /// pin of a result); `text` is not drawn.
     Disc,
+    /// A solid line from `px` to `tip` in the key's edge colour (an edge, a dimension line or its end tick); `text` is not drawn.
+    Line,
+    /// The same, dashed (a plane).
+    Dashes,
 }
 
 /// How much a card of the inspector matters right now.

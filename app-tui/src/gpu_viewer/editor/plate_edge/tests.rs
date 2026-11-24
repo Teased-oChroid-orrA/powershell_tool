@@ -393,11 +393,12 @@ fn the_load_arrow_is_always_there_and_the_dimensions_before_and_after_a_result()
         assert!(named(&before, want) && named(&after, want), "{want}: before {}, after {}", named(&before, want), named(&after, want));
     }
     assert!(named(&before, "D ") && !named(&after, "D "));
-    // The half-model caption is there before and after a run.
-    for v in [&before, &after] {
-        assert!(v.iter().any(|o| o.text == HALF_MODEL && o.kind == OverlayKind::Dimension), "caption missing");
+    // One caption line, before and after a run; the result's names the pin travel too.
+    for (v, want) in [(&before, HALF_MODEL), (&after, PIN_TRAVEL)] {
+        let captions: Vec<_> = v.iter().filter(|o| o.text.starts_with("half model")).collect();
+        assert!(captions.len() == 1 && captions[0].text == want && captions[0].kind == OverlayKind::Dimension, "one caption {want:?}");
     }
-    assert!(HALF_MODEL.contains("mirrored about the load line"));
+    assert!(HALF_MODEL.contains("mirrored about the load line") && PIN_TRAVEL.starts_with("half model, mirrored"));
     // The arrow runs from the pin toward the free edge and stays on screen.
     let a = before.iter().find(|o| o.kind == OverlayKind::Load).unwrap();
     let tip = a.tip.unwrap();
@@ -604,4 +605,49 @@ fn the_allowables_heads_sit_over_the_right_edge_of_their_figures() {
         let under: Vec<_> = texts.iter().filter(|(t, r, ty)| is_figure(t) && (r - right).abs() < 0.6 && ty > y).collect();
         assert!(!under.is_empty(), "no figure ends where {head} ends ({right}): {:?}", texts.iter().filter(|(t, _, _)| is_figure(t)).collect::<Vec<_>>());
     }
+}
+
+#[test]
+fn each_result_label_sits_on_the_geometry_it_names() {
+    use crate::gpu_viewer::editor::authoring::OverlayKind;
+    use crate::gpu_viewer::editor::camera::Camera;
+    let (s, _) = after_a_2d_run();
+    let f = scene::Frame::of(&s.inputs);
+    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.5, pan: [0.0, 0.0] };
+    let size = [900.0, 600.0];
+    let px = |x: f64, y: f64| {
+        let (ndc, _) = cam.project(f.point(x, y));
+        Camera::pixel(ndc, size[0], size[1])
+    };
+    let ov = Authoring::overlay(&s, &cam, size);
+    let label = |text: &str| ov.iter().find(|o| o.kind == OverlayKind::Dimension && o.text.starts_with(text)).unwrap_or_else(|| panic!("no label {text}"));
+    let tol = 3.0;
+    let of_kind = |k: OverlayKind| ov.iter().filter(move |o| o.kind == k).collect::<Vec<_>>();
+    // The free edge label is on the edge line.
+    assert!((label("free edge").px[0] - px(-f.e, 0.0)[0]).abs() < tol, "free edge label off its line");
+    // The e dimension: a line from the edge to the hole centre, a tick at each end, the label centred on the line.
+    let y = scene::dimension_y(f.d);
+    let lines = of_kind(OverlayKind::Line);
+    let main = lines.iter().find(|o| (o.px[1] - o.tip.unwrap()[1]).abs() < 1e-3 && (o.px[0] - o.tip.unwrap()[0]).abs() > 10.0).expect("dimension line");
+    assert!((main.px[0] - px(-f.e, y)[0]).abs() < tol && (main.tip.unwrap()[0] - px(0.0, y)[0]).abs() < tol && (main.px[1] - px(0.0, y)[1]).abs() < tol);
+    let ticks: Vec<_> = lines.iter().filter(|o| (o.px[0] - o.tip.unwrap()[0]).abs() < 1e-3).collect();
+    assert_eq!(ticks.len(), 2, "an end tick each side");
+    for (t, x) in ticks.iter().zip([-f.e, 0.0]) {
+        let mid = 0.5 * (t.px[1] + t.tip.unwrap()[1]);
+        assert!((t.px[0] - px(x, y)[0]).abs() < tol && (mid - px(x, y)[1]).abs() < tol, "tick at x = {x}");
+    }
+    let e = label("e = ");
+    assert!((e.px[0] - 0.5 * (main.px[0] + main.tip.unwrap()[0])).abs() < tol && (e.px[1] - main.px[1]).abs() < tol, "e label off its dimension line");
+    // Both shear-out planes (the view is mirrored) are dashed lines from the edge to the hole centre at the hole's sides, and
+    // their label is on one of them.
+    let planes = of_kind(OverlayKind::Dashes);
+    assert_eq!(planes.len(), 2);
+    for (p, side) in planes.iter().zip([0.5 * f.d, -0.5 * f.d]) {
+        assert!((p.px[0] - px(-f.e, side)[0]).abs() < tol && (p.tip.unwrap()[0] - px(0.0, side)[0]).abs() < tol && (p.px[1] - px(0.0, side)[1]).abs() < tol, "plane at y = {side}");
+    }
+    let l = label("shear-out");
+    assert!(planes.iter().any(|p| (l.px[1] - p.px[1]).abs() < tol && l.px[0] > p.px[0] && l.px[0] < p.tip.unwrap()[0]), "plane label off its plane");
+    // The one caption is inside the view, along its bottom.
+    let c = label(PIN_TRAVEL);
+    assert!(c.px[0] > 0.0 && c.px[0] < size[0] && c.px[1] > 0.75 * size[1] && c.px[1] < size[1]);
 }
