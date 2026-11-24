@@ -41,6 +41,31 @@ travel plot (one curve per idealisation, onset marked, and the contact FE collap
 idealisation (the three lines in three palette colours, plane stress dashed, onset as a dot on each curve) (onset, yield, collapse, spread against plane strain, mesh, dof, seconds) and a mesh table (one row per mesh,
 with the change from the previous one; a single graded mesh says it has no convergence check).
 
+## The window (the mockup layout, 2026-11-24)
+
+The window is the three-pane workbench of `.audit/edge-workbench-mockup.html` (the Bushing window's `Workbench`, drawn with
+`ui::Look::Boxed`): inputs on the left, the views and the load-travel plot in the middle, results on the right. The top bar has
+the units, the verdict chip ("Governing: <mode> <load>"), an "advisory" chip and the actions (Save case, Report, Run 2D,
+Run 2D + 3D, Cancel while a run goes). Every input card opens with a segmented switch (plate Library | Custom; pin Class |
+Material | Custom; fit Clearance | Press-fit | Interference | Pressure; mesh Graded | Converge | Fixed fine). The centre has two
+switches: 2D plane | 3D solid and Geometry | Plastic strain, then the model, a status line of the last run and the plot. The
+results are cards: Allowable loads (one table, columns Allowable / 2D FE / 3D FE, the governing row marked with an accent bar),
+the handbook check, mesh convergence, FE bearing response and Limits. No card starts folded; each folds from its header.
+
+What the mockup shows that the engines do not back (not added, nothing made up):
+
+* von Mises, shear, bearing-pressure and pin fields: `lug_solver::bracket::Fields` is the mesh, the displacement and the plastic
+  strain, so the field switch is Geometry | Plastic strain.
+* Plate width and an inclined load: neither is an input of `edge_check::modes` or the bracket, so "Load direction" is a
+  read-only row ("to free edge").
+* FE numbers per mode: only the bearing yield (2 % D offset) and the collapse rows have a 2D FE and a 3D FE figure; the other
+  rows show "-". The 2D FE column is plane strain; plane stress stays in the plot, the FE card and the convergence card.
+* A Library | Custom pin switch: the engine distinguishes a specification class from a material, so the pin has three sources.
+
+Overlay bug found on the way: the workbench branch of `Gui::build` returns before the common path, so `model_labels` was never
+called and the load arrow, the pin disc and every caption were dropped (the hole drew black). Fixed by calling it in that
+branch; a headless test runs the real `Gui` and checks the painted disc and captions.
+
 ## The picture
 
 The solve is on half the plate (symmetric about the load line); the drawing mirrors the half model about the load line

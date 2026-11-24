@@ -3,8 +3,9 @@
 //! ultimate, shear-out, tear-out, the pin's shear, bearing and bending) from the handbook closed forms and the elastic stress
 //! field (`edge_check::modes`), and the 2D and 3D finite-element bearing response (`lug_solver::bracket`) beside them.
 //!
-//! Inputs live in the inspector (a click types a number or cycles a choice), the results follow in their own cards, and the
-//! viewport shows the plate, then the solved model coloured by equivalent plastic strain. Nothing here computes mechanics:
+//! The window is a boxed three-pane workbench (`Authoring::workbench`): inputs on the left (a click types a number or picks
+//! one of a few choices), the plate or the solved model in the centre with the load-travel plot under it, the results on the
+//! right. The viewport shows the plate, then the solved model coloured by equivalent plastic strain. Nothing here computes mechanics:
 //! `inputs.rs` turns the case into the two solvers' inputs, `run.rs` runs them on a worker, `cards.rs` shows the answer.
 mod cards;
 pub mod inputs;
@@ -12,7 +13,7 @@ pub mod run;
 mod scene;
 
 use super::{
-    authoring::{Authoring, Card, Overlay, OverlayKind},
+    authoring::{Authoring, Overlay, OverlayKind},
     camera::Camera,
     session::{EditorAction, Key, KeyResult, Mods},
 };
@@ -20,10 +21,10 @@ use crate::gpu_viewer::{
     bench::Bench,
     controller::StandardView,
     menu::{Item, Menu},
-    ui::{DockItem, RibbonTab, TreeNode},
+    ui::{DockItem, RibbonTab, TreeNode, Workbench},
     Scene,
 };
-use inputs::{Field, PlateEdgeInputs};
+use inputs::{Field, FitKind, MeshMode, PinSource, PlateEdgeInputs, Source};
 
 /// The caption of the picture: the solve is on half the plate, the drawing mirrors it.
 /// The result's caption: what the picture shows of the pin and the hole.
@@ -36,28 +37,52 @@ use std::path::{Path, PathBuf};
 pub enum PlateEdgeAct {
     /// A numeric input: type the number.
     Field(Field),
-    /// A choice: cycle it.
+    /// A choice of many (fastener class, nominal size): step to the next.
     Cycle(Choice),
+    /// A choice of a few, one segment of a card's switch.
+    Set(Setting),
+    /// The centre view: 2D or 3D model.
+    View(Dim),
+    /// What the centre view shows of the model.
+    Layer(Layer),
     /// Type part of a library material's name to pick it.
     Search(Pick),
     Run(run::Kind),
     Cancel,
-    Step(&'static str),
     Undo,
     Redo,
     Save,
     Export,
 }
 
-/// A choice row.
+/// A choice row that steps through many values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
-    PlateSource,
-    PinSource,
     PinClass,
     Size,
-    Fit,
-    Mesh,
+}
+
+/// One segment of a card's switch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Setting {
+    Plate(Source),
+    Pin(PinSource),
+    Fit(FitKind),
+    Mesh(MeshMode),
+}
+
+/// Which FE model the centre view draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dim {
+    Two,
+    Three,
+}
+
+/// What the centre view shows: the plate as drawn, or the solved model coloured by plastic strain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layer {
+    Geometry,
+    Strain,
 }
 
 /// Which library material a search picks.
@@ -90,7 +115,9 @@ pub struct PlateEdgeSession {
     redo: Vec<PlateEdgeInputs>,
     prompt: Option<Prompt>,
     status: String,
-    step: &'static str,
+    /// The centre view: which FE model, and what of it.
+    dim: Dim,
+    layer: Layer,
     saved_revision: Option<String>,
     /// The picture is rebuilt after an edit or a result.
     drawn: bool,
@@ -118,7 +145,8 @@ impl PlateEdgeSession {
             redo: Vec::new(),
             prompt: None,
             status: String::new(),
-            step: "Inputs",
+            dim: Dim::Two,
+            layer: Layer::Geometry,
             drawn: false,
             outcome: None,
             job: None,
@@ -294,6 +322,34 @@ impl PlateEdgeSession {
         self.outcome.as_ref().is_some_and(|o| o.inputs == self.inputs)
     }
 
+    /// A segment of a card's switch; the one already chosen is not an edit.
+    fn set(&mut self, setting: Setting) {
+        let mut next = self.inputs.clone();
+        match setting {
+            Setting::Plate(v) => next.plate_source = v,
+            Setting::Pin(v) => next.pin_source = v,
+            Setting::Fit(k) if k != next.fit => {
+                next.fit = k;
+                next.fit_value = k.default_value();
+            }
+            Setting::Fit(_) => {}
+            Setting::Mesh(v) => next.mesh = v,
+        }
+        if next != self.inputs {
+            self.checkpoint();
+            self.inputs = next;
+            self.changed();
+        }
+    }
+
+    /// A finished run draws its solved model: the 3D one when it ran, else the 2D.
+    fn show_run(&mut self, outcome: &run::Outcome) {
+        if scene::pick_fields(outcome, Dim::Three).is_some() {
+            self.layer = Layer::Strain;
+            self.dim = if outcome.lines.iter().any(|l| l.label.starts_with("3D") && l.fields.is_some()) { Dim::Three } else { Dim::Two };
+        }
+    }
+
     fn do_act(&mut self, a: PlateEdgeAct) {
         // A message stays until the next thing the person does.
         self.status.clear();
@@ -303,14 +359,19 @@ impl PlateEdgeSession {
             PlateEdgeAct::Cycle(c) => {
                 self.checkpoint();
                 match c {
-                    Choice::PlateSource => self.inputs.plate_source = self.inputs.plate_source.next(),
-                    Choice::PinSource => self.inputs.pin_source = self.inputs.pin_source.next(),
                     Choice::PinClass => self.inputs.pin_class = (self.inputs.pin_class + 1) % inputs::PIN_CLASSES.len(),
                     Choice::Size => self.inputs.cycle_size(),
-                    Choice::Fit => self.inputs.cycle_fit(),
-                    Choice::Mesh => self.inputs.mesh = self.inputs.mesh.next(),
                 }
                 self.changed();
+            }
+            PlateEdgeAct::Set(setting) => self.set(setting),
+            PlateEdgeAct::View(d) => {
+                self.dim = d;
+                self.drawn = false;
+            }
+            PlateEdgeAct::Layer(l) => {
+                self.layer = l;
+                self.drawn = false;
             }
             PlateEdgeAct::Run(k) => self.start(k),
             PlateEdgeAct::Cancel => {
@@ -319,7 +380,6 @@ impl PlateEdgeSession {
                     self.status = "Cancelling: the solver stops at its next step.".into();
                 }
             }
-            PlateEdgeAct::Step(s) => self.step = s,
             PlateEdgeAct::Undo => self.undo(),
             PlateEdgeAct::Redo => self.redo(),
             PlateEdgeAct::Save => self.save(),
@@ -387,7 +447,7 @@ impl Authoring for PlateEdgeSession {
     fn select_at(&mut self, _px: [f32; 2], _size: [f32; 2], _cam: &Camera) {}
     fn scene(&mut self) -> Result<Scene, String> {
         self.drawn = true;
-        scene::build(&self.inputs, &self.name, self.outcome.as_ref().filter(|_| self.current()))
+        scene::build(&self.inputs, &self.name, self.outcome.as_ref().filter(|_| self.current() && self.layer == Layer::Strain), self.dim)
     }
     fn needs_scene(&self) -> bool {
         !self.drawn
@@ -399,6 +459,7 @@ impl Authoring for PlateEdgeSession {
             Camera::pixel(ndc, size[0], size[1])
         };
         let below = |p: [f32; 2], dy: f32| [p[0], p[1] + dy];
+        let beside = |p: [f32; 2], dx: f32| [p[0] + dx, p[1]];
         let r = 0.5 * f.d;
         // The pin as drawn: at its start before a result, at its travelled position after one.
         let cx = if self.shows_result() { scene::pin_disc(&f, self.inputs.pin_diameter()).0 } else { f.pin(self.inputs.pin_diameter()).1 };
@@ -412,15 +473,20 @@ impl Authoring for PlateEdgeSession {
         }
         out.push(Overlay { px: px(cx, 0.0), text: "P".into(), kind: OverlayKind::Load, tip: Some(px(-reach, 0.0)) });
         // The solve is on half the plate; the drawing mirrors it: say so.
-        out.push(Overlay { px: below(px(-0.5 * f.e, scene::dimension_y(f.d)), 52.0), text: HALF_MODEL.into(), kind: OverlayKind::Dimension, tip: None });
+        // The captions sit in the empty top of the view, clear of the colour legend that takes the bottom left.
+        let top = px(-0.5 * f.e, 2.6 * f.d);
+        out.push(Overlay { px: top, text: HALF_MODEL.into(), kind: OverlayKind::Dimension, tip: None });
+        let boxed = |p: [f32; 2], text: String| Overlay { px: p, text, kind: OverlayKind::Dimension, tip: None };
+        // The plate's own dimensions stay with the contour: the edge distance, the free edge and the shear-out planes.
+        out.push(boxed(below(px(-0.5 * f.e, scene::dimension_y(f.d)), 22.0), format!("e = {:.3} in   e/D {:.2}", f.e, f.e / f.d)));
+        out.push(boxed(below(px(-0.5 * f.e, r), -14.0), "shear-out planes".into()));
+        // Inside the plate against the edge it names (a label is centred on its point).
+        out.push(boxed(beside(px(-f.e, 2.0 * f.d), 48.0), "free edge".into()));
         if self.shows_result() {
-            out.push(Overlay { px: below(px(-0.5 * f.e, scene::dimension_y(f.d)), 82.0), text: PIN_TRAVEL.into(), kind: OverlayKind::Dimension, tip: None });
+            out.push(boxed(below(top, 30.0), PIN_TRAVEL.into()));
         } else {
-            let boxed = |p: [f32; 2], text: String| Overlay { px: p, text, kind: OverlayKind::Dimension, tip: None };
-            out.push(boxed(below(px(-0.5 * f.e, scene::dimension_y(f.d)), 22.0), format!("e = {:.3} in   e/D {:.2}", f.e, f.e / f.d)));
+            // The undeformed bore has a diameter to name.
             out.push(boxed(below(px(0.0, r), -20.0), format!("D {:.4} in", f.d)));
-            out.push(boxed(below(px(-0.5 * f.e, r), -14.0), "shear-out planes".into()));
-            out.push(boxed(below(px(-f.e, 2.0 * f.d), 0.0), "free edge".into()));
         }
         out
     }
@@ -428,7 +494,7 @@ impl Authoring for PlateEdgeSession {
         !self.shows_result()
     }
     fn shows_result(&self) -> bool {
-        self.current() && self.outcome.as_ref().is_some_and(|o| scene::pick_fields(o).is_some())
+        self.layer == Layer::Strain && self.current() && self.outcome.as_ref().is_some_and(|o| scene::pick_fields(o, self.dim).is_some())
     }
     fn field_unit(&self, _label: &str) -> String {
         String::new()
@@ -453,6 +519,9 @@ impl Authoring for PlateEdgeSession {
                     Some(outcome) => {
                         if let Some(note) = outcome.fe_note.as_ref().filter(|_| kind != run::Kind::Quick) {
                             self.status = format!("FE: {note}.");
+                        }
+                        if kind != run::Kind::Quick {
+                            self.show_run(&outcome);
                         }
                         self.outcome = Some(outcome);
                     }
@@ -503,29 +572,23 @@ impl Authoring for PlateEdgeSession {
     fn dirty(&self) -> bool {
         self.dirty
     }
-    fn focus_step(&self) -> Option<&'static str> {
-        Some(self.step)
-    }
     fn tree(&self) -> Vec<TreeNode> {
-        self.tree_nodes()
+        Vec::new()
     }
     fn properties(&self) -> Vec<DockItem> {
-        super::authoring::flatten(self.inspector())
+        super::authoring::flatten([self.input_cards(), self.result_cards()].concat())
     }
-    fn inspector(&self) -> Vec<Card> {
-        self.inspector_cards()
+    fn inspector(&self) -> Vec<super::authoring::Card> {
+        Vec::new()
     }
     fn ribbon(&self) -> Vec<RibbonTab> {
-        self.ribbon_tabs()
+        Vec::new()
     }
-    fn step_state(&self, tab: &str) -> Option<super::authoring::StepState> {
-        use super::authoring::StepState::{Done, Todo};
-        Some(match tab {
-            "Inputs" if self.inputs.modes_input(false).is_ok() => Done,
-            "Results" if self.current() && self.outcome.as_ref().is_some_and(|o| o.kind != run::Kind::Quick) => Done,
-            "Inputs" | "Results" => Todo,
-            _ => return None,
-        })
+    fn workbench(&self) -> Option<Workbench> {
+        Some(self.workbench_data())
+    }
+    fn has_workbench(&self) -> bool {
+        true
     }
     fn menus(&self) -> Vec<Menu> {
         self.menu_bar()

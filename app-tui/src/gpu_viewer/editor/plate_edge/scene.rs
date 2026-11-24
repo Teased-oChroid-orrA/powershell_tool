@@ -6,6 +6,7 @@
 //! Both views are framed on the same region, the hole, the ligament and the free edge (`Frame`), so the picture does not jump
 //! when a result replaces it; the plate beyond the region continues past the viewport.
 use super::inputs::PlateEdgeInputs;
+use super::Dim;
 use super::run::{FeLine, Outcome};
 use crate::gpu_viewer::{scene::SceneSource, Scene};
 use fea_core::{sweep::extrude, Mesh};
@@ -25,9 +26,13 @@ const FILL: f64 = 0.75;
 const LIFT: f32 = 0.0006;
 const LINE: f64 = 0.006;
 
-/// The FE line the picture shows: the 3D solid if it ran, else plane strain.
-pub fn pick_fields(o: &Outcome) -> Option<&FeLine> {
-    ["3D solid", "2D plane strain", "2D plane stress"].iter().find_map(|l| o.lines.iter().find(|x| x.label == *l && x.fields.is_some()))
+/// The FE line the picture shows: the one asked for (the 3D solid, or plane strain), else the other family.
+pub fn pick_fields(o: &Outcome, dim: Dim) -> Option<&FeLine> {
+    let order = match dim {
+        Dim::Three => ["3D solid", "2D plane strain", "2D plane stress"],
+        Dim::Two => ["2D plane strain", "2D plane stress", "3D solid"],
+    };
+    order.iter().find_map(|l| o.lines.iter().find(|x| x.label == *l && x.fields.is_some()))
 }
 
 /// The region both views are framed on, in the model's inches (hole centre at the origin, the free edge at `x = -e`, the load
@@ -134,8 +139,8 @@ fn mirror(scene: &mut Scene, y0: f32) {
     }
 }
 
-pub fn build(inputs: &PlateEdgeInputs, name: &str, outcome: Option<&Outcome>) -> Result<Scene, String> {
-    if let Some(line) = outcome.and_then(pick_fields) {
+pub fn build(inputs: &PlateEdgeInputs, name: &str, outcome: Option<&Outcome>, dim: Dim) -> Result<Scene, String> {
+    if let Some(line) = outcome.and_then(|o| pick_fields(o, dim)) {
         let f = line.fields.as_ref().expect("picked for its fields");
         let last = line.last();
         let label = format!("{name} | {} | {} elements around, {} dof | pin load at 0.1 D travel {:.0} lbf | deformation to scale", line.label, last.around, last.dofs, last.collapse);

@@ -1,20 +1,21 @@
-//! What the Plate Edge workbench shows: the inspector's cards, the tree, the ribbon, the menus, the status line and the text
-//! report. Plain data built from the inputs and the last run; the window draws it.
-use super::inputs::{self, Field, FitKind, MeshMode, PinSource, Prop, Source, PIN_CLASSES};
+//! What the Plate Edge workbench shows: the three panes' cards (inputs, results, the plot under the view), the top bar's chips
+//! and actions, the menus, the status line and the text report. Plain data built from the inputs and the last run; the window
+//! draws it (`gui/workbench.rs`, `Look::Boxed`).
+use super::inputs::{self, Field, FitKind, MeshMode, PinSource, Prop, Source};
 use super::run::{FeLine, Kind, Outcome};
-use super::{Choice, PlateEdgeAct, PlateEdgeSession, Pick, Target};
+use super::{Choice, Dim, Layer, PlateEdgeAct, PlateEdgeSession, Pick, Setting, Target};
 use crate::gpu_viewer::{
     controller::UiAction,
     editor::{
-        authoring::{Card, Relevance},
+        authoring::{Authoring, Card, Relevance},
         session::{EditorAction, Tone},
     },
     menu::{Entry, Item, Menu},
     page::{Cell, Column, DockTable, TableRow},
-    ui::{DockItem, Mark, Plot, RibbonTab, Series, TreeNode},
+    ui::{Compare, CompareRow, DockItem, Look, Mark, Plot, Series, Workbench, WorkbenchView},
 };
 use crate::toolboxes::fastener_hole::model::format_for_edit;
-use edge_check::modes::{Group, ModeRow, ModesResult};
+use edge_check::modes::ModesResult;
 
 fn act(a: PlateEdgeAct) -> UiAction {
     UiAction::Editor(EditorAction::PlateEdge(a))
@@ -39,19 +40,136 @@ fn lb(v: f64) -> String {
 fn opt(v: Option<f64>) -> String {
     v.map_or_else(|| "-".into(), lb)
 }
-/// `s` cut to `n` characters with an ellipsis (the inspector clips a long value at its edge).
-fn short(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        format!("{}...", s.chars().take(n - 3).collect::<String>())
+/// A load for a table cell: whole pounds with thousands grouped, one decimal under 100, "never" for an unreachable mode, no unit
+/// (the head says lb).
+pub(super) fn grp(v: f64) -> String {
+    if v.is_infinite() {
+        return "never".into();
     }
+    let s = if v.abs() >= 100.0 { format!("{:.0}", v.abs()) } else { format!("{:.1}", v.abs()) };
+    let (int, frac) = s.split_once('.').map_or((s.as_str(), ""), |(i, f)| (i, f));
+    let mut g = String::new();
+    for (k, c) in int.chars().enumerate() {
+        if k > 0 && (int.len() - k) % 3 == 0 {
+            g.push(',');
+        }
+        g.push(c);
+    }
+    format!("{}{g}{}", if v < 0.0 { "-" } else { "" }, if frac.is_empty() { String::new() } else { format!(".{frac}") })
+}
+fn cell(v: Option<f64>) -> String {
+    v.map_or_else(|| "-".into(), grp)
 }
 fn pct(v: f64) -> String {
     format!("{:.2} %", 100.0 * v)
 }
 
 impl PlateEdgeSession {
+    // ------------------------------------------------------------------ the three panes
+
+    pub(super) fn workbench_data(&self) -> Workbench {
+        let busy = self.solving();
+        let shown = self.solved();
+        let on_geometry = !self.shows_result();
+        let have_3d = self.outcome.as_ref().is_some_and(|o| o.lines.iter().any(|l| l.label.starts_with("3D") && l.fields.is_some()));
+        let three = shown.is_some_and(|l| l.label.starts_with("3D")) || (shown.is_none() && self.dim == Dim::Three);
+        let run = |label: &str, k: Kind| entry(label, "", PlateEdgeAct::Run(k)).when(if busy { Err("a run is going; cancel it first".to_string()) } else { Ok(()) });
+        let mut actions = vec![entry("Save case", "Ctrl/Cmd+S", PlateEdgeAct::Save), entry("Report", "", PlateEdgeAct::Export)];
+        if busy {
+            actions.push(entry("Cancel", "Esc", PlateEdgeAct::Cancel));
+        } else {
+            actions.extend([run("Run 2D", Kind::TwoD), run("Run 2D + 3D", Kind::ThreeD)]);
+        }
+        let d = self.inputs.hole_diameter();
+        let mut title = vec![shown.filter(|_| !on_geometry).map_or("Geometry", |l| l.label).to_string(), format!("e {:.3} in (e/D {:.2})", self.inputs.edge, self.inputs.edge / d)];
+        if !on_geometry {
+            title.push("plastic strain at 0.1 D travel".into());
+        }
+        let mut cards_under = Vec::new();
+        if let Some(o) = self.outcome.as_ref().filter(|o| !o.lines.is_empty()) {
+            cards_under.push(self.plot_card(o));
+        }
+        Workbench {
+            chips: self.chips(),
+            actions,
+            inputs: self.input_cards(),
+            inputs_note: "US customary inputs only. A value is typed: click it, Enter applies, Esc cancels.".into(),
+            views: vec![
+                entry("2D plane", "", PlateEdgeAct::View(Dim::Two)).checked(!three),
+                entry("3D solid", "", PlateEdgeAct::View(Dim::Three)).checked(three).when(if have_3d { Ok(()) } else { Err("no 3D solid yet: Run 2D + 3D".to_string()) }),
+            ],
+            show: WorkbenchView::Model,
+            fields: vec![
+                entry("Geometry", "", PlateEdgeAct::Layer(Layer::Geometry)).checked(on_geometry),
+                entry("Plastic strain", "", PlateEdgeAct::Layer(Layer::Strain)).checked(!on_geometry).when(if shown.is_some() { Ok(()) } else { Err("no solved model for these inputs: run the FE".to_string()) }),
+            ],
+            switches: Vec::new(),
+            view_note: String::new(),
+            model_title: title.join(" \u{b7} "),
+            model_hint: String::new(),
+            sketches: Vec::new(),
+            results: self.result_cards(),
+            dialog: None,
+            look: Look::Boxed,
+            under: cards_under,
+            view_status: self.view_status(),
+        }
+    }
+
+    /// The solved model the centre view would draw for the current inputs (`dim` first, else the other family).
+    fn solved(&self) -> Option<&FeLine> {
+        self.outcome.as_ref().filter(|_| self.current()).and_then(|o| super::scene::pick_fields(o, self.dim))
+    }
+
+    /// The units, the verdict and the advisory mark in the top bar.
+    fn chips(&self) -> Vec<(String, Tone)> {
+        let mut chips = vec![("in \u{b7} lbf \u{b7} ksi".to_string(), Tone::Normal)];
+        chips.push(match self.outcome.as_ref().filter(|_| self.current()) {
+            None => (if self.job.is_some() { "Computing..." } else { "Not computed" }.to_string(), if self.job.is_some() { Tone::Dim } else { Tone::Warn }),
+            Some(o) => match o.modes.as_ref().map(|m| m.governing.map(|g| &m.rows[g])) {
+                Ok(Some(r)) => (format!("Governing: {} {}", r.label, opt(r.lowest())), Tone::On),
+                Ok(None) => ("No mode has a number".to_string(), Tone::Warn),
+                Err(_) => ("Not computed".to_string(), Tone::Warn),
+            },
+        });
+        chips.push(("advisory".to_string(), Tone::Dim));
+        chips
+    }
+
+    /// What the last FE run did, or what is going on now: the line between the view and the plot.
+    fn view_status(&self) -> Option<(String, Tone)> {
+        if let Some(j) = self.job.as_ref().filter(|j| j.kind != Kind::Quick) {
+            let last = j.progress.last().map(|(l, r)| format!(" \u{b7} {l}: {} around{}, collapse {}", r.around, if r.layers > 1 { format!(", {} layers", r.layers) } else { String::new() }, lb(r.collapse))).unwrap_or_default();
+            return Some((format!("running {:.0} s{last}", j.started.elapsed().as_secs_f32()), Tone::Warn));
+        }
+        let Some(o) = &self.outcome else { return Some(("Computing the allowables...".into(), Tone::Dim)) };
+        if o.lines.is_empty() {
+            return Some(match &o.fe_note {
+                Some(note) => (format!("FE not run: {note}."), Tone::Warn),
+                None => ("Allowables only: Run 2D or Run 2D + 3D for the FE bearing response.".into(), Tone::Dim),
+            });
+        }
+        if !self.current() {
+            return Some(("Inputs changed since this run; run it again.".into(), Tone::Warn));
+        }
+        let per: Vec<String> = o
+            .lines
+            .iter()
+            .map(|l| {
+                let mesh = match (l.meshes.len(), l.converged) {
+                    (1, _) => "one mesh".to_string(),
+                    (n, true) => format!("{n} meshes, converged"),
+                    (n, false) => format!("{n} meshes, not converged"),
+                };
+                format!("{}: {mesh}, {} dof, {:.0} s", short_title(l.label), grp(l.last().dofs as f64), l.last().secs)
+            })
+            .collect();
+        let converged = o.lines.iter().any(|l| l.meshes.len() > 1) && o.lines.iter().all(|l| l.converged);
+        Some((per.join(" \u{b7} "), if converged { Tone::On } else { Tone::Dim }))
+    }
+
+    // ------------------------------------------------------------------ inputs
+
     fn editing(&self, t: Target) -> Option<&super::Prompt> {
         self.prompt.as_ref().filter(|p| p.target == t)
     }
@@ -69,10 +187,18 @@ impl PlateEdgeSession {
     fn choice(&self, items: &mut Vec<DockItem>, label: &str, value: impl Into<String>, c: Choice) {
         items.push(DockItem::field(label, value, Tone::Normal, Some(act(PlateEdgeAct::Cycle(c))), false));
     }
+    /// A read-only figure the inputs give (the hole diameter, e/D).
+    fn derived(items: &mut Vec<DockItem>, label: &str, value: impl Into<String>, tone: Tone) {
+        items.push(DockItem::field(label, value, tone, None, false));
+    }
+    /// One choice of a few as a segmented switch across the card.
+    fn switch(items: &mut Vec<DockItem>, options: &[(&str, Setting, bool)]) {
+        items.push(DockItem::Segmented(options.iter().map(|(label, s, on)| entry(label, "", PlateEdgeAct::Set(*s)).checked(*on)).collect()));
+    }
     /// A library material row: a click types part of its name; Enter picks the first match, Enter again the next.
     fn material_row(&self, items: &mut Vec<DockItem>, label: &str, m: &mechanics_core::materials::Material, pick: Pick) {
         let editing = self.editing(Target::Search(pick));
-        let text = editing.map_or_else(|| short(m.name, 26), |p| format!("{}_", p.text));
+        let text = editing.map_or_else(|| m.name.to_string(), |p| format!("{}_", p.text));
         items.push(DockItem::field(label, text, if editing.is_some() { Tone::Warn } else { Tone::Normal }, Some(act(PlateEdgeAct::Search(pick))), editing.is_some()));
         if editing.is_some() {
             items.push(line("Type part of an alloy, temper or id (7075, 4340, T651), Enter picks the first match, Enter again the next.", Tone::Dim));
@@ -81,16 +207,14 @@ impl PlateEdgeSession {
         }
     }
 
-    pub(super) fn inspector_cards(&self) -> Vec<Card> {
-        let mut cards = vec![self.plate_card(), self.pin_card(), self.fit_card(), self.geometry_card(), self.mesh_card(), self.run_card(), self.summary_card()];
-        cards.extend(self.result_cards());
-        cards
+    pub(super) fn input_cards(&self) -> Vec<Card> {
+        vec![self.plate_card(), self.pin_card(), self.fit_card(), self.geometry_card(), self.mesh_card()]
     }
 
     fn plate_card(&self) -> Card {
         let i = &self.inputs;
         let mut items = Vec::new();
-        self.choice(&mut items, "Source", i.plate_source.label(), Choice::PlateSource);
+        Self::switch(&mut items, &[("Library", Setting::Plate(Source::Library), i.plate_source == Source::Library), ("Custom", Setting::Plate(Source::Custom), i.plate_source == Source::Custom)]);
         match i.plate_source {
             Source::Library => {
                 let m = i.plate_library();
@@ -103,13 +227,14 @@ impl PlateEdgeSession {
             }
             Source::Custom => Prop::ALL.iter().for_each(|&p| self.number(&mut items, Field::Plate(p))),
         }
-        Card::new("plate-edge-plate", "Plate material", Relevance::Primary, items).for_steps(&["Inputs"]).tag(i.plate_source.label())
+        Card::new("plate-edge-plate", "Plate material", Relevance::Primary, items)
     }
 
     fn pin_card(&self) -> Card {
         let i = &self.inputs;
         let mut items = Vec::new();
-        self.choice(&mut items, "Source", i.pin_source.label(), Choice::PinSource);
+        let at = |s: PinSource| i.pin_source == s;
+        Self::switch(&mut items, &[("Class", Setting::Pin(PinSource::Class), at(PinSource::Class)), ("Material", Setting::Pin(PinSource::Material), at(PinSource::Material)), ("Custom", Setting::Pin(PinSource::Custom), at(PinSource::Custom))]);
         match i.pin_source {
             PinSource::Class => {
                 self.choice(&mut items, "Fastener class", i.pin_class_spec().label, Choice::PinClass);
@@ -131,13 +256,15 @@ impl PlateEdgeSession {
         self.number(&mut items, Field::Span);
         let s = i.pin_spec();
         items.push(line(format!("Pin diameter {:.4} in  Ftu {:.0}  Fsu {:.0} ksi", s.dia, s.ftu / 1e3, s.fsu / 1e3), Tone::Dim));
-        Card::new("plate-edge-pin", "Fastener / pin", Relevance::Primary, items).for_steps(&["Inputs"]).tag(i.pin_source.label())
+        Card::new("plate-edge-pin", "Fastener / pin", Relevance::Primary, items)
     }
 
     fn fit_card(&self) -> Card {
         let i = &self.inputs;
         let mut items = Vec::new();
-        self.choice(&mut items, "Fit", i.fit.label(), Choice::Fit);
+        let at = |k: FitKind| i.fit == k;
+        Self::switch(&mut items, &[("Clearance", Setting::Fit(FitKind::Clearance), at(FitKind::Clearance)), ("Press-fit", Setting::Fit(FitKind::PressFit), at(FitKind::PressFit)), ("Interference", Setting::Fit(FitKind::Interference), at(FitKind::Interference)), ("Pressure", Setting::Fit(FitKind::Custom), at(FitKind::Custom))]);
+        Self::derived(&mut items, "Hole diameter D", format!("{:.4} in", i.hole_diameter()), Tone::Normal);
         let value = Field::FitValue;
         let editing = self.editing(Target::Field(value));
         let text = editing.map_or_else(|| format!("{}{}", format_for_edit(i.fit_value), i.fit.unit()), |p| format!("{}_", p.text));
@@ -145,18 +272,21 @@ impl PlateEdgeSession {
         if editing.is_some() {
             items.push(line(value.hint(), Tone::Dim));
         }
-        self.number(&mut items, Field::Friction);
-        items.push(line(format!("Hole {:.4} in  ({})", i.hole_diameter(), match i.fit {
-            FitKind::Clearance => "larger than the pin".to_string(),
-            FitKind::Custom => "equal to the pin; the pressure is given".to_string(),
-            _ => "smaller than the pin".to_string(),
-        }), Tone::Dim));
+        items.push(line(
+            match i.fit {
+                FitKind::Clearance => "The hole is larger than the pin by the clearance. The FE bracket (2D and 3D) models this fit: a rigid pin, no contact pressure.",
+                FitKind::PressFit => "Light interference: the hole is smaller than the pin. The fit's pressure is charged against shear-out and tear-out; the FE bracket skips it (2D contact FE of the allowables only).",
+                FitKind::Interference => "Heavy interference: the hole is smaller than the pin. The fit's pressure is charged against shear-out and tear-out; the FE bracket skips it (2D contact FE of the allowables only).",
+                FitKind::Custom => "Only the contact pressure is known: the hole equals the pin. The FE bracket skips it.",
+            },
+            Tone::Dim,
+        ));
         if let Some(Ok(m)) = self.outcome.as_ref().filter(|_| self.current()).map(|o| &o.modes) {
             if m.fit_pressure > 0.0 {
                 items.push(line(format!("Contact pressure {:.0} psi (charged against shear-out and tear-out at 100 %)", m.fit_pressure), Tone::Dim));
             }
         }
-        Card::new("plate-edge-fit", "Fit", Relevance::Primary, items).for_steps(&["Inputs"]).tag(i.fit.label())
+        Card::new("plate-edge-fit", "Fit", Relevance::Primary, items)
     }
 
     fn geometry_card(&self) -> Card {
@@ -165,14 +295,22 @@ impl PlateEdgeSession {
         self.number(&mut items, Field::Edge);
         self.number(&mut items, Field::Thickness);
         let d = i.hole_diameter();
-        items.push(line(format!("e/D {:.2}   t/D {:.2}", i.edge / d, i.thickness / d), if i.edge / d < 1.5 { Tone::Warn } else { Tone::Dim }));
-        Card::new("plate-edge-geometry", "Plate and edge", Relevance::Primary, items).for_steps(&["Inputs"])
+        let (ed, td) = (i.edge / d, i.thickness / d);
+        Self::derived(&mut items, if ed < 1.5 { "! e / D" } else { "e / D" }, format!("{ed:.2}"), if ed < 1.5 { Tone::Warn } else { Tone::Normal });
+        Self::derived(&mut items, "t / D", format!("{td:.2}"), Tone::Normal);
+        self.number(&mut items, Field::Friction);
+        Self::derived(&mut items, "Load direction", "to free edge", Tone::Normal);
+        if ed < 1.5 {
+            items.push(line("e/D under 1.5: the handbook bearing tables are read at the actual e/D and extrapolate poorly there.", Tone::Warn));
+        }
+        Card::new("plate-edge-geometry", "Plate & load", Relevance::Primary, items)
     }
 
     fn mesh_card(&self) -> Card {
         let i = &self.inputs;
         let mut items = Vec::new();
-        self.choice(&mut items, "Mesh", i.mesh.label(), Choice::Mesh);
+        let at = |m: MeshMode| i.mesh == m;
+        Self::switch(&mut items, &[("Graded", Setting::Mesh(MeshMode::Graded), at(MeshMode::Graded)), ("Converge", Setting::Mesh(MeshMode::Converge), at(MeshMode::Converge)), ("Fixed fine", Setting::Mesh(MeshMode::Fine), at(MeshMode::Fine))]);
         self.number(&mut items, Field::Around);
         self.number(&mut items, Field::Layers);
         if i.mesh == MeshMode::Converge {
@@ -183,111 +321,139 @@ impl PlateEdgeSession {
             MeshMode::Converge => "Repeats the FE on finer meshes until the collapse load changes by less than the tolerance, then stops (2D up to 4 meshes, 3D up to 3).",
             MeshMode::Fine => "One fixed fine mesh (72 around, 4 layers) as a reference. Slow in 3D.",
         }, Tone::Dim));
-        Card::new("plate-edge-mesh", "Mesh", Relevance::Context, items).for_steps(&["Inputs"]).folded()
-    }
-
-    fn run_card(&self) -> Card {
-        let mut items = Vec::new();
-        match &self.job {
-            Some(j) if j.kind != Kind::Quick => {
-                items.push(line(format!("running ({:.0} s)", j.started.elapsed().as_secs_f32()), Tone::Warn));
-                for (label, r) in &j.progress {
-                    items.push(line(format!("{label}: {} around, {} layers: collapse {}", r.around, r.layers, lb(r.collapse)), Tone::Dim));
-                }
-                items.push(DockItem::row("Cancel", Tone::Warn, Some(act(PlateEdgeAct::Cancel)), false));
-            }
-            _ => {
-                items.push(DockItem::row("Run 2D (contact FE and 2D bracket, seconds)", Tone::Title, Some(act(PlateEdgeAct::Run(Kind::TwoD))), false));
-                items.push(DockItem::row("Run 2D + 3D (minutes)", Tone::Title, Some(act(PlateEdgeAct::Run(Kind::ThreeD))), false));
-                if let Some(why) = self.inputs.bracket_refusal() {
-                    items.push(line(format!("The FE bracket is skipped: {why}."), Tone::Warn));
-                }
-            }
-        }
-        let tag = match (&self.job, &self.outcome) {
-            (Some(j), _) if j.kind != Kind::Quick => "running",
-            (_, None) => "not run",
-            (_, Some(o)) if !self.current() => if o.kind == Kind::Quick { "stale" } else { "stale" },
-            (_, Some(o)) => match o.kind {
-                Kind::Quick => "allowables only",
-                Kind::TwoD => "2D done",
-                Kind::ThreeD => "2D + 3D done",
-            },
-        };
-        Card::new("plate-edge-run", "Run", Relevance::Primary, items).for_steps(&["Inputs", "Results"]).tag(tag)
+        Card::new("plate-edge-mesh", "Mesh", Relevance::Context, items)
     }
 
     // ------------------------------------------------------------------ results
 
-    /// The answer in one glance on the Inputs step: the governing mode and each FE collapse load (the full tables are on Results).
-    fn summary_card(&self) -> Card {
-        let mut items = Vec::new();
-        match self.outcome.as_ref().filter(|_| self.current()) {
-            None => items.push(line(if self.job.is_some() { "Computing..." } else { "Not computed yet." }, Tone::Dim)),
-            Some(o) => {
-                match o.modes.as_ref().ok().and_then(|m| m.governing.map(|g| &m.rows[g])) {
-                    Some(r) => {
-                        items.push(DockItem::field("Governing", r.label, Tone::On, None, false));
-                        items.push(DockItem::field("Allowable load", opt(r.lowest()), Tone::On, None, false));
-                    }
-                    None => items.push(line("No mode has a number: see Results.", Tone::Warn)),
-                }
-                for l in &o.lines {
-                    items.push(DockItem::field(fe_name(l.label), format!("collapse {}", lb(l.last().collapse)), Tone::Normal, None, false));
-                }
-                if let Some(note) = &o.fe_note {
-                    items.push(line(format!("FE not run: {note}."), Tone::Warn));
-                }
-                items.push(line("Tables and the FE detail are on the Results step.", Tone::Dim));
-            }
-        }
-        Card::new("plate-edge-summary", "Answer", Relevance::Info, items).for_steps(&["Inputs"])
-    }
-
-    fn result_cards(&self) -> Vec<Card> {
+    pub(super) fn result_cards(&self) -> Vec<Card> {
         let Some(o) = &self.outcome else {
-            return vec![Card::new("plate-edge-allowables", "Allowable loads", Relevance::Info, vec![line("Not computed yet: enter a valid case.", Tone::Dim)]).for_steps(&["Results"])];
+            return vec![Card::new("plate-edge-allowables", "Allowable loads", Relevance::Info, vec![line("Not computed yet: enter a valid case.", Tone::Dim)])];
         };
         let mut cards = Vec::new();
         let stale = !self.current();
         match &o.modes {
-            Err(why) => cards.push(Card::new("plate-edge-allowables", "Allowable loads", Relevance::Info, vec![line(format!("Not computed: {why}."), Tone::Warn)]).for_steps(&["Results"])),
-            Ok(m) => cards.push(self.allowables_card(m, stale)),
-        }
-        if o.kind != Kind::Quick || !o.lines.is_empty() {
-            cards.push(self.fe_card(o, stale));
+            Err(why) => cards.push(Card::new("plate-edge-allowables", "Allowable loads", Relevance::Info, vec![line(format!("Not computed: {why}."), Tone::Warn)])),
+            Ok(m) => {
+                cards.push(self.allowables_card(o, m, stale));
+                cards.push(self.check_card(o, m));
+            }
         }
         if !o.lines.is_empty() {
             cards.push(self.convergence_card(o));
+        }
+        if o.kind != Kind::Quick || !o.lines.is_empty() {
+            cards.push(self.fe_card(o, stale));
         }
         cards.push(self.notes_card());
         cards
     }
 
-    fn allowables_card(&self, m: &ModesResult, stale: bool) -> Card {
+    /// Every failure mode with the lowest load any method gives, then the FE's load for the modes it also reaches: plane strain
+    /// (the 2D column) and the 3D solid. The FE bracket's own loads are the 2 % offset yield (the bearing yield row) and the
+    /// collapse at 0.1 D (the collapse row); no other row has an FE number, and none is made up.
+    fn allowables_card(&self, o: &Outcome, m: &ModesResult, stale: bool) -> Card {
+        let fe = |label: &str, id: &str| -> Option<f64> {
+            let l = o.lines.iter().find(|l| l.label == label)?;
+            match id {
+                "bearing_onset" => l.last().onset,
+                "collapse" => Some(l.last().collapse),
+                _ => None,
+            }
+        };
+        let eligible: Vec<f64> = m.rows.iter().filter(|r| r.governs).filter_map(|r| r.lowest()).filter(|v| v.is_finite()).collect();
+        let most = eligible.iter().copied().fold(0.0, f64::max);
+        let rows = m
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(k, r)| {
+                let methods: Vec<String> = [("handbook", r.handbook), ("elastic field", r.elastic), ("contact FE", r.contact)].into_iter().filter_map(|(n, v)| v.map(|v| format!("{n} {}", grp(v)))).collect();
+                let governing = m.governing == Some(k);
+                CompareRow {
+                    title: r.label.to_string(),
+                    detail: r.why.clone().unwrap_or_else(|| methods.join(" \u{b7} ")),
+                    values: vec![cell(r.lowest()), cell(fe("2D plane strain", r.id)), cell(fe("3D solid", r.id))],
+                    governing,
+                    bar: r.lowest().filter(|v| governing && v.is_finite() && most > 0.0).map(|v| (v / most) as f32),
+                    chip: None,
+                    dim: !r.governs,
+                }
+            })
+            .collect();
+        let mut footer = "lb. Allowable is the lowest of the handbook, the elastic field and the contact FE. 2D FE is plane strain.".to_string();
+        if !o.lines.is_empty() {
+            footer.push_str(" FE loads: bearing yield at 2 % D offset, collapse at 0.1 D travel.");
+        }
         let mut items = Vec::new();
         if stale {
             items.push(line("Inputs changed since this result; it is being recomputed.", Tone::Warn));
         }
-        match m.governing.map(|g| &m.rows[g]) {
-            Some(r) => {
-                items.push(DockItem::field("Governing", r.label, Tone::On, None, false));
-                items.push(DockItem::field("Allowable load", opt(r.lowest()), Tone::On, None, false));
-            }
-            None => items.push(line("No mode has a number: see the reasons below.", Tone::Warn)),
-        }
-        for group in [Group::Plate, Group::Pin] {
-            items.push(line(if group == Group::Plate { "Plate" } else { "Pin / fastener" }, Tone::Title));
-            for (k, r) in m.rows.iter().enumerate().filter(|(_, r)| r.group == group) {
-                items.extend(row_items(r, m.governing == Some(k)));
-            }
-        }
+        items.push(DockItem::Compare(Box::new(Compare { heads: vec!["Mode".into(), "Allowable".into(), "2D FE".into(), "3D FE".into()], rows, footer })));
         for n in &m.notes {
             items.push(line(n.clone(), Tone::Dim));
         }
-        Card::new("plate-edge-allowables", "Allowable loads", Relevance::Info, items).for_steps(&["Results"]).tag(if m.governing.is_some() { "advisory" } else { "incomplete" })
+        let (tag, tone) = match m.governing.map(|g| &m.rows[g]) {
+            Some(r) => (format!("governing: {}", r.label), Tone::On),
+            None => ("incomplete".to_string(), Tone::Warn),
+        };
+        Card::new("plate-edge-allowables", "Allowable loads", Relevance::Info, items).tag(tag).tag_tone(tone)
     }
 
+    /// The legacy handbook figure beside what the FE says: advisory, nothing promoted to the governing check.
+    fn check_card(&self, o: &Outcome, m: &ModesResult) -> Card {
+        let ultimate = m.rows.iter().find(|r| r.id == "bearing_ultimate").and_then(|r| r.handbook);
+        let mut rows = vec![CompareRow {
+            title: "Handbook bearing ultimate".into(),
+            detail: "Fbru at this e/D times D t. The legacy Fbru + 0.8 p check stays governing; nothing here is promoted to it.".into(),
+            values: vec![ultimate.map_or_else(|| "-".into(), |v| format!("{} lb", grp(v)))],
+            ..CompareRow::default()
+        }];
+        let get = |label: &str| o.lines.iter().find(|l| l.label == label).map(|l| l.last().collapse);
+        if let (Some(strain), Some(solid)) = (get("2D plane strain"), get("3D solid")) {
+            rows.push(CompareRow {
+                title: "3D vs plane strain".into(),
+                detail: "Spread of the two FE collapse loads. Plane strain brackets the 3D answer from above, plane stress from below.".into(),
+                values: vec![format!("{:+.1} %", 100.0 * (solid / strain - 1.0))],
+                dim: true,
+                ..CompareRow::default()
+            });
+        }
+        let mut footer = "Advisory: the FE and the allowables do not replace the legacy handbook check.".to_string();
+        if m.fit_pressure > 0.0 {
+            footer = format!("Fit contact pressure {:.0} psi, charged against shear-out and tear-out at 100 %. {footer}", m.fit_pressure);
+        }
+        Card::new("plate-edge-check", "Check against the handbook rule", Relevance::Info, vec![DockItem::Compare(Box::new(Compare { heads: vec!["Check".into(), "Value".into()], rows, footer }))])
+    }
+
+    /// Every mesh of every FE line: its collapse load and how much it moved from the previous mesh. One mesh (the graded
+    /// mode) has no change to show; the card says so.
+    fn convergence_card(&self, o: &Outcome) -> Card {
+        let mut rows = Vec::new();
+        for l in &o.lines {
+            for r in &l.meshes {
+                rows.push(CompareRow {
+                    title: format!("{} \u{b7} {} x {}", l.label, r.around, r.layers),
+                    detail: format!("{} dof \u{b7} {:.1} s{}", grp(r.dofs as f64), r.secs, if r.collapse_change.is_none() { " \u{b7} first mesh" } else { "" }),
+                    values: vec![grp(r.collapse), r.collapse_change.map_or_else(|| "-".to_string(), pct)],
+                    ..CompareRow::default()
+                });
+            }
+        }
+        let multi = o.lines.iter().any(|l| l.meshes.len() > 1);
+        let all_converged = o.lines.iter().all(|l| l.converged);
+        let (footer, tag, tone) = if !multi {
+            ("One mesh per model: no convergence check. Choose Mesh: Converge to repeat on finer meshes.", "single mesh", Tone::Dim)
+        } else if all_converged {
+            ("Converged: the last change of every model is under the tolerance.", "converged", Tone::On)
+        } else {
+            ("Not converged within the meshes allowed: the last change of a model is above the tolerance.", "not converged", Tone::Warn)
+        };
+        let compare = Compare { heads: vec!["Mesh".into(), "Collapse, lb".into(), "Change".into()], rows, footer: footer.into() };
+        Card::new("plate-edge-convergence", "Mesh convergence", Relevance::Info, vec![DockItem::Compare(Box::new(compare))]).tag(tag).tag_tone(tone)
+    }
+
+    /// The FE lines' loads side by side, the contact FE beside them. The load-travel plot is under the view.
     fn fe_card(&self, o: &Outcome, stale: bool) -> Card {
         let mut items = Vec::new();
         if stale {
@@ -296,8 +462,10 @@ impl PlateEdgeSession {
         if let Some(note) = &o.fe_note {
             items.push(line(format!("FE not run: {note}."), Tone::Warn));
         }
+        for l in &o.lines {
+            items.push(DockItem::field(fe_name(l.label), format!("collapse {}", lb(l.last().collapse)), Tone::Normal, None, false));
+        }
         if !o.lines.is_empty() {
-            items.push(curve_plot(o));
             items.push(DockItem::Table(Box::new(line_table(o))));
             items.push(line("Pin load toward the edge. Onset: where the load-travel line has lost 5 % of its initial stiffness. Yield: its 2 % D offset. Collapse: the load at 0.1 D of pin travel. Dots on the curves: onset. The housing is elastic-perfectly-plastic, so yield and collapse sit close together: the table's bearing-onset row is the handbook Fbry, not this.", Tone::Dim));
             items.push(line(FE_MODELS_NOTE, Tone::Dim));
@@ -308,49 +476,23 @@ impl PlateEdgeSession {
                 items.push(line(format!("The FE bracket's plane strain collapse is {:+.1} % against it.", 100.0 * (b.last().collapse / c2 - 1.0)), Tone::Dim));
             }
         }
-        Card::new("plate-edge-fe", "FE bearing response", Relevance::Info, items).for_steps(&["Results"]).tag(if o.lines.iter().any(|l| l.label.starts_with("3D")) { "2D + 3D" } else { "2D" })
+        Card::new("plate-edge-fe", "FE bearing response", Relevance::Info, items).tag(if o.lines.iter().any(|l| l.label.starts_with("3D")) { "2D + 3D" } else { "2D" })
     }
 
-    /// Every mesh of every FE line: its collapse load and how much it moved from the previous mesh. One mesh (the graded
-    /// mode) has no change to show; the card says so.
-    fn convergence_card(&self, o: &Outcome) -> Card {
-        let mut rows = Vec::new();
-        for l in &o.lines {
-            for r in &l.meshes {
-                rows.push(TableRow {
-                    cells: vec![text(short_title(l.label), Tone::Normal), text(format!("{} x {}", r.around, r.layers), Tone::Normal), text(lb(r.collapse), Tone::Normal), text(r.dofs.to_string(), Tone::Dim), text(r.collapse_change.map_or_else(|| "first mesh".to_string(), |c| pct(c)), Tone::Normal)],
-                    governing: false,
-                });
-            }
-        }
-        let multi = o.lines.iter().any(|l| l.meshes.len() > 1);
-        let all_converged = o.lines.iter().all(|l| l.converged);
-        let (footer, tone) = if !multi {
-            ("One mesh per model: no convergence check. Choose Mesh: Graded + converge to repeat on finer meshes.".to_string(), Tone::Dim)
-        } else if all_converged {
-            ("Converged: the last change of every model is under the tolerance.".to_string(), Tone::On)
-        } else {
-            ("Not converged within the meshes allowed: the last change of a model is above the tolerance.".to_string(), Tone::Warn)
-        };
-        let table = DockTable {
-            columns: vec![Column::new("Model", 2.0), Column::new("Mesh", 1.3), Column::new("Collapse", 1.4).right(), Column::new("Dof", 1.0).right().optional(), Column::new("Change", 1.8).right()],
-            rows,
-            add: None,
-            footer,
-            footer_tone: Some(tone),
-            hint: String::new(),
-        };
-        Card::new("plate-edge-convergence", "Mesh convergence", Relevance::Info, vec![DockItem::Table(Box::new(table))]).for_steps(&["Results"])
+    /// The load-travel plot under the view.
+    fn plot_card(&self, o: &Outcome) -> Card {
+        let tag = if o.lines.iter().any(|l| l.label.starts_with("3D")) { "2D and 3D overlay" } else { "2D" };
+        Card::new("plate-edge-plot", "Load vs. pin travel", Relevance::Info, vec![curve_plot(o)]).tag(tag)
     }
 
     fn notes_card(&self) -> Card {
         let items = vec![
-            line("Advisory. The legacy handbook check (Fbru + 0.8 p in the Bushing workbench) stays the governing check; nothing here is promoted to it.", Tone::Dim),
             line("Plane strain runs above the 3D model at e/D 1.5 to 2.0 (12 to 36 % in the recorded bracket) and plane stress below it: read the 2D numbers as a bracket, and the 3D as the better single estimate for a bare pin.", Tone::Dim),
             line("The 3D and 2D FE model a rigid pin in a clearance or line-to-line hole. An interference fit is in the 2D contact FE; its 3D collapse did not converge in trials.", Tone::Dim),
             line("Handbook rows read the table values of the chosen material at the actual e/D; a row with no table value says why.", Tone::Dim),
+            line("The FE bracket computes the mesh, the displacement and the plastic strain only: von Mises, shear and bearing-pressure fields are not available. The load is along the free-edge direction; plate width and an inclined load are not inputs of these calculations.", Tone::Dim),
         ];
-        Card::new("plate-edge-notes", "Limits", Relevance::Info, items).for_steps(&["Results"]).folded()
+        Card::new("plate-edge-notes", "Limits", Relevance::Info, items)
     }
 
     // ------------------------------------------------------------------ status and report
@@ -418,70 +560,24 @@ impl PlateEdgeSession {
         t
     }
 
-    // ------------------------------------------------------------------ tree, ribbon, menus
-
-    pub(super) fn tree_nodes(&self) -> Vec<TreeNode> {
-        let step = |s: &'static str| act(PlateEdgeAct::Step(s));
-        let mut out = vec![TreeNode::new(1, 0, 'P', format!("Plate edge: {}", self.name)).on_click(step("Inputs"))];
-        out.push(TreeNode::new(2, 1, '+', "Inputs").folder().selected(self.step == "Inputs").on_click(step("Inputs")));
-        for (k, label) in ["Plate material", "Fastener / pin", "Fit", "Plate and edge", "Mesh"].into_iter().enumerate() {
-            out.push(TreeNode::new(10 + k as u32, 2, '#', label).on_click(step("Inputs")));
-        }
-        out.push(TreeNode::new(3, 1, '+', "Results").folder().selected(self.step == "Results").on_click(step("Results")));
-        if let Some(Ok(m)) = self.outcome.as_ref().filter(|_| self.current()).map(|o| &o.modes) {
-            for (k, r) in m.rows.iter().enumerate() {
-                let gov = m.governing == Some(k);
-                out.push(TreeNode::new(30 + k as u32, 2, if gov { '!' } else { '^' }, format!("{}: {}", r.label, opt(r.lowest()))).tone(if gov { Tone::Warn } else { Tone::Normal }).on_click(step("Results")));
-            }
-        }
-        out
-    }
-
-    pub(super) fn ribbon_tabs(&self) -> Vec<RibbonTab> {
-        let never = |what: &str| Err(format!("nothing to {what}"));
-        let busy = self.job.as_ref().is_some_and(|j| j.kind != Kind::Quick);
-        let run = |label: &str, k: Kind| entry(label, "", PlateEdgeAct::Run(k)).when(if busy { Err("a run is going; cancel it first".to_string()) } else { Ok(()) });
-        vec![
-            RibbonTab::new("Inputs")
-                .group("Case", vec![entry("Fit type", "", PlateEdgeAct::Cycle(Choice::Fit)), entry("Mesh mode", "", PlateEdgeAct::Cycle(Choice::Mesh)), entry("Plate source", "", PlateEdgeAct::Cycle(Choice::PlateSource)), entry("Pin source", "", PlateEdgeAct::Cycle(Choice::PinSource))])
-                .group(
-                    "Edit",
-                    vec![
-                        entry("Undo", "Ctrl/Cmd+Z", PlateEdgeAct::Undo).when(if self.undo.is_empty() { never("undo") } else { Ok(()) }),
-                        entry("Redo", "Ctrl/Cmd+Shift+Z", PlateEdgeAct::Redo).when(if self.redo.is_empty() { never("redo") } else { Ok(()) }),
-                        entry("Save", "Ctrl/Cmd+S", PlateEdgeAct::Save),
-                    ],
-                ),
-            RibbonTab::new("Results")
-                .group("Run", vec![run("Run 2D", Kind::TwoD), run("Run 2D + 3D", Kind::ThreeD), entry("Cancel", "Esc", PlateEdgeAct::Cancel).when(if busy { Ok(()) } else { never("cancel") })])
-                .group("Report", vec![entry("Export report", "", PlateEdgeAct::Export), entry("Save", "Ctrl/Cmd+S", PlateEdgeAct::Save)]),
-        ]
-    }
+    // ------------------------------------------------------------------ menus
 
     pub(super) fn menu_bar(&self) -> Vec<Menu> {
-        let tabs = self.ribbon_tabs();
-        let all = |tab: &str| tabs.iter().find(|t| t.title == tab).map(|t| t.groups.iter().flat_map(|g| g.buttons.clone()).collect::<Vec<_>>()).unwrap_or_default();
-        let pick = |tab: &str, labels: &[&str]| all(tab).into_iter().filter(|e| labels.contains(&e.label.as_str())).map(Item::Entry).collect::<Vec<_>>();
+        let busy = self.solving();
+        let never = |what: &str| Err(format!("nothing to {what}"));
+        let run = |label: &str, k: Kind| entry(label, "", PlateEdgeAct::Run(k)).when(if busy { Err("a run is going; cancel it first".to_string()) } else { Ok(()) });
         vec![
-            Menu { title: "File".into(), items: pick("Results", &["Save", "Export report"]) },
-            Menu { title: "Edit".into(), items: pick("Inputs", &["Undo", "Redo"]) },
-            Menu { title: "Run".into(), items: pick("Results", &["Run 2D", "Run 2D + 3D", "Cancel"]) },
+            Menu { title: "File".into(), items: vec![Item::Entry(entry("Save case", "Ctrl/Cmd+S", PlateEdgeAct::Save)), Item::Entry(entry("Export report", "", PlateEdgeAct::Export))] },
+            Menu {
+                title: "Edit".into(),
+                items: vec![
+                    Item::Entry(entry("Undo", "Ctrl/Cmd+Z", PlateEdgeAct::Undo).when(if self.undo.is_empty() { never("undo") } else { Ok(()) })),
+                    Item::Entry(entry("Redo", "Ctrl/Cmd+Shift+Z", PlateEdgeAct::Redo).when(if self.redo.is_empty() { never("redo") } else { Ok(()) })),
+                ],
+            },
+            Menu { title: "Run".into(), items: vec![Item::Entry(run("Run 2D", Kind::TwoD)), Item::Entry(run("Run 2D + 3D", Kind::ThreeD)), Item::Entry(entry("Cancel", "Esc", PlateEdgeAct::Cancel).when(if busy { Ok(()) } else { never("cancel") }))] },
         ]
     }
-}
-
-/// A mode's rows: the lowest load as the field, then how each method reached its number (or why there is none).
-fn row_items(r: &ModeRow, governing: bool) -> Vec<DockItem> {
-    let tone = if governing { Tone::On } else { Tone::Normal };
-    let mut items = vec![DockItem::field(r.label, opt(r.lowest()), tone, None, false)];
-    let methods: Vec<String> = [("handbook", r.handbook), ("elastic field", r.elastic), ("contact FE", r.contact)].into_iter().filter_map(|(n, v)| v.map(|v| format!("{n} {}", lb(v)))).collect();
-    if !methods.is_empty() {
-        items.push(line(methods.join("  |  "), Tone::Dim));
-    }
-    if let Some(why) = &r.why {
-        items.push(line(why.clone(), Tone::Warn));
-    }
-    items
 }
 
 /// What the FE lines are and how they differ from the contact FE row of the allowables table.
@@ -565,9 +661,4 @@ fn line_table(o: &Outcome) -> DockTable {
     rows.push(row("Dof", Tone::Dim, per(&|l| l.last().dofs.to_string()), false));
     rows.push(row("Time", Tone::Dim, per(&|l| format!("{:.1} s", l.last().secs)), false));
     DockTable { columns, rows, add: None, footer: String::new(), footer_tone: None, hint: String::new() }
-}
-
-#[allow(dead_code)]
-fn pin_classes() -> usize {
-    PIN_CLASSES.len()
 }

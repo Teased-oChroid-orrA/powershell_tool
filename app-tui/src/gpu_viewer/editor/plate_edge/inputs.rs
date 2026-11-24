@@ -31,12 +31,6 @@ impl Source {
             Source::Custom => "Custom",
         }
     }
-    pub fn next(self) -> Self {
-        match self {
-            Source::Library => Source::Custom,
-            Source::Custom => Source::Library,
-        }
-    }
 }
 
 /// The fit between pin and hole.
@@ -113,13 +107,6 @@ impl MeshMode {
             MeshMode::Fine => "Fixed fine",
         }
     }
-    pub fn next(self) -> Self {
-        match self {
-            MeshMode::Graded => MeshMode::Converge,
-            MeshMode::Converge => MeshMode::Fine,
-            MeshMode::Fine => MeshMode::Graded,
-        }
-    }
 }
 
 /// Strengths and elastic constants typed by the person (ksi, as the library tables are).
@@ -181,13 +168,6 @@ impl PinSource {
             PinSource::Class => "Library: fastener class",
             PinSource::Material => "Library: material",
             PinSource::Custom => "Custom",
-        }
-    }
-    pub fn next(self) -> Self {
-        match self {
-            PinSource::Class => PinSource::Material,
-            PinSource::Material => PinSource::Custom,
-            PinSource::Custom => PinSource::Class,
         }
     }
 }
