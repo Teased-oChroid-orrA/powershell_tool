@@ -52,6 +52,10 @@ contact AMR is 2D only and was deliberately not exposed (`docs/hybrid-meshing-am
   (changes -0.60 % and -0.16 %); departure 10329, 2 % offset 13595 / 13545 / 13529 (first mesh to third).
   A 0.5 % tolerance stops at the third mesh (`tests/edge_3d_bracket.rs`, `the_convergence_loop_stops_when_the_load_stops_moving`).
 * 3D, same case, 2 layers: 12234 lbf in 148 s at 17205 dof (the recorded 12234; layers 2/3/4 differ by 0.08 %).
+* The window's own default case with a 0.002 in clearance (0.25 in pin, handbook 7075 T651 plate 0.126-0.249 in [A], e = 0.5 in, e/D 1.98,
+  t = 0.125 in, t/D 0.50, friction 0.12, the plate sized as the Bushing window's contact FE sizes it): collapse 3841 lbf plane strain,
+  2304 lbf plane stress, 2754 lbf in 3D, so the 2D idealisations bracket the 3D solid (end to end through the window, 104 s,
+  `a_three_d_run_adds_the_solid_below_plane_strain_and_draws_it`, ignored by default).
 * With the perfectly plastic housing the curve is flat by about 0.05 D, so the 2 % offset load is within about 1 % of the
   collapse load. The housing law has no hardening: the FE cannot separate bearing yield from ultimate the way the tabulated
   `Fbry` and `Fbru` do, which is why the bearing-onset row is the handbook number and the FE shows onset, yield and collapse
