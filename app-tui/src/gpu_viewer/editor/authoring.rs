@@ -43,6 +43,10 @@ pub enum OverlayKind {
     /// A filled disc in the key's pin colour centred at `px` and passing through `tip` (a body drawn over the model, the
     /// pin of a result); `text` is not drawn.
     Disc,
+    /// A solid line from `px` to `tip` in the key's edge colour (an edge, a dimension line or its end tick); `text` is not drawn.
+    Line,
+    /// The same, dashed (a plane).
+    Dashes,
 }
 
 /// How much a card of the inspector matters right now.
@@ -71,10 +75,12 @@ pub struct Card {
     pub folded: bool,
     /// A short note at the right of the title (a source, a state).
     pub tag: String,
+    /// The tag's tone (a boxed card draws it as a chip in it).
+    pub tag_tone: super::session::Tone,
 }
 impl Card {
     pub fn new(id: impl Into<String>, title: impl Into<String>, relevance: Relevance, items: Vec<DockItem>) -> Self {
-        Self { id: id.into(), title: title.into(), relevance, steps: Vec::new(), items, folded: false, tag: String::new() }
+        Self { id: id.into(), title: title.into(), relevance, steps: Vec::new(), items, folded: false, tag: String::new(), tag_tone: super::session::Tone::Dim }
     }
     pub fn folded(mut self) -> Self {
         self.folded = true;
@@ -82,6 +88,10 @@ impl Card {
     }
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
         self.tag = tag.into();
+        self
+    }
+    pub fn tag_tone(mut self, tone: super::session::Tone) -> Self {
+        self.tag_tone = tone;
         self
     }
     pub fn for_steps(mut self, steps: &[&'static str]) -> Self {

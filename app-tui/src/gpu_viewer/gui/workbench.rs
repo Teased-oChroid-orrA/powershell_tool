@@ -8,9 +8,10 @@ use crate::gpu_viewer::{
     editor::{authoring::Card, session::Tone},
     menu::Outcome,
     sketch::{self, Fill, Ink, Sketch},
-    ui::{Dialog, DockItem, Workbench, WorkbenchView},
+    menu::Entry,
+    ui::{Compare, Dialog, DockItem, Look, Workbench, WorkbenchView},
 };
-use egui::{Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Order, Pos2, Rect, RichText, Sense, Stroke, UiBuilder, Vec2};
+use egui::{Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Order, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2};
 
 /// Height of the views' toolbar.
 const TOOLBAR: f32 = 44.0;
@@ -26,6 +27,10 @@ const INPUTS_DRAWER_BELOW: f32 = 700.0;
 const DRAWER_WIDTH: f32 = 320.0;
 /// Below this window width the top bar drops the status chips and folds the secondary actions into a menu.
 const COMPACT_BAR_BELOW: f32 = 900.0;
+/// Height of the strip under the views that a boxed workbench keeps for its status line and plot (at most 42 % of the body).
+const UNDER: f32 = 292.0;
+/// Height of the status line over the cards under the views.
+const STATUS: f32 = 28.0;
 
 /// A workbench pane that a narrow window folds into a drawer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,11 +45,14 @@ impl Gui {
         // Narrow windows give the views the room: the results (then also the inputs) become drawers over them.
         let results_drawer = window.width() < DRAWER_BELOW;
         let inputs_drawer = window.width() < INPUTS_DRAWER_BELOW;
+        let boxed = wb.look == Look::Boxed;
+        // Boxed cards sit on the page colour, so they read as raised from it.
+        let pane = |margin: Margin| if boxed { bar_frame(p, margin).fill(p.bg) } else { bar_frame(p, margin) };
         if !inputs_drawer {
-            egui::Panel::left("wb-inputs").default_size(300.0).size_range(250.0..=440.0).frame(bar_frame(p, Margin::symmetric(12, 10))).show(ui, |ui| self.inputs_pane(ui, wb, p, out));
+            egui::Panel::left("wb-inputs").default_size(if boxed { 330.0 } else { 300.0 }).size_range(250.0..=440.0).frame(pane(Margin::symmetric(12, 10))).show(ui, |ui| self.inputs_pane(ui, wb, p, out));
         }
         if !results_drawer {
-            egui::Panel::right("wb-results").default_size(350.0).size_range(290.0..=540.0).frame(bar_frame(p, Margin::symmetric(12, 10))).show(ui, |ui| self.results_pane(ui, wb, p, out));
+            egui::Panel::right("wb-results").default_size(if boxed { 400.0 } else { 350.0 }).size_range(290.0..=540.0).frame(pane(Margin::symmetric(12, 10))).show(ui, |ui| self.results_pane(ui, wb, p, out));
         }
         let free = ui.available_rect_before_wrap();
         let narrow = free.width() < STACK_BELOW;
@@ -53,7 +61,16 @@ impl Gui {
         ui.painter().rect_filled(bar, 0.0, p.panel);
         ui.painter().line_segment([bar.left_bottom(), bar.right_bottom()], Stroke::new(1.0, p.line));
         ui.scope_builder(UiBuilder::new().max_rect(bar.shrink2(Vec2::new(10.0, 5.0))).id_salt("wb-toolbar"), |ui| {
-            if narrow {
+            if boxed {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    let k = wb.views.len().max(1) as f32;
+                    self.segmented_equal(ui, &wb.views, (k * 96.0).min(ui.max_rect().width() * 0.4), p, out);
+                    let k = wb.fields.len().max(1) as f32;
+                    self.segmented_equal(ui, &wb.fields, (k * 104.0).min(ui.max_rect().width() * 0.5), p, out);
+                    self.switches(ui, wb, p, out, hint);
+                });
+            } else if narrow {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         let width = super::document::segmented_width(ui, &wb.views, p);
@@ -69,7 +86,18 @@ impl Gui {
                 });
             }
         });
-        let body = Rect::from_min_max(Pos2::new(free.left(), bar.bottom()), free.max);
+        let whole = Rect::from_min_max(Pos2::new(free.left(), bar.bottom()), free.max);
+        // What a boxed workbench keeps under the views: a status line and its cards (the plot).
+        let under_h = match (wb.under.is_empty(), wb.view_status.is_some()) {
+            (true, false) => 0.0,
+            // A status line alone needs no room for cards.
+            (true, true) => STATUS + 4.0,
+            _ => UNDER.min(whole.height() * 0.42),
+        };
+        let body = Rect::from_min_max(whole.min, Pos2::new(whole.right(), whole.bottom() - under_h));
+        if under_h > 0.0 {
+            self.under_pane(ui, Rect::from_min_max(Pos2::new(whole.left(), body.bottom()), whole.max), wb, p, out);
+        }
         match wb.show {
             WorkbenchView::Model => {
                 self.viewport = Some(body);
@@ -114,7 +142,7 @@ impl Gui {
         pane_title(ui, "Inputs", p);
         egui::ScrollArea::vertical().id_salt("wb-inputs-scroll").auto_shrink([false, false]).show(ui, |ui| {
             for c in &wb.inputs {
-                self.pane_card(ui, c, true, p, out);
+                self.pane_card(ui, c, true, wb.look, p, out);
             }
             if !wb.inputs_note.is_empty() {
                 ui.add_space(8.0);
@@ -127,10 +155,10 @@ impl Gui {
         pane_title(ui, "Results", p);
         egui::ScrollArea::vertical().id_salt("wb-results-scroll").auto_shrink([false, false]).show(ui, |ui| {
             for (k, c) in wb.results.iter().enumerate() {
-                if k > 0 {
+                if k > 0 && wb.look == Look::Ruled {
                     ui.add_space(4.0);
                 }
-                self.pane_card(ui, c, false, p, out);
+                self.pane_card(ui, c, false, wb.look, p, out);
             }
         });
     }
@@ -245,6 +273,16 @@ impl Gui {
             self.targets.push(("Colour by".into(), r.response.rect));
             r.response.on_hover_text("What the 3D view is coloured by");
         }
+        self.switches(ui, wb, p, out, hint);
+        if !wb.view_note.is_empty() && ui.max_rect().width() > 850.0 {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add(egui::Label::new(RichText::new(&wb.view_note).size(11.5).color(p.dim)).truncate());
+            });
+        }
+    }
+
+    /// The views' switches and buttons (Quarter cut, Reset view).
+    fn switches(&mut self, ui: &mut egui::Ui, wb: &Workbench, _p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         for e in &wb.switches {
             match e.checked {
                 Some(on) => {
@@ -260,25 +298,29 @@ impl Gui {
                 }
             }
         }
-        if !wb.view_note.is_empty() && ui.max_rect().width() > 850.0 {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add(egui::Label::new(RichText::new(&wb.view_note).size(11.5).color(p.dim)).truncate());
-            });
-        }
     }
 
     /// The 3D view's title at its top left and the hint at its bottom left, over the model.
     fn model_caption(&self, ui: &egui::Ui, r: Rect, wb: &Workbench, p: &Palette) {
         let painter = ui.painter();
         let at = r.left_top() + Vec2::new(12.0, 10.0);
-        let cap = painter.text(at, Align2::LEFT_TOP, "3D", FontId::proportional(11.0), p.dim);
-        painter.text(Pos2::new(cap.right() + 6.0, at.y), Align2::LEFT_TOP, &wb.model_title, FontId::proportional(11.5), p.text);
+        // A boxed workbench's title names the model whole (it may be a 2D one).
+        let x = if wb.look == Look::Boxed { at.x } else { painter.text(at, Align2::LEFT_TOP, "3D", FontId::proportional(11.0), p.dim).right() + 6.0 };
+        if wb.look == Look::Boxed {
+            // A chip behind the title: the model's own edge runs under it.
+            let g = painter.layout_no_wrap(wb.model_title.clone(), FontId::proportional(11.5), p.text);
+            painter.rect_filled(Rect::from_min_size(at - Vec2::new(8.0, 4.0), g.size() + Vec2::new(16.0, 8.0)), 6.0, with_alpha(p.panel, 225));
+        }
+        painter.text(Pos2::new(x, at.y), Align2::LEFT_TOP, &wb.model_title, FontId::proportional(11.5), p.text);
         painter.text(r.left_bottom() + Vec2::new(12.0, -8.0), Align2::LEFT_BOTTOM, &wb.model_hint, FontId::proportional(11.0), p.dim);
     }
 
     /// One section of a pane: a header that folds it (title, a tag at the right), then its rows. Inputs draw their values
     /// as boxes.
-    fn pane_card(&mut self, ui: &mut egui::Ui, card: &Card, inputs: bool, p: &Palette, out: &mut Vec<Outcome>) {
+    fn pane_card(&mut self, ui: &mut egui::Ui, card: &Card, inputs: bool, look: Look, p: &Palette, out: &mut Vec<Outcome>) {
+        if look == Look::Boxed {
+            return self.boxed_card(ui, card, inputs, p, out);
+        }
         let open = *self.card_open.get(&card.id).unwrap_or(&!card.folded);
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
         self.targets.push((format!("{} card", card.title), rect));
@@ -303,7 +345,7 @@ impl Gui {
             ui.spacing_mut().item_spacing.y = 3.0;
             for item in &card.items {
                 match item {
-                    DockItem::Field { label, value, tone, action, focused } if inputs => self.input_row(ui, label, value, *tone, *action, *focused, p, out),
+                    DockItem::Field { label, value, tone, action, focused } if inputs => self.input_row(ui, label, value, *tone, *action, *focused, false, p, out),
                     _ => self.dock_item(ui, item, p, out),
                 }
             }
@@ -314,11 +356,197 @@ impl Gui {
         ui.add_space(4.0);
     }
 
+    /// A boxed workbench's card: a rounded box on the page, its title and a state chip in a header that folds it.
+    fn boxed_card(&mut self, ui: &mut egui::Ui, card: &Card, inputs: bool, p: &Palette, out: &mut Vec<Outcome>) {
+        let open = *self.card_open.get(&card.id).unwrap_or(&!card.folded);
+        egui::Frame::new().fill(p.panel).stroke(Stroke::new(1.0, p.line)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(12)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::click());
+            self.targets.push((format!("{} card", card.title), rect));
+            let painter = ui.painter();
+            let mid = rect.center().y;
+            // A chevron says the card folds: down when open, right when folded.
+            let c = Pos2::new(rect.left() + 4.0, mid);
+            let tri = if open { vec![c + Vec2::new(-3.5, -2.0), c + Vec2::new(3.5, -2.0), c + Vec2::new(0.0, 3.0)] } else { vec![c + Vec2::new(-2.0, -3.5), c + Vec2::new(3.0, 0.0), c + Vec2::new(-2.0, 3.5)] };
+            painter.add(egui::Shape::convex_polygon(tri, p.dim, Stroke::NONE));
+            let title = painter.text(Pos2::new(rect.left() + 16.0, mid), Align2::LEFT_CENTER, card.title.to_uppercase(), FontId::proportional(11.0), if resp.hovered() { p.text } else { p.dim });
+            if !card.tag.is_empty() {
+                let colour = tone_colour(p, card.tag_tone);
+                let room = (rect.right() - title.right() - 12.0).max(40.0);
+                // A tag longer than the room is cut with an ellipsis, never clipped mid-letter.
+                let mut text = card.tag.clone();
+                let mut g = painter.layout_no_wrap(text.clone(), FontId::proportional(11.0), colour);
+                while g.size().x + 16.0 > room && text.chars().count() > 2 {
+                    text.pop();
+                    g = painter.layout_no_wrap(format!("{}\u{2026}", text.trim_end()), FontId::proportional(11.0), colour);
+                }
+                let w = g.size().x + 16.0;
+                let chip = Rect::from_min_size(Pos2::new(rect.right() - w, mid - 10.0), Vec2::new(w, 20.0));
+                painter.rect(chip, CornerRadius::same(10), if card.tag_tone == Tone::Dim { Color32::TRANSPARENT } else { with_alpha(colour, 30) }, Stroke::new(1.0, with_alpha(colour, 120)), StrokeKind::Inside);
+                painter.galley(Pos2::new(chip.left() + 8.0, mid - g.size().y / 2.0), g, colour);
+            }
+            if resp.clicked() {
+                self.card_open.insert(card.id.clone(), !open);
+            }
+            if open {
+                ui.add_space(6.0);
+                ui.spacing_mut().item_spacing.y = 4.0;
+                for item in &card.items {
+                    match item {
+                        DockItem::Field { label, value, tone, action, focused } if inputs => self.input_row(ui, label, value, *tone, *action, *focused, true, p, out),
+                        _ => self.dock_item(ui, item, p, out),
+                    }
+                }
+            }
+        });
+        ui.add_space(10.0);
+    }
+
+    /// The strip under the views: the last run's status line, then the cards (the load-travel plot).
+    fn under_pane(&mut self, ui: &mut egui::Ui, r: Rect, wb: &Workbench, p: &Palette, out: &mut Vec<Outcome>) {
+        ui.painter().rect_filled(r, 0.0, p.bg);
+        ui.painter().line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, p.line));
+        if let Some((text, tone)) = &wb.view_status {
+            let colour = tone_colour(p, *tone);
+            let at = Pos2::new(r.left() + 16.0, r.top() + STATUS / 2.0 + 2.0);
+            ui.painter().circle_filled(at, 4.0, if *tone == Tone::Dim { p.dim } else { colour });
+            let g = ui.painter().layout(text.clone(), FontId::proportional(12.0), p.dim, (r.width() - 44.0).max(60.0));
+            ui.painter().galley(Pos2::new(at.x + 12.0, at.y - 7.0), g, p.dim);
+        }
+        let cards = Rect::from_min_max(Pos2::new(r.left() + 10.0, r.top() + STATUS + 2.0), r.max - Vec2::new(10.0, 0.0));
+        if wb.dialog.is_some() || wb.under.is_empty() || cards.height() < 40.0 {
+            return;
+        }
+        ui.scope_builder(UiBuilder::new().max_rect(cards).id_salt("wb-under"), |ui| {
+            egui::ScrollArea::vertical().id_salt("wb-under-scroll").auto_shrink([false, false]).show(ui, |ui| {
+                for c in &wb.under {
+                    self.pane_card(ui, c, false, wb.look, p, out);
+                }
+            });
+        });
+    }
+
+    /// One choice of a few as a segmented control across `width`: equal segments, the chosen one filled with the accent.
+    pub(super) fn segmented_equal(&mut self, ui: &mut egui::Ui, entries: &[Entry], width: f32, p: &Palette, out: &mut Vec<Outcome>) {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(width.max(40.0), 30.0), Sense::click());
+        ui.painter().rect(rect, CornerRadius::same(9), p.raised, Stroke::new(1.0, p.line), StrokeKind::Inside);
+        let w = (rect.width() - 4.0) / entries.len().max(1) as f32;
+        let at = |q: Pos2| (((q.x - rect.left() - 2.0) / w).floor().max(0.0) as usize).min(entries.len().saturating_sub(1));
+        let hovered = resp.hover_pos().map(at);
+        for (i, e) in entries.iter().enumerate() {
+            let r = Rect::from_min_size(Pos2::new(rect.left() + 2.0 + w * i as f32, rect.top() + 2.0), Vec2::new(w, rect.height() - 4.0));
+            self.targets.push((e.label.clone(), r));
+            let on = e.checked == Some(true);
+            let colour = if on {
+                ui.painter().rect_filled(r, CornerRadius::same(7), p.accent);
+                p.on_accent
+            } else if !e.enabled {
+                with_alpha(p.dim, 120)
+            } else if hovered == Some(i) {
+                ui.painter().rect_filled(r, CornerRadius::same(7), p.panel);
+                p.text
+            } else {
+                p.dim
+            };
+            ui.painter().with_clip_rect(r).text(r.center(), Align2::CENTER_CENTER, &e.label, FontId::proportional(12.0), colour);
+        }
+        if let Some(i) = hovered {
+            let tip = entries[i].hover_text();
+            if !tip.is_empty() {
+                resp.clone().on_hover_text(tip);
+            }
+        }
+        if let (true, Some(q)) = (resp.clicked(), resp.interact_pointer_pos()) {
+            let e = &entries[at(q)];
+            out.push(match (&e.reason, e.enabled) {
+                (Some(reason), false) => Outcome::Blocked(reason.clone()),
+                _ => Outcome::Action(e.action),
+            });
+        }
+    }
+
+    /// Named rows with a detail line and a figure per column; the governing row has an accent bar and a tint.
+    pub(super) fn compare_ui(&mut self, ui: &mut egui::Ui, c: &Compare, p: &Palette) {
+        let width = ui.available_width();
+        let figures = c.heads.len().saturating_sub(1);
+        let figure_font = FontId::monospace(12.5);
+        let head_font = FontId::proportional(10.5);
+        let measure = |t: &str, f: &FontId| ui.painter().layout_no_wrap(t.to_string(), f.clone(), p.text).size().x;
+        // Each figure column is as wide as its widest figure or its head, plus a gap, so a head sits over its figures.
+        let col_w: Vec<f32> = (0..figures)
+            .map(|j| {
+                let figs = c.rows.iter().filter_map(|r| r.values.get(j)).map(|v| measure(v, &figure_font)).fold(0.0_f32, f32::max);
+                figs.max(measure(&c.heads[j + 1].to_uppercase(), &head_font)).max(30.0) + 14.0
+            })
+            .collect();
+        let chip_w = if c.rows.iter().any(|r| r.chip.is_some()) { 70.0 } else { 0.0 };
+        let name_w = (width - col_w.iter().sum::<f32>() - chip_w - 6.0).max(80.0);
+        // Right edge of figure column `k`, from the left of the card.
+        let col_right = |k: usize| width - chip_w - col_w[k + 1..].iter().sum::<f32>() - 2.0;
+        let (head, _) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
+        for (k, h) in c.heads.iter().enumerate() {
+            let (align, x) = if k == 0 { (Align2::LEFT_CENTER, head.left()) } else { (Align2::RIGHT_CENTER, head.left() + col_right(k - 1)) };
+            ui.painter().text(Pos2::new(x, head.center().y), align, h.to_uppercase(), head_font.clone(), p.dim);
+        }
+        let n = c.rows.len();
+        for (k, row) in c.rows.iter().enumerate() {
+            let text_col = if row.dim { p.dim } else { p.text };
+            let title = ui.painter().layout(row.title.clone(), FontId::proportional(13.0), text_col, name_w - 4.0);
+            let detail = (!row.detail.is_empty()).then(|| ui.painter().layout(row.detail.clone(), FontId::proportional(11.0), p.dim, name_w - 4.0));
+            let bar_h = if row.bar.is_some() { 12.0 } else { 0.0 };
+            let height = title.size().y + detail.as_ref().map_or(0.0, |d| d.size().y + 1.0) + bar_h + 14.0;
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+            self.targets.push((row.title.clone(), rect));
+            let painter = ui.painter();
+            if row.governing {
+                // To the card's edges, as the mockup's row runs under its padding.
+                let band = Rect::from_min_max(Pos2::new(rect.left() - 12.0, rect.top()), Pos2::new(rect.right() + 12.0, rect.bottom()));
+                painter.rect_filled(band, 0.0, with_alpha(p.accent, 24));
+                painter.rect_filled(Rect::from_min_size(band.left_top(), Vec2::new(3.0, band.height())), 0.0, p.accent);
+            } else if k + 1 < n && !c.rows[k + 1].governing {
+                painter.line_segment([Pos2::new(rect.left(), rect.bottom()), Pos2::new(rect.right(), rect.bottom())], Stroke::new(1.0, with_alpha(p.line, 170)));
+            }
+            let mut y = rect.top() + 7.0;
+            let title_h = title.size().y;
+            painter.galley(Pos2::new(rect.left(), y), title, text_col);
+            y += title_h;
+            if let Some(d) = detail {
+                let h = d.size().y;
+                painter.galley(Pos2::new(rect.left(), y + 1.0), d, p.dim);
+                y += h + 1.0;
+            }
+            if let Some(share) = row.bar {
+                let track = Rect::from_min_size(Pos2::new(rect.left(), y + 4.0), Vec2::new(name_w * 0.9, 6.0));
+                painter.rect_filled(track, 3.0, p.raised);
+                painter.rect_filled(Rect::from_min_size(track.min, Vec2::new((track.width() * share.clamp(0.0, 1.0)).max(4.0), track.height())), 3.0, p.accent);
+            }
+            let mid = rect.top() + 7.0 + 8.0;
+            for (j, v) in row.values.iter().enumerate() {
+                let colour = if v == "-" || row.dim { p.dim } else if row.governing { p.text } else { p.text };
+                painter.text(Pos2::new(rect.left() + col_right(j), mid), Align2::RIGHT_CENTER, v, figure_font.clone(), colour);
+            }
+            if let Some((text, tone)) = &row.chip {
+                let colour = tone_colour(p, *tone);
+                let g = painter.layout_no_wrap(text.clone(), FontId::proportional(11.0), colour);
+                let w = (g.size().x + 14.0).min(chip_w);
+                let chip = Rect::from_min_size(Pos2::new(rect.right() - w, mid - 9.0), Vec2::new(w, 18.0));
+                painter.rect(chip, CornerRadius::same(9), with_alpha(colour, 30), Stroke::new(1.0, with_alpha(colour, 120)), StrokeKind::Inside);
+                painter.with_clip_rect(chip).galley(Pos2::new(chip.left() + 7.0, mid - g.size().y / 2.0), g, colour);
+            }
+        }
+        if !c.footer.is_empty() {
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(&c.footer).size(11.5).color(p.dim)).wrap());
+        }
+    }
+
     /// An input: its label, and its value in a box at the right (the edit box while it is being typed).
     #[allow(clippy::too_many_arguments)]
-    fn input_row(&mut self, ui: &mut egui::Ui, label: &str, value: &str, tone: Tone, action: Option<crate::gpu_viewer::controller::UiAction>, focused: bool, p: &Palette, out: &mut Vec<Outcome>) {
+    fn input_row(&mut self, ui: &mut egui::Ui, label: &str, value: &str, tone: Tone, action: Option<crate::gpu_viewer::controller::UiAction>, focused: bool, boxed: bool, p: &Palette, out: &mut Vec<Outcome>) {
         let width = ui.available_width();
-        let box_w = (width * 0.46).clamp(96.0, 170.0);
+        let value_w = ui.painter().layout_no_wrap(value.to_string(), FontId::monospace(12.0), p.text).size().x + 18.0;
+        // A long value (a material's name) gets more of the row, at most two thirds; past that it is cut with an ellipsis.
+        let box_w = (width * 0.46).clamp(96.0, 170.0).max(value_w.min(width * 0.66));
         let (flag, label) = match label.strip_prefix("! ") {
             Some(rest) => (true, rest),
             None => (false, label),
@@ -341,11 +569,23 @@ impl Gui {
         let b = Rect::from_min_max(Pos2::new(rect.right() - box_w, rect.top() + 2.0), Pos2::new(rect.right(), rect.bottom() - 2.0));
         let editing = focused || tone == Tone::Warn;
         let stroke = if editing { Stroke::new(1.4, p.accent) } else if resp.hovered() && action.is_some() { Stroke::new(1.0, p.dim) } else { Stroke::new(1.0, p.line) };
-        painter.rect(b, 5.0, p.bg, stroke, egui::StrokeKind::Inside);
-        let vcol = if editing { p.accent } else if tone == Tone::On { p.good } else { p.text };
-        let value_g = painter.layout_no_wrap(value.to_string(), FontId::monospace(12.0), vcol);
+        if boxed && action.is_none() {
+            // A figure the window works out: no box to type in.
+            painter.rect_filled(b, 7.0, with_alpha(p.raised, 150));
+        } else {
+            painter.rect(b, if boxed { 7.0 } else { 5.0 }, if boxed { p.raised } else { p.bg }, stroke, egui::StrokeKind::Inside);
+        }
+        let vcol = if editing { p.accent } else if tone == Tone::On { p.good } else if boxed && action.is_none() { p.dim } else { p.text };
         let clip = b.shrink2(Vec2::new(8.0, 0.0));
-        painter.with_clip_rect(clip).galley(Pos2::new(clip.left(), mid - value_g.size().y / 2.0), value_g, vcol);
+        let mut shown = value.to_string();
+        let mut value_g = painter.layout_no_wrap(shown.clone(), FontId::monospace(12.0), vcol);
+        while boxed && value_g.size().x > clip.width() && shown.chars().count() > 2 {
+            shown.pop();
+            value_g = painter.layout_no_wrap(format!("{}\u{2026}", shown.trim_end()), FontId::monospace(12.0), vcol);
+        }
+        // A boxed workbench's figures sit at the right of their box, as typed numbers do.
+        let x = if boxed { (clip.right() - value_g.size().x).max(clip.left()) } else { clip.left() };
+        painter.with_clip_rect(clip).galley(Pos2::new(x, mid - value_g.size().y / 2.0), value_g, vcol);
         if let (Some(a), true) = (action, resp.clicked()) {
             out.push(Outcome::Action(a));
         }
@@ -461,6 +701,10 @@ impl Gui {
             }
         }
     }
+}
+
+fn tone_colour(p: &Palette, tone: Tone) -> Color32 {
+    super::theme::tone_color(p, tone)
 }
 
 fn pane_title(ui: &mut egui::Ui, title: &str, p: &Palette) {

@@ -582,6 +582,8 @@ impl Gui {
             self.workbench(ui, wb, &p, out, hint);
             self.floating_list(ui.ctx(), &p, out, hint);
             if wb.dialog.is_none() && !matches!(wb.show, crate::gpu_viewer::ui::WorkbenchView::Sketch(_)) {
+                // What the editor drew on the model (a load arrow, a pin disc, dimension captions) belongs to the views.
+                self.model_labels(ui.ctx(), input, &p);
                 self.contour_legend(ui.ctx(), input, &p, out);
             }
             self.value_card(ui.ctx(), input, &p, out, hint);
@@ -829,6 +831,17 @@ impl Gui {
                     let tip = Pos2::new(origin.x + tip[0] / ppp, origin.y + tip[1] / ppp);
                     let [kr, kg, kb] = input.view.key_colours[2];
                     back.circle(at, (tip - at).length(), Color32::from_rgb(kr, kg, kb), egui::Stroke::new(1.5, p.text));
+                }
+                OverlayKind::Line | OverlayKind::Dashes => {
+                    let Some(tip) = o.tip else { continue };
+                    let tip = Pos2::new(origin.x + tip[0] / ppp, origin.y + tip[1] / ppp);
+                    let [kr, kg, kb] = input.view.key_colours[3];
+                    let stroke = egui::Stroke::new(2.0, Color32::from_rgb(kr, kg, kb));
+                    if o.kind == OverlayKind::Dashes {
+                        back.extend(egui::Shape::dashed_line(&[at, tip], stroke, 8.0, 6.0));
+                    } else {
+                        back.line_segment([at, tip], stroke);
+                    }
                 }
                 OverlayKind::Support => {
                     let out = o

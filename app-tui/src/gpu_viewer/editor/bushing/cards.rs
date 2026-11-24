@@ -111,6 +111,9 @@ impl BushingSession {
             sketches: sketch::sketches(m),
             results: self.result_cards(),
             dialog: self.dialog_open.then(|| self.send_dialog()),
+            look: Default::default(),
+            under: Vec::new(),
+            view_status: None,
         }
     }
 

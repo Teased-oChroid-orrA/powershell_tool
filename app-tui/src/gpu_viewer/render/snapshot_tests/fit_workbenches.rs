@@ -678,8 +678,8 @@ fn assembly_snapshot() {
     });
 }
 
-/// The Plate Edge window: the picture before any run (light and dark), then after a 2D + 3D run (about four minutes) the
-/// Inputs step with the solved model and the Results step, dark and light:
+/// The Plate Edge window: the plate before any run (light and dark), then after a 2D + 3D run (about four minutes) the solved
+/// model with its results, dark and light:
 /// `FEA_SNAPSHOT_PLATE_EDGE_OUT=/dir cargo test ... plate_edge_snapshot -- --ignored`.
 #[test]
 #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_PLATE_EDGE_OUT"]
@@ -726,12 +726,13 @@ fn plate_edge_snapshot() {
     inputs.edge = 0.5;
     let mut session = PlateEdgeSession::new(inputs, "Plate edge".into(), std::env::temp_dir().join("plate-edge-snapshot.json"));
     wait(&mut session);
-    shot(&mut session, "plate-edge-picture-light", false, 1500);
-    shot(&mut session, "plate-edge-picture-dark", true, 1500);
+    shot(&mut session, "plate-edge-inputs-light", false, 1500);
+    shot(&mut session, "plate-edge-inputs-dark", true, 1500);
+    session.act(EditorAction::PlateEdge(PlateEdgeAct::Run(Kind::TwoD)));
+    wait(&mut session);
+    shot(&mut session, "plate-edge-results-2d-dark", true, 1500);
     session.act(EditorAction::PlateEdge(PlateEdgeAct::Run(Kind::ThreeD)));
     wait(&mut session);
-    shot(&mut session, "plate-edge-inputs-3d-dark", true, 1500);
-    session.act(EditorAction::PlateEdge(PlateEdgeAct::Step("Results")));
-    shot(&mut session, "plate-edge-results-3d-dark", true, 1500);
-    shot(&mut session, "plate-edge-results-3d-light", false, 1500);
+    shot(&mut session, "plate-edge-results-dark", true, 1500);
+    shot(&mut session, "plate-edge-results-light", false, 1500);
 }

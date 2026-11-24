@@ -1,6 +1,6 @@
 //! The Plate Edge window: inputs reach the calculations, edits undo, the case file round-trips, a result is fresh only for its inputs.
 use super::*;
-use crate::gpu_viewer::editor::authoring::Authoring;
+use crate::gpu_viewer::editor::{authoring::Authoring, session::Tone};
 use std::time::{Duration, Instant};
 
 fn session() -> PlateEdgeSession {
@@ -36,7 +36,7 @@ fn it_opens_with_a_case_and_computes_the_allowables() {
     let m = o.modes.as_ref().expect("a valid default case");
     assert!(m.governing.is_some() && m.rows.len() == 9);
     let t = texts(&s).join("\n");
-    assert!(t.contains("Allowable loads") || t.contains("Governing"), "{t}");
+    assert!(t.contains("Shear-out") && t.contains("Bearing ultimate"), "{t}");
     assert!(s.status().starts_with("governing"), "{}", s.status());
 }
 
@@ -155,14 +155,11 @@ fn a_saved_case_reopens_with_its_inputs_and_the_report_is_written_beside_it() {
 fn a_two_d_run_adds_the_fe_and_goes_stale_when_an_input_changes() {
     let mut s = session();
     wait(&mut s);
-    // Four presses of the fit choice come back to the start.
-    for _ in 0..4 {
-        s.act(EditorAction::PlateEdge(PlateEdgeAct::Cycle(Choice::Fit)));
-    }
-    assert_eq!(s.inputs.fit, inputs::FitKind::PressFit);
-    s.inputs.fit = inputs::FitKind::Clearance;
-    s.inputs.fit_value = 0.002;
-    s.changed();
+    // Choosing a fit sets its typical value and is one undo step; choosing the one already chosen is not an edit.
+    s.act(EditorAction::PlateEdge(PlateEdgeAct::Set(Setting::Fit(inputs::FitKind::PressFit))));
+    assert!(s.undo.is_empty());
+    s.act(EditorAction::PlateEdge(PlateEdgeAct::Set(Setting::Fit(inputs::FitKind::Clearance))));
+    assert_eq!((s.inputs.fit, s.inputs.fit_value, s.undo.len()), (inputs::FitKind::Clearance, 0.002, 1));
     wait(&mut s);
     s.act(EditorAction::PlateEdge(PlateEdgeAct::Run(run::Kind::TwoD)));
     assert!(s.solving());
@@ -205,17 +202,43 @@ fn escape_cancels_a_running_fe_run() {
 }
 
 #[test]
-fn ribbon_tree_menus_and_cards_exist() {
+fn the_window_is_a_boxed_workbench_with_inputs_results_and_menus() {
     let mut s = session();
     wait(&mut s);
-    assert_eq!(s.ribbon().len(), 2);
-    assert!(s.tree().len() > 5);
+    assert!(s.has_workbench() && s.tree().is_empty() && s.inspector().is_empty() && s.ribbon().is_empty());
     assert_eq!(s.menus().iter().map(|m| m.title.as_str()).collect::<Vec<_>>(), ["File", "Edit", "Run"]);
-    let ids: Vec<String> = s.inspector().into_iter().map(|c| c.id).collect();
-    for want in ["plate-edge-plate", "plate-edge-pin", "plate-edge-fit", "plate-edge-geometry", "plate-edge-mesh", "plate-edge-run", "plate-edge-allowables"] {
-        assert!(ids.iter().any(|i| i == want), "{want} in {ids:?}");
+    let wb = s.workbench().unwrap();
+    assert_eq!(wb.look, crate::gpu_viewer::ui::Look::Boxed);
+    let ids = |cards: &[crate::gpu_viewer::editor::authoring::Card]| cards.iter().map(|c| c.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&wb.inputs), ["plate-edge-plate", "plate-edge-pin", "plate-edge-fit", "plate-edge-geometry", "plate-edge-mesh"]);
+    assert_eq!(ids(&wb.results), ["plate-edge-allowables", "plate-edge-check", "plate-edge-notes"]);
+    // Each switched card opens with its segmented control; the chosen segment is the input's value.
+    for c in wb.inputs.iter().filter(|c| c.id != "plate-edge-geometry") {
+        let DockItem::Segmented(seg) = &c.items[0] else { panic!("{} starts with a switch", c.id) };
+        assert_eq!(seg.iter().filter(|e| e.checked == Some(true)).count(), 1, "{}", c.id);
     }
+    assert_eq!(wb.actions.iter().map(|a| a.label.as_str()).collect::<Vec<_>>(), ["Save case", "Report", "Run 2D", "Run 2D + 3D"]);
+    assert!(wb.chips.iter().any(|(t, tone)| t.starts_with("Governing: ") && *tone == Tone::On), "{:?}", wb.chips);
+    // Before a run: the plate, no plot, the 3D view and the strain field not offered, a hint line in the status.
+    assert!(wb.under.is_empty() && wb.view_status.as_ref().is_some_and(|(t, _)| t.starts_with("Allowables only")));
+    assert!(wb.views.iter().any(|v| v.label == "3D solid" && !v.enabled) && wb.fields.iter().any(|f| f.label == "Plastic strain" && !f.enabled));
     assert!(s.scene().is_ok(), "the plate is drawn before any run");
+}
+
+#[test]
+fn the_allowables_card_compares_the_modes_by_method_and_marks_the_governing_one() {
+    let mut s = session();
+    wait(&mut s);
+    let cards = s.result_cards();
+    let DockItem::Compare(c) = &cards[0].items[0] else { panic!("a comparison") };
+    assert_eq!(c.heads, ["Mode", "Allowable", "2D FE", "3D FE"]);
+    assert_eq!(c.rows.len(), 9);
+    let gov: Vec<_> = c.rows.iter().filter(|r| r.governing).collect();
+    assert_eq!(gov.len(), 1);
+    assert!(gov[0].bar.is_some_and(|b| b > 0.0 && b <= 1.0) && cards[0].tag == format!("governing: {}", gov[0].title) && cards[0].tag_tone == Tone::On);
+    // No FE has run: no FE figure. The informational rows are dimmed and never govern.
+    assert!(c.rows.iter().all(|r| r.values[1] == "-" && r.values[2] == "-"));
+    assert!(c.rows.iter().filter(|r| r.title == "First yield" || r.title.starts_with("Collapse")).all(|r| r.dim && !r.governing));
 }
 
 #[test]
@@ -246,15 +269,23 @@ fn a_three_d_run_adds_the_solid_below_plane_strain_and_draws_it() {
     let (strain, stress, solid) = (get("2D plane strain"), get("2D plane stress"), get("3D solid"));
     eprintln!("plane strain {strain:.0}, plane stress {stress:.0}, 3D {solid:.0}");
     assert!(stress < solid && solid < strain, "the 2D idealisations bracket the 3D answer");
-    // The results step has the load-travel plot with a curve per line, and the lines side by side.
-    let fe = s.inspector().into_iter().find(|c| c.id == "plate-edge-fe").unwrap();
-    let plot = fe.items.iter().find_map(|i| if let DockItem::Plot(p) = i { Some(p) } else { None }).expect("a load-travel plot");
+    // The plot under the view has a curve per line; the FE card has the lines side by side.
+    let wb = s.workbench().unwrap();
+    let plot = wb.under[0].items.iter().find_map(|i| if let DockItem::Plot(p) = i { Some(p) } else { None }).expect("a load-travel plot");
+    let fe = s.result_cards().into_iter().find(|c| c.id == "plate-edge-fe").unwrap();
     assert_eq!(plot.series.len(), 3);
     assert_eq!(plot.series.iter().map(|s| s.color).collect::<std::collections::BTreeSet<_>>().len(), 3, "three colours for three lines");
     let table = fe.items.iter().find_map(|i| if let DockItem::Table(t) = i { Some(t) } else { None }).expect("the lines side by side");
     assert_eq!(table.columns.len(), 4, "a label column and one column per FE line");
-    assert_eq!(super::scene::pick_fields(o).map(|l| l.label), Some("3D solid"));
-    assert!(s.scene().is_ok() && s.shows_result());
+    assert_eq!(super::scene::pick_fields(o, Dim::Three).map(|l| l.label), Some("3D solid"));
+    assert_eq!(super::scene::pick_fields(o, Dim::Two).map(|l| l.label), Some("2D plane strain"));
+    // The finished run shows the solid; the allowables card carries its collapse and its bearing yield next to the 2D figures.
+    assert!(s.dim == Dim::Three && s.shows_result() && s.scene().is_ok());
+    let DockItem::Compare(c) = &s.result_cards()[0].items[0] else { panic!("a comparison") };
+    let collapse = c.rows.iter().find(|r| r.title.starts_with("Collapse")).unwrap();
+    assert!(collapse.values[1] != "-" && collapse.values[2] != "-", "{:?}", collapse.values);
+    s.act(EditorAction::PlateEdge(PlateEdgeAct::View(Dim::Two)));
+    assert!(s.scene().unwrap().label.contains("2D plane strain"));
 }
 
 /// Exploration of the window's default case (clearance fit) in the bracket, 2D plane strain and 3D, without and with pin-hole friction
@@ -342,7 +373,7 @@ fn the_picture_draws_the_pin_the_free_edge_and_the_planes_in_front_of_the_plate(
 }
 
 #[test]
-fn the_load_arrow_is_always_there_and_the_dimensions_only_before_a_result() {
+fn the_load_arrow_is_always_there_and_the_dimensions_before_and_after_a_result() {
     use crate::gpu_viewer::editor::authoring::OverlayKind;
     use crate::gpu_viewer::editor::camera::Camera;
     let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] };
@@ -356,14 +387,18 @@ fn the_load_arrow_is_always_there_and_the_dimensions_only_before_a_result() {
     let arrow = |v: &[crate::gpu_viewer::editor::authoring::Overlay]| v.iter().filter(|o| o.kind == OverlayKind::Load).count();
     assert_eq!((arrow(&before), arrow(&after)), (1, 1));
     let named = |v: &[crate::gpu_viewer::editor::authoring::Overlay], start: &str| v.iter().any(|o| o.text.starts_with(start));
-    for want in ["e = ", "D ", "shear-out", "free edge"] {
-        assert!(named(&before, want) && !named(&after, want), "{want}: before {}, after {}", named(&before, want), named(&after, want));
+    // The plate's dimensions stay with the contour (the mockup shows e/D, the free edge and the planes on it); the bore's own
+    // D label is only before a run, where the hole is undeformed.
+    for want in ["e = ", "shear-out", "free edge"] {
+        assert!(named(&before, want) && named(&after, want), "{want}: before {}, after {}", named(&before, want), named(&after, want));
     }
-    // The half-model caption is there before and after a run.
-    for v in [&before, &after] {
-        assert!(v.iter().any(|o| o.text == HALF_MODEL && o.kind == OverlayKind::Dimension), "caption missing");
+    assert!(named(&before, "D ") && !named(&after, "D "));
+    // One caption line, before and after a run; the result's names the pin travel too.
+    for (v, want) in [(&before, HALF_MODEL), (&after, PIN_TRAVEL)] {
+        let captions: Vec<_> = v.iter().filter(|o| o.text.starts_with("half model")).collect();
+        assert!(captions.len() == 1 && captions[0].text == want && captions[0].kind == OverlayKind::Dimension, "one caption {want:?}");
     }
-    assert!(HALF_MODEL.contains("mirrored about the load line"));
+    assert!(HALF_MODEL.contains("mirrored about the load line") && PIN_TRAVEL.starts_with("half model, mirrored"));
     // The arrow runs from the pin toward the free edge and stays on screen.
     let a = before.iter().find(|o| o.kind == OverlayKind::Load).unwrap();
     let tip = a.tip.unwrap();
@@ -374,15 +409,16 @@ fn the_load_arrow_is_always_there_and_the_dimensions_only_before_a_result() {
 }
 
 #[test]
-fn the_results_step_names_each_collapse_number_by_its_model_and_shows_plot_and_tables() {
+fn the_results_name_each_collapse_number_by_its_model_and_show_plot_and_tables() {
     let (s, _) = after_a_2d_run();
     let t = texts(&s).join("\n");
     assert!(t.contains("Collapse (contact FE, plane strain)") || t.contains("Collapse, edge-check contact FE (plane strain)"), "{t}");
     assert!(t.contains("2D plane strain (FE bracket)") && t.contains("2D plane stress (FE bracket)"), "{t}");
     assert!(!t.contains("ultimate, 2D FE"));
-    let cards = s.inspector();
-    let fe = cards.iter().find(|c| c.id == "plate-edge-fe").unwrap();
-    let plot = fe.items.iter().find_map(|i| if let DockItem::Plot(p) = i { Some(p) } else { None }).expect("a load-travel plot");
+    let wb = s.workbench().unwrap();
+    assert_eq!(wb.under.len(), 1, "the plot sits under the view");
+    assert_eq!(wb.under[0].title, "Load vs. pin travel");
+    let plot = wb.under[0].items.iter().find_map(|i| if let DockItem::Plot(p) = i { Some(p) } else { None }).expect("a load-travel plot");
     assert_eq!(plot.series.len(), 2);
     let last = |l: &run::FeLine| *l.last().curve.last().unwrap();
     let o = s.outcome.as_ref().unwrap();
@@ -396,15 +432,54 @@ fn the_results_step_names_each_collapse_number_by_its_model_and_shows_plot_and_t
     assert_eq!(colours.len(), plot.series.len(), "every line has its own colour");
     assert!(plot.marks.iter().filter(|m| m.text.is_empty()).count() == 2 && plot.marks.iter().all(|m| m.text.is_empty() || m.text.contains("edge-check")), "onset dots carry no overlapping labels");
     // The lines side by side: a label column and one column per line, the collapse row and the spread against plane strain.
+    let cards = s.result_cards();
+    let fe = cards.iter().find(|c| c.id == "plate-edge-fe").unwrap();
     let table = fe.items.iter().find_map(|i| if let DockItem::Table(t) = i { Some(t) } else { None }).expect("a 2D | 3D table");
     assert_eq!(table.columns.len(), 3);
     let rows = DockItem::Table(table.clone()).plain_text().unwrap();
     assert!(rows.contains("Collapse (0.1 D)") && rows.contains("vs plane strain") && rows.contains("Dof"), "{rows}");
-    // The convergence table exists for one mesh too, and says there is no convergence check.
+    // The allowables table carries the FE: plane strain in the 2D column, nothing in the 3D column (not run), and only for
+    // the two rows the FE bracket reaches.
+    let DockItem::Compare(c) = &cards[0].items[0] else { panic!("a comparison") };
+    let strain = o.lines[0].last();
+    for r in &c.rows {
+        let want = match r.title.as_str() {
+            t if t.starts_with("Collapse") => super::cards::grp(strain.collapse),
+            "Bearing onset (yield)" => strain.onset.map_or_else(|| "-".into(), super::cards::grp),
+            _ => "-".into(),
+        };
+        assert_eq!((r.values[1].as_str(), r.values[2].as_str()), (want.as_str(), "-"), "{}", r.title);
+    }
+    // The handbook check card: the legacy bearing figure and no invented margin.
+    let DockItem::Compare(check) = &cards[1].items[0] else { panic!("a comparison") };
+    assert!(check.rows[0].title == "Handbook bearing ultimate" && check.rows[0].detail.contains("legacy Fbru + 0.8 p check stays governing"));
+    assert!(check.footer.contains("Advisory"));
+    // The convergence card exists for one mesh too, and says there is no convergence check.
     let conv = cards.iter().find(|c| c.id == "plate-edge-convergence").expect("a convergence card after any FE run");
-    let DockItem::Table(ct) = &conv.items[0] else { panic!("a table") };
-    assert_eq!(ct.rows.len(), 2);
-    assert!(ct.footer.contains("no convergence check"), "{}", ct.footer);
+    let DockItem::Compare(cc) = &conv.items[0] else { panic!("a comparison") };
+    assert_eq!(cc.rows.len(), 2);
+    assert!(cc.footer.contains("no convergence check") && conv.tag == "single mesh", "{}", cc.footer);
+    // The status line under the view describes the run; an edit makes it stale.
+    assert!(wb.view_status.as_ref().is_some_and(|(t, _)| t.contains("one mesh") && t.contains("dof")), "{:?}", wb.view_status);
+}
+
+#[test]
+fn the_centre_view_follows_the_run_and_the_switches() {
+    let (mut s, _) = after_a_2d_run();
+    assert_eq!((s.dim, s.layer), (Dim::Two, Layer::Strain), "a finished run shows its solved model");
+    assert!(s.scene().unwrap().label.contains("2D plane strain"));
+    s.act(EditorAction::PlateEdge(PlateEdgeAct::Layer(Layer::Geometry)));
+    assert!(!s.shows_result() && s.geometry_view() && s.needs_scene());
+    let wb = s.workbench().unwrap();
+    assert_eq!(wb.fields.iter().map(|f| f.checked).collect::<Vec<_>>(), [Some(true), Some(false)]);
+    assert!(wb.model_title.starts_with("Geometry"), "{}", wb.model_title);
+    s.act(EditorAction::PlateEdge(PlateEdgeAct::Layer(Layer::Strain)));
+    assert!(s.shows_result() && !s.geometry_view());
+    assert!(s.workbench().unwrap().model_title.starts_with("2D plane strain"));
+    // An edit makes the result stale: the plate is drawn again, the strain field is not offered, the status line says why.
+    s.commit_field(Field::Edge, "0.6");
+    assert!(!s.shows_result());
+    assert!(s.workbench().unwrap().fields.iter().any(|f| f.label == "Plastic strain" && !f.enabled));
 }
 
 /// The drawing is the whole plate: the solved half is mirrored about the load line, so the box is symmetric about it and the
@@ -471,4 +546,112 @@ fn the_result_draws_the_pin_at_its_travelled_position() {
     let texts = |v: &[crate::gpu_viewer::editor::authoring::Overlay]| v.iter().filter(|o| o.kind == OverlayKind::Dimension).map(|o| o.text.clone()).collect::<Vec<_>>();
     assert!(texts(&Authoring::overlay(&s, &cam, size)).iter().any(|t| t == PIN_TRAVEL));
     assert!(!texts(&Authoring::overlay(&open, &cam, size)).iter().any(|t| t == PIN_TRAVEL));
+}
+
+/// Every text and circle the window painted in one frame at 1500 x 1000 with the editor's overlays on: `(text, right edge, y)`
+/// of each text, `(centre, radius, colour)` of each circle.
+#[cfg(feature = "gpu-viewer")]
+type Painted = (Vec<(String, f32, f32)>, Vec<(egui::Pos2, f32, egui::Color32)>);
+#[cfg(feature = "gpu-viewer")]
+fn paint_window(s: &mut PlateEdgeSession) -> Painted {
+    use crate::gpu_viewer::{controller::ViewState, editor::camera::Camera, gui::Gui, results::GuiInput};
+    use egui::epaint::Shape;
+    let scene = s.scene().unwrap();
+    let view = ViewState::new(&scene);
+    let scenes = [scene];
+    let raw = || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1500.0, 1000.0))), ..Default::default() };
+    let mut gui = Gui::new();
+    gui.ctx().set_theme(egui::Theme::Dark);
+    let input = |overlay: &'static [crate::gpu_viewer::editor::authoring::Overlay]| GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&*s as &dyn Authoring), error: None, box_drag: None, overlay };
+    for _ in 0..3 {
+        gui.run(raw(), &input(&[])).0.textures_delta.clear();
+    }
+    let vp = gui.viewport_px((1500, 1000));
+    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.5, aspect: vp.w as f32 / vp.h as f32, pan: [0.0, 0.0] };
+    let overlay: &'static [_] = Box::leak(Authoring::overlay(s, &cam, [vp.w as f32, vp.h as f32]).into_boxed_slice());
+    let (mut full, _) = gui.run(raw(), &input(overlay));
+    full.textures_delta.clear();
+    fn walk(shape: &Shape, out: &mut Painted) {
+        match shape {
+            Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            Shape::Text(t) => out.0.push((t.galley.text().to_string(), t.pos.x + t.galley.rect.right(), t.pos.y)),
+            Shape::Circle(c) => out.1.push((c.center, c.radius, c.fill)),
+            _ => {}
+        }
+    }
+    let mut out = (Vec::new(), Vec::new());
+    full.shapes.iter().for_each(|c| walk(&c.shape, &mut out));
+    out
+}
+
+#[cfg(feature = "gpu-viewer")]
+#[test]
+fn the_workbench_window_paints_the_pin_disc_and_the_plate_captions_over_the_view() {
+    let (mut s, _) = after_a_2d_run();
+    assert!(s.shows_result());
+    let (texts, circles) = paint_window(&mut s);
+    for want in ["free edge", "shear-out planes", PIN_TRAVEL] {
+        assert!(texts.iter().any(|(t, _, _)| t == want), "{want} is not painted: the workbench layout dropped the overlays");
+    }
+    assert!(texts.iter().any(|(t, _, _)| t.starts_with("e = ")), "the edge distance dimension is missing");
+    // The pin as a filled disc of a real size (the overlay's `Disc`), not only the load arrow's tip.
+    assert!(circles.iter().any(|(_, r, _)| *r > 8.0), "no pin disc painted: {circles:?}");
+}
+
+#[cfg(feature = "gpu-viewer")]
+#[test]
+fn the_allowables_heads_sit_over_the_right_edge_of_their_figures() {
+    let (mut s, _) = after_a_2d_run();
+    let (texts, _) = paint_window(&mut s);
+    let is_figure = |t: &str| t.chars().next().is_some_and(|c| c.is_ascii_digit()) && t.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '.');
+    for head in ["ALLOWABLE", "2D FE"] {
+        let (_, right, y) = texts.iter().find(|(t, _, _)| t == head).unwrap_or_else(|| panic!("no head {head}"));
+        let under: Vec<_> = texts.iter().filter(|(t, r, ty)| is_figure(t) && (r - right).abs() < 0.6 && ty > y).collect();
+        assert!(!under.is_empty(), "no figure ends where {head} ends ({right}): {:?}", texts.iter().filter(|(t, _, _)| is_figure(t)).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn each_result_label_sits_on_the_geometry_it_names() {
+    use crate::gpu_viewer::editor::authoring::OverlayKind;
+    use crate::gpu_viewer::editor::camera::Camera;
+    let (s, _) = after_a_2d_run();
+    let f = scene::Frame::of(&s.inputs);
+    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.5, pan: [0.0, 0.0] };
+    let size = [900.0, 600.0];
+    let px = |x: f64, y: f64| {
+        let (ndc, _) = cam.project(f.point(x, y));
+        Camera::pixel(ndc, size[0], size[1])
+    };
+    let ov = Authoring::overlay(&s, &cam, size);
+    let label = |text: &str| ov.iter().find(|o| o.kind == OverlayKind::Dimension && o.text.starts_with(text)).unwrap_or_else(|| panic!("no label {text}"));
+    let tol = 3.0;
+    let of_kind = |k: OverlayKind| ov.iter().filter(move |o| o.kind == k).collect::<Vec<_>>();
+    // The free edge label is on the edge line.
+    assert!((label("free edge").px[0] - px(-f.e, 0.0)[0]).abs() < tol, "free edge label off its line");
+    // The e dimension: a line from the edge to the hole centre, a tick at each end, the label centred on the line.
+    let y = scene::dimension_y(f.d);
+    let lines = of_kind(OverlayKind::Line);
+    let main = lines.iter().find(|o| (o.px[1] - o.tip.unwrap()[1]).abs() < 1e-3 && (o.px[0] - o.tip.unwrap()[0]).abs() > 10.0).expect("dimension line");
+    assert!((main.px[0] - px(-f.e, y)[0]).abs() < tol && (main.tip.unwrap()[0] - px(0.0, y)[0]).abs() < tol && (main.px[1] - px(0.0, y)[1]).abs() < tol);
+    let ticks: Vec<_> = lines.iter().filter(|o| (o.px[0] - o.tip.unwrap()[0]).abs() < 1e-3).collect();
+    assert_eq!(ticks.len(), 2, "an end tick each side");
+    for (t, x) in ticks.iter().zip([-f.e, 0.0]) {
+        let mid = 0.5 * (t.px[1] + t.tip.unwrap()[1]);
+        assert!((t.px[0] - px(x, y)[0]).abs() < tol && (mid - px(x, y)[1]).abs() < tol, "tick at x = {x}");
+    }
+    let e = label("e = ");
+    assert!((e.px[0] - 0.5 * (main.px[0] + main.tip.unwrap()[0])).abs() < tol && (e.px[1] - main.px[1]).abs() < tol, "e label off its dimension line");
+    // Both shear-out planes (the view is mirrored) are dashed lines from the edge to the hole centre at the hole's sides, and
+    // their label is on one of them.
+    let planes = of_kind(OverlayKind::Dashes);
+    assert_eq!(planes.len(), 2);
+    for (p, side) in planes.iter().zip([0.5 * f.d, -0.5 * f.d]) {
+        assert!((p.px[0] - px(-f.e, side)[0]).abs() < tol && (p.tip.unwrap()[0] - px(0.0, side)[0]).abs() < tol && (p.px[1] - px(0.0, side)[1]).abs() < tol, "plane at y = {side}");
+    }
+    let l = label("shear-out");
+    assert!(planes.iter().any(|p| (l.px[1] - p.px[1]).abs() < tol && l.px[0] > p.px[0] && l.px[0] < p.tip.unwrap()[0]), "plane label off its plane");
+    // The one caption is inside the view, along its bottom.
+    let c = label(PIN_TRAVEL);
+    assert!(c.px[0] > 0.0 && c.px[0] < size[0] && c.px[1] > 0.75 * size[1] && c.px[1] < size[1]);
 }

@@ -144,6 +144,34 @@ pub enum DockItem {
     Table(Box<super::page::DockTable>),
     /// Toggle chips side by side (`checked` is each one's state); a click runs the entry's action.
     Chips { label: String, chips: Vec<crate::gpu_viewer::menu::Entry> },
+    /// One choice of a few as a segmented control across the card (`checked` is the one chosen).
+    Segmented(Vec<crate::gpu_viewer::menu::Entry>),
+    /// Rows of a name and its figures under column heads (the failure modes by method).
+    Compare(Box<Compare>),
+}
+
+/// A table of named rows with a detail line under each name and one figure per column: the first head titles the names.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Compare {
+    pub heads: Vec<String>,
+    pub rows: Vec<CompareRow>,
+    /// A dim line under the rows.
+    pub footer: String,
+}
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CompareRow {
+    pub title: String,
+    pub detail: String,
+    /// One figure per column after the names.
+    pub values: Vec<String>,
+    /// The row that sets the answer: an accent bar at its left and a tint.
+    pub governing: bool,
+    /// A small bar under the detail, 0 to 1 (the governing row's share of the largest figure).
+    pub bar: Option<f32>,
+    /// A state chip after the figures.
+    pub chip: Option<(String, Tone)>,
+    /// An informational row: drawn dimmer.
+    pub dim: bool,
 }
 
 /// One large figure: its label, value and unit, and dim lines under it.
@@ -223,6 +251,21 @@ pub struct Workbench {
     pub results: Vec<crate::gpu_viewer::editor::authoring::Card>,
     /// A confirmation shown over the window.
     pub dialog: Option<Dialog>,
+    pub look: Look,
+    /// Cards under the views in the centre pane (a plot), after the status line.
+    pub under: Vec<crate::gpu_viewer::editor::authoring::Card>,
+    /// A line between the views and `under`: what the last run did, in a tone.
+    pub view_status: Option<(String, Tone)>,
+}
+
+/// How a workbench's panes draw their cards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Look {
+    /// Ruled sections on the pane (Bushing).
+    #[default]
+    Ruled,
+    /// Rounded cards on the page, the views and the field as segmented switches (Plate Edge).
+    Boxed,
 }
 
 /// Which views the centre pane shows.
@@ -310,6 +353,8 @@ impl DockItem {
                 super::page::Cell::Text { text, .. } | super::page::Cell::Wall { text, .. } | super::page::Cell::Chip { text, .. } => Some(text.clone()),
                 super::page::Cell::Button { .. } => None,
             }).collect::<Vec<_>>().join("  ")).collect::<Vec<_>>().join("\n")),
+            DockItem::Segmented(e) => Some(e.iter().map(|c| format!("[{}] {}", if c.checked == Some(true) { "x" } else { " " }, c.label)).collect::<Vec<_>>().join(" ")),
+            DockItem::Compare(c) => Some(c.rows.iter().map(|r| format!("{}  {}", r.title, r.values.join("  "))).collect::<Vec<_>>().join("\n")),
             DockItem::Chips { label, chips } => Some(format!("{label} {}", chips.iter().map(|c| format!("[{}] {}", if c.checked == Some(true) { "x" } else { " " }, c.label)).collect::<Vec<_>>().join(" "))),
             _ => None,
         }
