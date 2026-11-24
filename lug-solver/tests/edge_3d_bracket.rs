@@ -302,3 +302,65 @@ fn bushed_3d() {
         println!("3D {layers} layers {:.0} lbf ({:+.1} % vs plane strain), fit {:.0} psi, {:.0} s, {} dof", o.at_limit(), pct(o.at_limit(), strain.at_limit()), o.fit_pressure.unwrap(), o.secs, o.dofs);
     }
 }
+
+// ------------------------------------------------------------------------------------- bearing yield and convergence
+
+/// The 2 % offset load is on the curve between the first step and the collapse load, and a curve that never leaves its
+/// initial line has none.
+#[test]
+fn the_offset_load_lies_between_the_first_step_and_the_collapse_load() {
+    let o = run(naca_75s(1.5, 0.5, 36), Idealisation::Strain);
+    let onset = o.offset_load(lug_solver::bracket::OFFSET_FRACTION).expect("a plastic plate yields within 0.1 D");
+    eprintln!("2D strain: bearing yield {onset:.0} lbf, collapse {:.0} lbf", o.at_limit());
+    assert!(onset > o.pts[0].1 && onset <= o.at_limit() * 1.0001, "{onset}");
+    // A straight line through the origin never crosses its own offset.
+    let linear = Out { pts: (1..=10).map(|i| (0.01 * i as f64, 1000.0 * i as f64)).collect(), fit_pressure: None, secs: 0.0, dofs: 0 };
+    assert_eq!(linear.offset_load(0.02), None);
+    // An ideal elastic-perfectly-plastic curve with k = 100000 and yield 1000 crosses its offset at 1000 (a flat top).
+    let epp = Out { pts: (1..=10).map(|i| (0.01 * i as f64, (100_000.0 * 0.01 * i as f64).min(1000.0))).collect(), fit_pressure: None, secs: 0.0, dofs: 0 };
+    let x = epp.offset_load(0.02).unwrap();
+    assert!((x - 1000.0).abs() < 1e-6 * 1000.0, "{x}");
+}
+
+/// The departure load is where the secant stiffness has lost 5 %: exactly the yield of an elastic-perfectly-plastic curve
+/// shifted by that loss, before the collapse load, and none for a straight line.
+#[test]
+fn the_departure_load_is_where_the_stiffness_falls() {
+    // k = 100000, yield 1000 at travel 0.01: the secant is 0.95 k where P = 1000 and t = 1000 / (0.95 k).
+    let epp = Out { pts: (1..=40).map(|i| (0.0025 * i as f64, (100_000.0 * 0.0025 * i as f64).min(1000.0))).collect(), fit_pressure: None, secs: 0.0, dofs: 0 };
+    let d = epp.departure_load(0.05).unwrap();
+    assert!((d - 1000.0).abs() < 1.0, "{d}");
+    let linear = Out { pts: (1..=10).map(|i| (0.01 * i as f64, 1000.0 * i as f64)).collect(), fit_pressure: None, secs: 0.0, dofs: 0 };
+    assert_eq!(linear.departure_load(0.05), None);
+    let o = run(naca_75s(1.5, 0.5, 36), Idealisation::Strain);
+    let (dep, off) = (o.departure_load(0.05).unwrap(), o.offset_load(0.02).unwrap());
+    eprintln!("2D strain: departure {dep:.0}, 2 % offset {off:.0}, collapse {:.0}", o.at_limit());
+    assert!(dep < off && off <= o.at_limit() * 1.0001);
+}
+
+/// The convergence loop stops on the measured change: the three 2D meshes of the recorded study (36, 54, 72 around) change the
+/// collapse load by -0.6 % and -0.15 %, so a 0.5 % tolerance stops at the third, and a loose one at the second.
+#[test]
+fn the_convergence_loop_stops_when_the_load_stops_moving() {
+    let mut seen = Vec::new();
+    let c = lug_solver::bracket::converge(naca_75s(1.5, 0.5, 36), Idealisation::Strain, 0.005, 5, None, &mut |r| seen.push(r.clone())).unwrap();
+    for r in &c.steps {
+        eprintln!("around {:>3}: collapse {:.0} ({:?}), onset {:?} ({:?}), {} dof", r.around, r.collapse, r.collapse_change, r.onset, r.onset_change, r.dofs);
+    }
+    assert!(c.converged && (2..=3).contains(&c.steps.len()), "{} meshes", c.steps.len());
+    assert_eq!(seen.len(), c.steps.len(), "progress is reported after every mesh");
+    assert!(c.steps[0].collapse_change.is_none() && c.last().collapse_change.unwrap() < 0.005);
+    assert!(c.steps.windows(2).all(|w| w[1].around > w[0].around && w[1].dofs > w[0].dofs), "each mesh is finer");
+    // A tolerance no mesh can meet runs out the meshes and says it did not converge.
+    let tight = lug_solver::bracket::converge(naca_75s(1.5, 0.5, 36), Idealisation::Strain, 1e-9, 2, None, &mut |_| {}).unwrap();
+    assert!(!tight.converged && tight.steps.len() == 2);
+}
+
+/// A cancel request stops a run with an error instead of a result.
+#[test]
+fn a_cancel_request_stops_the_run() {
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let err = try_run(naca_75s(1.5, 0.5, 36), Idealisation::Strain, Some(cancel)).err().expect("cancelled");
+    eprintln!("cancelled run: {err}");
+    assert!(!err.is_empty());
+}
