@@ -1734,6 +1734,7 @@ name = "fastened-joint-solver"
 version = "0.1.0"
 dependencies = [
  "mechanics-core",
+ "serde",
 ]
 
 [[package]]

@@ -39,9 +39,10 @@ impl Group {
     }
 }
 
-pub const WORKBENCHES: [Workbench; 13] = [
+pub const WORKBENCHES: [Workbench; 14] = [
     Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", kind: EditorKind::Search , group: Group::Data },
     Workbench { id: "plate-edge", name: "Plate Edge", summary: "Pin in a plate near an edge: bearing, shear-out, tear-out, pin; 2D and 3D FE.", kind: EditorKind::PlateEdge, group: Group::Joints },
+    Workbench { id: "thread", name: "Thread Workbench", summary: "Unified threads, helical coil and Keensert inserts; strength and damage comparison.", kind: EditorKind::Thread, group: Group::Joints },
     Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", kind: EditorKind::FastenerHole , group: Group::Joints },
     Workbench { id: "assembly", name: "Assembly Joints", summary: "Holes, fastener sites and contact faces of a STEP assembly, shown on the model.", kind: EditorKind::Assembly , group: Group::Joints },
     Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", kind: EditorKind::Bushing , group: Group::Joints },

@@ -18,6 +18,7 @@ pub mod bushing;
 pub mod eccentric;
 pub mod fastener;
 pub mod plate_edge;
+pub mod thread_workbench;
 pub mod assembly;
 pub mod handoff;
 pub mod materials;

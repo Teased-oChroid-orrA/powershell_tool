@@ -48,6 +48,7 @@ filters across text, Office (`.docx`/`.pptx`/`.xlsx`), `.zip` (including
 nested), `.rtf`, `.pdf`, and dozens of code/config/data formats, producing an
 HTML report plus optional CSV/JSON export. It has grown into a multi-tool
 "Toolbench" for GS Engineering: Search, Fastener Holes, Bushing Workbench,
+Thread Workbench,
 Pressure Vessel Analyzer, Preload Analysis, Lug Analysis, an FEA Workbench
 (define a 2D / extruded / imported-mesh problem, solve it on `fea-core`, contour
 the result) and Material Lookup
@@ -90,6 +91,7 @@ nodes.
 | General FEA kernel (2D/3D elements, sparse solve, loads, contact, plasticity, modal / buckling / transient, heat conduction, sensitivities, verified adaptive solve) | `fea-core/` | `fea-core/AGENTS.md` | Active; phases 0-11 done (`docs/fea-core.md`; decisions `docs/adr/ADR-012`, `ADR-013`). `lug-solver` runs the lug on it (`lug-solver/src/fea*.rs`) and `app-tui` Lug Analysis uses that as its main solver; `fea-problem` / the FEA Workbench define and solve general problems on it (including interference-fit bushings with contact); `edge-check`'s plane-stress FE and Preload's member-compliance check run on it (Preload can also solve with the FE member stiffness: `Member Stiffness: Finite Element`). |
 | Problem definition over the kernel (sketch / extrusion / imported mesh, supports, loads, solve, results, raster; bolt-joint member compliance) | `fea-problem/` | `fea-problem/AGENTS.md` | Active. Consumed by the `app-tui` FEA Workbench and Preload Analysis. |
 | Plate Edge workbench (pin near a free edge: allowables by failure mode, 2D and 3D FE bearing response, library or custom material and fastener, fit types, mesh convergence) | `app-tui/src/gpu_viewer/editor/plate_edge/` | `app-tui/src/gpu_viewer/editor/plate_edge/AGENTS.md` | Active. Window-only. Advisory; `edge-check/src/modes.rs` and `lug-solver/src/bracket.rs` do the work. Design/evidence: `docs/plate-edge-workbench.md`. |
+| Thread Workbench (Unified tapped threads, helical-coil STI, Keenserts, axial strength and damage comparison) | `app-tui/src/gpu_viewer/editor/thread_workbench.rs`, `fastened-joint-solver/src/thread_capability.rs` | `app-tui/AGENTS.md`, `fastened-joint-solver/AGENTS.md` | Active. Native window. Method and limits: `docs/thread-workbench.md`. |
 | Eccentric bushing spin capacity (offset bore: friction torque of the fit vs F e sin(angle); maximum offset / load; meshed elastic pin, direct spin simulation, round boss or edge-limited plate) | `eccentric-bushing/` | `eccentric-bushing/AGENTS.md` + `app-tui/src/toolboxes/eccentric_bushing/AGENTS.md` | Active. Plane contact FE on `fea-core`; the terminal toolbox currently uses a default Bushing case until #242 restores case handoff. Plan/evidence: `docs/eccentric-bushing.md`. |
 | B-rep solids (ADR-019, ADR-023): face-tagged surface mesh with BVH signed distance, tetrahedral volume meshing, native STEP import and modelling (OpenCascade was retired, ADR-023) | `solid-kernel/` | `solid-kernel/AGENTS.md` | Active. No CAD library is linked. Volume mesher: `fea-core/src/tetmesh.rs`. |
 | Pressure vessel solver (Lame, failure margins, UG-27 heads, shell-to-head junction FE on `fea-core`, supported-tube line run) | `pressure-vessel-solver/` | `pressure-vessel-solver/AGENTS.md` | Active. Sibling pattern to `bushing-solver`; line run: `docs/pressure-vessel-line-run.md`; heads and junction: `docs/pressure-vessel-heads.md`. |
@@ -268,6 +270,7 @@ full index mapping decision topics to ADR numbers.
 | Change the lug FE (mesh, contact, solve) | `lug-solver/AGENTS.md` |
 | Change the Bushing or Eccentric Bushing window (inputs, checks, housing/bushing FE view) or the dashboard | `app-tui/src/gpu_viewer/editor/{bushing,eccentric}/AGENTS.md`, `app-tui/AGENTS.md` (Native window) |
 | Change the Plate Edge workbench (allowables by failure mode, 2D/3D FE) | `app-tui/src/gpu_viewer/editor/plate_edge/AGENTS.md`, `edge-check/AGENTS.md`, `lug-solver/AGENTS.md` |
+| Change the Thread Workbench (Unified threads and inserts) | `app-tui/AGENTS.md`, `fastened-joint-solver/AGENTS.md`, `docs/thread-workbench.md` |
 | Change the eccentric bushing spin check / maximum offset | `eccentric-bushing/AGENTS.md`, `app-tui/src/toolboxes/eccentric_bushing/AGENTS.md` |
 | Change the FEA Workbench or the problem schema | `app-tui/src/toolboxes/fea_workbench/AGENTS.md`, `fea-problem/AGENTS.md` |
 | Understand why an architecture decision was made | `docs/AGENTS.md` -> `docs/adr/` |

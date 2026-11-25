@@ -87,6 +87,7 @@ pub enum EditorAction {
     Fastener(super::fastener::FastenerAct),
     /// The Plate Edge workbench (see `plate_edge`).
     PlateEdge(super::plate_edge::PlateEdgeAct),
+    Thread(super::thread_workbench::ThreadAct),
     /// The Assembly Joints window (see `assembly`).
     Assembly(super::assembly::AssemblyAct),
     /// The Search workbench (see `search`).
@@ -353,7 +354,7 @@ impl Session {
             EditorAction::ToggleSupports => self.state.show_supports = !self.state.show_supports,
             EditorAction::ToggleLoads => self.state.show_loads = !self.state.show_loads,
             // A member session never receives solid actions (its UI does not offer them).
-            EditorAction::Solid(_) | EditorAction::Bushing(_) | EditorAction::Eccentric(_) | EditorAction::Fastener(_) | EditorAction::PlateEdge(_) | EditorAction::Assembly(_) | EditorAction::Search(_) | EditorAction::Materials(_) | EditorAction::Vessel(_) | EditorAction::Preload(_) | EditorAction::Lug(_) | EditorAction::Stackup(_) => {}
+            EditorAction::Solid(_) | EditorAction::Bushing(_) | EditorAction::Eccentric(_) | EditorAction::Fastener(_) | EditorAction::PlateEdge(_) | EditorAction::Thread(_) | EditorAction::Assembly(_) | EditorAction::Search(_) | EditorAction::Materials(_) | EditorAction::Vessel(_) | EditorAction::Preload(_) | EditorAction::Lug(_) | EditorAction::Stackup(_) => {}
         }
         self.touch();
     }
