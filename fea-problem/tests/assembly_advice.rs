@@ -48,6 +48,9 @@ fn two_stacked_plates_with_one_bolt_hole_give_a_tie_and_a_fastener_with_the_meas
     assert_eq!(faces.iter().map(|f| f.body).collect::<std::collections::BTreeSet<_>>().len(), 2);
     assert!(reason.contains("\u{d8}5.000 mm (") && reason.contains("M6 tap drill") && reason.contains("\u{d8}6.600 mm (M6 normal clearance)"), "{reason}");
     assert!(reason.contains("Every bore fits M6") && reason.contains("20.00 mm of axis"), "{reason}");
+    // the plates are 40 x 30 with the hole at the centre: the 30 mm sides are 15 mm from the axis, e/D 3.00 and 2.27, geometry only
+    assert!(reason.contains("body 1: nearest free edge 15.00 mm from the axis (e/D 3.00), a straight edge of a 10.00 mm plate"), "{reason}");
+    assert!(reason.contains("body 2: nearest free edge 15.00 mm from the axis (e/D 2.27)"), "{reason}");
     assert!(items[1].label().contains("M6") && items[1].faces().len() >= 2);
 }
 
@@ -89,6 +92,7 @@ fn a_bolt_sized_hole_with_no_mating_bore_is_advice_with_its_measured_numbers() {
     // the lower plate's hole is closed by the upper plate's face in the model, but the hole itself is open at both ends
     assert_eq!(*closure, fea_problem::assembly_advice::Closure::Through);
     assert!(reason.contains("Body 1") && reason.contains("\u{d8}5.000 mm") && reason.contains("10.00 mm deep") && reason.contains("M5 nominal (press / locating)") && reason.contains("M6 tap drill") && reason.contains("#10-24 close clearance"), "{reason}");
+    assert!(reason.contains("Edge distance, geometry only: nearest free edge 15.00 mm from the axis (e/D 3.00), a straight edge of a 10.00 mm plate."), "{reason}");
     assert_eq!(found[0].detail(), "\u{d8}5.000 mm \u{b7} through");
     assert_eq!(found[0].label(), "Body 1 hole \u{d8}5.000 mm (M5 or M6 or #10-24) has no mate");
     assert_eq!(found[0].faces().len(), faces.len());
@@ -190,4 +194,18 @@ fn a_near_closed_bore_is_advice_that_names_where_the_gap_is_and_is_not_a_hole_or
 fn no_near_closed_advice_without_a_near_closed_bore() {
     let items = advice(&[plate([0., 0., 0.], [40., 30., 10.], &[([20., 15.], 2.)]), plate([0., 0., 10.], [40., 30., 20.], &[([20., 15.], 2.)])]);
     assert!(!items.iter().any(|i| matches!(i, AssemblyAdvice::NearClosed { .. })), "{items:?}");
+}
+
+#[test]
+fn a_bore_with_no_free_edge_to_read_says_why_instead_of_a_number() {
+    // a 5 mm blind hole from the floor of a 12 mm counterbore: the floor's only boundary is the counterbore wall
+    let b = NativeBrep::box_from_corners([0., 0., 0.], [40., 30., 10.]).unwrap();
+    let top = b.planar_faces_through([0., 0., 10.], [0., 0., 1.])[0];
+    let b = b.drill(top, [20., 15., 10.], 6., Some(3.)).unwrap();
+    let floor = b.planar_faces_through([20., 15., 7.], [0., 0., 1.])[0];
+    let b = b.drill(floor, [20., 15., 7.], 2.5, Some(4.)).unwrap();
+    let items = advice(&[b, plate([0., 0., 10.], [40., 30., 20.], &[])]);
+    let narrow: Vec<_> = unmated(&items).into_iter().filter(|i| i.label().contains("\u{d8}5.000")).collect();
+    assert_eq!(narrow.len(), 1, "{items:?}");
+    assert!(narrow[0].reason().contains("Edge distance, geometry only: no free edge distance read: the face has no free edge"), "{}", narrow[0].reason());
 }

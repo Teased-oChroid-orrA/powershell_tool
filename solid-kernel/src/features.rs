@@ -14,22 +14,22 @@ use crate::face_identity::Kind;
 use crate::step::Error;
 use crate::V3;
 
-fn add(a: V3, b: V3) -> V3 {
+pub(crate) fn add(a: V3, b: V3) -> V3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
-fn sub(a: V3, b: V3) -> V3 {
+pub(crate) fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
-fn mul(a: V3, s: f64) -> V3 {
+pub(crate) fn mul(a: V3, s: f64) -> V3 {
     [a[0] * s, a[1] * s, a[2] * s]
 }
-fn dot(a: V3, b: V3) -> f64 {
+pub(crate) fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-fn cross(a: V3, b: V3) -> V3 {
+pub(crate) fn cross(a: V3, b: V3) -> V3 {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
-fn norm(a: V3) -> f64 {
+pub(crate) fn norm(a: V3) -> f64 {
     dot(a, a).sqrt()
 }
 
@@ -113,7 +113,7 @@ pub struct ClassifiedFace {
 }
 
 /// Closed polyline of one face bound: the edge samples in the direction of use, each joint once.
-fn bound_polyline(model: &AnalyticModel, edges: &[crate::step_topology::EdgeUse]) -> Vec<V3> {
+pub(crate) fn bound_polyline(model: &AnalyticModel, edges: &[crate::step_topology::EdgeUse]) -> Vec<V3> {
     let mut out: Vec<V3> = Vec::new();
     for u in edges {
         let Some(points) = model.edge_points(u.edge) else { continue };
@@ -141,7 +141,7 @@ pub(crate) fn plane_basis(n: V3) -> (V3, V3) {
 }
 
 /// Shoelace area (absolute) of a closed polyline projected on the plane basis `(u, v)`.
-fn loop_area(points: &[V3], u: V3, v: V3) -> f64 {
+pub(crate) fn loop_area(points: &[V3], u: V3, v: V3) -> f64 {
     let n = points.len();
     let mut s = 0.0;
     for i in 0..n {
@@ -181,7 +181,7 @@ fn stable_basis(axis: V3) -> (V3, V3) {
 const TAU: f64 = std::f64::consts::TAU;
 
 /// Merge intervals of `[0, 2 pi]` that touch or lie within `gap` of each other.
-fn merge_arcs(mut arcs: Vec<[f64; 2]>, gap: f64) -> Vec<[f64; 2]> {
+pub(crate) fn merge_arcs(mut arcs: Vec<[f64; 2]>, gap: f64) -> Vec<[f64; 2]> {
     arcs.sort_by(|a, b| a[0].total_cmp(&b[0]));
     let mut out: Vec<[f64; 2]> = Vec::new();
     for a in arcs {
@@ -374,7 +374,7 @@ impl Hole {
 }
 
 /// The angle (radians) a distance `tol` subtends over `length`.
-fn angle_tol(tol: f64, length: f64) -> f64 {
+pub(crate) fn angle_tol(tol: f64, length: f64) -> f64 {
     tol / length.max(tol).max(1e-9)
 }
 
@@ -1091,6 +1091,8 @@ pub struct Features {
     pub unresolved: Vec<(FaceKey, FaceKey)>,
     /// Bores that almost close (not holes: see [`NearClosedBore`]).
     pub near_closed: Vec<NearClosedBore>,
+    /// The nearest free edge of each hole's plate face, one per entry of `holes` ([`crate::free_edge`]); a refusal says why.
+    pub free_edges: Vec<Result<crate::free_edge::FreeEdge, crate::free_edge::FreeEdgeError>>,
 }
 
 /// Detect the holes, fastener sites and contact interfaces of placed bodies (the models of `AnalyticModel::read_all`).
@@ -1100,7 +1102,8 @@ pub fn detect(models: &[AnalyticModel]) -> Result<Features, Error> {
     let sites = find_sites(models, &holes, &faces);
     let (interfaces, unresolved) = find_interfaces(models, &faces);
     let near_closed = find_near_closed(models, &faces, NEAR_CLOSED_MIN_TURN);
-    Ok(Features { faces, holes, sites, interfaces, unresolved, near_closed })
+    let free_edges = crate::free_edge::free_edges(models, &faces, &holes);
+    Ok(Features { faces, holes, sites, interfaces, unresolved, near_closed, free_edges })
 }
 
 #[cfg(test)]
