@@ -35,6 +35,52 @@ pub fn pick_fields(o: &Outcome, dim: Dim) -> Option<&FeLine> {
     order.iter().find_map(|l| o.lines.iter().find(|x| x.label == *l && x.fields.is_some()))
 }
 
+/// Where the shear-out planes are drawn (the upper half, model frame: hole centre at the origin, free edge at `x = -e`; the
+/// lower half is the mirror image) and what they were derived from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Planes {
+    pub wall: [f64; 2],
+    pub edge: [f64; 2],
+    pub source: PlaneSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaneSource {
+    /// The scan over the elastic field (`edge_check::shear`).
+    Elastic,
+    /// The ridge of equivalent plastic strain of an FE line (`lug_solver::shear_path`), by the line's label.
+    Fe(&'static str),
+    /// Nothing derived yet: the tangents to the hole toward the edge.
+    Tangent,
+}
+
+impl Planes {
+    /// The caption of the drawn planes.
+    pub fn caption(&self) -> String {
+        match self.source {
+            PlaneSource::Elastic => "shear-out planes (derived from elastic field)".into(),
+            PlaneSource::Fe(label) => format!("shear-out planes (derived from FE, {})", label.replace("2D plane ", "").replace("3D solid", "3D")),
+            PlaneSource::Tangent => "shear-out planes (tangents, not derived yet)".into(),
+        }
+    }
+}
+
+/// The planes to draw: the FE line's ridge when a result of that line is shown and has one, else the elastic scan, else the
+/// tangents to the hole.
+pub fn planes(inputs: &PlateEdgeInputs, outcome: Option<&Outcome>, dim: Dim, result: bool) -> Planes {
+    let r = 0.5 * inputs.hole_diameter();
+    if let Some(o) = outcome {
+        if let Some(path) = result.then(|| pick_fields(o, dim)).flatten().and_then(|l| l.last().shear.as_ref().ok().map(|p| (l.label, p))) {
+            return Planes { wall: path.1.wall, edge: path.1.edge_pt, source: PlaneSource::Fe(path.0) };
+        }
+        if let Some(best) = o.modes.as_ref().ok().and_then(|m| m.shear_scan.as_ref().ok()).map(|s| s.best) {
+            let phi = best.start_deg.to_radians();
+            return Planes { wall: [-r * phi.cos(), r * phi.sin()], edge: [-inputs.edge, best.edge_y], source: PlaneSource::Elastic };
+        }
+    }
+    Planes { wall: [0.0, r], edge: [-inputs.edge, r], source: PlaneSource::Tangent }
+}
+
 /// The region both views are framed on, in the model's inches (hole centre at the origin, the free edge at `x = -e`, the load
 /// line along `y = 0`, the plate drawn mirrored to both sides of it): the free edge and a little beyond, two hole diameters
 /// past the hole and two above and below the load line.
@@ -139,7 +185,7 @@ fn mirror(scene: &mut Scene, y0: f32) {
     }
 }
 
-pub fn build(inputs: &PlateEdgeInputs, name: &str, outcome: Option<&Outcome>, dim: Dim) -> Result<Scene, String> {
+pub fn build(inputs: &PlateEdgeInputs, name: &str, outcome: Option<&Outcome>, dim: Dim, planes: &Planes) -> Result<Scene, String> {
     if let Some(line) = outcome.and_then(|o| pick_fields(o, dim)) {
         let f = line.fields.as_ref().expect("picked for its fields");
         let last = line.last();
@@ -150,11 +196,11 @@ pub fn build(inputs: &PlateEdgeInputs, name: &str, outcome: Option<&Outcome>, di
         mirror(&mut scene, frame.xy(0.0, 0.0)[1]);
         return Ok(scene);
     }
-    picture(inputs, name)
+    picture(inputs, name, planes)
 }
 
 /// The plate before any solve: the hole wall in one colour, the pin, the free edge, the shear-out planes and the edge distance.
-fn picture(inputs: &PlateEdgeInputs, name: &str) -> Result<Scene, String> {
+fn picture(inputs: &PlateEdgeInputs, name: &str, planes: &Planes) -> Result<Scene, String> {
     let case = inputs.picture_case()?;
     let fe = case.lug(PlaneMode::Strain);
     let half_t = 0.5 * case.thickness();
@@ -169,7 +215,7 @@ fn picture(inputs: &PlateEdgeInputs, name: &str) -> Result<Scene, String> {
     let frame = Frame::of(inputs);
     reframe(&mut scene, &mesh, &frame);
     mirror(&mut scene, frame.xy(0.0, 0.0)[1]);
-    draw_annotations(&mut scene, &frame, inputs);
+    draw_annotations(&mut scene, &frame, inputs, planes);
     Ok(scene)
 }
 
@@ -244,18 +290,17 @@ impl<'a> Ink<'a> {
     }
 }
 
-/// The pin, the free edge, the shear-out planes (the tangents to the hole toward the edge, one each side of the load line) and
-/// the edge distance `e`, measured under the hole.
-fn draw_annotations(scene: &mut Scene, f: &Frame, inputs: &PlateEdgeInputs) {
+/// The pin, the free edge, the shear-out planes (from the hole wall to the free edge, one each side of the load line) and the
+/// edge distance `e`, measured under the hole.
+fn draw_annotations(scene: &mut Scene, f: &Frame, inputs: &PlateEdgeInputs, planes: &Planes) {
     let (d, e) = (f.d, f.e);
-    let r = 0.5 * d;
     let (rp, cx) = f.pin(inputs.pin_diameter());
     let top = 2.2 * d;
     let mut ink = Ink::new(scene, f);
     ink.disc([cx, 0.0], rp, PIN);
     ink.bar([-e, -top], [-e, top], EDGE);
-    for side in [r, -r] {
-        ink.dashes([-e, side], [0.0, side], 0.3 * d, 0.2 * d, EDGE);
+    for side in [1.0, -1.0] {
+        ink.dashes([planes.edge[0], side * planes.edge[1]], [planes.wall[0], side * planes.wall[1]], 0.3 * d, 0.2 * d, EDGE);
     }
     let y = dimension_y(d);
     ink.bar([-e, y], [0.0, y], EDGE);

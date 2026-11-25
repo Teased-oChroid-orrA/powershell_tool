@@ -99,10 +99,18 @@ fn the_fit_type_sets_the_hole_and_the_interference_changes_the_allowables() {
     assert!(i.bracket_refusal().is_none() && i.bracket_case().is_ok());
     i.cycle_fit();
     assert_eq!(i.fit, inputs::FitKind::PressFit);
-    assert!(i.bracket_refusal().is_some() && i.bracket_case().is_err(), "the FE bracket refuses an interference fit and says why");
+    // An interference fit is modelled: the pin is an elastic body (a ring of the pin's modulus around the rigid core of the
+    // contact FE) pressed into the hole by the diametral interference, with the window's friction.
+    assert!(i.bracket_refusal().is_none());
+    let case = i.bracket_case().expect("the FE bracket models an interference fit");
+    let b = case.bush.expect("the pin is installed by interference contact");
+    let spec = i.pin_spec();
+    assert!((b.interference_dia - 0.0008).abs() < 1e-12 && (b.e - spec.e).abs() < 1.0 && (b.nu - spec.nu).abs() < 1e-12 && (b.mu - i.friction).abs() < 1e-12);
+    assert!((b.inner_dia - edge_check::estimate::PIN_CORE * i.hole_diameter()).abs() < 1e-12 && (case.dia - i.hole_diameter()).abs() < 1e-12);
     i.fit = inputs::FitKind::Custom;
     i.fit_value = 5000.0;
     assert_eq!(i.delta_and_pressure(), (0.0, Some(5000.0)));
+    assert!(i.bracket_refusal().is_some() && i.bracket_case().is_err(), "a custom pressure has no interference to impose, and the refusal says so");
 }
 
 #[test]
@@ -177,15 +185,64 @@ fn a_two_d_run_adds_the_fe_and_goes_stale_when_an_input_changes() {
     assert!(!s.current() && !s.shows_result());
 }
 
+/// The default press fit runs in the 2D bracket as an elastic pin pressed into the hole (it used to be refused): both
+/// idealisations return, the fit pressure is the FE's own, and a pin that is only line to line is within a few percent of it.
 #[test]
-fn an_interference_case_runs_the_allowables_and_says_why_the_bracket_did_not() {
+fn an_interference_case_runs_in_the_bracket_as_an_elastic_pin() {
     let mut s = session();
+    assert_eq!(s.inputs.fit, inputs::FitKind::PressFit);
     s.act(EditorAction::PlateEdge(PlateEdgeAct::Run(run::Kind::TwoD)));
     wait(&mut s);
     let o = s.outcome.as_ref().unwrap();
-    assert!(o.lines.is_empty() && o.fe_note.as_deref().is_some_and(|n| n.contains("interference")), "{:?}", o.fe_note);
+    assert!(o.fe_note.is_none(), "{:?}", o.fe_note);
+    assert_eq!(o.lines.len(), 2, "plane strain and plane stress");
     let m = o.modes.as_ref().unwrap();
     assert!(m.rows.iter().any(|r| r.id == "collapse" && r.contact.is_some()), "the contact FE ran for the pin with interference");
+    // The bracket's fit pressure is the Lame pressure of a solid pin to within the ring idealisation and the housing's yield.
+    let fit = o.lines[0].last().collapse;
+    assert!(fit > 0.0);
+}
+
+#[test]
+fn a_custom_pressure_is_not_modelled_by_the_bracket_and_the_run_says_why() {
+    let mut s = session();
+    s.inputs.fit = inputs::FitKind::Custom;
+    s.inputs.fit_value = 5000.0;
+    s.changed();
+    s.act(EditorAction::PlateEdge(PlateEdgeAct::Run(run::Kind::TwoD)));
+    wait(&mut s);
+    let o = s.outcome.as_ref().unwrap();
+    assert!(o.lines.is_empty() && o.fe_note.as_deref().is_some_and(|n| n.contains("contact pressure")), "{:?}", o.fe_note);
+    assert!(o.modes.as_ref().unwrap().rows.iter().any(|r| r.id == "collapse" && r.contact.is_some()));
+}
+
+/// The planes are drawn where they were derived: the elastic scan's best plane from the allowables alone, the FE's ridge once a
+/// result is shown (when the solve has one), never the old tangents once anything is derived.
+#[test]
+fn the_planes_come_from_the_elastic_field_then_from_the_fe_ridge() {
+    use scene::PlaneSource;
+    let (s, _) = after_a_2d_run();
+    let o = s.outcome.as_ref().unwrap();
+    let m = o.modes.as_ref().unwrap();
+    let best = m.shear_scan.as_ref().expect("an elastic scan").best;
+    let r = 0.5 * s.inputs.hole_diameter();
+    let elastic = scene::planes(&s.inputs, Some(o), Dim::Two, false);
+    assert_eq!(elastic.source, PlaneSource::Elastic);
+    let phi = best.start_deg.to_radians();
+    assert!((elastic.wall[0] + r * phi.cos()).abs() < 1e-12 && (elastic.wall[1] - r * phi.sin()).abs() < 1e-12);
+    assert!((elastic.edge[0] + s.inputs.edge).abs() < 1e-12 && (elastic.edge[1] - best.edge_y).abs() < 1e-12);
+    // The wall point is on the hole wall; the planes are not the tangents (whose wall point is at 90 degrees).
+    assert!((elastic.wall[0].hypot(elastic.wall[1]) - r).abs() < 1e-9 && best.start_deg < 89.0);
+    let shown = scene::planes(&s.inputs, Some(o), Dim::Two, true);
+    match &o.lines[0].last().shear {
+        Ok(p) => {
+            assert_eq!(shown.source, PlaneSource::Fe("2D plane strain"));
+            assert_eq!((shown.wall, shown.edge), (p.wall, p.edge_pt));
+            assert!((shown.wall[0].hypot(shown.wall[1]) - r).abs() < 1e-3 * r, "the ridge ends on the wall");
+        }
+        Err(_) => assert_eq!(shown.source, PlaneSource::Elastic),
+    }
+    assert_eq!(scene::planes(&s.inputs, None, Dim::Two, false).source, PlaneSource::Tangent);
 }
 
 #[test]
@@ -590,10 +647,11 @@ fn the_workbench_window_paints_the_pin_disc_and_the_plate_captions_over_the_view
     let (mut s, _) = after_a_2d_run();
     assert!(s.shows_result());
     let (texts, circles) = paint_window(&mut s);
-    for want in ["free edge", "shear-out planes", PIN_TRAVEL] {
+    for want in ["free edge", PIN_TRAVEL] {
         assert!(texts.iter().any(|(t, _, _)| t == want), "{want} is not painted: the workbench layout dropped the overlays");
     }
     assert!(texts.iter().any(|(t, _, _)| t.starts_with("e = ")), "the edge distance dimension is missing");
+    assert!(texts.iter().any(|(t, _, _)| t.starts_with("shear-out planes (derived from")), "the planes' caption names where they come from");
     // The pin as a filled disc of a real size (the overlay's `Disc`), not only the load arrow's tip.
     assert!(circles.iter().any(|(_, r, _)| *r > 8.0), "no pin disc painted: {circles:?}");
 }
@@ -642,15 +700,22 @@ fn each_result_label_sits_on_the_geometry_it_names() {
     }
     let e = label("e = ");
     assert!((e.px[0] - 0.5 * (main.px[0] + main.tip.unwrap()[0])).abs() < tol && (e.px[1] - main.px[1]).abs() < tol, "e label off its dimension line");
-    // Both shear-out planes (the view is mirrored) are dashed lines from the edge to the hole centre at the hole's sides, and
-    // their label is on one of them.
+    // Both shear-out planes (the view is mirrored) are dashed lines from the hole wall to the free edge at the derived geometry,
+    // one each side of the load line, and their label names the source and is on one of them.
+    let derived = s.planes();
     let planes = of_kind(OverlayKind::Dashes);
     assert_eq!(planes.len(), 2);
-    for (p, side) in planes.iter().zip([0.5 * f.d, -0.5 * f.d]) {
-        assert!((p.px[0] - px(-f.e, side)[0]).abs() < tol && (p.tip.unwrap()[0] - px(0.0, side)[0]).abs() < tol && (p.px[1] - px(0.0, side)[1]).abs() < tol, "plane at y = {side}");
+    for (p, side) in planes.iter().zip([1.0, -1.0]) {
+        let (edge, wall) = (px(derived.edge[0], side * derived.edge[1]), px(derived.wall[0], side * derived.wall[1]));
+        assert!((p.px[0] - edge[0]).abs() < tol && (p.px[1] - edge[1]).abs() < tol && (p.tip.unwrap()[0] - wall[0]).abs() < tol && (p.tip.unwrap()[1] - wall[1]).abs() < tol, "plane at side {side}");
     }
     let l = label("shear-out");
-    assert!(planes.iter().any(|p| (l.px[1] - p.px[1]).abs() < tol && l.px[0] > p.px[0] && l.px[0] < p.tip.unwrap()[0]), "plane label off its plane");
+    assert!(l.text.contains("derived from"), "{}", l.text);
+    assert!(planes.iter().any(|p| {
+        let (a, b) = (p.px, p.tip.unwrap());
+        let t = (l.px[0] - a[0]) / (b[0] - a[0]);
+        (0.0..=1.0).contains(&t) && (l.px[1] - (a[1] + t * (b[1] - a[1]))).abs() < tol
+    }), "plane label off its plane");
     // The one caption is inside the view, along its bottom.
     let c = label(PIN_TRAVEL);
     assert!(c.px[0] > 0.0 && c.px[0] < size[0] && c.px[1] > 0.75 * size[1] && c.px[1] < size[1]);

@@ -317,6 +317,11 @@ impl PlateEdgeSession {
         }
     }
 
+    /// The shear-out planes the picture draws: the shown FE line's ridge, else the elastic scan, else the tangents.
+    fn planes(&self) -> scene::Planes {
+        scene::planes(&self.inputs, self.outcome.as_ref().filter(|_| self.current()), self.dim, self.shows_result())
+    }
+
     /// The last run is for exactly the live inputs.
     fn current(&self) -> bool {
         self.outcome.as_ref().is_some_and(|o| o.inputs == self.inputs)
@@ -447,7 +452,7 @@ impl Authoring for PlateEdgeSession {
     fn select_at(&mut self, _px: [f32; 2], _size: [f32; 2], _cam: &Camera) {}
     fn scene(&mut self) -> Result<Scene, String> {
         self.drawn = true;
-        scene::build(&self.inputs, &self.name, self.outcome.as_ref().filter(|_| self.current() && self.layer == Layer::Strain), self.dim)
+        scene::build(&self.inputs, &self.name, self.outcome.as_ref().filter(|_| self.current() && self.layer == Layer::Strain), self.dim, &self.planes())
     }
     fn needs_scene(&self) -> bool {
         !self.drawn
@@ -479,9 +484,10 @@ impl Authoring for PlateEdgeSession {
         let dim_y = scene::dimension_y(f.d);
         // The plate's own dimensions stay with the contour: the edge distance, the free edge and the shear-out planes. A result's
         // scene has none of them drawn, so the lines come with their labels; the label sits on what it names.
+        let planes = self.planes();
         if self.shows_result() {
-            for side in [r, -r] {
-                out.push(line(px(-f.e, side), px(0.0, side), OverlayKind::Dashes));
+            for side in [1.0, -1.0] {
+                out.push(line(px(planes.edge[0], side * planes.edge[1]), px(planes.wall[0], side * planes.wall[1]), OverlayKind::Dashes));
             }
             out.push(line(px(-f.e, dim_y), px(0.0, dim_y), OverlayKind::Line));
             for x in [-f.e, 0.0] {
@@ -491,7 +497,7 @@ impl Authoring for PlateEdgeSession {
         } else {
             out.push(boxed(below(px(-0.5 * f.e, dim_y), 22.0), format!("e = {:.3} in   e/D {:.2}", f.e, f.e / f.d)));
         }
-        out.push(boxed(px(-0.5 * f.e, r), "shear-out planes".into()));
+        out.push(boxed(px(0.5 * (planes.wall[0] + planes.edge[0]), 0.5 * (planes.wall[1] + planes.edge[1])), planes.caption()));
         out.push(boxed(px(-f.e, 2.0 * f.d), "free edge".into()));
         if !self.shows_result() {
             // The undeformed bore has a diameter to name.

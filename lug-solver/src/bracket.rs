@@ -19,11 +19,15 @@ use crate::{BushingSpec, Hardening, LugGeometry, Material, MeshSpec, PlaneMode};
 use fea_core::contact::{ContactRule, ContactSpec, RigidMaster, RigidShape};
 use fea_core::fit::{interference_contacts, start_after_fit, Tuning};
 use fea_core::material::J2;
-use fea_core::nonlinear::{Interrupt, NlOptions};
+use fea_core::nonlinear::{Interrupt, NlOptions, NlState, StepObserver};
 use fea_core::sweep::extrude;
 use fea_core::{Loads, Mesh, Model};
-use std::sync::{atomic::AtomicBool, Arc};
+use crate::shear_path::{self, ShearPath, Step};
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
 use std::time::Instant;
+
+/// Penalties (in `E / bore radius`) the pin stage tries in turn when Newton stalls.
+const PENALTY_LADDER: [f64; 3] = [10.0, 3.0, 30.0];
 
 /// The collapse load is read at this pin travel from first touch, in hole diameters.
 pub const D_OVER_D: f64 = edge_check::contact::COLLAPSE_D_OVER_D;
@@ -103,6 +107,9 @@ pub struct Out {
     pub dofs: usize,
     /// The solved model at the collapse travel, for a picture (`None` for a curve built by hand).
     pub fields: Option<Fields>,
+    /// The shear path read from the solved field and its mean shear at every step, or why there is none
+    /// (`crate::shear_path`).
+    pub shear: Result<ShearPath, String>,
 }
 
 /// The deformed model of a finished run: the mesh, the displacement of every node and the equivalent plastic strain
@@ -204,6 +211,8 @@ pub struct Refinement {
     pub onset_change: Option<f64>,
     /// The load-travel curve of this mesh: `(pin travel / D, load lbf)` after every step.
     pub curve: Vec<(f64, f64)>,
+    /// The shear path of this mesh (`Out::shear`).
+    pub shear: Result<ShearPath, String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -251,7 +260,7 @@ pub fn converge_with(case: Case, ideal: Idealisation, tol: f64, max_meshes: usiz
         let (collapse, onset) = (out.at_limit(), out.offset_load(OFFSET_FRACTION));
         let rel = |a: f64, b: f64| ((a - b) / b).abs();
         let prev = steps.last();
-        let r = Refinement { around, layers, collapse, onset, departure: out.departure_load(DEPARTURE_DROP), secs: out.secs, dofs: out.dofs, collapse_change: prev.map(|p| rel(collapse, p.collapse)), onset_change: prev.and_then(|p| Some(rel(onset?, p.onset?))), curve: std::mem::take(&mut out.pts) };
+        let r = Refinement { around, layers, collapse, onset, departure: out.departure_load(DEPARTURE_DROP), secs: out.secs, dofs: out.dofs, collapse_change: prev.map(|p| rel(collapse, p.collapse)), onset_change: prev.and_then(|p| Some(rel(onset?, p.onset?))), curve: std::mem::take(&mut out.pts), shear: std::mem::replace(&mut out.shear, Err(String::new())) };
         progress(&r, out.fields.take());
         let done = r.collapse_change.is_some_and(|c| c < tol) && r.onset_change.is_none_or(|c| c < tol);
         steps.push(r);
@@ -269,7 +278,12 @@ pub fn plasticity(h: &Housing) -> J2 {
 /// Runs the case; `cancel` set from another thread stops it at the next Newton step with an error. Blocking: a 3D case
 /// takes minutes.
 pub fn try_run(case: Case, ideal: Idealisation, cancel: Option<Arc<AtomicBool>>) -> Result<Out, String> {
-    let interrupt = Interrupt { deadline: None, cancel };
+    try_run_with(case, ideal, Interrupt { deadline: None, cancel })
+}
+
+/// [`try_run`] with a cost cap: `interrupt.deadline` ends the run with an error at the next step once it has passed (a case
+/// whose cost is not known, such as an interference fit in 3D, is probed this way).
+pub fn try_run_with(case: Case, ideal: Idealisation, interrupt: Interrupt) -> Result<Out, String> {
     let t0 = Instant::now();
     let fe = case.lug(if matches!(ideal, Idealisation::Stress) { PlaneMode::Stress } else { PlaneMode::Strain });
     let mut mesh2 = fe.model.mesh.clone();
@@ -385,23 +399,55 @@ pub fn try_run(case: Case, ideal: Idealisation, cancel: Option<Arc<AtomicBool>>)
     let cap = D_OVER_D * case.dia;
     let shape = if solid { RigidShape::Cylinder { p: [0.0; 3], a: [0.0, 0.0, 1.0], r: r_pin } } else { RigidShape::Circle { c: [0.0; 2], r: r_pin } };
     let master = RigidMaster { shift: [-(r_left - r_pin), 0.0, 0.0], ..RigidMaster::new(shape).with_travel([-cap, 0.0, 0.0]) };
-    let tune = Tuning::collapse();
-    let eps_n = tune.eps_n(case.housing.e, a_contact);
-    let mut pin_spec = ContactSpec::rigid("pin", model.mesh.surfaces["bore"].clone(), master, eps_n).with_rule(ContactRule::Reduced);
-    if case.pin_mu > 0.0 && !bushed {
-        pin_spec = pin_spec.with_friction(case.pin_mu, fea_core::fit::EPS_T_RATIO * eps_n);
-    }
-    let mut specs = vec![pin_spec];
-    specs.extend(fit_specs(eps_n));
-    let steps = ((cap / (tune.step_fraction * a_contact)).ceil() as usize).clamp(6, 80);
+    let steps = ((cap / (Tuning::collapse().step_fraction * a_contact)).ceil() as usize).clamp(6, 80);
     let start = fit_nl.as_ref().map(|nl| start_after_fit(nl, 1));
-    let nl = model.solve_nonlinear_contact_from(&loads, &bc, specs, &NlOptions { interrupt, ..tune.options(steps) }, start.as_ref()).map_err(|e| e.to_string())?;
-    if !nl.complete() {
+    // The pin stage. Newton on a plastic contact problem that is nearly a mechanism (plane stress, a yielded wall) converges
+    // or stalls depending on the penalty, not on the physics (the same case converged at one penalty and stalled at its
+    // neighbour in trials, with the loads of the penalties that did converge within 0.3 %): a stall retries on the next
+    // penalty of the ladder, and only a stall on all of them is an error. An interruption is never retried.
+    let mut stalls = Vec::new();
+    let mut solved = None;
+    for factor in PENALTY_LADDER {
+        let mut tune = Tuning::collapse();
+        tune.penalty_factor = factor;
+        let eps_n = tune.eps_n(case.housing.e, a_contact);
+        let mut pin_spec = ContactSpec::rigid("pin", model.mesh.surfaces["bore"].clone(), master, eps_n).with_rule(ContactRule::Reduced);
+        if case.pin_mu > 0.0 && !bushed {
+            pin_spec = pin_spec.with_friction(case.pin_mu, fea_core::fit::EPS_T_RATIO * eps_n);
+        }
+        let mut specs = vec![pin_spec];
+        specs.extend(fit_specs(eps_n));
+        // Every converged step hands its displacements and starting material state over: the shear path's mean shear is read
+        // from them after the solve (the state is a few MB in 3D, kept for the length of the run only).
+        let history: Arc<Mutex<Vec<(Vec<f64>, NlState)>>> = Arc::default();
+        let sink = history.clone();
+        let observer = StepObserver(Arc::new(move |e| sink.lock().expect("the step history is only pushed to").push((e.u.to_vec(), e.before.clone()))));
+        let nl = model.solve_nonlinear_contact_from(&loads, &bc, specs, &NlOptions { interrupt: interrupt.clone(), observer: Some(observer), ..tune.options(steps) }, start.as_ref()).map_err(|e| e.to_string())?;
+        if nl.complete() {
+            solved = Some((nl, std::mem::take(&mut *history.lock().expect("the step history is only pushed to"))));
+            break;
+        }
+        if matches!(nl.stop, fea_core::nonlinear::Stop::NoConvergence(_)) {
+            stalls.push(format!("penalty {factor} E/a: {:?}", nl.stop));
+            if trace {
+                eprintln!("[{:.1}s] pin run stalled at penalty {factor}: {:?}", t0.elapsed().as_secs_f64(), nl.stop);
+            }
+            continue;
+        }
         return Err(format!("the pin run stopped early: {:?}", nl.stop));
     }
+    let Some((nl, hist)) = solved else { return Err(format!("the pin run stopped early on every penalty tried ({})", stalls.join("; "))) };
     // Whole-plate force: x2 for the load-line symmetry, x2 again for the mid-plane in 3D.
     let share = if solid { 4.0 } else { 2.0 };
     let pts: Vec<(f64, f64)> = nl.steps.iter().map(|s| (s.lambda * cap / case.dia, share * s.master_force[0][0])).collect();
     let plastic = nodal_plastic_strain(&model.mesh, &nl.state);
-    Ok(Out { pts, fit_pressure, secs: t0.elapsed().as_secs_f64(), dofs: model.mesh.n_dofs(), fields: Some(Fields { u: nl.u.clone(), plastic, mesh: model.mesh.clone() }) })
+    let shear = if hist.len() == pts.len() {
+        shear_path::ridge(&model.mesh, &plastic, 0.5 * case.dia, case.ed * case.dia).and_then(|r| {
+            let steps: Vec<Step> = hist.into_iter().zip(&pts).map(|((u, before), p)| Step { u, before, load: p.1 }).collect();
+            shear_path::trace(&model, &steps, &r, solid.then(|| 0.5 * case.thickness()))
+        })
+    } else {
+        Err(format!("the solver reported {} steps for {} load points", hist.len(), pts.len()))
+    };
+    Ok(Out { pts, fit_pressure, secs: t0.elapsed().as_secs_f64(), dofs: model.mesh.n_dofs(), fields: Some(Fields { u: nl.u.clone(), plastic, mesh: model.mesh.clone() }), shear })
 }

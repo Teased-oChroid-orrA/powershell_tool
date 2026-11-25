@@ -127,6 +127,20 @@ fn the_elastic_field_gives_shear_out_tear_out_and_first_yield_and_the_lowest_row
     assert!(r.rows[g].governs, "informational rows never govern");
 }
 
+/// The shear-out row's elastic column is the plane of least capacity found on the field, never above the handbook-angle
+/// planes evaluated on the same field, and the result carries the angles it picked; an interference fit lowers it.
+#[test]
+fn the_shear_out_elastic_column_is_the_derived_plane() {
+    let r = analyse(&input(2.0, 0.0)).unwrap();
+    let scan = r.shear_scan.as_ref().expect("a scan");
+    close(row(&r, "shear_out").elastic.unwrap(), scan.best.capacity);
+    assert!(scan.best.capacity <= scan.classical.capacity && scan.best.capacity <= scan.tangent.capacity);
+    assert_eq!(scan.classical.start_deg, 40.0);
+    assert!((30.0..=80.0).contains(&scan.best.start_deg) && scan.best.length > 0.0, "{:?}", scan.best);
+    let fit = analyse(&input(2.0, 0.003)).unwrap();
+    assert!(fit.shear_scan.unwrap().best.capacity < scan.best.capacity);
+}
+
 #[test]
 fn the_contact_fe_adds_collapse_and_first_yield_when_asked() {
     let mut i = input(2.0, 0.0);

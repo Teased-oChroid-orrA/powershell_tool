@@ -275,9 +275,9 @@ impl PlateEdgeSession {
         items.push(line(
             match i.fit {
                 FitKind::Clearance => "The hole is larger than the pin by the clearance. The FE bracket (2D and 3D) models this fit: a rigid pin, no contact pressure.",
-                FitKind::PressFit => "Light interference: the hole is smaller than the pin. The fit's pressure is charged against shear-out and tear-out; the FE bracket skips it (2D contact FE of the allowables only).",
-                FitKind::Interference => "Heavy interference: the hole is smaller than the pin. The fit's pressure is charged against shear-out and tear-out; the FE bracket skips it (2D contact FE of the allowables only).",
-                FitKind::Custom => "Only the contact pressure is known: the hole equals the pin. The FE bracket skips it.",
+                FitKind::PressFit => "Light interference: the hole is smaller than the pin. The fit's pressure is charged against shear-out and tear-out. The FE bracket models the pin as an elastic body pressed into the hole, then pushed toward the edge.",
+                FitKind::Interference => "Heavy interference: the hole is smaller than the pin. The fit's pressure is charged against shear-out and tear-out. The FE bracket models the pin as an elastic body pressed into the hole, then pushed toward the edge.",
+                FitKind::Custom => "Only the contact pressure is known: the hole equals the pin. The FE bracket skips it (it imposes a diametral interference, which a pressure does not give).",
             },
             Tone::Dim,
         ));
@@ -336,6 +336,7 @@ impl PlateEdgeSession {
             Err(why) => cards.push(Card::new("plate-edge-allowables", "Allowable loads", Relevance::Info, vec![line(format!("Not computed: {why}."), Tone::Warn)])),
             Ok(m) => {
                 cards.push(self.allowables_card(o, m, stale));
+                cards.push(self.shear_card(o, m));
                 cards.push(self.check_card(o, m));
             }
         }
@@ -368,12 +369,13 @@ impl PlateEdgeSession {
             .iter()
             .enumerate()
             .map(|(k, r)| {
-                let methods: Vec<String> = [("handbook", r.handbook), ("elastic field", r.elastic), ("contact FE", r.contact)].into_iter().filter_map(|(n, v)| v.map(|v| format!("{n} {}", grp(v)))).collect();
+                let names = if r.id == "shear_out" { ["handbook 40\u{b0} planes", "elastic field, derived plane", "contact FE"] } else { ["handbook", "elastic field", "contact FE"] };
+                let methods: Vec<String> = [(names[0], r.handbook), (names[1], r.elastic), (names[2], r.contact)].into_iter().filter_map(|(n, v)| v.map(|v| format!("{n} {}", grp(v)))).collect();
                 let governing = m.governing == Some(k);
                 CompareRow {
                     title: r.label.to_string(),
                     detail: r.why.clone().unwrap_or_else(|| methods.join(" \u{b7} ")),
-                    values: vec![cell(r.lowest()), cell(fe("2D plane strain", r.id)), cell(fe("3D solid", r.id))],
+                    values: if r.id == "shear_out" { vec![cell(r.lowest()), shear_fe_cell(o, "2D plane strain"), shear_fe_cell(o, "3D solid")] } else { vec![cell(r.lowest()), cell(fe("2D plane strain", r.id)), cell(fe("3D solid", r.id))] },
                     governing,
                     bar: r.lowest().filter(|v| governing && v.is_finite() && most > 0.0).map(|v| (v / most) as f32),
                     chip: None,
@@ -398,6 +400,68 @@ impl PlateEdgeSession {
             None => ("incomplete".to_string(), Tone::Warn),
         };
         Card::new("plate-edge-allowables", "Allowable loads", Relevance::Info, items).tag(tag).tag_tone(tone)
+    }
+
+    /// The shear-out plane three ways: the handbook's assumed 40 degree planes, the plane of least capacity found on the elastic
+    /// field, and the ridge of plastic strain of each FE line with the load at which the mean shear along it reaches `Fsu`.
+    fn shear_card(&self, o: &Outcome, m: &ModesResult) -> Card {
+        let fsu = o.inputs.plate_strengths().0.fsu;
+        let angles = |start: f64, incline: f64| format!("{start:.0} / {incline:+.0}\u{b0}");
+        let mut rows = Vec::new();
+        if let Some(h) = m.rows.iter().find(|r| r.id == "shear_out").and_then(|r| r.handbook) {
+            rows.push(CompareRow {
+                title: "Handbook (assumed)".into(),
+                detail: "two planes parallel to the load, leaving the hole at 40\u{b0}: 2 Fsu t (e - a cos 40\u{b0}) less the fit's p D t. An assumption, kept as the handbook column.".into(),
+                values: vec![angles(40.0, 0.0), grp(h)],
+                dim: true,
+                ..CompareRow::default()
+            });
+        }
+        match &m.shear_scan {
+            Ok(s) => {
+                let a = 0.5 * o.inputs.hole_diameter();
+                let pinned = s.best.edge_y < 0.05 * a;
+                rows.push(CompareRow {
+                    title: "Derived from elastic field".into(),
+                    detail: format!(
+                        "plane of least capacity over where it leaves the wall and its inclination, mean shear along it = Fsu; {:.3} in long, ends {:.3} in from the load line at the free edge{}. Same field on the 40\u{b0} parallel planes: {}; on the tangent planes: {}.",
+                        s.best.length,
+                        s.best.edge_y,
+                        if pinned { " (the planes of both halves meet there: the family's limit, a plate cannot shear out along planes that cross)" } else { "" },
+                        grp(s.classical.capacity),
+                        grp(s.tangent.capacity)
+                    ),
+                    values: vec![angles(s.best.start_deg, s.best.incline_deg), grp(s.best.capacity)],
+                    governing: true,
+                    ..CompareRow::default()
+                });
+            }
+            Err(why) => rows.push(CompareRow { title: "Derived from elastic field".into(), detail: format!("not derived: {why}"), values: vec!["-".into(), "-".into()], dim: true, ..CompareRow::default() }),
+        }
+        for l in &o.lines {
+            let title = format!("Derived from FE, {}", short_title(l.label));
+            match &l.last().shear {
+                Ok(p) => {
+                    let reached = p.load_at(fsu);
+                    rows.push(CompareRow {
+                        title,
+                        detail: format!(
+                            "ridge of equivalent plastic strain (peak {:.3}), {:.3} in long; mean shear along it {:.0} psi = {:.0} % of Fsu at 0.1 D travel{}",
+                            p.peak_plastic,
+                            p.length,
+                            p.mean_at_end(),
+                            100.0 * p.mean_at_end() / fsu,
+                            if reached.is_some() { "" } else { ": not reached, bearing governs the FE" }
+                        ),
+                        values: vec![angles(p.start_deg, p.incline_deg), reached.map_or_else(|| "not reached".into(), grp)],
+                        ..CompareRow::default()
+                    });
+                }
+                Err(why) => rows.push(CompareRow { title, detail: format!("no path: {why}"), values: vec!["-".into(), "-".into()], dim: true, ..CompareRow::default() }),
+            }
+        }
+        let footer = "Angles: where the plane leaves the hole wall, from the load line at the hole centre / its inclination to the load line (+ opens toward the edge). Load: pin load, lb, at which the mean shear along the plane reaches Fsu. The elastic figure is a full-redistribution criterion (lowest over the planes); the FE path is read from the solve and its stress state at every step. Advisory.";
+        Card::new("plate-edge-shear", "Shear-out plane", Relevance::Info, vec![DockItem::Compare(Box::new(Compare { heads: vec!["Plane".into(), "Angle".into(), "Load".into()], rows, footer: footer.into() }))])
     }
 
     /// The legacy handbook figure beside what the FE says: advisory, nothing promoted to the governing check.
@@ -460,7 +524,7 @@ impl PlateEdgeSession {
             items.push(line("Inputs changed since this run; run it again.", Tone::Warn));
         }
         if let Some(note) = &o.fe_note {
-            items.push(line(format!("FE not run: {note}."), Tone::Warn));
+            items.push(line(format!("{}: {note}.", if o.lines.is_empty() { "FE not run" } else { "FE incomplete" }), Tone::Warn));
         }
         for l in &o.lines {
             items.push(DockItem::field(fe_name(l.label), format!("collapse {}", lb(l.last().collapse)), Tone::Normal, None, false));
@@ -488,7 +552,7 @@ impl PlateEdgeSession {
     fn notes_card(&self) -> Card {
         let items = vec![
             line("Plane strain runs above the 3D model at e/D 1.5 to 2.0 (12 to 36 % in the recorded bracket) and plane stress below it: read the 2D numbers as a bracket, and the 3D as the better single estimate for a bare pin.", Tone::Dim),
-            line("The 3D and 2D FE model a rigid pin in a clearance or line-to-line hole. An interference fit is in the 2D contact FE; its 3D collapse did not converge in trials.", Tone::Dim),
+            line("The 2D and 3D FE model a rigid pin in a clearance or line-to-line hole, or an elastic pin (a ring of the pin's modulus around a rigid core, as edge-check models it) pressed into an interference hole by frictional contact and then pushed toward the edge. A custom contact pressure is not modelled by the FE.", Tone::Dim),
             line("Handbook rows read the table values of the chosen material at the actual e/D; a row with no table value says why.", Tone::Dim),
             line("The FE bracket computes the mesh, the displacement and the plastic strain only: von Mises, shear and bearing-pressure fields are not available. The load is along the free-edge direction; plate width and an inclined load are not inputs of these calculations.", Tone::Dim),
         ];
@@ -539,13 +603,17 @@ impl PlateEdgeSession {
                         if let Some(g) = m.governing {
                             t += &format!("Governing: {} {}\n", m.rows[g].label, opt(m.rows[g].lowest()));
                         }
+                        match &m.shear_scan {
+                            Ok(s) => t += &format!("Shear-out plane derived from the elastic field: leaves the wall at {:.1} deg, inclined {:+.1} deg to the load line, {:.3} in long, ends {:.3} in from the load line at the free edge; capacity {} (the handbook's 40 deg parallel planes on the same field: {}; tangent planes: {})\n", s.best.start_deg, s.best.incline_deg, s.best.length, s.best.edge_y, opt(Some(s.best.capacity)), opt(Some(s.classical.capacity)), opt(Some(s.tangent.capacity))),
+                            Err(why) => t += &format!("Shear-out plane not derived: {why}\n"),
+                        }
                         for n in &m.notes {
                             t += &format!("Note: {n}\n");
                         }
                     }
                 }
                 if let Some(n) = &o.fe_note {
-                    t += &format!("\nFE not run: {n}.\n");
+                    t += &format!("\n{}: {n}.\n", if o.lines.is_empty() { "FE not run" } else { "FE incomplete" });
                 }
                 for l in &o.lines {
                     t += &format!("\n{}\n", fe_name(l.label));
@@ -553,6 +621,11 @@ impl PlateEdgeSession {
                         t += &format!("  {} around, {} layers, {} dof: onset {}, yield {}, collapse {}, {:.1} s\n", r.around, r.layers, r.dofs, opt(r.departure), opt(r.onset), lb(r.collapse), r.secs);
                     }
                     t += &format!("  {}\n", if l.meshes.len() > 1 { if l.converged { "converged" } else { "not converged" } } else { "one mesh" });
+                    let fsu = o.inputs.plate_strengths().0.fsu;
+                    match &l.last().shear {
+                        Ok(p) => t += &format!("  shear-out path from the plastic strain: leaves the wall at {:.1} deg, inclined {:+.1} deg; mean shear at 0.1 D {:.0} psi = {:.0} % of Fsu; {}\n", p.start_deg, p.incline_deg, p.mean_at_end(), 100.0 * p.mean_at_end() / fsu, p.load_at(fsu).map_or_else(|| "Fsu not reached".to_string(), |v| format!("reaches Fsu at {} lbf", opt(Some(v))))),
+                        Err(why) => t += &format!("  no shear-out path: {why}\n"),
+                    }
                 }
             }
         }
@@ -577,6 +650,17 @@ impl PlateEdgeSession {
             },
             Menu { title: "Run".into(), items: vec![Item::Entry(run("Run 2D", Kind::TwoD)), Item::Entry(run("Run 2D + 3D", Kind::ThreeD)), Item::Entry(entry("Cancel", "Esc", PlateEdgeAct::Cancel).when(if busy { Ok(()) } else { never("cancel") }))] },
         ]
+    }
+}
+
+/// The FE line's figure for the shear-out row: the pin load at which the mean shear along its plastic-strain path reaches `Fsu`,
+/// or how far the shear got when the travel ended, or nothing when the solve showed no path.
+fn shear_fe_cell(o: &Outcome, label: &str) -> String {
+    let Some(l) = o.lines.iter().find(|l| l.label == label) else { return "-".into() };
+    let fsu = o.inputs.plate_strengths().0.fsu;
+    match &l.last().shear {
+        Ok(p) => p.load_at(fsu).map_or_else(|| format!("{:.0} % Fsu", 100.0 * p.mean_at_end() / fsu), grp),
+        Err(_) => "-".into(),
     }
 }
 

@@ -400,18 +400,23 @@ pub enum Control {
 /// at every Newton iteration and load step and returns the state it reached with `Stop::Interrupted`.
 /// What a converged load step reports to a [`StepObserver`].
 #[derive(Debug, Clone, Copy)]
-pub struct StepEvent {
+pub struct StepEvent<'a> {
     /// Converged steps of this run so far (including this one).
     pub step: usize,
     pub lambda: f64,
     /// Norm of the force on the first contact master (the pin's pressing force), when there is contact.
     pub master_force: Option<f64>,
     pub factorisations: usize,
+    /// The displacements at the end of this step and the material state at its start: with them
+    /// [`Model::nl_gauss_stresses`] / [`crate::locate::Locator::nl_stress_at`] give the stresses of this step, so a caller can
+    /// follow a stress measure along the load path (clone what it keeps; both are borrowed from the solver).
+    pub u: &'a [f64],
+    pub before: &'a NlState,
 }
 
 /// A callback invoked after every converged load step, on the solving thread (live progress for a long solve).
 #[derive(Clone)]
-pub struct StepObserver(pub std::sync::Arc<dyn Fn(&StepEvent) + Send + Sync>);
+pub struct StepObserver(pub std::sync::Arc<dyn for<'a> Fn(&StepEvent<'a>) + Send + Sync>);
 
 impl std::fmt::Debug for StepObserver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1719,7 +1724,7 @@ impl Ctx<'_> {
                         continue;
                     }
                     if let Some(obs) = &self.opt.observer {
-                        (obs.0)(&StepEvent { step: steps.len() + 1, lambda, master_force: master_force.first().map(|f| norm(f)), factorisations: self.factorisations.get() });
+                        (obs.0)(&StepEvent { step: steps.len() + 1, lambda, master_force: master_force.first().map(|f| norm(f)), factorisations: self.factorisations.get(), u: &un, before: &state });
                     }
                     steps.push(StepInfo { lambda, iterations, residuals, max_ep, plastic_fraction: sn.plastic_fraction(), cuts: cuts_total, indefinite: false, master_force });
                     u = un;

@@ -16,10 +16,12 @@
 //!
 //! Units: inches, pounds-force, psi.
 
+use crate::analytic::AnalyticField;
 use crate::estimate::{prepare, BoreFit, EstimateInput, EstimateOptions, LoadCase, PIN_CORE};
 use crate::models::default_models;
 use crate::runner::mode_capacities;
-use crate::types::{BushingSpec, Mode, Strengths};
+use crate::shear::{scan, ShearScan};
+use crate::types::{BushingSpec, Geometry, Mode, Strengths};
 use mechanics_core::materials::fbru_at_edge_ratio;
 
 /// The pin or fastener.
@@ -107,6 +109,10 @@ pub struct ModesResult {
     pub fit_pressure: f64,
     /// Index of the governing row, if any row has a finite number.
     pub governing: Option<usize>,
+    /// The shear-out plane derived from the elastic field (`crate::shear`): the plane of least capacity, next to the
+    /// handbook's and the tangent planes. The `shear_out` row's elastic column is its capacity. `Err` says why there is none
+    /// (the row then falls back to the tangent planes).
+    pub shear_scan: Result<ShearScan, String>,
     pub notes: Vec<String>,
 }
 
@@ -151,6 +157,15 @@ fn validate(i: &ModesInput) -> Result<(), String> {
     Ok(())
 }
 
+/// The shear-out plane scan over the closed-form elastic field of the input's plate, charged with the fit pressure `p`.
+fn shear_scan_of(i: &ModesInput, p: f64) -> Result<ShearScan, String> {
+    let a = 0.5 * i.bore_dia;
+    let reach = (3.0 * i.edge).max(10.0 * a);
+    let geom = Geometry { bore_radius: a, edge: i.edge, thickness: i.thickness, plate_far: reach, plate_half_height: reach, plane_angle_deg: i.plane_angle_deg };
+    let field = AnalyticField::build(a, i.edge, i.thickness, i.plate.nu)?;
+    scan(&field, &geom, &i.plate, p)
+}
+
 /// The table. Blocking (about 0.3 s, about 3 s with the contact FE): call from a worker.
 pub fn analyse(i: &ModesInput) -> Result<ModesResult, String> {
     validate(i)?;
@@ -184,6 +199,9 @@ pub fn analyse(i: &ModesInput) -> Result<ModesResult, String> {
     let (input, cfg) = prepare(&est, &EstimateOptions { deep: i.deep, ..Default::default() })?;
     let caps = mode_capacities(&default_models(&cfg), &input);
     let cap = |model: &str, mode: Mode| caps.iter().find(|c| c.model == model && c.mode == mode).map(|c| c.capacity_lbf);
+    // The shear-out plane taken from the elastic field (the same analytic field the `analytic` column integrates).
+    let shear_scan = shear_scan_of(i, p);
+    let shear_elastic = shear_scan.as_ref().ok().map(|s| s.best.capacity).or_else(|| cap("analytic", Mode::ShearOut));
 
     // Handbook closed forms.
     let bearing = |strength: Option<f64>| strength.map(|f| f * d * t);
@@ -225,10 +243,10 @@ pub fn analyse(i: &ModesInput) -> Result<ModesResult, String> {
         ModeRow {
             id: "shear_out",
             label: "Shear-out",
-            basis: "two planes at the shear-out angle: 2 Fsu t (e - a cos) less the fit's p D t; elastic field: mean tangent-plane shear = Fsu",
+            basis: "handbook: two planes parallel to the load leaving the hole at the shear-out angle, 2 Fsu t (e - a cos) less the fit's p D t; elastic field: the plane of least capacity found by scanning where it leaves the wall and how it is inclined, mean shear along it = Fsu",
             group: Group::Plate,
             handbook: Some(shear_out),
-            elastic: cap("analytic", Mode::ShearOut),
+            elastic: shear_elastic,
             contact: None,
             why: None,
             governs: true,
@@ -311,5 +329,5 @@ pub fn analyse(i: &ModesInput) -> Result<ModesResult, String> {
     });
 
     let governing = rows.iter().enumerate().filter(|(_, r)| r.governs).filter_map(|(k, r)| r.lowest().filter(|v| v.is_finite()).map(|v| (k, v))).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(k, _)| k);
-    Ok(ModesResult { rows, fit_pressure: p, governing, notes })
+    Ok(ModesResult { rows, fit_pressure: p, governing, shear_scan, notes })
 }

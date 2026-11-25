@@ -11,6 +11,7 @@ pub mod finite;
 pub mod geometry;
 pub mod mesh;
 pub mod pin;
+pub mod shear_path;
 pub mod plastic;
 pub mod solve;
 pub mod sparse;

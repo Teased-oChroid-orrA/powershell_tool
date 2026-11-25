@@ -142,10 +142,12 @@ fn work(inp: &PlateEdgeInputs, kind: Kind, cancel: &Arc<AtomicBool>, tx: &std::s
                         Err(e) => Some(format!("{label}: {e}")),
                     }
                 };
-                fe_note = run("2D plane strain", Idealisation::Strain).or_else(|| run("2D plane stress", Idealisation::Stress));
-                if kind == Kind::ThreeD && fe_note.is_none() {
-                    fe_note = run("3D solid", inp.solid());
+                // Each idealisation stands alone: one that stalls (plane stress of a yielded wall can) does not stop the others.
+                let mut notes: Vec<String> = [run("2D plane strain", Idealisation::Strain), run("2D plane stress", Idealisation::Stress)].into_iter().flatten().collect();
+                if kind == Kind::ThreeD && !cancel.load(Ordering::Relaxed) {
+                    notes.extend(run("3D solid", inp.solid()));
                 }
+                fe_note = (!notes.is_empty()).then(|| notes.join("; "));
             }
         }
     }

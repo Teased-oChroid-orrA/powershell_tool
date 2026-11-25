@@ -6,7 +6,7 @@
 use edge_check::modes::{ModesInput, PinSpec};
 use edge_check::models::contact_model::flow_stress;
 use edge_check::types::Strengths;
-use lug_solver::bracket::{Case, Housing, Idealisation};
+use lug_solver::bracket::{Bush, Case, Housing, Idealisation};
 use mechanics_core::materials::{builtin_catalog, get_material, Material};
 use serde::{Deserialize, Serialize};
 
@@ -476,10 +476,11 @@ impl PlateEdgeInputs {
         Ok(ModesInput { bore_dia: self.hole_diameter(), edge: self.edge, thickness: self.thickness, plate, fbry, fbry_e15, pin, delta, custom_pressure, friction: self.friction, plane_angle_deg: PLANE_ANGLE, deep })
     }
 
-    /// Why the FE bracket cannot model this fit, if it cannot: its pin is rigid and only a bushing's interference is modelled.
+    /// Why the FE bracket cannot model this fit, if it cannot: it imposes a diametral interference (the pin is an elastic body
+    /// pressed into the hole) or a clearance, but a custom contact pressure has no interference to impose.
     pub fn bracket_refusal(&self) -> Option<String> {
-        let (delta, pressure) = self.delta_and_pressure();
-        (delta > 0.0 || pressure.is_some_and(|p| p > 0.0)).then(|| "the 2D/3D bracket FE models a clearance or line-to-line pin (a rigid pin in the hole); an interference fit is in the contact FE of the 2D allowables".to_string())
+        let (_, pressure) = self.delta_and_pressure();
+        pressure.is_some_and(|p| p > 0.0).then(|| "the 2D/3D bracket FE imposes a diametral interference, and a custom contact pressure has none: choose Press-fit or Interference to model the pin pressed in".to_string())
     }
 
     /// The FE bracket's case, or why there is none.
@@ -487,7 +488,15 @@ impl PlateEdgeInputs {
         if let Some(why) = self.bracket_refusal() {
             return Err(why);
         }
-        self.picture_case()
+        let mut case = self.picture_case()?;
+        let (delta, _) = self.delta_and_pressure();
+        if delta > 0.0 {
+            // The pin as an elastic body pressed into the bore, as `edge-check`'s contact FE has it: a thick ring around a rigid
+            // core of `PIN_CORE` of the hole radius, installed by two-pass frictional contact, then pushed toward the edge.
+            let pin = self.pin_spec();
+            case.bush = Some(Bush { inner_dia: edge_check::estimate::PIN_CORE * case.dia, e: pin.e, nu: pin.nu, interference_dia: delta, mu: self.friction });
+        }
+        Ok(case)
     }
 
     /// The plate as the FE meshes it (the picture of the inputs uses it whatever the fit).

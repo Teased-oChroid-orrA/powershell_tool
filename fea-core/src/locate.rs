@@ -236,6 +236,53 @@ impl Locator {
     }
 }
 
+impl Locator {
+    /// Stress `[xx, yy, zz, xy, yz, zx]` at `x` of a small-strain elastic-plastic state: `u` the displacements and `old` the
+    /// material state at the start of the last accepted step (as [`Model::nl_gauss_stresses`]). A plastic element is read
+    /// out by the return map at the point's natural coordinates started from the nearest Gauss point's state (the state
+    /// lives at the Gauss points only), averaged over the elements containing the point; an elastic block gives its linear
+    /// stress. `None` outside the mesh or in a finite-strain block.
+    pub fn nl_stress_at(&self, model: &Model, u: &[f64], old: &crate::nonlinear::NlState, x: [f64; 3]) -> Option<[f64; 6]> {
+        let hits = self.locate(model, x);
+        if hits.is_empty() {
+            return None;
+        }
+        let mesh = &model.mesh;
+        let d = mesh.dim();
+        let mut acc = [0.0f64; 6];
+        for h in &hits {
+            let blk = &mesh.blocks[h.block];
+            let t = blk.kind.table();
+            let nn = blk.kind.n_nodes();
+            let mut xyz = vec![[0.0f64; 3]; nn];
+            let mut ue = vec![0.0f64; nn * d];
+            for (a, &n) in blk.elem(h.elem).iter().enumerate() {
+                xyz[a] = mesh.nodes[n];
+                for i in 0..d {
+                    ue[a * d + i] = u[n * d + i];
+                }
+            }
+            let xi = clamp_natural(blk.kind, h.xi);
+            let s = if blk.plasticity.is_some() {
+                let near = (0..t.ngp).min_by(|&a, &b| {
+                    let dist = |g: usize| (0..d).map(|i| (t.xi[g][i] - xi[i]).powi(2)).sum::<f64>();
+                    dist(a).total_cmp(&dist(b))
+                })?;
+                crate::nonlinear::plastic_stress_at(blk, mesh.physics, &xyz, &ue, xi, old.gp.get(h.block)?.get(h.elem * t.ngp + near)?).ok()?.0
+            } else {
+                stress_at_xi(blk.kind, mesh.physics, &blk.material, &xyz, &ue, xi, 0.0).ok()?
+            };
+            for c in 0..6 {
+                acc[c] += s[c];
+            }
+        }
+        for v in &mut acc {
+            *v /= hits.len() as f64;
+        }
+        Some(acc)
+    }
+}
+
 fn clamp_natural(kind: ElementKind, mut xi: [f64; 3]) -> [f64; 3] {
     let d = kind.dim();
     if kind.is_simplex() {

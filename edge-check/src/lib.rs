@@ -14,4 +14,5 @@ pub mod plate;
 pub mod models;
 pub mod modes;
 pub mod runner;
+pub mod shear;
 pub mod types;
