@@ -5,6 +5,7 @@
 //! to apply a tie or a fastener to until the multi-body representation (and the solver exposure of epic Phase C) exists. Body numbers
 //! in the text are 1-based (the order of the STEP product structure); `FaceKey::body` is the 0-based index.
 use solid_kernel::features::{size_matches, FaceKey, FastenerSite, FitClass, Features, Hole, Interface, NearClosedBore, SizeMatch};
+use solid_kernel::free_edge::{EdgeKind, FreeEdge, FreeEdgeError};
 /// Re-exported so a front end names a hole's closure without a direct `solid-kernel` dependency.
 pub use solid_kernel::features::Closure;
 
@@ -98,6 +99,23 @@ fn matches_text(m: &[SizeMatch]) -> String {
     }
 }
 
+/// The geometric nearest-free-edge reading of one hole as a clause (no strength statement: Assembly Joints has no material or load,
+/// `docs/edge-distance-crosscheck.md`). The distance is from the hole axis in the plane of the plate face, so the ligament is the
+/// distance less the radius; `e/D` is the figure the edge-distance rules quote.
+fn edge_clause(h: &Hole, e: Option<&Result<FreeEdge, FreeEdgeError>>) -> String {
+    match e {
+        Some(Ok(e)) => {
+            let kind = match e.kind {
+                EdgeKind::Line => "a straight edge".to_string(),
+                EdgeKind::Arc { radius } => format!("a circular edge of radius {radius:.2} mm"),
+            };
+            format!("nearest free edge {:.2} mm from the axis (e/D {:.2}), {kind} of a {:.2} mm plate", e.distance, e.distance / h.diameter(), e.thickness)
+        }
+        Some(Err(why)) => format!("no free edge distance read: {why}"),
+        None => "no free edge distance read".to_string(),
+    }
+}
+
 fn tie(i: &Interface) -> AssemblyAdvice {
     let gap = if i.gap.abs() < 5e-7 { "no gap".to_string() } else if i.gap > 0.0 { format!("a {:.4} mm gap", i.gap) } else { format!("{:.4} mm of interpenetration", -i.gap) };
     AssemblyAdvice::Tie {
@@ -125,6 +143,8 @@ fn fastener(f: &Features, s: &FastenerSite) -> AssemblyAdvice {
         bores.push(format!("body {} \u{d8}{:.3} mm ({})", h.body + 1, b.diameter, matches_text(&b.matches)));
     }
     let mut reason = format!("{} coaxial bores over {:.2} mm of axis: {}.", s.bores.len(), s.span[1] - s.span[0], bores.join("; "));
+    let edges: Vec<String> = s.bores.iter().map(|b| format!("body {}: {}", f.holes[b.hole].body + 1, edge_clause(&f.holes[b.hole], f.free_edges.get(b.hole)))).collect();
+    reason.push_str(&format!(" Edge distance, geometry only ({}).", edges.join("; ")));
     match s.fastener {
         Some(size) => reason.push_str(&format!(" Every bore fits {size}, so one {size} fastener can pass through them.")),
         None => reason.push_str(" No single standard size fits every bore."),
@@ -190,9 +210,10 @@ fn unmated(f: &Features) -> Vec<AssemblyAdvice> {
     }
     f.holes
         .iter()
+        .enumerate()
         .zip(&mated)
-        .filter(|(h, m)| !**m && h.closure() != Closure::Enclosed)
-        .filter_map(|(h, _)| {
+        .filter(|((_, h), m)| !**m && h.closure() != Closure::Enclosed)
+        .filter_map(|((i, h), _)| {
             let matches = size_matches(h.diameter());
             let mut sizes: Vec<&str> = matches.iter().map(|m| m.size).collect();
             sizes.dedup();
@@ -202,12 +223,13 @@ fn unmated(f: &Features) -> Vec<AssemblyAdvice> {
             let size = sizes.join(" or ");
             let closure = h.closure();
             let reason = format!(
-                "Body {} has a \u{d8}{:.3} mm {} hole {:.2} mm deep ({}) with no coaxial bore on another body: it is not a fastener site, so it is a place for a support or a load.",
+                "Body {} has a \u{d8}{:.3} mm {} hole {:.2} mm deep ({}) with no coaxial bore on another body: it is not a fastener site, so it is a place for a support or a load. Edge distance, geometry only: {}.",
                 h.body + 1,
                 h.diameter(),
                 closure_word(closure),
                 h.depth(),
-                matches_text(&matches)
+                matches_text(&matches),
+                edge_clause(h, f.free_edges.get(i))
             );
             Some(AssemblyAdvice::Unmated { body: h.body, faces: h.faces.iter().map(|&face| FaceKey { body: h.body, face }).collect(), diameter: h.diameter(), closure, size, reason })
         })
