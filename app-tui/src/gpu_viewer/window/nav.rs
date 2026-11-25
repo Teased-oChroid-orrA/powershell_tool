@@ -40,6 +40,25 @@ struct Parked {
 }
 
 impl Viewer {
+    pub(super) fn shared_display(&self) -> DisplaySettings {
+        let mut display = self.view.display_settings();
+        if let Some(editor) = self.editor.as_deref() {
+            if editor.initial_style().is_some() || editor.initial_key_colours().is_some() {
+                let saved = self
+                    .display_file
+                    .as_ref()
+                    .map(|p| DisplaySettings::load_from(p))
+                    .unwrap_or_default();
+                if editor.initial_style().is_some() {
+                    display.style = saved.style;
+                }
+                if editor.initial_key_colours().is_some() {
+                    display.key_colours = saved.key_colours;
+                }
+            }
+        }
+        display
+    }
     fn editor_of(&self, id: &str) -> Option<&dyn Authoring> {
         let nav = self.nav.as_ref()?;
         if nav.active == Some(id) {
@@ -164,6 +183,7 @@ impl Viewer {
         self.project = ViewerProject::single(built.scene);
         self.view = fresh_view(&self.project, Some(&*built.editor));
         self.view.set_display(display);
+        launch::apply_initial_display(&mut self.view, &*built.editor);
         self.editor = Some(built.editor);
         if let Some(nav) = &mut self.nav {
             nav.open.push(Open { id: w.id, parked: None, lease: built.lease });
@@ -202,6 +222,7 @@ impl Viewer {
                 self.project = p.project;
                 self.view = p.view;
                 self.view.set_display(display);
+                launch::apply_initial_display(&mut self.view, self.editor.as_deref().unwrap());
                 page = Some(p.page);
                 nav.active = to;
             }
@@ -220,7 +241,7 @@ impl Viewer {
     fn park_current(&mut self) {
         let blank = ViewerProject::single(blank_scene("dashboard"));
         let mut view = fresh_view(&blank, None);
-        view.set_display(self.view.display_settings());
+        view.set_display(self.shared_display());
         let Some(nav) = &mut self.nav else { return };
         match nav.active.take() {
             None => nav.home = self.dashboard.take(),

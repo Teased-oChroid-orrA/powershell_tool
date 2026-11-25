@@ -84,6 +84,9 @@ impl Viewer {
             s.panel_pos = s.panel_pos.map(crate::gpu_viewer::display::sanitize_panel_pos);
             s.page_layout = s.page_layout.and_then(crate::gpu_viewer::display::PageLayout::sanitized);
             self.view.set_display(s);
+            if let Some(editor) = self.editor.as_deref() {
+                super::launch::apply_initial_display(&mut self.view, editor);
+            }
         }
         self.display_file = path;
     }
@@ -91,7 +94,7 @@ impl Viewer {
         let Some(path) = &self.display_file else {
             return;
         };
-        if let Err(e) = self.view.display_settings().save_to(path) {
+        if let Err(e) = self.shared_display().save_to(path) {
             self.error = Some(format!("could not save the display settings: {e}"));
         }
     }

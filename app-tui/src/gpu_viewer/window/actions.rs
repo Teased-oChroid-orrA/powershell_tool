@@ -129,6 +129,7 @@ impl Viewer {
             (self.view.yaw, self.view.pitch) = v.angles();
         }
         self.view.show_mesh = ed.default_mesh_lines();
+        super::launch::apply_initial_display(&mut self.view, &**ed);
         ed.set_status(format!("{} bench: {}", bench.label(), bench.summary()));
         match ed.scene() {
             Ok(scene) => {

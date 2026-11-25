@@ -2,6 +2,66 @@
 use super::*;
 
 #[test]
+#[ignore = "needs a graphics adapter and FEA_SNAPSHOT_THREAD_OUT"]
+fn thread_assembly_snapshots() {
+    use crate::gpu_viewer::editor::{
+        session::EditorAction,
+        thread_workbench::{ThreadAct, ThreadSession},
+    };
+    use fastened_joint_solver::thread_capability::Family;
+
+    let dir = std::env::var("FEA_SNAPSHOT_THREAD_OUT").expect("snapshot folder");
+    std::fs::create_dir_all(&dir).unwrap();
+    let _guard = headless_guard();
+    let mut session =
+        ThreadSession::open(std::path::Path::new("/tmp/thread-snapshot-unused.json")).unwrap();
+    pollster::block_on(async {
+        let adapter = test_adapter().await.expect("graphics adapter required");
+        for (family, name) in [
+            (Family::Tapped, "tapped"),
+            (Family::HelicalCoil, "coil"),
+            (Family::Keensert, "keensert"),
+        ] {
+            session.act(EditorAction::Thread(ThreadAct::Family(family)));
+            let scene = session.scene().unwrap();
+            let (w, h) = (1280, 800);
+            let mut renderer =
+                Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                    .await
+                    .unwrap();
+            let texture = target(&renderer, w, h);
+            let mut gui = Gui::new();
+            let mut view = ViewState::new(&scene);
+            view.style = crate::gpu_viewer::display::DisplayStyle::Shaded;
+            view.key_colours = session.initial_key_colours().unwrap();
+            let scenes = [scene];
+            let input = GuiInput {
+                view: &view,
+                scenes: &scenes,
+                selected: 0,
+                editor: Some(&session),
+                error: None,
+                box_drag: None,
+                overlay: &[],
+            };
+            draw(
+                &mut renderer,
+                &mut gui,
+                &texture,
+                &input,
+                [-0.7854, -0.6155],
+                false,
+            );
+            std::fs::write(
+                format!("{dir}/{name}-{w}x{h}.rgba"),
+                read_back(&renderer, &texture),
+            )
+            .unwrap();
+        }
+    });
+}
+
+#[test]
 #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_STACKUP_OUT"]
 fn stackup_snapshot() {
     use crate::gpu_viewer::editor::stackup::StackupSession;

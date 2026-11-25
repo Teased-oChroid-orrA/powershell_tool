@@ -17,6 +17,8 @@ use fastened_joint_solver::thread_capability::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod drawing;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Change {
     FemaleMinor,
@@ -367,6 +369,7 @@ pub struct ThreadSession {
     status: String,
     changed_view: bool,
     drawn: bool,
+    translucent_from: Option<u32>,
 }
 impl ThreadSession {
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -389,6 +392,7 @@ impl ThreadSession {
             status: String::new(),
             changed_view: false,
             drawn: false,
+            translucent_from: None,
         })
     }
     fn action(a: ThreadAct) -> UiAction {
@@ -980,7 +984,7 @@ impl ThreadSession {
                     "baseline"
                 }
             ),
-            model_hint: "Schematic section only. Strength values are in the comparison table."
+            model_hint: "Illustrative assembled threads; clearances are enlarged for visibility. Strength values are in the comparison table."
                 .into(),
             sketches: Vec::new(),
             results: self.results(),
@@ -1030,65 +1034,6 @@ impl ThreadSession {
         }
         s.push_str("Default strengths and load are illustrative. No safety factor, preload, fatigue, temperature or transverse load. Basic dimensions do not certify a thread class.\n");
         s
-    }
-    fn schematic(&self) -> Scene {
-        let c = if self.changed_view {
-            self.file.changed()
-        } else {
-            self.file.case.clone()
-        };
-        let insert = c.family != Family::Tapped;
-        let bolt_half = (c.inner.major / self.file.case.inner.major * 0.16).clamp(0.05, 0.3) as f32;
-        let gap = (c.inner.female_minor / self.file.case.inner.female_minor * 0.19)
-            .clamp(0.16, 0.35) as f32;
-        let mut positions = Vec::new();
-        let mut triangles = Vec::new();
-        let mut samples = Vec::new();
-        let mut rect = |x0: f32, x1: f32, y0: f32, y1: f32, code: f32| {
-            let n = positions.len() as u32;
-            positions.extend([[x0, y0, 0.0], [x1, y0, 0.0], [x1, y1, 0.0], [x0, y1, 0.0]]);
-            triangles.extend([n, n + 1, n + 2, n, n + 2, n + 3]);
-            samples.extend([[0.0, 0.0, 0.0, code]; 4]);
-        };
-        // The native viewer's surface-less style hides state codes below 0.5.
-        rect(-0.9, -gap, -0.6, 0.6, 0.5);
-        rect(gap, 0.9, -0.6, 0.6, 0.5);
-        if insert {
-            rect(-gap, -bolt_half - 0.015, -0.45, 0.45, 1.0);
-            rect(bolt_half + 0.015, gap, -0.45, 0.45, 1.0);
-        }
-        rect(-bolt_half, bolt_half, -0.78, 0.78, 2.0);
-        let crest = bolt_half + if insert { 0.012 } else { 0.025 };
-        for tooth in 0..8 {
-            let y0 = -0.5 + tooth as f32 * 0.125;
-            let y1 = y0 + 0.125;
-            for side in [-1.0_f32, 1.0] {
-                let n = positions.len() as u32;
-                positions.extend([
-                    [side * bolt_half, y0, 0.001],
-                    [side * crest, (y0 + y1) / 2.0, 0.001],
-                    [side * bolt_half, y1, 0.001],
-                ]);
-                if side < 0.0 {
-                    triangles.extend([n, n + 2, n + 1]);
-                } else {
-                    triangles.extend([n, n + 1, n + 2]);
-                }
-                samples.extend([[0.0, 0.0, 0.0, 2.0]; 3]);
-            }
-        }
-        Scene {
-            label: format!("{} | schematic thread section", self.file.name),
-            positions,
-            triangles,
-            samples,
-            times: vec![0.0],
-            range: [0.0, 3.0],
-            gain: 1.0,
-            harmonic_period: None,
-            field_label: String::new(),
-            fields: Vec::new(),
-        }
     }
 }
 impl Authoring for ThreadSession {
@@ -1158,11 +1103,33 @@ impl Authoring for ThreadSession {
     }
     fn select_at(&mut self, _: [f32; 2], _: [f32; 2], _: &Camera) {}
     fn scene(&mut self) -> Result<Scene, String> {
+        let shown = if self.changed_view {
+            self.file.changed()
+        } else {
+            self.file.case.clone()
+        };
+        let (scene, translucent_from) = drawing::scene(&self.file.case, &shown, &self.file.name)?;
+        self.translucent_from = translucent_from;
         self.drawn = true;
-        Ok(self.schematic())
+        Ok(scene)
     }
     fn needs_scene(&self) -> bool {
         !self.drawn
+    }
+    fn translucent(&self) -> Option<(u32, f32)> {
+        self.translucent_from.map(|first| (first, 0.28))
+    }
+    fn initial_view(&self) -> Option<crate::gpu_viewer::controller::StandardView> {
+        Some(crate::gpu_viewer::controller::StandardView::Isometric)
+    }
+    fn initial_style(&self) -> Option<crate::gpu_viewer::display::DisplayStyle> {
+        Some(crate::gpu_viewer::display::DisplayStyle::Shaded)
+    }
+    fn initial_key_colours(&self) -> Option<[[u8; 3]; 4]> {
+        Some([[117, 130, 138], [195, 158, 105], [200, 209, 213], [90, 98, 103]])
+    }
+    fn shows_body_only(&self) -> bool {
+        true
     }
     fn poll(&mut self) -> bool {
         false

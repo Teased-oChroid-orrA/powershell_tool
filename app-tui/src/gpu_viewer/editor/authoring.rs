@@ -202,6 +202,12 @@ pub trait Authoring {
     fn initial_view(&self) -> Option<crate::gpu_viewer::controller::StandardView> {
         None
     }
+    fn initial_style(&self) -> Option<crate::gpu_viewer::display::DisplayStyle> {
+        None
+    }
+    fn initial_key_colours(&self) -> Option<[[u8; 3]; 4]> {
+        None
+    }
     /// The scene is a result of a computation (a static result, a mode shape, a transient): the colours are values.
     fn shows_result(&self) -> bool {
         false

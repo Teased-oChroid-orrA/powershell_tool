@@ -107,10 +107,22 @@ pub(super) fn blank_scene(label: &str) -> Scene {
 pub(super) fn fresh_view(project: &ViewerProject, editor: Option<&dyn Authoring>) -> ViewState {
     let mut view = ViewState::new(&project.scenes[project.selected]);
     view.show_mesh = editor.is_some_and(|e| e.default_mesh_lines());
+    if let Some(editor) = editor {
+        apply_initial_display(&mut view, editor);
+    }
     if let Some(v) = editor.and_then(|e| e.initial_view()) {
         (view.yaw, view.pitch) = v.angles();
     }
     view
+}
+
+pub(super) fn apply_initial_display(view: &mut ViewState, editor: &dyn Authoring) {
+    if let Some(style) = editor.initial_style() {
+        view.style = style;
+    }
+    if let Some(colours) = editor.initial_key_colours() {
+        view.key_colours = colours;
+    }
 }
 
 pub(super) fn new_viewer(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Viewer {

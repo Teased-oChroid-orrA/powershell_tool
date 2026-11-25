@@ -52,6 +52,22 @@ fn a_workbench_opens_in_the_window_and_home_returns_to_the_dashboard() {
 }
 
 #[test]
+fn thread_illustration_keeps_its_display_without_changing_the_shared_view() {
+    use crate::gpu_viewer::display::{default_key_colours, DisplayStyle};
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = shell();
+    v.open_workbench("thread", Some(case(&dir, "thread.json")));
+    assert_eq!(v.view.style, DisplayStyle::Shaded);
+    assert_ne!(v.view.key_colours, default_key_colours());
+    v.dispatch(UiAction::Nav(NavAct::Home));
+    assert_eq!(v.view.style, DisplayStyle::Wireframe);
+    assert_eq!(v.view.key_colours, default_key_colours());
+    v.dispatch(UiAction::Nav(NavAct::Open("thread")));
+    assert_eq!(v.view.style, DisplayStyle::Shaded);
+    assert_ne!(v.view.key_colours, default_key_colours());
+}
+
+#[test]
 fn a_parked_workbench_keeps_its_unsaved_model_and_opening_it_again_reuses_the_tab() {
     let dir = tempfile::tempdir().unwrap();
     let mut v = shell();
