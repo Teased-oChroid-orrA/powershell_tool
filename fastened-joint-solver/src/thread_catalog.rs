@@ -15,7 +15,8 @@
 //! larger basic minor diameter than plain UN/UNF:
 //!
 //! ```text
-//! UN/UNF (ASME B1.1):  pitch_diameter = D - 0.649519*p   minor_diameter = D - 1.082532*p
+//! UN/UNF (ASME B1.1):  pitch_diameter = D - 0.649519*p   internal_minor = D - 1.082532*p
+//!                        external_root = D - 1.226869*p
 //! UNJ    (ASME B1.15):  pitch_diameter = D - 0.649519*p   minor_diameter = D - 0.974279*p
 //! ```
 //!
@@ -25,7 +26,7 @@
 //! tangency point of UNJ's *maximum* root radius) rather than published
 //! directly by any standard as a single constant: `d3 = D - 2*0.5625*H =
 //! D - 0.974279*p`. [`ThreadForm`] selects which coefficient a given
-//! catalog entry uses; `basic_minor_diameter`/`basic_minor_diameter_unj`
+//! catalog entry uses; `basic_external_minor_diameter`/`basic_minor_diameter_unj`
 //! implement both.
 //!
 //! **UNJ tensile/stress area is NOT `(pi/4)*((d2+d3)/2)^2`** for aerospace
@@ -70,10 +71,20 @@ pub fn basic_pitch_diameter(major_diameter: f64, pitch: f64) -> f64 {
     major_diameter - 0.649_519 * pitch
 }
 
-/// ASME B1.1 basic minor (root) diameter for a 60-degree external UN/UNF
-/// thread.
+/// ASME B1.1 basic internal minor diameter for a 60-degree UN/UNF thread.
 pub fn basic_minor_diameter(major_diameter: f64, pitch: f64) -> f64 {
     major_diameter - 1.082_532 * pitch
+}
+
+/// ASME B1.1 basic external root diameter for a 60-degree UN/UNF thread.
+pub fn basic_external_minor_diameter(major_diameter: f64, pitch: f64) -> f64 {
+    major_diameter - 1.226_869 * pitch
+}
+
+/// ASME B1.1 Unified thread tensile-stress area (NASA RP-1228 also uses this form).
+pub fn unified_tensile_stress_area(major_diameter: f64, pitch: f64) -> f64 {
+    let diameter = major_diameter - 0.9743 * pitch;
+    std::f64::consts::FRAC_PI_4 * diameter * diameter
 }
 
 /// ASME B1.15 basic minor (root) diameter for a UNJ thread - derived from
@@ -95,7 +106,7 @@ impl BoltCatalogEntry {
         let pitch = self.pitch();
         let d2 = basic_pitch_diameter(self.major_diameter, pitch);
         let d3 = match self.thread_form {
-            ThreadForm::UnUnf => basic_minor_diameter(self.major_diameter, pitch),
+            ThreadForm::UnUnf => basic_external_minor_diameter(self.major_diameter, pitch),
             ThreadForm::Unj => basic_minor_diameter_unj(self.major_diameter, pitch),
         };
         ThreadGeometry { d: self.major_diameter, d2, d3, pitch, starts: 1, thread_angle_deg: 60.0 }
@@ -105,7 +116,10 @@ impl BoltCatalogEntry {
     /// exists for this entry, else the generic formula (see this module's
     /// own doc comment for why that fallback is not exact for UNJ).
     pub fn tensile_stress_area(&self) -> f64 {
-        self.tabulated_tensile_stress_area.unwrap_or_else(|| self.thread_geometry().tensile_stress_area())
+        self.tabulated_tensile_stress_area.unwrap_or_else(|| match self.thread_form {
+            ThreadForm::UnUnf => unified_tensile_stress_area(self.major_diameter, self.pitch()),
+            ThreadForm::Unj => self.thread_geometry().tensile_stress_area(),
+        })
     }
 }
 
@@ -278,9 +292,9 @@ mod tests {
         assert!((g.d - 0.2500).abs() < 1e-9);
         assert!((g.pitch - 1.0 / 28.0).abs() < 1e-9);
         // Basic pitch/minor diameter formulas, hand-checked:
-        // d2 = 0.25 - 0.649519/28 = 0.226805..., d3 = 0.25 - 1.082532/28 = 0.211339...
+        // d2 = 0.25 - 0.649519/28 = 0.226805..., d3 = 0.25 - 1.226869/28 = 0.206183...
         assert!((g.d2 - 0.226_805).abs() < 1e-5);
-        assert!((g.d3 - 0.211_339).abs() < 1e-5);
+        assert!((g.d3 - 0.206_183).abs() < 1e-5);
     }
 
     #[test]
@@ -307,9 +321,9 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_without_a_tabulated_area_falls_back_to_the_generic_formula() {
+    fn an_entry_without_a_tabulated_area_uses_unified_stress_area() {
         let an6 = AN_BOLT_CATALOG.iter().find(|e| e.designation.starts_with("AN6")).unwrap();
-        assert_eq!(an6.tensile_stress_area(), an6.thread_geometry().tensile_stress_area());
+        assert_eq!(an6.tensile_stress_area(), unified_tensile_stress_area(an6.major_diameter, an6.pitch()));
     }
 
     #[test]

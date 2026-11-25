@@ -78,6 +78,7 @@
 //!   `preload_analysis/bolt_picker.rs`'s own doc comment.
 
 pub mod bearing;
+pub mod thread_capability;
 pub mod compliance;
 pub mod fatigue;
 pub mod quadrature;

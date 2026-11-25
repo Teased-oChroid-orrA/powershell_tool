@@ -57,6 +57,7 @@ pub enum EditorKind {
     FastenerHole,
     /// The Plate Edge workbench (`editor::plate_edge::inputs::PlateEdgeInputs`).
     PlateEdge,
+    Thread,
     /// The Assembly Joints window (`editor::assembly`); its argument is an optional STEP assembly, it writes nothing.
     Assembly,
     /// The Search workbench (`editor::search`); its argument is an optional folder to search, its settings are the
@@ -82,6 +83,7 @@ impl EditorKind {
             EditorKind::Eccentric => "--gpu-eccentric",
             EditorKind::FastenerHole => "--gpu-fastener",
             EditorKind::PlateEdge => "--gpu-plate-edge",
+            EditorKind::Thread => "--gpu-thread",
             EditorKind::Assembly => "--gpu-assembly",
             EditorKind::Search => "--gpu-search",
             EditorKind::Materials => "--gpu-materials",
@@ -91,7 +93,7 @@ impl EditorKind {
         }
     }
     pub fn from_flag(flag: &str) -> Option<Self> {
-        [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::PlateEdge, EditorKind::Assembly, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug].into_iter().find(|k| k.flag() == flag)
+        [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::PlateEdge, EditorKind::Thread, EditorKind::Assembly, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug].into_iter().find(|k| k.flag() == flag)
     }
     pub fn title(self) -> &'static str {
         match self {
@@ -102,6 +104,7 @@ impl EditorKind {
             EditorKind::Eccentric => "Eccentric bushing workbench",
             EditorKind::FastenerHole => "Fastener hole workbench",
             EditorKind::PlateEdge => "Plate edge workbench",
+            EditorKind::Thread => "Thread workbench",
             EditorKind::Assembly => "Assembly joints workbench",
             EditorKind::Search => "Search workbench",
             EditorKind::Materials => "Material Lookup",
@@ -120,6 +123,7 @@ impl EditorKind {
             EditorKind::Eccentric => "eccentric-case.json",
             EditorKind::FastenerHole => "fastener-hole-case.json",
             EditorKind::PlateEdge => "plate-edge-case.json",
+            EditorKind::Thread => "thread-case.json",
             EditorKind::PressureVessel => "pressure-vessel-case.json",
             EditorKind::Preload => "preload-case.json",
             EditorKind::Lug => "lug-case.json",
@@ -166,7 +170,7 @@ mod tests {
 
     #[test]
     fn editor_flags_round_trip_and_unknown_flags_are_not_editors() {
-        for k in [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::PlateEdge, EditorKind::Assembly, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug] {
+        for k in [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::PlateEdge, EditorKind::Thread, EditorKind::Assembly, EditorKind::Search, EditorKind::Materials, EditorKind::PressureVessel, EditorKind::Preload, EditorKind::Lug] {
             assert_eq!(EditorKind::from_flag(k.flag()), Some(k));
         }
         assert_eq!(EditorKind::from_flag("--gpu-viewer"), None);

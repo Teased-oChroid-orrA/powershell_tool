@@ -101,12 +101,6 @@ pub fn washer_dims(d: f64) -> (f64, f64, f64) {
     (id, od, t)
 }
 
-/// Tensile stress area of a UN thread (in^2).
-fn tensile_stress_area(d: f64, pitch: f64) -> f64 {
-    let dm = d - 0.9743 * pitch;
-    std::f64::consts::FRAC_PI_4 * dm * dm
-}
-
 /// The preset templates. They keep the model's current bolt.
 pub fn presets() -> Vec<JointTemplate> {
     let two = |name: &str, desc: &str, layers: Vec<Layer>, from: TighteningMember| JointTemplate { name: name.to_string(), description: desc.to_string(), bolt_index: None, layers, tightening_from: from, mu: 0.15 };
@@ -315,7 +309,7 @@ impl PreloadModel {
         self.engaged_threads = (0.8 * d / self.thread_pitch).round().max(3.0);
         self.nut_outer_diameter = (1.73 * d * 1000.0).round() / 1000.0;
 
-        let force = 0.5 * 125_000.0 * tensile_stress_area(d, self.thread_pitch);
+        let force = 0.5 * 125_000.0 * fastened_joint_solver::thread_catalog::unified_tensile_stress_area(d, self.thread_pitch);
         self.target_preload = force.round();
         self.applied_torque = (0.2 * d * force).round();
         self.recompute();
