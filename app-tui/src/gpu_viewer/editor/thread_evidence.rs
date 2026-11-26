@@ -16,6 +16,8 @@ use std::{
 
 const PAGE: &str = include_str!("thread_evidence/index.html");
 const DATA: &str = include_str!("thread_evidence/nasa-coil.json");
+const TAPPED_PAGE: &str = include_str!("thread_evidence/tapped.html");
+const TAPPED_DATA: &str = include_str!("thread_evidence/nasa-tapped.json");
 const MAX_HEAD: usize = 8192;
 const MAX_BODY: usize = 16384;
 
@@ -24,6 +26,18 @@ struct SourceRow {
     id: String,
     load: [Option<f64>; 5],
     eq: [Option<f64>; 5],
+}
+
+#[derive(Deserialize)]
+struct TappedRow {
+    id: String,
+    limit: Option<f64>,
+    pullout: Option<f64>,
+}
+
+fn tapped_rows() -> &'static [TappedRow] {
+    static ROWS: OnceLock<Vec<TappedRow>> = OnceLock::new();
+    ROWS.get_or_init(|| serde_json::from_str(TAPPED_DATA).expect("bundled tapped evidence data"))
 }
 
 fn source_rows() -> &'static [SourceRow] {
@@ -44,7 +58,7 @@ struct Update {
 }
 
 fn valid_edits(edits: &BTreeMap<String, f64>) -> bool {
-    if edits.len() > source_rows().len() * 10 {
+    if edits.len() > source_rows().len() * 10 + tapped_rows().len() * 2 {
         return false;
     }
     edits.iter().all(|(key, value)| {
@@ -61,12 +75,19 @@ fn valid_edits(edits: &BTreeMap<String, f64>) -> bool {
         if parts.next().is_some() || index >= 5 || !value.is_finite() {
             return false;
         }
-        let Some(row) = source_rows().iter().find(|row| row.id == series) else {
-            return false;
-        };
         match kind {
-            "load" => row.load[index].is_some() && (0.0..=1_000_000_000.0).contains(value),
-            "eq" => row.eq[index].is_some() && (-15.0..=15.0).contains(value),
+            "load" | "eq" => {
+                let Some(row) = source_rows().iter().find(|row| row.id == series) else { return false; };
+                match kind {
+                    "load" => row.load[index].is_some() && (0.0..=1_000_000_000.0).contains(value),
+                    _ => row.eq[index].is_some() && (-15.0..=15.0).contains(value),
+                }
+            }
+            "limit" | "pullout" => {
+                let Some(row) = tapped_rows().iter().find(|row| row.id == series) else { return false; };
+                index == 0 && (0.0..=1_000_000_000.0).contains(value)
+                    && (if kind == "limit" { row.limit } else { row.pullout }).is_some()
+            }
             _ => false,
         }
     })
@@ -257,6 +278,8 @@ fn handle(mut stream: TcpStream, port: u16, token: &str, store: &Path) -> io::Re
             "application/json; charset=utf-8",
             DATA.as_bytes(),
         ),
+        ("GET", "tapped") => response(&mut stream, "200 OK", "text/html; charset=utf-8", TAPPED_PAGE.as_bytes()),
+        ("GET", "tapped/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", TAPPED_DATA.as_bytes()),
         ("GET", "state") => {
             let data = locked(store, || {
                 let saved = read_saved(store)?;
@@ -364,6 +387,8 @@ mod tests {
         let origin = format!("http://127.0.0.1:{}", server.port);
         assert_eq!(http(&server, "GET", "", "", &origin).0, 200);
         assert_eq!(http(&server, "GET", "data", "", &origin).0, 200);
+        assert_eq!(http(&server, "GET", "tapped", "", &origin).0, 200);
+        assert_eq!(http(&server, "GET", "tapped/data", "", &origin).0, 200);
         let (_, state) = http(&server, "GET", "state", "", &origin);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&state).unwrap()["revision"],
@@ -375,8 +400,13 @@ mod tests {
         let (_, current) = http(&server, "GET", "state", "", &origin);
         let current: serde_json::Value = serde_json::from_str(&current).unwrap();
         assert_eq!(current["edits"]["load:B1:0"], 52000.0);
+        let tapped = serde_json::json!({"revision": current["revision"], "edits": {"load:B1:0": 52000.0, "pullout:8:0": 7700.0}}).to_string();
+        assert_eq!(http(&server, "PUT", "state", &tapped, &origin).0, 200);
+        let (_, updated) = http(&server, "GET", "state", "", &origin);
+        let updated: serde_json::Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(updated["edits"]["pullout:8:0"], 7700.0);
         for key in ["load:P:0", "other:B1:0", "load:B1:9"] {
-            let body = serde_json::json!({"revision": current["revision"], "edits": {(key): 1.0}})
+            let body = serde_json::json!({"revision": updated["revision"], "edits": {(key): 1.0}})
                 .to_string();
             assert_eq!(http(&server, "PUT", "state", &body, &origin).0, 400);
         }

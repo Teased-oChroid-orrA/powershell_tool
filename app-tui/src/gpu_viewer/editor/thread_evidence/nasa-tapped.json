@@ -1,0 +1,9 @@
+[
+  {"id":"8","limit":7100,"pullout":7664,"lubrication":"MIL T 83483","prior_torque":"None reported"},
+  {"id":"7","limit":7050,"pullout":7470,"lubrication":"MIL T 83483","prior_torque":"None reported"},
+  {"id":"6","limit":7200,"pullout":7814,"lubrication":"None","prior_torque":"None reported"},
+  {"id":"5","limit":7100,"pullout":7657,"lubrication":"MIL T 83483","prior_torque":"186 in-lbf / 6994 lbf / 185° past 50 in-lbf"},
+  {"id":"3","limit":null,"pullout":null,"lubrication":"MIL T 83483","prior_torque":"175 in-lbf / 7050 lbf / 127° past 50 in-lbf; continued to 199 in-lbf / 6438 lbf / 185°; metallographic sample"},
+  {"id":"2","limit":6220,"pullout":6702,"lubrication":"MIL T 83483","prior_torque":"196 in-lbf / 6896 lbf / 115° past 50 in-lbf; continued to 220 in-lbf / 6588 lbf / 165°; shear yielding indicated"},
+  {"id":"1","limit":6450,"pullout":7050,"lubrication":"MIL T 83483","prior_torque":"171 in-lbf / 6904 lbf / 135° past 50 in-lbf; continued to 188 in-lbf / 6731 lbf / 188°; shear yielding indicated"}
+]

@@ -17,4 +17,5 @@ path = "src/lib.rs"
 
 [dependencies]
 mechanics-core = { path = "../mechanics-core" }
+fea-core = { path = "../fea-core" }
 serde = { version = "1", features = ["derive"] }

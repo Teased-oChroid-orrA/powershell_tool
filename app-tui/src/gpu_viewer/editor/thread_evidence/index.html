@@ -33,7 +33,7 @@
 </head>
 <body>
 <main class="shell">
-  <header><div><div class="eyebrow">Thread Workbench / evidence explorer</div><h1>Damaged insert shear-out</h1><p class="subtitle">NASA/ATK Thiokol specimen results. Explore measured loads and equivalent missing threads. Edit a working copy to test scenarios; original published values remain visible.</p></div><div class="actions"><button class="btn" id="reset" disabled>Reset working copy</button><button class="btn primary" id="export" disabled>Export edited CSV</button></div></header>
+  <header><div><div class="eyebrow">Thread Workbench / evidence explorer</div><h1>Damaged insert shear-out</h1><p class="subtitle">NASA/ATK Thiokol specimen results. Explore measured loads and equivalent missing threads. Edit a working copy to test scenarios; original published values remain visible.</p><p style="margin-top:10px"><a class="source" href="tapped">View direct-tapped pull-out tests →</a></p></div><div class="actions"><button class="btn" id="reset" disabled>Reset coil edits</button><button class="btn primary" id="export" disabled>Export edited CSV</button></div></header>
   <div class="grid" aria-label="Study summary"><div class="metric"><small>Restrained pristine mean</small><strong>59,768 lbf</strong><span>Table 2 · series A</span></div><div class="metric"><small>Engaged threads</small><strong>15</strong><span>0.83 in baseline</span></div><div class="metric"><small>Specimen series</small><strong>18</strong><span>Two A conditions included</span></div><div class="metric"><small>Edited inputs</small><strong id="editCount">0</strong><span id="saveStatus" role="status">Loading app data…</span></div></div>
   <div class="notice"><strong>Source inconsistency:</strong> Table 3 appears to exchange B2 and B3 equivalent-thread results. Published values stay unchanged here. This coil study does not calibrate tapped-hole or Keensert capacities.</div>
   <div class="plots"><section class="panel"><div class="panelhead"><div><h2>Mean shear-out load</h2><p>Working-copy specimen mean · lbf</p></div><div class="legend"><span><i class="dot teal"></i>Series</span><span><i class="dot gold"></i>Selected</span></div></div><svg id="loadPlot" class="plot" role="img" aria-label="Bar chart of mean shear-out load by series"></svg></section><section class="panel"><div class="panelhead"><div><h2>Equivalent missing threads</h2><p>Working-copy specimen mean · thread count</p></div></div><svg id="eqPlot" class="plot" role="img" aria-label="Bar chart of equivalent missing threads by series"></svg></section></div>
@@ -46,12 +46,13 @@ const key = (type, series, sample) => `${type}:${series}:${sample}`;
 let edits = {}, revision = null, pending = Promise.resolve();
 let tab = 'load', selected = 'A-R';
 const byId = id => document.getElementById(id);
+const coilEditCount = () => Object.keys(edits).filter(k => k.startsWith('load:') || k.startsWith('eq:')).length;
 const sourceValue = (row, type, i) => row[type][i];
 const value = (row, type, i) => Object.hasOwn(edits, key(type,row.id,i)) ? edits[key(type,row.id,i)] : sourceValue(row,type,i);
 const mean = (row,type) => { const v=row[type].map((_,i)=>value(row,type,i)).filter(x=>x!==null); return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null; };
 const fmt = (v,type) => v===null ? '—' : type==='load' ? Math.round(v).toLocaleString('en-US') : v.toFixed(2);
 function save(){
-  byId('editCount').textContent=Object.keys(edits).length;
+  byId('editCount').textContent=coilEditCount();
   const snapshot={...edits};
   pending=pending.then(async()=>{
     byId('saveStatus').textContent='Saving…';
@@ -85,7 +86,7 @@ function drawPlot(id,type){
 function renderDetail(){const r=SOURCE.find(x=>x.id===selected);byId('selectedLabel').textContent=`${r.id} · ${r.description}`;const items=[['Published load mean',`${fmt(r.loadMean,'load')} lbf`],['Working load mean',`${fmt(mean(r,'load'),'load')} lbf`],['Published missing threads',fmt(r.eqMean,'eq')],['Working missing threads',fmt(mean(r,'eq'),'eq')]];if(selected==='B2'||selected==='B3')items.push(['Source check','Table 3 B2/B3 rows appear exchanged']);const dl=byId('detail');dl.replaceChildren();for(const [label,val] of items){const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=val;if(label==='Source check')dd.className='flag';dl.append(dt,dd);}}
 function render(){if(!SOURCE.length)return;renderTable();drawPlot('loadPlot','load');drawPlot('eqPlot','eq');renderDetail();}
 byId('loadTab').addEventListener('click',()=>{tab='load';render();});byId('eqTab').addEventListener('click',()=>{tab='eq';render();});byId('search').addEventListener('input',renderTable);
-byId('reset').addEventListener('click',()=>{if(!confirm('Reset all edited specimen values to the published values?'))return;edits={};save();render();});
+byId('reset').addEventListener('click',()=>{if(!confirm('Reset coil specimen edits to the published values?'))return;for(const k of Object.keys(edits))if(k.startsWith('load:')||k.startsWith('eq:'))delete edits[k];save();render();});
 byId('export').addEventListener('click',()=>{const lines=['series,description,sample_1,sample_2,sample_3,sample_4,sample_5,working_mean,published_mean,table'];for(const type of ['load','eq'])for(const r of SOURCE){const q=x=>'"'+String(x).replaceAll('"','""')+'"';lines.push([r.id,q(r.description),...r[type].map((_,i)=>value(r,type,i)??''),mean(r,type)??'',r[type+'Mean'],type].join(','));}const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([lines.join('\n')+'\n'],{type:'text/csv'}));a.download='nasa-coil-working-copy.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);});
 async function init(){
   try {
@@ -94,7 +95,7 @@ async function init(){
     SOURCE=await data.json();
     const saved=await state.json();edits=saved.edits;revision=saved.revision;
     byId('reset').disabled=false;byId('export').disabled=false;
-    byId('editCount').textContent=Object.keys(edits).length;
+    byId('editCount').textContent=coilEditCount();
     byId('saveStatus').textContent='Saved in Toolbench app data';
     render();
   }catch(e){byId('saveStatus').textContent=e.message;}
