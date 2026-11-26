@@ -134,7 +134,7 @@ Per-toolbox nodes (read the one for the toolbox you are changing):
 | Search Files | `src/toolboxes/search/AGENTS.md` |
 | Fastener Holes | `src/toolboxes/fastener_hole/AGENTS.md` |
 | Plate Edge (window-only: pin near a free edge, allowables by failure mode, 2D and 3D FE) | `src/gpu_viewer/editor/plate_edge/AGENTS.md` |
-| Thread Workbench (window-only: Unified strength, insert evidence gates, damage comparison) | `src/gpu_viewer/editor/thread_workbench.rs`; mechanics in `fastened-joint-solver/src/thread_capability.rs`; evidence in `docs/thread-workbench.md` |
+| Thread Workbench (window-only: Unified strength, tapped-hole elastic FE load sharing, insert evidence gates, damage comparison) | `src/gpu_viewer/editor/thread_workbench.rs`; mechanics in `fastened-joint-solver/src/{thread_capability,thread_hybrid}.rs`; evidence in `docs/thread-workbench.md` |
 | Bushing Workbench model (window-only) | `src/toolboxes/bushing/AGENTS.md`; window `src/gpu_viewer/editor/bushing/AGENTS.md` |
 | Pressure Vessel model (window-only) | `src/toolboxes/pressure_vessel/AGENTS.md`; window `src/gpu_viewer/editor/vessel/AGENTS.md` |
 | Preload Analysis model (window-only) | `src/toolboxes/preload_analysis/AGENTS.md`; window `src/gpu_viewer/editor/preload/AGENTS.md` |

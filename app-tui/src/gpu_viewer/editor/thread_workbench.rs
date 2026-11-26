@@ -8,12 +8,13 @@ use crate::gpu_viewer::{
     bench::Bench,
     controller::UiAction,
     menu::{Entry, Item, Menu},
-    ui::{CardRow, Compare, CompareRow, DockItem, Look, ValueCard, Workbench, WorkbenchView},
+    ui::{CardRow, Compare, CompareRow, DockItem, Look, Plot, Series, ValueCard, Workbench, WorkbenchView},
     Scene,
 };
 use fastened_joint_solver::thread_capability::{
     self as strength, Analysis, Case, Family, Interface, StiMeasurement,
 };
+use fastened_joint_solver::thread_hybrid::{self, ElasticInputs, ElasticResult};
 use mechanics_core::materials::{builtin_catalog, Material};
 use crate::toolboxes::material_lookup::model::{catalog, filter_sort, Query};
 use serde::{Deserialize, Serialize};
@@ -781,6 +782,29 @@ impl ThreadSession {
             strength::compute(&self.file.changed()).expect("validated proposal"),
         )
     }
+    fn elastic_fe(&self) -> Result<(ElasticResult, ElasticResult), String> {
+        if self.file.case.family != Family::Tapped {
+            return Err("Elastic FE currently supports directly tapped threads only.".into());
+        }
+        let material = |id: &Option<String>, role: &str| {
+            id.as_deref().and_then(File::material)
+                .ok_or_else(|| format!("Select a catalog {role} material for elastic FE."))
+        };
+        let bolt = material(&self.file.bolt_material, "bolt")?;
+        let parent = material(&self.file.parent_material, "parent")?;
+        let c = &self.file.case;
+        let wall = self.file.parent_wall.unwrap_or(0.5 * c.nominal_major);
+        let input = ElasticInputs {
+            bolt_e_psi: bolt.e_ksi * 1000.0,
+            bolt_nu: bolt.nu,
+            parent_e_psi: parent.e_ksi * 1000.0,
+            parent_nu: parent.nu,
+            parent_outer_diameter_in: c.nominal_major + 2.0 * wall,
+        };
+        let baseline = thread_hybrid::tapped_load_share(c, input).map_err(str::to_string)?;
+        let changed = thread_hybrid::tapped_load_share(&self.file.changed(), input).map_err(str::to_string)?;
+        Ok((baseline, changed))
+    }
     fn row(&self, f: Field) -> DockItem {
         let editing = self.prompt.as_ref().filter(|p| p.field == f);
         let value = editing.map_or_else(|| self.value(f), |p| p.text.clone());
@@ -946,7 +970,7 @@ impl ThreadSession {
             } else {
                 DockItem::text("One measured characteristic changes.", Tone::Dim)
             },
-            DockItem::text("Parent wall is recorded for future FE calibration; no wall correction is applied.",Tone::Dim),
+            DockItem::text("Parent wall defines an idealized uniform FE annulus; no wall correction changes capacity.",Tone::Dim),
             DockItem::text("One characteristic changes. An insert rating is withdrawn when geometry or material changes.",Tone::Dim),
             DockItem::text("Click a value, type, Enter applies, Esc cancels.",Tone::Dim)];
         cards.push(Card::new(
@@ -1064,7 +1088,7 @@ impl ThreadSession {
         if let Some(wall) = self.file.parent_wall {
             limits.push(DockItem::text(format!("Minimum radial wall: {wall:.4} in (recorded; no capacity adjustment)."), Tone::Dim));
         }
-        vec![
+        let mut cards = vec![
             Card::new(
                 "thread-summary",
                 "Strength capability",
@@ -1083,7 +1107,42 @@ impl ThreadSession {
                 Relevance::Info,
                 limits,
             ),
-        ]
+        ];
+        let mut fe = Vec::new();
+        match self.elastic_fe() {
+            Ok((base, changed)) => {
+                let changed_load = self.file.changed().axial_load;
+                fe.push(DockItem::field("Peak turn share, baseline / changed",
+                    format!("{:.1}% / {:.1}%", 100.0 * base.peak_fraction, 100.0 * changed.peak_fraction),
+                    Tone::Normal, None, false));
+                let points = |result: &ElasticResult, total: f64| result.per_turn_lbf.iter().enumerate()
+                    .map(|(i, &load)| [(i + 1) as f64, 100.0 * load / total])
+                    .collect();
+                fe.push(DockItem::Plot(Plot {
+                    x_label: "Engaged turn from loaded face".into(),
+                    y_label: "Axial load share, %".into(),
+                    series: vec![
+                        Series { label: "Baseline".into(), points: points(&base, self.file.case.axial_load), color: 0, dashed: false },
+                        Series { label: "Changed".into(), points: points(&changed, changed_load), color: 1, dashed: true },
+                    ],
+                    ..Plot::default()
+                }));
+                let wall = self.file.parent_wall.map_or_else(
+                    || format!("assumed {:.4} in (0.5D)", 0.5 * self.file.case.nominal_major),
+                    |v| format!("entered minimum {v:.4} in"));
+                fe.push(DockItem::text(format!("1D elastic bolt/parent FE; {wall} modeled uniformly around a cylindrical boss."), Tone::Dim));
+                if self.file.change.current(&self.file.case) != self.file.proposed
+                    && base.per_turn_lbf.len() == changed.per_turn_lbf.len()
+                    && base.per_turn_lbf.iter().zip(&changed.per_turn_lbf).all(|(&before, &after)|
+                        (before / self.file.case.axial_load - after / changed_load).abs() < 1e-10) {
+                    fe.push(DockItem::text("Selected change does not alter elastic turn sharing in this model; plotted curves overlap.", Tone::Dim));
+                }
+                fe.push(DockItem::text("Load sharing only: no flank clearance, plasticity, rupture, coil or Keensert behavior. Analytical capacities are unchanged.", Tone::Dim));
+            }
+            Err(reason) => fe.push(DockItem::text(reason, Tone::Warn)),
+        }
+        cards.insert(1, Card::new("thread-elastic-fe", "Elastic FE load sharing", Relevance::Info, fe));
+        cards
     }
     fn workbench_data(&self) -> Workbench {
         let (_, changed) = self.analyses();
@@ -1205,6 +1264,17 @@ impl ThreadSession {
             s.push_str(&format!(
                 "Manufacturer assembly rating: {n:.0} lbf; source: {source}\n"
             ));
+        }
+        match self.elastic_fe() {
+            Ok((base, changed)) => {
+                s.push_str(&format!("1D elastic FE peak turn load share: baseline {:.2}%, changed {:.2}%\n",
+                    100.0 * base.peak_fraction, 100.0 * changed.peak_fraction));
+                s.push_str(&format!("FE parent annulus: uniform radial wall {:.4} in{}; no capacity correction\n",
+                    self.file.parent_wall.unwrap_or(0.5 * self.file.case.nominal_major),
+                    if self.file.parent_wall.is_none() { " (assumed 0.5D)" } else { " (entered minimum modeled uniformly)" }));
+                s.push_str("FE load sharing excludes flank clearance, plasticity and rupture; coil and Keensert are not modeled.\n");
+            }
+            Err(reason) => s.push_str(&format!("Elastic FE load sharing unavailable: {reason}\n")),
         }
         s.push_str("Default strengths and load are illustrative. No safety factor, preload, fatigue, temperature or transverse load. Basic dimensions do not certify a thread class.\n");
         s
@@ -1446,6 +1516,31 @@ impl Authoring for ThreadSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tapped_hybrid_runs_and_keeps_analytical_capacity_separate() {
+        let mut s = ThreadSession::open(&std::env::temp_dir().join("thread-hybrid-never-written.json")).unwrap();
+        let (base, changed) = s.elastic_fe().unwrap();
+        assert_eq!(base.per_turn_lbf.len(), 11);
+        assert_eq!(base.per_turn_lbf, changed.per_turn_lbf);
+        let fe_card = s.results().into_iter().find(|card| card.id == "thread-elastic-fe").unwrap();
+        assert!(fe_card.items.iter().any(|item| matches!(item, DockItem::Plot(plot) if plot.series.len() == 2)));
+        s.set_change(Change::FemaleMinor);
+        let (base, changed) = s.elastic_fe().unwrap();
+        assert_eq!(base.per_turn_lbf, changed.per_turn_lbf);
+        let fe_card = s.results().into_iter().find(|card| card.id == "thread-elastic-fe").unwrap();
+        assert!(fe_card.items.iter().any(|item| matches!(item, DockItem::Line { text, .. } if text.contains("curves overlap"))));
+        let (analytical, damaged) = s.analyses();
+        assert_ne!(analytical.rows, damaged.rows);
+        s.set_change(Change::BoltMinor);
+        assert_ne!(s.elastic_fe().unwrap().0.per_turn_lbf, s.elastic_fe().unwrap().1.per_turn_lbf);
+        let capacity = s.analyses();
+        let distribution = s.elastic_fe().unwrap().0.per_turn_lbf;
+        s.file.parent_wall = Some(0.25);
+        assert_eq!(s.analyses(), capacity);
+        assert_ne!(s.elastic_fe().unwrap().0.per_turn_lbf, distribution);
+        s.set_family(Family::HelicalCoil);
+        assert!(s.elastic_fe().is_err());
+    }
     #[test]
     fn damage_study_preserves_unselected_thread_properties() {
         let file = File::new();

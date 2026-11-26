@@ -88,6 +88,7 @@ pub mod solve;
 pub mod stress;
 pub mod thread;
 pub mod thread_catalog;
+pub mod thread_hybrid;
 pub mod thread_load_distribution;
 pub mod thread_shear;
 pub mod uncertainty;

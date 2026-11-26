@@ -139,12 +139,25 @@ fn thread_coupling_stiffness(pitch_diameter: f64, fastener_e: f64, fastener_nu: 
 /// and is not a free DOF). Thread `i`'s coupling spring connects `u_b[i]`
 /// to `u_n[i]` (ground, for `i == 0`).
 pub fn compute(preload: f64, thread: &ThreadGeometry, fastener_e: f64, fastener_nu: f64, inputs: &ThreadLoadDistributionInputs) -> Option<ThreadLoadDistribution> {
+    compute_with_last_fraction(preload, thread, fastener_e, fastener_nu, inputs, 1.0)
+}
+
+/// Approximate a partial final pitch by scaling its spring stiffness with
+/// engaged fraction. This is an elastic load-sharing assumption, not a
+/// validated damage or pull-out law.
+pub fn compute_with_last_fraction(preload: f64, thread: &ThreadGeometry, fastener_e: f64, fastener_nu: f64, inputs: &ThreadLoadDistributionInputs, last_fraction: f64) -> Option<ThreadLoadDistribution> {
     let n = inputs.engaged_threads as usize;
-    if n == 0 || thread.pitch <= 0.0 || fastener_e <= 0.0 || inputs.nut_modulus <= 0.0 {
+    if n == 0 || !preload.is_finite() || preload < 0.0 || !thread.pitch.is_finite() || thread.pitch <= 0.0
+        || !fastener_e.is_finite() || fastener_e <= 0.0 || !inputs.nut_modulus.is_finite() || inputs.nut_modulus <= 0.0
+        || !last_fraction.is_finite() || !(0.0 < last_fraction && last_fraction <= 1.0)
+        || !fastener_nu.is_finite() || !(-1.0..0.5).contains(&fastener_nu)
+        || !inputs.nut_poisson_ratio.is_finite() || !(-1.0..0.5).contains(&inputs.nut_poisson_ratio)
+        || [thread.d, thread.d2, thread.d3].iter().any(|v| !v.is_finite())
+        || thread.validate().is_err() {
         return None;
     }
     let nut_area = std::f64::consts::FRAC_PI_4 * (inputs.nut_outer_diameter * inputs.nut_outer_diameter - thread.d * thread.d);
-    if nut_area <= 0.0 {
+    if !nut_area.is_finite() || nut_area <= 0.0 {
         return None;
     }
     let k_b_seg = fastener_e * thread.root_area() / thread.pitch;
@@ -188,15 +201,16 @@ pub fn compute(preload: f64, thread: &ThreadGeometry, fastener_e: f64, fastener_
         // Thread 0 couples the bolt node directly to ground (the nut's
         // bearing-face reaction).
         let b0 = b_index(0);
-        k[b0][b0] += k_thread;
+        k[b0][b0] += k_thread * if n == 1 { last_fraction } else { 1.0 };
     }
     for i in 1..n {
         let bi = b_index(i);
         let ni = n_index(i);
-        k[bi][bi] += k_thread;
-        k[ni][ni] += k_thread;
-        k[bi][ni] -= k_thread;
-        k[ni][bi] -= k_thread;
+        let stiffness = k_thread * if i == n - 1 { last_fraction } else { 1.0 };
+        k[bi][bi] += stiffness;
+        k[ni][ni] += stiffness;
+        k[bi][ni] -= stiffness;
+        k[ni][bi] -= stiffness;
     }
 
     // The full preload enters the bolt body at the loaded face (node 0).
@@ -207,7 +221,10 @@ pub fn compute(preload: f64, thread: &ThreadGeometry, fastener_e: f64, fastener_
     let u_b = |i: usize| x[b_index(i)];
     let u_n = |i: usize| if i == 0 { 0.0 } else { x[n_index(i)] };
 
-    let per_thread_loads: Vec<f64> = (0..n).map(|i| k_thread * (u_b(i) - u_n(i))).collect();
+    let per_thread_loads: Vec<f64> = (0..n).map(|i| {
+        let stiffness = k_thread * if i == n - 1 { last_fraction } else { 1.0 };
+        stiffness * (u_b(i) - u_n(i))
+    }).collect();
     let first_thread_load = per_thread_loads[0];
     let max_thread_load = per_thread_loads.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
@@ -248,6 +265,18 @@ mod tests {
             let sum: f64 = result.per_thread_loads.iter().sum();
             assert!((sum - 10_000.0).abs() < 1e-6, "n={n} sum={sum}");
         }
+    }
+
+    #[test]
+    fn partial_last_turn_preserves_force_balance_and_reduces_its_share() {
+        let thread = steel_thread();
+        let inputs = steel_inputs(6);
+        let full = compute(10_000.0, &thread, 200_000.0, 0.3, &inputs).unwrap();
+        let half = compute_with_last_fraction(10_000.0, &thread, 200_000.0, 0.3, &inputs, 0.5).unwrap();
+        assert!((half.per_thread_loads.iter().sum::<f64>() - 10_000.0).abs() < 1e-6);
+        assert!(half.per_thread_loads[5] < full.per_thread_loads[5]);
+        assert!(half.per_thread_loads[0] > full.per_thread_loads[0]);
+        assert!(compute_with_last_fraction(10_000.0, &thread, 200_000.0, 0.3, &inputs, 0.0).is_none());
     }
 
     #[test]
