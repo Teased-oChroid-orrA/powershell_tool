@@ -208,6 +208,9 @@ pub trait Authoring {
     fn initial_key_colours(&self) -> Option<[[u8; 3]; 4]> {
         None
     }
+    fn adjustable_shading(&self) -> bool {
+        false
+    }
     /// The scene is a result of a computation (a static result, a mode shape, a transient): the colours are values.
     fn shows_result(&self) -> bool {
         false

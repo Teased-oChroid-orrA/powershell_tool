@@ -428,10 +428,13 @@ impl Gui {
 
     /// One choice of a few as a segmented control across `width`: equal segments, the chosen one filled with the accent.
     pub(super) fn segmented_equal(&mut self, ui: &mut egui::Ui, entries: &[Entry], width: f32, p: &Palette, out: &mut Vec<Outcome>) {
+        if entries.is_empty() {
+            return;
+        }
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(width.max(40.0), 30.0), Sense::click());
         ui.painter().rect(rect, CornerRadius::same(9), p.raised, Stroke::new(1.0, p.line), StrokeKind::Inside);
-        let w = (rect.width() - 4.0) / entries.len().max(1) as f32;
-        let at = |q: Pos2| (((q.x - rect.left() - 2.0) / w).floor().max(0.0) as usize).min(entries.len().saturating_sub(1));
+        let w = (rect.width() - 4.0) / entries.len() as f32;
+        let at = |q: Pos2| (((q.x - rect.left() - 2.0) / w).floor().max(0.0) as usize).min(entries.len() - 1);
         let hovered = resp.hover_pos().map(at);
         for (i, e) in entries.iter().enumerate() {
             let r = Rect::from_min_size(Pos2::new(rect.left() + 2.0 + w * i as f32, rect.top() + 2.0), Vec2::new(w, rect.height() - 4.0));
@@ -700,6 +703,46 @@ impl Gui {
                 self.entry_click(&r, e, out, hint);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod empty_segment_tests {
+    use super::*;
+
+    #[test]
+    fn empty_segments_ignore_hover_and_click() {
+        let mut gui = Gui::new();
+        let ctx = egui::Context::default();
+        let palette = super::super::theme::palette(false);
+        let mut out = Vec::new();
+        let mut pointer = Pos2::new(30.0, 20.0);
+        for pressed in [false, false, true] {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0))),
+                events: vec![
+                    egui::Event::PointerMoved(pointer),
+                    egui::Event::PointerButton {
+                        pos: pointer,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+                ..Default::default()
+            });
+            let area = egui::Area::new(Id::new("empty-segments"))
+                .fixed_pos(Pos2::ZERO)
+                .show(&ctx, |ui| {
+                    let before = ui.available_rect_before_wrap().min;
+                    gui.segmented_equal(ui, &[], 100.0, &palette, &mut out);
+                    assert_eq!(ui.available_rect_before_wrap().min, before);
+                });
+            pointer = area.response.rect.center();
+            ctx.end_pass().drop_without_applying_deltas();
+        }
+        assert!(out.is_empty());
+        assert!(gui.targets.is_empty());
     }
 }
 

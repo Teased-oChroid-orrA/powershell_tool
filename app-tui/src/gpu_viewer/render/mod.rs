@@ -95,6 +95,8 @@ pub struct DisplayOptions {
     pub swing: Option<f32>,
     /// Light the surface (a geometry view); a result keeps its contour colours exact.
     pub shade: bool,
+    /// Surface contrast multiplier; 1.0 is the standard light, always above zero in the Thread Workbench.
+    pub shade_intensity: f32,
     /// Colours (sRGB) of the geometry view's state codes; `None` draws them with the contour map. Set only with `shade`.
     pub key_colours: Option<[[u8; 3]; 4]>,
     /// Screen-space shift of the view in NDC units.
@@ -114,6 +116,7 @@ impl Default for DisplayOptions {
             style: DisplayStyle::Shaded,
             swing: None,
             shade: false,
+            shade_intensity: 1.0,
             key_colours: None,
             pan: [0.0, 0.0],
             translucent: None,

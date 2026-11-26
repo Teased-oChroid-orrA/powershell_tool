@@ -57,8 +57,8 @@ fn view_entries(c: &MenuContext) -> ViewEntries {
     let style = DisplayStyle::ALL
         .iter()
         .map(|s| {
-            let colours = geometry || s.paints_surface();
-            ok_if(cmd(s.label(), "", Command::SetStyle(*s)).checked(shown == *s), colours, "a result is drawn with its colours: show the model (V) to use this style")
+            let colours = (geometry || s.paints_surface()) && (!c.editor.is_some_and(|e| e.adjustable_shading()) || s.paints_surface());
+            ok_if(cmd(s.label(), "", Command::SetStyle(*s)).checked(shown == *s), colours, "shading stays active in this workbench")
         })
         .collect();
     let mut background: Vec<Entry> = Background::PRESETS.iter().map(|b| cmd(b.label(), "", Command::SetBackground(*b)).checked(v.background == *b)).collect();

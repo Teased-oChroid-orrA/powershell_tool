@@ -43,7 +43,7 @@ impl Viewer {
     pub(super) fn shared_display(&self) -> DisplaySettings {
         let mut display = self.view.display_settings();
         if let Some(editor) = self.editor.as_deref() {
-            if editor.initial_style().is_some() || editor.initial_key_colours().is_some() {
+            if editor.initial_style().is_some() || editor.initial_key_colours().is_some() || editor.adjustable_shading() {
                 let saved = self
                     .display_file
                     .as_ref()
@@ -54,6 +54,9 @@ impl Viewer {
                 }
                 if editor.initial_key_colours().is_some() {
                     display.key_colours = saved.key_colours;
+                }
+                if editor.adjustable_shading() {
+                    display.panel_pos[0] = saved.panel_pos[0];
                 }
             }
         }
@@ -221,8 +224,11 @@ impl Viewer {
                 self.editor = Some(p.editor);
                 self.project = p.project;
                 self.view = p.view;
+                let local_style = self.editor.as_ref().is_some_and(|e| e.initial_style().is_some()).then_some(self.view.style);
+                let local_colours = self.editor.as_ref().is_some_and(|e| e.initial_key_colours().is_some()).then_some(self.view.key_colours);
                 self.view.set_display(display);
-                launch::apply_initial_display(&mut self.view, self.editor.as_deref().unwrap());
+                if let Some(style) = local_style { self.view.style = style; }
+                if let Some(colours) = local_colours { self.view.key_colours = colours; }
                 page = Some(p.page);
                 nav.active = to;
             }

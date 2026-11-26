@@ -180,6 +180,14 @@ impl Viewer {
         }
     }
     pub(super) fn command(&mut self, command: Command) {
+        if matches!(command, Command::ResetKeyColours) {
+            if let Some(colours) = self.editor.as_ref().and_then(|e| e.initial_key_colours()) {
+                self.view.key_colours = colours;
+                return;
+            }
+        }
+        if matches!(command, Command::SetStyle(style) if !style.paints_surface())
+            && self.editor.as_ref().is_some_and(|e| e.adjustable_shading()) { return; }
         let scene = &self.project.scenes[self.project.selected];
         let before = self.view.display_settings();
         self.view.apply(command, scene);

@@ -45,7 +45,7 @@ fn key_colour(t: f32) -> vec3<f32> {
 @fragment fn fs(o: Out) -> @location(0) vec4<f32> {
     // Screen-space derivatives give the face normal without vertex normals; they must run in uniform control flow.
     let n = cross(dpdx(o.view), dpdy(o.view));
-    let light = 0.58 + 0.42 * abs(n.z) / max(length(n), 1e-20);
+    let light = max(0.12, 1.0 - params.pan.z * 0.42 * (1.0 - abs(n.z) / max(length(n), 1e-20)));
     var c: vec3<f32>;
     if (params.frames.w & 1u) != 0u {
         c = vec3<f32>(0.6, 0.65, 0.72);

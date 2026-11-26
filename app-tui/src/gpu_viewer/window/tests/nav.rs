@@ -57,14 +57,27 @@ fn thread_illustration_keeps_its_display_without_changing_the_shared_view() {
     let dir = tempfile::tempdir().unwrap();
     let mut v = shell();
     v.open_workbench("thread", Some(case(&dir, "thread.json")));
+    frame(&mut v);
+    assert!(v.gui.find_target("Colours / shading").is_some());
+    assert!(v.gui.find_target("Parent material colour").is_none(), "compact control leaves assembly visible");
+    let key = target(&v, "Colours / shading");
+    click(&mut v, key);
+    assert!(v.gui.find_target("Parent material colour").is_some());
+    assert!(v.gui.find_target("Shading intensity").is_some());
     assert_eq!(v.view.style, DisplayStyle::Shaded);
     assert_ne!(v.view.key_colours, default_key_colours());
+    let custom = [91, 145, 191];
+    v.dispatch(UiAction::Command(crate::gpu_viewer::controller::Command::SetKeyColour(0, custom)));
     v.dispatch(UiAction::Nav(NavAct::Home));
     assert_eq!(v.view.style, DisplayStyle::Wireframe);
     assert_eq!(v.view.key_colours, default_key_colours());
     v.dispatch(UiAction::Nav(NavAct::Open("thread")));
     assert_eq!(v.view.style, DisplayStyle::Shaded);
-    assert_ne!(v.view.key_colours, default_key_colours());
+    assert_eq!(v.view.key_colours[0], custom);
+    v.dispatch(UiAction::Command(crate::gpu_viewer::controller::Command::SetStyle(DisplayStyle::Wireframe)));
+    assert_eq!(v.view.style, DisplayStyle::Shaded, "thread shading cannot be switched off");
+    v.dispatch(UiAction::Command(crate::gpu_viewer::controller::Command::ResetKeyColours));
+    assert_eq!(v.view.key_colours[0], [108, 122, 131]);
 }
 
 #[test]

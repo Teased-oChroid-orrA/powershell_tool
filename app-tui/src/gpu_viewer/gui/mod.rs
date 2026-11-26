@@ -66,6 +66,8 @@ struct Floating {
 /// What a workbench's page keeps while another one is shown in the window (`Gui::park_page`).
 pub(crate) struct PageState {
     tab: usize,
+    shade_intensity: f32,
+    thread_key_open: bool,
     collapsed: HashSet<u32>,
     drawer: Option<workbench::Drawer>,
     inspector_dismissed: Option<String>,
@@ -81,6 +83,8 @@ pub struct Gui {
     pub visible: Visible,
     pub confirm_close: bool,
     tab: usize,
+    shade_intensity: f32,
+    thread_key_open: bool,
     collapsed: HashSet<u32>,
     palette: Option<PaletteState>,
     floating: Option<Floating>,
@@ -166,6 +170,8 @@ impl Gui {
             visible: Visible::default(),
             confirm_close: false,
             tab: 0,
+            shade_intensity: 1.0,
+            thread_key_open: false,
             collapsed: HashSet::new(),
             palette: None,
             floating: None,
@@ -208,6 +214,7 @@ impl Gui {
     pub fn reset_page(&mut self) {
         self.confirm_close = false;
         self.tab = 0;
+        self.thread_key_open = false;
         self.collapsed.clear();
         self.palette = None;
         self.floating = None;
@@ -239,6 +246,8 @@ impl Gui {
         self.doc.settle();
         let state = PageState {
             tab: self.tab,
+            shade_intensity: self.shade_intensity,
+            thread_key_open: self.thread_key_open,
             collapsed: std::mem::take(&mut self.collapsed),
             drawer: self.drawer.take(),
             inspector_dismissed: self.inspector_dismissed.take(),
@@ -254,6 +263,8 @@ impl Gui {
     /// Give a workbench's page back what `park_page` took (after `reset_page` cleared the previous page).
     pub(crate) fn restore_page(&mut self, s: PageState) {
         self.tab = s.tab;
+        self.shade_intensity = s.shade_intensity;
+        self.thread_key_open = s.thread_key_open;
         self.collapsed = s.collapsed;
         self.drawer = s.drawer;
         self.inspector_dismissed = s.inspector_dismissed;
@@ -306,6 +317,7 @@ impl Gui {
     pub fn ctx(&self) -> &egui::Context {
         &self.ctx
     }
+    pub fn shade_intensity(&self) -> f32 { self.shade_intensity }
     pub fn toggle(&mut self, panel: Panel) {
         match panel {
             Panel::Ribbon => self.visible.ribbon = !self.visible.ribbon,
@@ -968,8 +980,11 @@ impl Gui {
             "contour-legend"
         });
         // egui sizes a new area at this before it is measured, and keeps the pivot it then constrains: never wider than the viewport.
+        let compact_thread_key = geometry && input.editor.is_some_and(|e| e.adjustable_shading()) && !self.thread_key_open;
         let size = corner_slot_size(
-            if geometry {
+            if compact_thread_key {
+                Vec2::new(170.0, 34.0)
+            } else if geometry {
                 Vec2::new(150.0, 170.0)
             } else {
                 Vec2::new(260.0, 250.0)
@@ -996,6 +1011,7 @@ impl Gui {
                     ),
                 )
             }
+            (None, None) if compact_thread_key => (Align2::RIGHT_TOP, Pos2::new(vp.right() - 12.0, vp.top() + 12.0)),
             (None, None) => {
                 let preferred = if geometry {
                     Corner::TopRight
@@ -1048,6 +1064,14 @@ impl Gui {
                         // Text that can be selected would take the drag that moves the panel.
                         ui.style_mut().interaction.selectable_labels = false;
                         if geometry {
+                            if input.editor.is_some_and(|e| e.adjustable_shading()) {
+                                let r = ui.small_button("Colours / shading");
+                                self.targets.push(("Colours / shading".into(), r.rect));
+                                if r.clicked() {
+                                    self.thread_key_open = !self.thread_key_open;
+                                }
+                                if !self.thread_key_open { return; }
+                            }
                             ui.label(
                                 egui::RichText::new("COLOUR KEY  (drag to move)")
                                     .small()
@@ -1073,6 +1097,10 @@ impl Gui {
                                     }
                                     ui.label(name);
                                 });
+                            }
+                            if input.editor.is_some_and(|e| e.adjustable_shading()) {
+                                let r = ui.add(egui::Slider::new(&mut self.shade_intensity, 0.1..=1.8).text("Shading intensity"));
+                                self.targets.push(("Shading intensity".into(), r.rect));
                             }
                             if input.view.key_colours
                                 != crate::gpu_viewer::display::default_key_colours()

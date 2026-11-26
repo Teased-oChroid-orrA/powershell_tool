@@ -32,7 +32,7 @@ fn thread_assembly_snapshots() {
             let texture = target(&renderer, w, h);
             let mut gui = Gui::new();
             let mut view = ViewState::new(&scene);
-            view.style = crate::gpu_viewer::display::DisplayStyle::Shaded;
+            view.style = session.initial_style().unwrap();
             view.key_colours = session.initial_key_colours().unwrap();
             let scenes = [scene];
             let input = GuiInput {

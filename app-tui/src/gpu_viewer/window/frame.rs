@@ -134,11 +134,14 @@ impl Viewer {
                             field: self.view.field,
                             viewport: Some(scene_rect),
                             background: Some(background),
-                            style: self
-                                .view
-                                .style_for(&self.project.scenes[self.project.selected], geometry),
+                            style: if self.editor.as_ref().is_some_and(|e| e.adjustable_shading()) && !self.view.style.paints_surface() {
+                                crate::gpu_viewer::display::DisplayStyle::Shaded
+                            } else {
+                                self.view.style_for(&self.project.scenes[self.project.selected], geometry)
+                            },
                             swing: self.view.swing(&self.project.scenes[self.project.selected]),
                             shade: geometry,
+                            shade_intensity: if self.editor.as_ref().is_some_and(|e| e.adjustable_shading()) { self.gui.shade_intensity() } else { 1.0 },
                             key_colours: geometry.then_some(self.view.key_colours),
                             pan: self.view.pan,
                             translucent: self.editor.as_ref().and_then(|e| e.translucent()),

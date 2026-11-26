@@ -123,6 +123,9 @@ pub(super) fn apply_initial_display(view: &mut ViewState, editor: &dyn Authoring
     if let Some(colours) = editor.initial_key_colours() {
         view.key_colours = colours;
     }
+    if editor.adjustable_shading() {
+        view.panel_pos[0] = None;
+    }
 }
 
 pub(super) fn new_viewer(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Viewer {

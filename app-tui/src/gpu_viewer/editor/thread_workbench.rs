@@ -14,6 +14,7 @@ use crate::gpu_viewer::{
 use fastened_joint_solver::thread_capability::{
     self as strength, Analysis, Case, Family, Interface, StiMeasurement,
 };
+use mechanics_core::materials::{builtin_catalog, Material};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -266,8 +267,17 @@ struct File {
     rating_value: Option<f64>,
     #[serde(default)]
     rating_source: String,
+    #[serde(default)]
+    bolt_material: Option<String>,
+    #[serde(default)]
+    parent_material: Option<String>,
+    #[serde(default)]
+    insert_material: Option<String>,
 }
 impl File {
+    fn material(id: &str) -> Option<&'static Material> {
+        builtin_catalog().find(|m| m.id == id)
+    }
     fn suggested(change: Change, case: &Case) -> f64 {
         let proposed = change.suggestion(case);
         let mut trial = case.clone();
@@ -279,6 +289,8 @@ impl File {
         }
     }
     fn new() -> Self {
+        let bolt = Self::material("steel4340").unwrap();
+        let parent = Self::material("al7075").unwrap();
         let case = Case {
             family: Family::Tapped,
             nominal_major: 0.25,
@@ -287,9 +299,9 @@ impl File {
             outer: None,
             sti: None,
             axial_load: 3000.0,
-            bolt_tensile_strength: 120_000.0,
-            bolt_shear_strength: 72_000.0,
-            parent_shear_strength: 30_000.0,
+            bolt_tensile_strength: bolt.ftu_ksi * 1000.0,
+            bolt_shear_strength: bolt.fsu_ksi * 1000.0,
+            parent_shear_strength: parent.fsu_ksi * 1000.0,
             insert_shear_strength: None,
             assembly_rating: None,
         };
@@ -301,6 +313,9 @@ impl File {
             case,
             rating_value: None,
             rating_source: String::new(),
+            bolt_material: Some(bolt.id.into()),
+            parent_material: Some(parent.id.into()),
+            insert_material: None,
         }
     }
     fn sync_rating(&mut self) {
@@ -336,6 +351,26 @@ impl File {
         if self.case.assembly_rating != expected {
             return Err("assembly rating and source disagree".into());
         }
+        if let Some(id) = &self.bolt_material {
+            let m = Self::material(id).ok_or("bolt material is missing from library")?;
+            if self.case.bolt_tensile_strength != m.ftu_ksi * 1000.0
+                || self.case.bolt_shear_strength != m.fsu_ksi * 1000.0 {
+                return Err("bolt strengths disagree with material library".into());
+            }
+        }
+        if let Some(id) = &self.parent_material {
+            let m = Self::material(id).ok_or("parent material is missing from library")?;
+            if self.case.parent_shear_strength != m.fsu_ksi * 1000.0 {
+                return Err("parent strength disagrees with material library".into());
+            }
+        }
+        if let Some(id) = &self.insert_material {
+            let m = Self::material(id).ok_or("insert material is missing from library")?;
+            if self.case.family == Family::Keensert
+                && self.case.insert_shear_strength != Some(m.fsu_ksi * 1000.0) {
+                return Err("insert strength disagrees with material library".into());
+            }
+        }
         strength::compute(&self.case).map_err(str::to_string)?;
         strength::compute(&self.changed()).map_err(|e| format!("proposed change: {e}"))?;
         Ok(())
@@ -348,11 +383,14 @@ pub enum ThreadAct {
     NextChange,
     View(bool),
     Edit(usize),
+    Material(MaterialRole, &'static str),
     Undo,
     Redo,
     Save,
     Report,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialRole { Bolt, Parent, Insert }
 struct Prompt {
     field: Field,
     text: String,
@@ -425,10 +463,12 @@ impl ThreadSession {
                 self.file.case.outer = None;
                 self.file.case.sti = None;
                 self.file.case.insert_shear_strength = None;
+                self.file.insert_material = None;
             }
             Family::HelicalCoil => {
                 self.file.case.outer = None;
                 self.file.case.insert_shear_strength = None;
+                self.file.insert_material = None;
                 self.file.case.sti =
                     strength::sti_limits(self.file.case.inner.major, self.file.case.tpi).map(|l| {
                         StiMeasurement {
@@ -447,6 +487,34 @@ impl ThreadSession {
             self.file.change = Change::FemaleMinor;
         }
         self.file.proposed = File::suggested(self.file.change, &self.file.case);
+        self.edited();
+    }
+    fn set_material(&mut self, role: MaterialRole, id: &'static str) {
+        let Some(m) = File::material(id) else { return };
+        if m.ftu_ksi <= 0.0 || m.fsu_ksi <= 0.0 { return; }
+        let mut next = self.file.clone();
+        match role {
+            MaterialRole::Bolt => {
+                next.bolt_material = Some(id.into());
+                next.case.bolt_tensile_strength = m.ftu_ksi * 1000.0;
+                next.case.bolt_shear_strength = m.fsu_ksi * 1000.0;
+            }
+            MaterialRole::Parent => {
+                next.parent_material = Some(id.into());
+                next.case.parent_shear_strength = m.fsu_ksi * 1000.0;
+            }
+            MaterialRole::Insert => {
+                next.insert_material = Some(id.into());
+                if next.case.family == Family::Keensert {
+                    next.case.insert_shear_strength = Some(m.fsu_ksi * 1000.0);
+                }
+            }
+        }
+        next.clear_rating();
+        next.proposed = File::suggested(next.change, &next.case);
+        if let Err(e) = next.validate() { self.status = e; return; }
+        self.checkpoint();
+        self.file = next;
         self.edited();
     }
     fn set_change(&mut self, ch: Change) {
@@ -556,10 +624,10 @@ impl ThreadSession {
                 }
                 Field::Engagement => next.case.inner.engagement = v,
                 Field::Load => next.case.axial_load = v,
-                Field::BoltTensile => next.case.bolt_tensile_strength = v * 1000.0,
-                Field::BoltShear => next.case.bolt_shear_strength = v * 1000.0,
-                Field::ParentShear => next.case.parent_shear_strength = v * 1000.0,
-                Field::InsertShear => next.case.insert_shear_strength = Some(v * 1000.0),
+                Field::BoltTensile => { next.case.bolt_tensile_strength = v * 1000.0; next.bolt_material = None; }
+                Field::BoltShear => { next.case.bolt_shear_strength = v * 1000.0; next.bolt_material = None; }
+                Field::ParentShear => { next.case.parent_shear_strength = v * 1000.0; next.parent_material = None; }
+                Field::InsertShear => { next.case.insert_shear_strength = Some(v * 1000.0); next.insert_material = None; }
                 Field::OuterMajor => {
                     if let Some((n, o)) = &mut next.case.outer {
                         *o = Interface::basic(v, *n, o.engagement);
@@ -659,6 +727,7 @@ impl ThreadSession {
     fn run(&mut self, a: ThreadAct) {
         match a {
             ThreadAct::Family(f) => self.set_family(f),
+            ThreadAct::Material(role, id) => self.set_material(role, id),
             ThreadAct::Change(c) => self.set_change(c),
             ThreadAct::NextChange => self.next_change(),
             ThreadAct::View(v) => {
@@ -703,6 +772,17 @@ impl ThreadSession {
             ))),
             editing.is_some(),
         )
+    }
+    fn material_rows(&self, role: MaterialRole, ids: &[(&'static str, &'static str)]) -> Vec<DockItem> {
+        let selected = match role {
+            MaterialRole::Bolt => &self.file.bolt_material,
+            MaterialRole::Parent => &self.file.parent_material,
+            MaterialRole::Insert => &self.file.insert_material,
+        };
+        let label = match role { MaterialRole::Bolt => "Bolt material", MaterialRole::Parent => "Parent material", MaterialRole::Insert => "Insert material" };
+        let mut rows = vec![DockItem::text(format!("{label}: {}", selected.as_deref().and_then(File::material).map_or("manual / unspecified", |m| m.name)), Tone::Dim)];
+        rows.extend(ids.chunks(3).map(|part| DockItem::Segmented(part.iter().map(|&(id, name)| Self::entry(name, ThreadAct::Material(role, id)).checked(selected.as_deref() == Some(id))).collect())));
+        rows
     }
     fn inputs(&self) -> Vec<Card> {
         let c = &self.file.case;
@@ -752,12 +832,19 @@ impl ThreadSession {
             ],
         )
         .tag("ASME B1.1");
-        let load=Card::new("thread-load","Load and strengths",Relevance::Primary,vec![
-            self.row(Field::Load),self.row(Field::BoltTensile),self.row(Field::BoltShear),
-            self.row(Field::ParentShear),
-            DockItem::text("Default strengths and load are illustrative. Enter documented strengths for your actual materials.",Tone::Warn),
+        let mut load_rows = self.material_rows(MaterialRole::Bolt, &[("steel4340", "4340 steel"), ("ph174", "17-4 CRES"), ("ph157mo", "15-7 CRES"), ("ti6al4v", "Ti-6Al-4V")]);
+        load_rows.extend(self.material_rows(MaterialRole::Parent, &[("al7075", "7075-T6"), ("al2024", "2024-T3"), ("al7050", "7050-T7451"), ("ti6al4v", "Ti-6Al-4V"), ("steel4340", "4340 steel")]));
+        load_rows.extend([self.row(Field::Load),self.row(Field::BoltTensile),self.row(Field::BoltShear), self.row(Field::ParentShear),
+            DockItem::text("Catalog values are material strengths, not certified fastener ratings. Check product form, condition and basis.",Tone::Warn),
             DockItem::text("Results are an axial screen, not design allowables.",Tone::Dim)]);
+        let load=Card::new("thread-load","Load and strengths",Relevance::Primary,load_rows);
         let mut cards = vec![family, geometry, load];
+        if c.family == Family::Tapped {
+            cards.push(Card::new("thread-tap", "Hole preparation", Relevance::Primary, vec![
+                DockItem::text("Regular Unified tap matches the bolt thread. An STI tap is not interchangeable.", Tone::Dim),
+                DockItem::text("Pilot drill and tap class require the selected process specification.", Tone::Dim),
+            ]));
+        }
         if c.family != Family::Tapped {
             let mut rows = vec![DockItem::text(
                 if c.family == Family::HelicalCoil {
@@ -768,6 +855,14 @@ impl ThreadSession {
                 Tone::Dim,
             )];
             if c.family == Family::Keensert {
+                rows.push(DockItem::text("Regular Unified tap matches the insert external thread; do not use an STI tap.", Tone::Dim));
+                if let Some((outer_tpi, outer)) = c.outer {
+                    if let Some(i) = strength::keensert_installation((c.nominal_major, c.tpi), (outer.major, outer_tpi), outer.engagement) {
+                        rows.push(DockItem::text(format!("Howmet carbon part {} geometry: regular tap drill {:.4} in; countersink {:.3} in; tap depth ≥{:.3} in", i.carbon_part, i.regular_tap_drill, i.countersink, i.min_tap_depth), Tone::Dim));
+                    }
+                }
+                rows.extend(self.material_rows(MaterialRole::Insert, &[("steel4340", "4340 steel"), ("ph174", "17-4 CRES"), ("ph157mo", "15-7 CRES"), ("ti6al4v", "Ti-6Al-4V")]));
+                rows.push(DockItem::text("Select only the actual insert alloy and condition; a matching Howmet geometry does not identify its strength.", Tone::Warn));
                 rows.extend([
                     self.row(Field::InsertShear),
                     self.row(Field::OuterMajor),
@@ -776,7 +871,14 @@ impl ThreadSession {
                 ]);
             }
             if c.family == Family::HelicalCoil {
-                if let Some(l) = strength::sti_limits(c.nominal_major, c.tpi) {
+                rows.push(DockItem::text("Standard Heli-Coil wire: cold-worked 304 stainless, tensile 200–250 ksi by wire size; no matched wire shear rating.", Tone::Dim));
+                if let Some(installation) = strength::sti_installation(c.nominal_major, c.tpi) {
+                    let l = installation.limits;
+                    rows.push(DockItem::text("Use an STI tap for the parent hole. The bolt uses a regular Unified thread.", Tone::Dim));
+                    rows.push(DockItem::text(format!(
+                        "Suggested STI pilot drill: aluminum {:.4} in; steel, magnesium or plastic {:.4} in",
+                        installation.drill_aluminum, installation.drill_steel_magnesium_plastic
+                    ), Tone::Dim));
                     rows.push(DockItem::text(
                         format!(
                             "Stanley 2B STI limits: pitch {:.4}–{:.4}, minor {:.4}–{:.4} in",
@@ -999,6 +1101,29 @@ impl ThreadSession {
         let mut s=format!("Thread Workbench · {}\nUnified 60-degree thread · {:.4}-{:.0}\nFamily: {:?}\nChange: {} from {:.4} {} to {:.4} {}\nAxial load: {:.0} lbf\n\n",
             self.file.name,self.file.case.inner.major,self.file.case.tpi,self.file.case.family,self.file.change.label(),
             self.file.change.current(&self.file.case),self.file.change.unit(),self.file.proposed,self.file.change.unit(),changed.axial_load);
+        for (name, id) in [("Bolt", &self.file.bolt_material), ("Parent", &self.file.parent_material), ("Insert", &self.file.insert_material)] {
+            if name == "Insert" && self.file.case.family == Family::Tapped { continue; }
+            let material = id.as_deref().and_then(File::material).map_or("manual / unspecified", |m| m.name);
+            s.push_str(&format!("{name} material: {material}\n"));
+        }
+        match self.file.case.family {
+            Family::Tapped => s.push_str("Hole tap: regular Unified, matching bolt thread; pilot drill not specified\n"),
+            Family::HelicalCoil => {
+                s.push_str("Hole tap: STI, matching wire insert\n");
+                if let Some(i) = strength::sti_installation(self.file.case.nominal_major, self.file.case.tpi) {
+                    s.push_str(&format!("Suggested STI pilot drill: aluminum {:.4} in; steel/magnesium/plastic {:.4} in (Heli-Coil Bulletin 2003 Table V)\n", i.drill_aluminum, i.drill_steel_magnesium_plastic));
+                }
+            }
+            Family::Keensert => {
+                s.push_str("Hole tap: regular Unified, matching insert external thread\n");
+                if let Some((n, o)) = self.file.case.outer {
+                    if let Some(i) = strength::keensert_installation((self.file.case.nominal_major, self.file.case.tpi), (o.major, n), o.engagement) {
+                        s.push_str(&format!("Howmet carbon part {} geometry: pilot drill {:.4} in; minimum tap depth {:.3} in\n", i.carbon_part, i.regular_tap_drill, i.min_tap_depth));
+                    }
+                }
+            }
+        }
+        s.push('\n');
         for r in &base.rows {
             let after = changed
                 .rows
@@ -1126,8 +1251,9 @@ impl Authoring for ThreadSession {
         Some(crate::gpu_viewer::display::DisplayStyle::Shaded)
     }
     fn initial_key_colours(&self) -> Option<[[u8; 3]; 4]> {
-        Some([[117, 130, 138], [195, 158, 105], [200, 209, 213], [90, 98, 103]])
+        Some([[108, 122, 131], [205, 214, 215], [168, 183, 192], [78, 88, 95]])
     }
+    fn adjustable_shading(&self) -> bool { true }
     fn shows_body_only(&self) -> bool {
         true
     }
@@ -1275,5 +1401,22 @@ mod tests {
         s.file.sync_rating();
         s.set_change(Change::Tpi);
         assert!(s.analyses().1.governing.is_some());
+    }
+    #[test]
+    fn selected_library_material_sets_strengths_and_manual_edit_severs_link() {
+        let mut s = ThreadSession::open(&std::env::temp_dir().join("thread-material-never-written.json")).unwrap();
+        s.set_material(MaterialRole::Bolt, "ti6al4v");
+        let m = File::material("ti6al4v").unwrap();
+        assert_eq!(s.file.case.bolt_tensile_strength, m.ftu_ksi * 1000.0);
+        assert_eq!(s.file.case.bolt_shear_strength, m.fsu_ksi * 1000.0);
+        s.edit(Field::BoltShear);
+        s.prompt.as_mut().unwrap().text = "80".into();
+        s.commit();
+        assert!(s.file.bolt_material.is_none());
+        assert_eq!(s.file.case.bolt_shear_strength, 80_000.0);
+        s.set_family(Family::Keensert);
+        s.set_material(MaterialRole::Insert, "ph174");
+        assert_eq!(s.file.case.insert_shear_strength, Some(File::material("ph174").unwrap().fsu_ksi * 1000.0));
+        assert!(s.file.validate().is_ok());
     }
 }
