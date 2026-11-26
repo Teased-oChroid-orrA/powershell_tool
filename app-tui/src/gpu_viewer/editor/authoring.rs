@@ -202,6 +202,10 @@ pub trait Authoring {
     fn initial_view(&self) -> Option<crate::gpu_viewer::controller::StandardView> {
         None
     }
+    /// Initial zoom for a workbench whose illustrative model needs more clearance around its bounds.
+    fn initial_zoom(&self) -> Option<f32> {
+        None
+    }
     fn initial_style(&self) -> Option<crate::gpu_viewer::display::DisplayStyle> {
         None
     }

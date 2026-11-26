@@ -8,13 +8,14 @@ use crate::gpu_viewer::{
     bench::Bench,
     controller::UiAction,
     menu::{Entry, Item, Menu},
-    ui::{Compare, CompareRow, DockItem, Look, Workbench, WorkbenchView},
+    ui::{CardRow, Compare, CompareRow, DockItem, Look, ValueCard, Workbench, WorkbenchView},
     Scene,
 };
 use fastened_joint_solver::thread_capability::{
     self as strength, Analysis, Case, Family, Interface, StiMeasurement,
 };
 use mechanics_core::materials::{builtin_catalog, Material};
+use crate::toolboxes::material_lookup::model::{catalog, filter_sort, Query};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -380,7 +381,9 @@ impl File {
 pub enum ThreadAct {
     Family(Family),
     Change(Change),
-    NextChange,
+    OpenChange,
+    OpenMaterial(MaterialRole),
+    ClosePicker,
     View(bool),
     Edit(usize),
     Material(MaterialRole, &'static str),
@@ -391,6 +394,7 @@ pub enum ThreadAct {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaterialRole { Bolt, Parent, Insert }
+enum Picker { Change, Material { role: MaterialRole, query: String } }
 struct Prompt {
     field: Field,
     text: String,
@@ -404,6 +408,7 @@ pub struct ThreadSession {
     undo: Vec<File>,
     redo: Vec<File>,
     prompt: Option<Prompt>,
+    picker: Option<Picker>,
     status: String,
     changed_view: bool,
     drawn: bool,
@@ -427,6 +432,7 @@ impl ThreadSession {
             undo: Vec::new(),
             redo: Vec::new(),
             prompt: None,
+            picker: None,
             status: String::new(),
             changed_view: false,
             drawn: false,
@@ -487,11 +493,12 @@ impl ThreadSession {
             self.file.change = Change::FemaleMinor;
         }
         self.file.proposed = File::suggested(self.file.change, &self.file.case);
+        self.picker = None;
         self.edited();
     }
     fn set_material(&mut self, role: MaterialRole, id: &'static str) {
         let Some(m) = File::material(id) else { return };
-        if m.ftu_ksi <= 0.0 || m.fsu_ksi <= 0.0 { return; }
+        if m.fsu_ksi <= 0.0 || (role == MaterialRole::Bolt && m.ftu_ksi <= 0.0) { return; }
         let mut next = self.file.clone();
         match role {
             MaterialRole::Bolt => {
@@ -515,6 +522,7 @@ impl ThreadSession {
         if let Err(e) = next.validate() { self.status = e; return; }
         self.checkpoint();
         self.file = next;
+        self.picker = None;
         self.edited();
     }
     fn set_change(&mut self, ch: Change) {
@@ -524,21 +532,8 @@ impl ThreadSession {
         self.checkpoint();
         self.file.change = ch;
         self.file.proposed = File::suggested(ch, &self.file.case);
+        self.picker = None;
         self.edited();
-    }
-    fn next_change(&mut self) {
-        let i = Change::ALL
-            .iter()
-            .position(|x| *x == self.file.change)
-            .unwrap_or(0);
-        let ch = Change::ALL
-            .iter()
-            .cycle()
-            .skip(i + 1)
-            .find(|x| x.available(self.file.case.family))
-            .copied()
-            .unwrap();
-        self.set_change(ch);
     }
     fn value(&self, f: Field) -> String {
         let c = &self.file.case;
@@ -583,6 +578,7 @@ impl ThreadSession {
         }
     }
     fn edit(&mut self, f: Field) {
+        self.picker = None;
         let v = self.value(f);
         self.prompt = Some(Prompt {
             field: f,
@@ -729,7 +725,9 @@ impl ThreadSession {
             ThreadAct::Family(f) => self.set_family(f),
             ThreadAct::Material(role, id) => self.set_material(role, id),
             ThreadAct::Change(c) => self.set_change(c),
-            ThreadAct::NextChange => self.next_change(),
+            ThreadAct::OpenChange => self.picker = Some(Picker::Change),
+            ThreadAct::OpenMaterial(role) => self.picker = Some(Picker::Material { role, query: String::new() }),
+            ThreadAct::ClosePicker => self.picker = None,
             ThreadAct::View(v) => {
                 self.changed_view = v;
                 self.drawn = false;
@@ -773,16 +771,14 @@ impl ThreadSession {
             editing.is_some(),
         )
     }
-    fn material_rows(&self, role: MaterialRole, ids: &[(&'static str, &'static str)]) -> Vec<DockItem> {
+    fn material_row(&self, role: MaterialRole) -> DockItem {
         let selected = match role {
             MaterialRole::Bolt => &self.file.bolt_material,
             MaterialRole::Parent => &self.file.parent_material,
             MaterialRole::Insert => &self.file.insert_material,
         };
         let label = match role { MaterialRole::Bolt => "Bolt material", MaterialRole::Parent => "Parent material", MaterialRole::Insert => "Insert material" };
-        let mut rows = vec![DockItem::text(format!("{label}: {}", selected.as_deref().and_then(File::material).map_or("manual / unspecified", |m| m.name)), Tone::Dim)];
-        rows.extend(ids.chunks(3).map(|part| DockItem::Segmented(part.iter().map(|&(id, name)| Self::entry(name, ThreadAct::Material(role, id)).checked(selected.as_deref() == Some(id))).collect())));
-        rows
+        DockItem::field(label, selected.as_deref().and_then(File::material).map_or("Search library…", |m| m.name), Tone::Normal, Some(Self::action(ThreadAct::OpenMaterial(role))), false)
     }
     fn inputs(&self) -> Vec<Card> {
         let c = &self.file.case;
@@ -832,8 +828,7 @@ impl ThreadSession {
             ],
         )
         .tag("ASME B1.1");
-        let mut load_rows = self.material_rows(MaterialRole::Bolt, &[("steel4340", "4340 steel"), ("ph174", "17-4 CRES"), ("ph157mo", "15-7 CRES"), ("ti6al4v", "Ti-6Al-4V")]);
-        load_rows.extend(self.material_rows(MaterialRole::Parent, &[("al7075", "7075-T6"), ("al2024", "2024-T3"), ("al7050", "7050-T7451"), ("ti6al4v", "Ti-6Al-4V"), ("steel4340", "4340 steel")]));
+        let mut load_rows = vec![self.material_row(MaterialRole::Bolt), self.material_row(MaterialRole::Parent)];
         load_rows.extend([self.row(Field::Load),self.row(Field::BoltTensile),self.row(Field::BoltShear), self.row(Field::ParentShear),
             DockItem::text("Catalog values are material strengths, not certified fastener ratings. Check product form, condition and basis.",Tone::Warn),
             DockItem::text("Results are an axial screen, not design allowables.",Tone::Dim)]);
@@ -861,7 +856,7 @@ impl ThreadSession {
                         rows.push(DockItem::text(format!("Howmet carbon part {} geometry: regular tap drill {:.4} in; countersink {:.3} in; tap depth ≥{:.3} in", i.carbon_part, i.regular_tap_drill, i.countersink, i.min_tap_depth), Tone::Dim));
                     }
                 }
-                rows.extend(self.material_rows(MaterialRole::Insert, &[("steel4340", "4340 steel"), ("ph174", "17-4 CRES"), ("ph157mo", "15-7 CRES"), ("ti6al4v", "Ti-6Al-4V")]));
+                rows.push(self.material_row(MaterialRole::Insert));
                 rows.push(DockItem::text("Select only the actual insert alloy and condition; a matching Howmet geometry does not identify its strength.", Tone::Warn));
                 rows.extend([
                     self.row(Field::InsertShear),
@@ -901,11 +896,8 @@ impl ThreadSession {
             );
         }
         let study=vec![
-            DockItem::Segmented([(Change::FemaleMinor,"Internal minor ↑"),(Change::BoltMajor,"Bolt major ↓"),
-                (Change::BoltMinor,"Bolt root ↓"),(Change::Engagement,"Engagement loss")]
-                .into_iter().map(|(ch,l)|Self::entry(l,ThreadAct::Change(ch)).checked(self.file.change==ch)).collect()),
-            DockItem::field("Other characteristic",self.file.change.label(),Tone::Normal,
-                Some(Self::action(ThreadAct::NextChange)),false),
+            DockItem::field("Characteristic",self.file.change.label(),Tone::Normal,
+                Some(Self::action(ThreadAct::OpenChange)),false),
             DockItem::field("Baseline value",format!("{:.4} {}",self.file.change.current(c),self.file.change.unit()),Tone::Dim,None,false),
             self.row(Field::Proposed),
             DockItem::text("One characteristic changes. An insert rating is withdrawn when geometry or material changes.",Tone::Dim),
@@ -1162,6 +1154,7 @@ impl ThreadSession {
     }
 }
 impl Authoring for ThreadSession {
+    fn initial_zoom(&self) -> Option<f32> { Some(1.25) }
     fn bench(&self) -> Bench {
         Bench::Static
     }
@@ -1313,6 +1306,62 @@ impl Authoring for ThreadSession {
     fn has_workbench(&self) -> bool {
         true
     }
+    fn value_card(&self) -> Option<ValueCard> {
+        let picker = self.picker.as_ref()?;
+        let close = Self::action(ThreadAct::ClosePicker);
+        match picker {
+            Picker::Change => Some(ValueCard {
+                title: "Damage characteristic".into(), width: 380.0, tag: "one change".into(),
+                rows: vec![CardRow::Select {
+                    label: "Characteristic".into(), selected: self.file.change.label().into(),
+                    options: Change::ALL.into_iter().filter(|ch| ch.available(self.file.case.family))
+                        .map(|ch| (ch.label().into(), Self::action(ThreadAct::Change(ch)))).collect(),
+                }, CardRow::Text("Choose one measured change; edit its proposed value in Inputs.".into())],
+                apply_label: "Close".into(), apply: close, cancel: close,
+            }),
+            Picker::Material { role, query } => {
+                let current = match role {
+                    MaterialRole::Bolt => &self.file.bolt_material,
+                    MaterialRole::Parent => &self.file.parent_material,
+                    MaterialRole::Insert => &self.file.insert_material,
+                };
+                let hits: Vec<_> = filter_sort(&Query { text: query.clone(), ..Default::default() })
+                    .into_iter().filter(|&i| {
+                        let m = catalog()[i];
+                        m.fsu_ksi > 0.0 && (*role != MaterialRole::Bolt || m.ftu_ksi > 0.0)
+                    }).collect();
+                let mut shown: Vec<_> = hits.iter().copied().take(12).collect();
+                if query.trim().is_empty() {
+                    if let Some(i) = current.as_deref().and_then(|id| catalog().iter().position(|m| m.id == id)) {
+                        if !shown.contains(&i) { shown.insert(0, i); shown.truncate(12); }
+                    }
+                }
+                let mut rows = vec![CardRow::Field { label: "Search".into(), text: query.clone(), index: 0, unit: String::new() }];
+                for i in shown {
+                    let m = catalog()[i];
+                    rows.push(CardRow::Choice {
+                        label: m.name.into(), detail: format!("Ftu {:.1} · Fsu {:.1} ksi{}", m.ftu_ksi, m.fsu_ksi,
+                            m.extra.map_or(" · typical".into(), |e| format!(" · {} · {}", e.form, e.basis))),
+                        action: Self::action(ThreadAct::Material(*role, m.id)),
+                        current: current.as_deref() == Some(m.id),
+                    });
+                }
+                if hits.len() > 12 { rows.push(CardRow::Text(format!("{} more; type to narrow the list.", hits.len() - 12))); }
+                if hits.is_empty() { rows.push(CardRow::Text("No matching material with the required shear strength.".into())); }
+                rows.push(CardRow::Text("Catalog strengths are material data; verify form, condition and bolt product rating.".into()));
+                Some(ValueCard {
+                    title: match role { MaterialRole::Bolt => "Bolt material", MaterialRole::Parent => "Parent material", MaterialRole::Insert => "Insert material" }.into(),
+                    width: 430.0, tag: "material library".into(), rows,
+                    apply_label: "Close".into(), apply: close, cancel: close,
+                })
+            }
+        }
+    }
+    fn card_field(&mut self, index: usize, text: String) {
+        if index == 0 {
+            if let Some(Picker::Material { query, .. }) = &mut self.picker { *query = text; }
+        }
+    }
     fn menus(&self) -> Vec<Menu> {
         vec![
             Menu {
@@ -1339,6 +1388,25 @@ impl Authoring for ThreadSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn material_picker_searches_full_catalog_and_change_picker_lists_valid_damage() {
+        let mut s = ThreadSession::open(&std::env::temp_dir().join("thread-picker-never-written.json")).unwrap();
+        s.run(ThreadAct::OpenMaterial(MaterialRole::Bolt));
+        s.card_field(0, "Inconel 718".into());
+        let card = s.value_card().unwrap();
+        assert!(card.rows.iter().any(|r| matches!(r, CardRow::Choice { label, .. } if label.contains("Inconel 718"))));
+        s.run(ThreadAct::Material(MaterialRole::Bolt, "inconel718"));
+        assert!(s.picker.is_none());
+        assert_eq!(s.file.bolt_material.as_deref(), Some("inconel718"));
+        s.run(ThreadAct::OpenChange);
+        let card = s.value_card().unwrap();
+        let CardRow::Select { options, .. } = &card.rows[0] else { panic!("damage dropdown"); };
+        assert_eq!(options.len(), Change::ALL.iter().filter(|ch| ch.available(Family::Tapped)).count());
+        assert!(options.iter().any(|(name, _)| name == Change::FemaleMinor.label()));
+        s.run(ThreadAct::Change(Change::Engagement));
+        assert!(s.picker.is_none());
+        assert_eq!(s.file.change, Change::Engagement);
+    }
     #[test]
     fn damage_comparison_and_rating_invalidation() {
         let path = std::env::temp_dir().join("thread-workbench-test-never-written.json");

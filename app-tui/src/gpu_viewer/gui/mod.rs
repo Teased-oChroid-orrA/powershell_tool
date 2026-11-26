@@ -68,6 +68,7 @@ pub(crate) struct PageState {
     tab: usize,
     shade_intensity: f32,
     thread_key_open: bool,
+    dock_visible: [bool; 2],
     collapsed: HashSet<u32>,
     drawer: Option<workbench::Drawer>,
     inspector_dismissed: Option<String>,
@@ -85,6 +86,7 @@ pub struct Gui {
     tab: usize,
     shade_intensity: f32,
     thread_key_open: bool,
+    dock_visible: [bool; 2],
     collapsed: HashSet<u32>,
     palette: Option<PaletteState>,
     floating: Option<Floating>,
@@ -172,6 +174,7 @@ impl Gui {
             tab: 0,
             shade_intensity: 1.0,
             thread_key_open: false,
+            dock_visible: [true; 2],
             collapsed: HashSet::new(),
             palette: None,
             floating: None,
@@ -215,6 +218,7 @@ impl Gui {
         self.confirm_close = false;
         self.tab = 0;
         self.thread_key_open = false;
+        self.dock_visible = [true; 2];
         self.collapsed.clear();
         self.palette = None;
         self.floating = None;
@@ -248,6 +252,7 @@ impl Gui {
             tab: self.tab,
             shade_intensity: self.shade_intensity,
             thread_key_open: self.thread_key_open,
+            dock_visible: self.dock_visible,
             collapsed: std::mem::take(&mut self.collapsed),
             drawer: self.drawer.take(),
             inspector_dismissed: self.inspector_dismissed.take(),
@@ -265,6 +270,7 @@ impl Gui {
         self.tab = s.tab;
         self.shade_intensity = s.shade_intensity;
         self.thread_key_open = s.thread_key_open;
+        self.dock_visible = s.dock_visible;
         self.collapsed = s.collapsed;
         self.drawer = s.drawer;
         self.inspector_dismissed = s.inspector_dismissed;

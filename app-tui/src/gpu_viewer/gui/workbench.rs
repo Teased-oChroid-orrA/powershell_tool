@@ -43,20 +43,20 @@ impl Gui {
     pub(super) fn workbench(&mut self, ui: &mut egui::Ui, wb: &Workbench, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         let window = ui.available_rect_before_wrap();
         // Narrow windows give the views the room: the results (then also the inputs) become drawers over them.
-        let results_drawer = window.width() < DRAWER_BELOW;
-        let inputs_drawer = window.width() < INPUTS_DRAWER_BELOW;
+        let results_drawer = window.width() < DRAWER_BELOW || !self.dock_visible[Drawer::Results as usize];
+        let inputs_drawer = window.width() < INPUTS_DRAWER_BELOW || !self.dock_visible[Drawer::Inputs as usize];
         let boxed = wb.look == Look::Boxed;
         // Boxed cards sit on the page colour, so they read as raised from it.
         let pane = |margin: Margin| if boxed { bar_frame(p, margin).fill(p.bg) } else { bar_frame(p, margin) };
         if !inputs_drawer {
-            egui::Panel::left("wb-inputs").default_size(if boxed { 330.0 } else { 300.0 }).size_range(250.0..=440.0).frame(pane(Margin::symmetric(12, 10))).show(ui, |ui| self.inputs_pane(ui, wb, p, out));
+            egui::Panel::left("wb-inputs").default_size(if boxed { 330.0 } else { 300.0 }).size_range(250.0..=440.0).frame(pane(Margin::symmetric(12, 10))).show(ui, |ui| self.inputs_pane(ui, wb, p, out, false, false));
         }
         if !results_drawer {
-            egui::Panel::right("wb-results").default_size(if boxed { 400.0 } else { 350.0 }).size_range(290.0..=540.0).frame(pane(Margin::symmetric(12, 10))).show(ui, |ui| self.results_pane(ui, wb, p, out));
+            egui::Panel::right("wb-results").default_size(if boxed { 400.0 } else { 350.0 }).size_range(290.0..=540.0).frame(pane(Margin::symmetric(12, 10))).show(ui, |ui| self.results_pane(ui, wb, p, out, false, false));
         }
         let free = ui.available_rect_before_wrap();
         let narrow = free.width() < STACK_BELOW;
-        let bar_height = if narrow { 92.0 } else { TOOLBAR };
+        let bar_height = if !boxed && narrow { 92.0 } else { TOOLBAR };
         let bar = Rect::from_min_size(free.min, Vec2::new(free.width(), bar_height));
         ui.painter().rect_filled(bar, 0.0, p.panel);
         ui.painter().line_segment([bar.left_bottom(), bar.right_bottom()], Stroke::new(1.0, p.line));
@@ -138,8 +138,8 @@ impl Gui {
         self.drawers(ui, window, wb, results_drawer, inputs_drawer, p, out);
     }
 
-    fn inputs_pane(&mut self, ui: &mut egui::Ui, wb: &Workbench, p: &Palette, out: &mut Vec<Outcome>) {
-        pane_title(ui, "Inputs", p);
+    fn inputs_pane(&mut self, ui: &mut egui::Ui, wb: &Workbench, p: &Palette, out: &mut Vec<Outcome>, drawer: bool, restore: bool) {
+        self.pane_title(ui, "Inputs", Drawer::Inputs, drawer, restore, p);
         egui::ScrollArea::vertical().id_salt("wb-inputs-scroll").auto_shrink([false, false]).show(ui, |ui| {
             for c in &wb.inputs {
                 self.pane_card(ui, c, true, wb.look, p, out);
@@ -151,8 +151,8 @@ impl Gui {
         });
     }
 
-    fn results_pane(&mut self, ui: &mut egui::Ui, wb: &Workbench, p: &Palette, out: &mut Vec<Outcome>) {
-        pane_title(ui, "Results", p);
+    fn results_pane(&mut self, ui: &mut egui::Ui, wb: &Workbench, p: &Palette, out: &mut Vec<Outcome>, drawer: bool, restore: bool) {
+        self.pane_title(ui, "Results", Drawer::Results, drawer, restore, p);
         egui::ScrollArea::vertical().id_salt("wb-results-scroll").auto_shrink([false, false]).show(ui, |ui| {
             for (k, c) in wb.results.iter().enumerate() {
                 if k > 0 && wb.look == Look::Ruled {
@@ -161,6 +161,22 @@ impl Gui {
                 self.pane_card(ui, c, false, wb.look, p, out);
             }
         });
+    }
+
+    fn pane_title(&mut self, ui: &mut egui::Ui, title: &str, which: Drawer, drawer: bool, restore: bool, p: &Palette) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(title.to_uppercase()).size(11.0).strong().color(p.dim));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let label = if restore { "Restore dock" } else if drawer { "Close drawer" } else { "Minimize dock" };
+                let r = ui.small_button(label).on_hover_text(if restore { "Restore this pane beside the model" } else if drawer { "Close this drawer" } else { "Move this pane to an edge tab" });
+                self.targets.push((format!("{label} {title}"), r.rect));
+                if r.clicked() {
+                    if restore || !drawer { self.dock_visible[which as usize] = drawer; }
+                    self.drawer = None;
+                }
+            });
+        });
+        ui.add_space(4.0);
     }
 
     /// The panes a narrow window folds: an edge tab for each (the results' one carries the verdict), and the open one slid
@@ -218,8 +234,8 @@ impl Gui {
                     ui.set_min_size(rect.size() - Vec2::new(26.0, 22.0));
                     ui.set_max_size(rect.size() - Vec2::new(26.0, 22.0));
                     match open {
-                        Drawer::Results => self.results_pane(ui, wb, p, out),
-                        Drawer::Inputs => self.inputs_pane(ui, wb, p, out),
+                        Drawer::Results => self.results_pane(ui, wb, p, out, true, window.width() >= DRAWER_BELOW),
+                        Drawer::Inputs => self.inputs_pane(ui, wb, p, out, true, window.width() >= INPUTS_DRAWER_BELOW),
                     }
                 });
             });
@@ -312,7 +328,8 @@ impl Gui {
             painter.rect_filled(Rect::from_min_size(at - Vec2::new(8.0, 4.0), g.size() + Vec2::new(16.0, 8.0)), 6.0, with_alpha(p.panel, 225));
         }
         painter.text(Pos2::new(x, at.y), Align2::LEFT_TOP, &wb.model_title, FontId::proportional(11.5), p.text);
-        painter.text(r.left_bottom() + Vec2::new(12.0, -8.0), Align2::LEFT_BOTTOM, &wb.model_hint, FontId::proportional(11.0), p.dim);
+        let hint = painter.layout(wb.model_hint.clone(), FontId::proportional(11.0), p.dim, (r.width() - 24.0).max(40.0));
+        painter.galley(r.left_bottom() + Vec2::new(12.0, -hint.size().y - 8.0), hint, p.dim);
     }
 
     /// One section of a pane: a header that folds it (title, a tag at the right), then its rows. Inputs draw their values
@@ -748,11 +765,6 @@ mod empty_segment_tests {
 
 fn tone_colour(p: &Palette, tone: Tone) -> Color32 {
     super::theme::tone_color(p, tone)
-}
-
-fn pane_title(ui: &mut egui::Ui, title: &str, p: &Palette) {
-    ui.label(RichText::new(title.to_uppercase()).size(11.0).strong().color(p.dim));
-    ui.add_space(4.0);
 }
 
 /// Paint a drawing in `r`: its panel, title and caption, then the layout's fills, lines, arrowheads and labels.

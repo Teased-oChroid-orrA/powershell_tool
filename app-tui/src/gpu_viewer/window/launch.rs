@@ -113,6 +113,9 @@ pub(super) fn fresh_view(project: &ViewerProject, editor: Option<&dyn Authoring>
     if let Some(v) = editor.and_then(|e| e.initial_view()) {
         (view.yaw, view.pitch) = v.angles();
     }
+    if let Some(zoom) = editor.and_then(|e| e.initial_zoom()) {
+        view.zoom = zoom;
+    }
     view
 }
 

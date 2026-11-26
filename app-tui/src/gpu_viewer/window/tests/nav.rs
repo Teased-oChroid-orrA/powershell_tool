@@ -81,6 +81,65 @@ fn thread_illustration_keeps_its_display_without_changing_the_shared_view() {
 }
 
 #[test]
+fn thread_docks_minimize_to_tabs_and_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = shell();
+    v.size_override = Some((1500, 1000));
+    v.open_workbench("thread", Some(case(&dir, "thread-docks.json")));
+    frame(&mut v);
+    assert_eq!(v.view.zoom, 1.25);
+    assert!(v.gui.find_target("Bolt material").is_some());
+    assert!(v.gui.find_target("Characteristic").is_some());
+    let at = target(&v, "Bolt material");
+    click(&mut v, at);
+    assert!(v.gui.find_target("Search field").is_some());
+    v.dispatch(UiAction::Editor(crate::gpu_viewer::editor::session::EditorAction::Thread(
+        crate::gpu_viewer::editor::thread_workbench::ThreadAct::ClosePicker,
+    )));
+    frame(&mut v);
+    let at = target(&v, "Minimize dock Inputs");
+    click(&mut v, at);
+    frame(&mut v);
+    assert!(v.gui.find_target("Inputs tab").is_some());
+    v.dispatch(UiAction::Nav(NavAct::Home));
+    v.dispatch(UiAction::Nav(NavAct::Open("thread")));
+    frame(&mut v);
+    assert!(v.gui.find_target("Inputs tab").is_some(), "minimized dock survives tab round trip");
+    let at = target(&v, "Inputs tab");
+    click(&mut v, at);
+    frame(&mut v);
+    assert!(v.gui.find_target("Restore dock Inputs").is_some());
+    let at = target(&v, "Restore dock Inputs");
+    click(&mut v, at);
+    frame(&mut v);
+    assert!(v.gui.find_target("Minimize dock Inputs").is_some());
+    let at = target(&v, "Minimize dock Results");
+    click(&mut v, at);
+    frame(&mut v);
+    assert!(v.gui.target_labels().iter().any(|label| label.starts_with("Results") && label.ends_with(" tab")));
+}
+
+#[test]
+fn thread_damage_characteristic_opens_selectable_dropdown() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = shell();
+    v.size_override = Some((1500, 1000));
+    v.open_workbench("thread", Some(case(&dir, "thread-damage-picker.json")));
+    for id in ["thread-family", "thread-geometry", "thread-load", "thread-tap"] {
+        v.gui.set_card_open(id, false);
+    }
+    frame(&mut v);
+    let at = target(&v, "Characteristic");
+    click(&mut v, at);
+    let at = target(&v, "Characteristic dropdown");
+    click(&mut v, at);
+    let at = target(&v, "Bolt major diameter (damage)");
+    click(&mut v, at);
+    let case = v.editor.as_ref().unwrap().workbench().unwrap();
+    assert!(case.inputs.iter().flat_map(|c| &c.items).any(|row| row.plain_text().is_some_and(|t| t.contains("Bolt major diameter (damage)"))));
+}
+
+#[test]
 fn a_parked_workbench_keeps_its_unsaved_model_and_opening_it_again_reuses_the_tab() {
     let dir = tempfile::tempdir().unwrap();
     let mut v = shell();
