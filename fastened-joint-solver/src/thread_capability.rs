@@ -294,7 +294,7 @@ pub fn compute(case: &Case) -> Result<Analysis, &'static str> {
     }
     let mut rows = Vec::new();
     let mut missing = Vec::new();
-    let mut advisory = None;
+    let mut advisory = Vec::new();
     let pitch = 1.0 / case.tpi;
     let nominal_root = basic_external_minor_diameter(case.nominal_major, pitch);
     let area = unified_tensile_stress_area(case.nominal_major, pitch);
@@ -323,7 +323,7 @@ pub fn compute(case: &Case) -> Result<Analysis, &'static str> {
             match (sti_limits(case.nominal_major, case.tpi), case.sti) {
                 (Some(limits), Some(measured)) if measured.within(limits) => {
                     if let Some(lbf) = hc68_pullout_estimate(case.nominal_major, case.tpi, case.inner.engagement, case.parent_shear_strength) {
-                        advisory = Some(Capacity {
+                        advisory.push(Capacity {
                             name: "HC68-2 pull-out estimate",
                             lbf,
                             basis: "Approximate graph read; advisory, not a qualified assembly rating",
@@ -358,16 +358,16 @@ pub fn compute(case: &Case) -> Result<Analysis, &'static str> {
                     return Err("external insert TPI must be positive");
                 }
                 if let Some(strength) = case.insert_shear_strength {
-                    rows.push(Capacity {
-                        name: "Insert external thread stripping",
+                    advisory.push(Capacity {
+                        name: "Insert external gross bound",
                         lbf: outer.external_shear_area(outer_tpi) * strength,
-                        basis: "FED-STD-H28/2A external shear area; solid insert",
+                        basis: "Key area unknown; gross upper bound only",
                     });
                 }
-                rows.push(Capacity {
-                    name: "Parent around insert stripping",
+                advisory.push(Capacity {
+                    name: "Parent thread gross bound",
                     lbf: outer.internal_shear_area(outer_tpi) * case.parent_shear_strength,
-                    basis: "FED-STD-H28/2A internal shear area",
+                    basis: "Key area unknown; gross upper bound only",
                 });
             } else {
                 missing.push("External insert and parent thread dimensions");
@@ -395,7 +395,7 @@ pub fn compute(case: &Case) -> Result<Analysis, &'static str> {
     } else {
         None
     };
-    if let Some(row) = advisory { rows.push(row); }
+    rows.extend(advisory);
     Ok(Analysis {
         rows,
         governing,
@@ -522,6 +522,20 @@ mod tests {
         c.insert_shear_strength = Some(60_000.0);
         c.outer = Some((16.0, Interface::basic(0.375, 16.0, 0.37)));
         assert!(compute(&c).unwrap().governing.is_some());
+    }
+    #[test]
+    fn keensert_gross_thread_areas_cannot_govern_with_unmodeled_keys() {
+        let mut c = direct();
+        c.family = Family::Keensert;
+        c.outer = Some((16.0, Interface::basic(0.375, 16.0, 0.37)));
+        c.insert_shear_strength = Some(60_000.0);
+        c.parent_shear_strength = 5_000.0;
+        c.assembly_rating = Some((100_000.0, "matched installed assembly test".into()));
+        let a = compute(&c).unwrap();
+        let gross = row(&a, "Parent thread gross bound");
+        assert!(gross < row(&a, "Bolt tensile"));
+        assert_ne!(a.governing.unwrap().name, "Parent thread gross bound");
+        assert!(a.rows.iter().any(|r| r.name == "Insert external gross bound"));
     }
     #[test]
     fn invalid_geometry_and_unsourced_rating_are_refused() {
