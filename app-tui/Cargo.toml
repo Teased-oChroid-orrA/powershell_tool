@@ -59,6 +59,8 @@ serde_json = "1"
 # Same OS-integration calls both `app/` and `app-egui/` already use for
 # opening a result / copying a path - reused as-is, not reimplemented.
 open = "5"
+getrandom = "0.3"
+fs4 = "0.13"
 arboard = "3"
 # Pressure Vessel Analyzer toolbox - pure calculation crates, the same ones
 # `app`/`app-egui` already consume unchanged (see

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thread Workbench · NASA coil benchmark</title>
+<style>
+  :root{font-family:Inter,"Segoe UI",system-ui,sans-serif;color:#e9eef4;background:#101820;font-variant-numeric:tabular-nums;--panel:#192630;--edge:#32424d;--muted:#99aab5;--accent:#69d4c1;--warn:#f6bc72}
+  *{box-sizing:border-box}body{margin:0}button,input{font:inherit}button{cursor:pointer}
+  .shell{max-width:1520px;margin:auto;padding:30px clamp(16px,3vw,42px) 64px}
+  .eyebrow{color:var(--accent);font-size:.75rem;font-weight:750;letter-spacing:.15em;text-transform:uppercase}
+  header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:25px}
+  h1{font-size:clamp(1.8rem,3vw,3rem);letter-spacing:-.045em;line-height:1.08;margin:8px 0 10px}
+  h2{font-size:1.13rem;letter-spacing:-.02em;margin:0}p{line-height:1.5;color:var(--muted);margin:0}
+  .subtitle{max-width:70ch}.source{color:#b5c7d1;text-decoration-color:#5d7d87}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+  .btn{border:1px solid var(--edge);border-radius:9px;background:#20313d;color:#e9eef4;padding:10px 14px;font-weight:650}
+  .btn:hover,.btn:focus-visible{border-color:var(--accent);outline:none}.btn.primary{background:var(--accent);border-color:var(--accent);color:#10241f}
+  .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:22px 0}
+  .metric,.panel{background:var(--panel);border:1px solid var(--edge);border-radius:14px}
+  .metric{padding:17px 19px}.metric small{color:var(--muted);font-weight:650}.metric strong{display:block;font-size:1.55rem;margin:7px 0 3px;letter-spacing:-.03em}.metric span{color:#b6c6cf;font-size:.79rem}
+  .notice{padding:14px 17px;border:1px solid #5b4f3c;background:#2b2925;border-radius:10px;color:#efcca0;margin-bottom:16px;font-size:.87rem;line-height:1.5}
+  .panel{padding:19px;margin-top:14px}.panelhead{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:16px}.panelhead p{font-size:.83rem;margin-top:4px}
+  .legend{display:flex;gap:14px;color:var(--muted);font-size:.79rem;align-items:center;flex-wrap:wrap}.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:5px}.dot.teal{background:var(--accent)}.dot.gold{background:var(--warn)}
+  .plots{display:grid;grid-template-columns:1fr 1fr;gap:14px}.plot{width:100%;height:310px;display:block}.plot text{fill:#aabac3;font:12px Inter,"Segoe UI",sans-serif}.plot .gridline{stroke:#344650;stroke-dasharray:3 5}.plot .bar{fill:#56b9a9}.plot .bar.active{fill:var(--warn)}.plot .baseline{stroke:#d7e5e9;stroke-dasharray:5 5;opacity:.8}
+  .toolbar{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin:3px 0 15px}.tabs{display:flex;gap:4px;background:#101d25;padding:4px;border-radius:9px}.tab{background:transparent;border:0;color:#a7bbc5;padding:9px 15px;border-radius:6px;font-weight:650}.tab[aria-selected="true"]{background:#2c454f;color:#e9fffa}
+  .search{border:1px solid var(--edge);background:#111e27;color:#fff;border-radius:8px;padding:10px 12px;min-width:230px}.search:focus,.cell:focus{outline:2px solid var(--accent);outline-offset:1px}
+  .tablewrap{overflow:auto;max-height:570px;border:1px solid var(--edge);border-radius:9px}table{border-collapse:separate;border-spacing:0;width:100%;min-width:900px;font-size:.84rem}th,td{padding:9px 10px;border-bottom:1px solid #2d3c46;text-align:right;white-space:nowrap}th{text-align:right;color:#b4c5ce;position:sticky;top:0;background:#253540;z-index:1;font-size:.74rem;letter-spacing:.04em;text-transform:uppercase}th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:#1b2a34;z-index:2}th:first-child{background:#253540;z-index:3}tr:hover td{background:#263a45}tr:hover td:first-child{background:#263a45}tr.selected td{background:#28453f}tr.selected td:first-child{background:#28453f}.series{font-weight:800;color:var(--accent)}.desc{color:#b2c4cd;max-width:330px;overflow:hidden;text-overflow:ellipsis}.cell{width:78px;border:1px solid transparent;border-radius:5px;background:transparent;color:#ecf3f5;text-align:right;padding:6px 5px}.cell:hover{border-color:#628478}.cell.edited{background:#314c46;color:#c1f7ec}.original{display:block;color:#9fb2bd;font-size:.69rem}.mean{font-weight:800;color:#f8dfb5}.source-mean{color:#a9b9c1}.empty{color:#647985}.foot{font-size:.78rem;margin-top:11px}.selected-name{color:var(--accent);font-weight:700}
+  .details{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}.detail-list{display:grid;grid-template-columns:auto 1fr;gap:8px 18px;margin:13px 0 0;font-size:.88rem}.detail-list dt{color:#93aab5}.detail-list dd{margin:0;color:#e2edf0}.flag{color:var(--warn)}
+  @media(max-width:900px){header,.plots,.details{display:block}.actions{justify-content:flex-start;margin-top:17px}.grid{grid-template-columns:repeat(2,1fr)}.plots .panel{margin-top:14px}}
+  @media(max-width:520px){.grid{grid-template-columns:1fr 1fr}.metric{padding:13px}.metric strong{font-size:1.2rem}.shell{padding-top:20px}.panel{padding:14px}}
+</style>
+</head>
+<body>
+<main class="shell">
+  <header><div><div class="eyebrow">Thread Workbench / evidence explorer</div><h1>Damaged insert shear-out</h1><p class="subtitle">NASA/ATK Thiokol specimen results. Explore measured loads and equivalent missing threads. Edit a working copy to test scenarios; original published values remain visible.</p></div><div class="actions"><button class="btn" id="reset" disabled>Reset working copy</button><button class="btn primary" id="export" disabled>Export edited CSV</button></div></header>
+  <div class="grid" aria-label="Study summary"><div class="metric"><small>Restrained pristine mean</small><strong>59,768 lbf</strong><span>Table 2 · series A</span></div><div class="metric"><small>Engaged threads</small><strong>15</strong><span>0.83 in baseline</span></div><div class="metric"><small>Specimen series</small><strong>18</strong><span>Two A conditions included</span></div><div class="metric"><small>Edited inputs</small><strong id="editCount">0</strong><span id="saveStatus" role="status">Loading app data…</span></div></div>
+  <div class="notice"><strong>Source inconsistency:</strong> Table 3 appears to exchange B2 and B3 equivalent-thread results. Published values stay unchanged here. This coil study does not calibrate tapped-hole or Keensert capacities.</div>
+  <div class="plots"><section class="panel"><div class="panelhead"><div><h2>Mean shear-out load</h2><p>Working-copy specimen mean · lbf</p></div><div class="legend"><span><i class="dot teal"></i>Series</span><span><i class="dot gold"></i>Selected</span></div></div><svg id="loadPlot" class="plot" role="img" aria-label="Bar chart of mean shear-out load by series"></svg></section><section class="panel"><div class="panelhead"><div><h2>Equivalent missing threads</h2><p>Working-copy specimen mean · thread count</p></div></div><svg id="eqPlot" class="plot" role="img" aria-label="Bar chart of equivalent missing threads by series"></svg></section></div>
+  <section class="panel"><div class="panelhead"><div><h2>Specimen tables</h2><p>Edit numeric specimen cells. Means and plots update immediately.</p></div><div class="legend">Published mean and working mean appear side by side</div></div><div class="toolbar"><div class="tabs" role="tablist" aria-label="Table"><button class="tab" id="loadTab" role="tab" aria-selected="true">Table 2 · Loads</button><button class="tab" id="eqTab" role="tab" aria-selected="false">Table 3 · Missing threads</button></div><input class="search" id="search" type="search" placeholder="Find series or condition" aria-label="Find series or condition"></div><div class="tablewrap"><table><thead><tr><th scope="col">Series / condition</th><th scope="col">#1</th><th scope="col">#2</th><th scope="col">#3</th><th scope="col">#4</th><th scope="col">#5</th><th scope="col">Working mean</th><th scope="col">Published mean</th></tr></thead><tbody id="rows"></tbody></table></div><p class="foot">Blank source cells stay blank. Green input marks an edit. Edits save to the Toolbench app-data folder, shared by Thread Workbench windows.</p></section>
+  <div class="details"><section class="panel"><div class="panelhead"><div><h2>Selected series</h2><p id="selectedLabel"></p></div></div><dl class="detail-list" id="detail"></dl></section><section class="panel"><h2>Method boundary</h2><p style="margin-top:12px">Published equivalent-thread values are source data, not an FE-derived correction factor. B2/B3 cannot be used as calibration targets without resolving the source inconsistency. Edited values are exploratory and never change Workbench strength results.</p><p style="margin-top:12px"><a class="source" href="https://ntrs.nasa.gov/api/citations/20050180634/downloads/20050180634.pdf" target="_blank" rel="noopener noreferrer">Open NASA source PDF</a></p></section></div>
+</main>
+<script>
+let SOURCE = [];
+const key = (type, series, sample) => `${type}:${series}:${sample}`;
+let edits = {}, revision = null, pending = Promise.resolve();
+let tab = 'load', selected = 'A-R';
+const byId = id => document.getElementById(id);
+const sourceValue = (row, type, i) => row[type][i];
+const value = (row, type, i) => Object.hasOwn(edits, key(type,row.id,i)) ? edits[key(type,row.id,i)] : sourceValue(row,type,i);
+const mean = (row,type) => { const v=row[type].map((_,i)=>value(row,type,i)).filter(x=>x!==null); return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null; };
+const fmt = (v,type) => v===null ? '—' : type==='load' ? Math.round(v).toLocaleString('en-US') : v.toFixed(2);
+function save(){
+  byId('editCount').textContent=Object.keys(edits).length;
+  const snapshot={...edits};
+  pending=pending.then(async()=>{
+    byId('saveStatus').textContent='Saving…';
+    const response=await fetch('state',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision,edits:snapshot})});
+    if(!response.ok) throw new Error(response.status===409?'Another window changed the evidence. Export this copy, then reload.':`Save failed (${response.status}). Export this copy before closing.`);
+    revision=(await response.json()).revision;
+    byId('saveStatus').textContent='Saved in Toolbench app data';
+  }).catch(e=>{byId('saveStatus').textContent=e.message;});
+}
+function renderTable(){
+  const query=byId('search').value.toLowerCase();
+  const rows=SOURCE.filter(r=>`${r.id} ${r.description}`.toLowerCase().includes(query));
+  const body=byId('rows'); body.replaceChildren();
+  for(const row of rows){
+    const tr=document.createElement('tr'); tr.className=row.id===selected?'selected':'';
+    const name=document.createElement('td'); name.innerHTML=`<span class="series">${row.id}</span> <span class="desc">${row.description}</span>`; name.title=row.description; name.addEventListener('click',()=>{selected=row.id;render();});tr.append(name);
+    row[tab].forEach((original,i)=>{const td=document.createElement('td'); if(original===null){td.className='empty';td.textContent='—';}else{const input=document.createElement('input');input.className='cell'+(Object.hasOwn(edits,key(tab,row.id,i))?' edited':'');input.type='number';input.step=tab==='load'?'1':'0.01';input.value=value(row,tab,i);input.setAttribute('aria-label',`${row.id} specimen ${i+1} ${tab==='load'?'load in lbf':'equivalent missing threads'}; published ${original}`);input.addEventListener('change',()=>{const n=Number(input.value);if(!Number.isFinite(n)||input.value.trim()===''||(tab==='load'&&(n<0||n>1e9))||(tab==='eq'&&(n< -15||n>15))){input.value=value(row,tab,i);return;}const k=key(tab,row.id,i);if(n===original)delete edits[k];else edits[k]=n;save();render();});const published=document.createElement('span');published.className='original';published.textContent=`source ${fmt(original,tab)}`;td.append(input,published);}tr.append(td);});
+    const work=document.createElement('td');work.className='mean';work.textContent=fmt(mean(row,tab),tab);tr.append(work);const published=document.createElement('td');published.className='source-mean';published.textContent=fmt(row[tab+'Mean'],tab);tr.append(published);body.append(tr);
+  }
+  byId('loadTab').setAttribute('aria-selected',String(tab==='load'));byId('eqTab').setAttribute('aria-selected',String(tab==='eq'));
+}
+function drawPlot(id,type){
+  const svg=byId(id), W=720,H=310,L=52,R=12,T=12,B=55;svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.replaceChildren();
+  const ns='http://www.w3.org/2000/svg', add=(name,attrs,text)=>{const e=document.createElementNS(ns,name);for(const [k,v] of Object.entries(attrs))e.setAttribute(k,String(v));if(text!==undefined)e.textContent=text;svg.append(e);return e;};
+  const values=SOURCE.map(r=>mean(r,type));const min=type==='load'?0:Math.min(-0.25,...values,0)*1.05;const max=Math.max(type==='load'?65000:4,...values,0)*1.05;const y=v=>T+(max-v)/(max-min)*(H-T-B);
+  for(let i=0;i<=4;i++){const v=min+(max-min)*i/4,yy=y(v);add('line',{x1:L,y1:yy,x2:W-R,y2:yy,class:'gridline'});add('text',{x:L-8,y:yy+4,'text-anchor':'end'},type==='load'?new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:1}).format(v):v.toFixed(1));}
+  if(type==='load')add('line',{x1:L,y1:y(59768),x2:W-R,y2:y(59768),class:'baseline'});
+  const slot=(W-L-R)/SOURCE.length,bw=slot*.62;
+  SOURCE.forEach((row,i)=>{const v=values[i],x=L+i*slot+(slot-bw)/2,top=Math.min(y(v),y(0)),height=Math.max(2,Math.abs(y(v)-y(0)));const b=add('rect',{x,y:top,width:bw,height,class:'bar'+(row.id===selected?' active':''),rx:3});b.setAttribute('tabindex','0');b.setAttribute('role','button');b.setAttribute('aria-label',`${row.id}: ${fmt(v,type)}`);b.addEventListener('click',()=>{selected=row.id;render();});b.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selected=row.id;render();}});add('text',{x:x+bw/2,y:H-B+18,'text-anchor':'middle'},row.id);});
+}
+function renderDetail(){const r=SOURCE.find(x=>x.id===selected);byId('selectedLabel').textContent=`${r.id} · ${r.description}`;const items=[['Published load mean',`${fmt(r.loadMean,'load')} lbf`],['Working load mean',`${fmt(mean(r,'load'),'load')} lbf`],['Published missing threads',fmt(r.eqMean,'eq')],['Working missing threads',fmt(mean(r,'eq'),'eq')]];if(selected==='B2'||selected==='B3')items.push(['Source check','Table 3 B2/B3 rows appear exchanged']);const dl=byId('detail');dl.replaceChildren();for(const [label,val] of items){const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=val;if(label==='Source check')dd.className='flag';dl.append(dt,dd);}}
+function render(){if(!SOURCE.length)return;renderTable();drawPlot('loadPlot','load');drawPlot('eqPlot','eq');renderDetail();}
+byId('loadTab').addEventListener('click',()=>{tab='load';render();});byId('eqTab').addEventListener('click',()=>{tab='eq';render();});byId('search').addEventListener('input',renderTable);
+byId('reset').addEventListener('click',()=>{if(!confirm('Reset all edited specimen values to the published values?'))return;edits={};save();render();});
+byId('export').addEventListener('click',()=>{const lines=['series,description,sample_1,sample_2,sample_3,sample_4,sample_5,working_mean,published_mean,table'];for(const type of ['load','eq'])for(const r of SOURCE){const q=x=>'"'+String(x).replaceAll('"','""')+'"';lines.push([r.id,q(r.description),...r[type].map((_,i)=>value(r,type,i)??''),mean(r,type)??'',r[type+'Mean'],type].join(','));}const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([lines.join('\n')+'\n'],{type:'text/csv'}));a.download='nasa-coil-working-copy.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);});
+async function init(){
+  try {
+    const [data,state]=await Promise.all([fetch('data'),fetch('state')]);
+    if(!data.ok||!state.ok)throw new Error('Could not load evidence data. Reopen from Thread Workbench.');
+    SOURCE=await data.json();
+    const saved=await state.json();edits=saved.edits;revision=saved.revision;
+    byId('reset').disabled=false;byId('export').disabled=false;
+    byId('editCount').textContent=Object.keys(edits).length;
+    byId('saveStatus').textContent='Saved in Toolbench app data';
+    render();
+  }catch(e){byId('saveStatus').textContent=e.message;}
+}
+init();
+</script>
+</body>
+</html>

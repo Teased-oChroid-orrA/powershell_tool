@@ -153,11 +153,9 @@ impl Change {
             Self::FemalePitch => c.inner.female_pitch = v,
             Self::NominalMajor => {
                 c.nominal_major = v;
-                c.inner = Interface::basic(v, c.tpi, c.inner.engagement);
             }
             Self::Tpi => {
                 c.tpi = v;
-                c.inner = Interface::basic(c.inner.major, v, c.inner.engagement);
             }
             Self::ParentShear => c.parent_shear_strength = v * 1000.0,
             Self::BoltTensile => c.bolt_tensile_strength = v * 1000.0,
@@ -414,6 +412,7 @@ pub enum ThreadAct {
     Redo,
     Save,
     Report,
+    Evidence,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaterialRole { Bolt, Parent, Insert }
@@ -768,6 +767,12 @@ impl ThreadSession {
             ThreadAct::Redo => self.redo(),
             ThreadAct::Save => self.save(),
             ThreadAct::Report => self.report(),
+            ThreadAct::Evidence => {
+                self.status = match super::thread_evidence::open() {
+                    Ok(()) => "Evidence tables opened in the browser.".into(),
+                    Err(e) => format!("Could not open evidence tables: {e}"),
+                };
+            }
         }
     }
     fn analyses(&self) -> (Analysis, Analysis) {
@@ -1102,6 +1107,7 @@ impl ThreadSession {
             actions: vec![
                 Self::entry("Save case", ThreadAct::Save),
                 Self::entry("Report", ThreadAct::Report),
+                Self::entry("Evidence tables", ThreadAct::Evidence),
             ],
             inputs: self.inputs(),
             inputs_note: "Click a value to type; Enter applies.".into(),
@@ -1420,6 +1426,7 @@ impl Authoring for ThreadSession {
                 items: vec![
                     Item::Entry(Self::entry("Save case", ThreadAct::Save)),
                     Item::Entry(Self::entry("Report", ThreadAct::Report)),
+                    Item::Entry(Self::entry("Evidence tables", ThreadAct::Evidence)),
                 ],
             },
             Menu {
@@ -1439,6 +1446,41 @@ impl Authoring for ThreadSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn damage_study_preserves_unselected_thread_properties() {
+        let file = File::new();
+        let base = file.case.clone();
+        for (change, proposed) in [
+            (Change::FemaleMinor, base.inner.female_minor + 0.002),
+            (Change::BoltMinor, base.inner.minor - 0.002),
+            (Change::BoltMajor, base.inner.major - 0.002),
+            (Change::Tpi, 30.0),
+            (Change::NominalMajor, 0.26),
+        ] {
+            let mut study = file.clone();
+            study.change = change;
+            study.proposed = proposed;
+            let changed = study.changed();
+            let mut expected = base.clone();
+            match change {
+                Change::FemaleMinor => expected.inner.female_minor = proposed,
+                Change::BoltMinor => expected.inner.minor = proposed,
+                Change::BoltMajor => expected.inner.major = proposed,
+                Change::Tpi => expected.tpi = proposed,
+                Change::NominalMajor => expected.nominal_major = proposed,
+                _ => unreachable!(),
+            }
+            assert_eq!(changed, expected, "{change:?} changed another property");
+            assert!(strength::compute(&changed).is_ok());
+        }
+    }
+    #[test]
+    fn evidence_tables_are_available_from_workbench_and_file_menu() {
+        let s = ThreadSession::open(&std::env::temp_dir().join("thread-evidence-never-written.json")).unwrap();
+        let wanted = ThreadSession::action(ThreadAct::Evidence);
+        assert!(s.workbench_data().actions.iter().any(|entry| entry.action == wanted));
+        assert!(s.menus().iter().find(|menu| menu.title == "File").unwrap().items.iter().any(|item| matches!(item, Item::Entry(entry) if entry.action == wanted)));
+    }
     #[test]
     fn material_picker_searches_full_catalog_and_change_picker_lists_valid_damage() {
         let mut s = ThreadSession::open(&std::env::temp_dir().join("thread-picker-never-written.json")).unwrap();
