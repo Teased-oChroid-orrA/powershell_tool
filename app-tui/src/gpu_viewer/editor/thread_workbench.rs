@@ -40,9 +40,10 @@ pub enum Change {
     InsertLength,
     StiMinor,
     StiPitch,
+    InactiveEntryTurns,
 }
 impl Change {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::FemaleMinor,
         Self::BoltMajor,
         Self::BoltMinor,
@@ -60,6 +61,7 @@ impl Change {
         Self::InsertLength,
         Self::StiMinor,
         Self::StiPitch,
+        Self::InactiveEntryTurns,
     ];
     fn label(self) -> &'static str {
         match self {
@@ -80,6 +82,7 @@ impl Change {
             Self::InsertLength => "External engagement length",
             Self::StiMinor => "STI tapped-hole minor diameter (damage)",
             Self::StiPitch => "STI tapped-hole pitch diameter (damage)",
+            Self::InactiveEntryTurns => "Fully ineffective entry turns",
         }
     }
     fn unit(self) -> &'static str {
@@ -87,6 +90,7 @@ impl Change {
             Self::Tpi => "TPI",
             Self::ParentShear | Self::BoltTensile | Self::BoltShear => "ksi",
             Self::Load => "lbf",
+            Self::InactiveEntryTurns => "turns",
             _ => "in",
         }
     }
@@ -94,6 +98,7 @@ impl Change {
         match self {
             Self::OuterMajor | Self::OuterFemaleMinor | Self::InsertLength => f == Family::Keensert,
             Self::StiMinor | Self::StiPitch => f == Family::HelicalCoil,
+            Self::InactiveEntryTurns => f == Family::Tapped,
             _ => true,
         }
     }
@@ -116,6 +121,7 @@ impl Change {
             Self::InsertLength => c.outer.map_or(0.0, |(_, o)| o.engagement),
             Self::StiMinor => c.sti.map_or(0.0, |s| s.minor),
             Self::StiPitch => c.sti.map_or(0.0, |s| s.pitch),
+            Self::InactiveEntryTurns => 0.0,
         }
     }
     fn suggestion(self, c: &Case) -> f64 {
@@ -130,6 +136,7 @@ impl Change {
             | Self::Engagement
             | Self::OuterMajor
             | Self::InsertLength => v - 0.005,
+            Self::InactiveEntryTurns => 1.0,
             _ => v,
         }
     }
@@ -181,6 +188,7 @@ impl Change {
                     s.pitch = v;
                 }
             }
+            Self::InactiveEntryTurns => c.inner.engagement -= v / c.tpi,
         }
         // A rating is for the exact qualified installed geometry and material.
         if c.family != Family::Tapped && self != Self::Load {
@@ -207,9 +215,10 @@ enum Field {
     Proposed,
     StiMinor,
     StiPitch,
+    ParentWall,
 }
 impl Field {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::Major,
         Self::Tpi,
         Self::Engagement,
@@ -226,6 +235,7 @@ impl Field {
         Self::Proposed,
         Self::StiMinor,
         Self::StiPitch,
+        Self::ParentWall,
     ];
     fn label(self) -> &'static str {
         match self {
@@ -245,6 +255,7 @@ impl Field {
             Self::Proposed => "Proposed value",
             Self::StiMinor => "STI tapped minor",
             Self::StiPitch => "STI tapped pitch",
+            Self::ParentWall => "Minimum radial wall",
         }
     }
     fn unit(self) -> &'static str {
@@ -274,6 +285,8 @@ struct File {
     parent_material: Option<String>,
     #[serde(default)]
     insert_material: Option<String>,
+    #[serde(default)]
+    parent_wall: Option<f64>,
 }
 impl File {
     fn material(id: &str) -> Option<&'static Material> {
@@ -317,6 +330,7 @@ impl File {
             bolt_material: Some(bolt.id.into()),
             parent_material: Some(parent.id.into()),
             insert_material: None,
+            parent_wall: None,
         }
     }
     fn sync_rating(&mut self) {
@@ -338,6 +352,15 @@ impl File {
     fn validate(&self) -> Result<(), String> {
         if self.version != 1 {
             return Err(format!("unsupported thread case version {}", self.version));
+        }
+        if self.parent_wall.is_some_and(|v| !v.is_finite() || v <= 0.0) {
+            return Err("minimum radial parent wall must be positive".into());
+        }
+        if self.change == Change::InactiveEntryTurns
+            && (self.case.family != Family::Tapped || !self.proposed.is_finite()
+                || self.proposed < 0.0 || self.proposed.fract() != 0.0)
+        {
+            return Err("ineffective entry turns must be a nonnegative whole number on a tapped thread".into());
         }
         if self
             .rating_value
@@ -575,6 +598,7 @@ impl ThreadSession {
             Field::StiPitch => c
                 .sti
                 .map_or("not supplied".into(), |s| format!("{:.4}", s.pitch)),
+            Field::ParentWall => self.file.parent_wall.map_or("not supplied".into(), |v| format!("{v:.4}")),
         }
     }
     fn edit(&mut self, f: Field) {
@@ -598,6 +622,8 @@ impl ThreadSession {
         let mut next = self.file.clone();
         if f == Field::RatingSource {
             next.rating_source = p.text.trim().to_string();
+        } else if f == Field::ParentWall && p.text.trim().is_empty() {
+            next.parent_wall = None;
         } else {
             let Ok(v) = p.text.trim().parse::<f64>() else {
                 self.status = format!("{} needs a number.", f.label());
@@ -652,6 +678,7 @@ impl ThreadSession {
                 }
                 Field::Rating => next.rating_value = Some(v),
                 Field::Proposed => next.proposed = v,
+                Field::ParentWall => next.parent_wall = Some(v),
                 Field::RatingSource => unreachable!(),
             }
         }
@@ -752,13 +779,20 @@ impl ThreadSession {
     fn row(&self, f: Field) -> DockItem {
         let editing = self.prompt.as_ref().filter(|p| p.field == f);
         let value = editing.map_or_else(|| self.value(f), |p| p.text.clone());
+        let unit = if editing.is_some() || (f == Field::ParentWall && self.file.parent_wall.is_none()) {
+            String::new()
+        } else if f == Field::Proposed {
+            format!(" {}", self.file.change.unit())
+        } else {
+            f.unit().into()
+        };
         DockItem::field(
             f.label(),
             format!(
                 "{}{}{}",
                 value,
                 if editing.is_some() { "_" } else { "" },
-                if editing.is_some() { "" } else { f.unit() }
+                unit
             ),
             if editing.is_some() {
                 Tone::Warn
@@ -811,6 +845,8 @@ impl ThreadSession {
                 self.row(Field::Major),
                 self.row(Field::Tpi),
                 self.row(Field::Engagement),
+                self.row(Field::ParentWall),
+                DockItem::text("Radial wall is measured from the outermost parent thread root to the nearest free surface.", Tone::Dim),
                 DockItem::field(
                     "Basic pitch diameter",
                     format!("{:.4} in", c.inner.pitch),
@@ -900,6 +936,12 @@ impl ThreadSession {
                 Some(Self::action(ThreadAct::OpenChange)),false),
             DockItem::field("Baseline value",format!("{:.4} {}",self.file.change.current(c),self.file.change.unit()),Tone::Dim,None,false),
             self.row(Field::Proposed),
+            if self.file.change == Change::InactiveEntryTurns {
+                DockItem::text("Whole entry turns are removed from idealized engagement; local load redistribution is not modeled.", Tone::Dim)
+            } else {
+                DockItem::text("One measured characteristic changes.", Tone::Dim)
+            },
+            DockItem::text("Parent wall is recorded for future FE calibration; no wall correction is applied.",Tone::Dim),
             DockItem::text("One characteristic changes. An insert rating is withdrawn when geometry or material changes.",Tone::Dim),
             DockItem::text("Click a value, type, Enter applies, Esc cancels.",Tone::Dim)];
         cards.push(Card::new(
@@ -1014,6 +1056,9 @@ impl ThreadSession {
             ));
         }
         limits.push(DockItem::text("Measured damage replaces one basic dimension. Class limits and damage are never guessed.",Tone::Dim));
+        if let Some(wall) = self.file.parent_wall {
+            limits.push(DockItem::text(format!("Minimum radial wall: {wall:.4} in (recorded; no capacity adjustment)."), Tone::Dim));
+        }
         vec![
             Card::new(
                 "thread-summary",
@@ -1097,6 +1142,12 @@ impl ThreadSession {
             if name == "Insert" && self.file.case.family == Family::Tapped { continue; }
             let material = id.as_deref().and_then(File::material).map_or("manual / unspecified", |m| m.name);
             s.push_str(&format!("{name} material: {material}\n"));
+        }
+        if let Some(wall) = self.file.parent_wall {
+            s.push_str(&format!("Minimum radial wall: {wall:.4} in; no wall correction applied\n"));
+        }
+        if self.file.change == Change::InactiveEntryTurns {
+            s.push_str("Entry-turn loss assumes fully ineffective turns and removes their pitch length from uniform engagement. It does not model local load redistribution.\n");
         }
         match self.file.case.family {
             Family::Tapped => s.push_str("Hole tap: regular Unified, matching bolt thread; pilot drill not specified\n"),
@@ -1442,6 +1493,10 @@ mod tests {
         let mut s = ThreadSession::open(&path).unwrap();
         s.run(ThreadAct::Save);
         assert_eq!(ThreadSession::open(&path).unwrap().file, s.file);
+        let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("parent_wall");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(ThreadSession::open(&path).unwrap().file.parent_wall, None);
         s.edit(Field::Proposed);
         s.prompt.as_mut().unwrap().text = "0.500".into();
         s.commit();
@@ -1457,6 +1512,43 @@ mod tests {
         s.set_change(Change::Engagement);
         assert!(s.analyses().1.governing.is_some());
         assert_eq!(s.file.proposed, 0.001);
+    }
+    #[test]
+    fn ineffective_entry_turns_reduce_only_idealized_tapped_engagement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entry-loss.thread.json");
+        let mut s = ThreadSession::open(&path).unwrap();
+        s.set_change(Change::InactiveEntryTurns);
+        s.file.proposed = 2.0;
+        let (base, changed) = s.analyses();
+        let remaining = 1.0 - 2.0 / (s.file.case.tpi * s.file.case.inner.engagement);
+        for name in ["Bolt external thread stripping", "Parent internal thread stripping"] {
+            let before = base.rows.iter().find(|r| r.name == name).unwrap().lbf;
+            let after = changed.rows.iter().find(|r| r.name == name).unwrap().lbf;
+            assert!((after / before - remaining).abs() < 1e-12);
+        }
+        assert_eq!(changed.rows[0].lbf, base.rows[0].lbf);
+        s.file.proposed = 0.5;
+        assert!(s.file.validate().is_err());
+        s.file.proposed = 12.0;
+        assert!(s.file.validate().is_err());
+        s.file.proposed = 2.0;
+        s.file.parent_wall = Some(0.125);
+        s.run(ThreadAct::Save);
+        assert_eq!(ThreadSession::open(&path).unwrap().file.parent_wall, Some(0.125));
+        s.set_family(Family::HelicalCoil);
+        assert_ne!(s.file.change, Change::InactiveEntryTurns);
+    }
+    #[test]
+    fn proposed_value_uses_selected_characteristic_unit() {
+        let mut s = ThreadSession::open(&std::env::temp_dir().join("thread-units-never-written.json")).unwrap();
+        for (change, unit) in [(Change::Tpi, " TPI"), (Change::ParentShear, " ksi"), (Change::Load, " lbf"), (Change::InactiveEntryTurns, " turns")] {
+            s.set_change(change);
+            let DockItem::Field { value, .. } = s.row(Field::Proposed) else { panic!("proposed field"); };
+            assert!(value.ends_with(unit), "{value}");
+        }
+        let DockItem::Field { value, .. } = s.row(Field::ParentWall) else { panic!("parent wall field"); };
+        assert_eq!(value, "not supplied");
     }
     #[test]
     fn unchanged_insert_comparison_keeps_qualified_rating() {
