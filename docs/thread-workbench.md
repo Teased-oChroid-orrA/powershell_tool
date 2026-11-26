@@ -60,6 +60,8 @@ Windows [run 45842190193](https://github.com/Teased-oChroid-orrA/powershell_tool
 
 Windows [run 45844437880](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/45844437880) succeeded for `a1f4371`, including the Keensert advisory-row correction. The workflow builds the release executable, opens the bare dashboard for a smoke check and uploads the package; it does not inspect Thread Workbench rendering.
 
+Windows [run 45874189323](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/45874189323) succeeded for `26762b4`, including the editable evidence view and isolated damage-change behavior. The release executable built, the bare dashboard smoke check passed, and the package uploaded. Local evidence: 124 solver tests, 1,404 app-tui library tests (47 ignored), three focused evidence/change tests, and the no-default-features check passed. The HTML view was inspected in a browser; editing a specimen changed its working mean and plot while its published value stayed visible. The Windows workflow did not inspect that browser view or the Thread Workbench window.
+
 ## Verification
 
 On 2026-11-24, `cargo test -p fastened-joint-solver` passed 121 tests and `cargo test -p app-tui --features gpu-viewer --lib` passed 1,391 tests (46 ignored). The no-default-features check also passed. The macOS native window opened from `--gpu-thread`; a screen capture confirmed three-pane layout, the baseline/changed comparison, and parent and bolt sections visible under the surface-less display style. Hosted Windows qualification remains the Windows evidence.
