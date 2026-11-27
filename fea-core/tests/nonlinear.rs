@@ -5,7 +5,7 @@
 
 use fea_core::generate::grid;
 use fea_core::material::J2;
-use fea_core::nonlinear::Stop;
+use fea_core::nonlinear::{FailureMonitor, Stop};
 use fea_core::*;
 use mechanics_core::hardening::Hardening;
 
@@ -309,6 +309,20 @@ fn the_failure_strain_stops_the_analysis() {
     assert_eq!(sol.stop, Stop::FailureStrain);
     let ep = sol.state.max_ep();
     assert!((0.03..0.05).contains(&ep), "stopped at ep = {ep}");
+}
+
+#[test]
+fn a_fixed_material_state_monitor_stops_the_analysis() {
+    let pl = limit_pressure();
+    let (model, bc, loads) = cylinder(0.3, 8, Physics::PlaneStrain { thickness: 1.0 }, false, pl);
+    let monitor = FailureMonitor(std::sync::Arc::new(|state| state.max_ep() >= 0.03));
+    let sol = model.solve_nonlinear(&loads, &bc, &NlOptions {
+        control: Control::Arc { ds: 2e-3, lambda_max: 1.3, max_steps: 400 },
+        failure_monitor: Some(monitor),
+        ..NlOptions::default()
+    }).unwrap();
+    assert_eq!(sol.stop, Stop::FailureStrain);
+    assert!((0.03..0.05).contains(&sol.state.max_ep()));
 }
 
 #[test]

@@ -19,6 +19,7 @@ Does not own: any UI, unit selection, or material database (`mechanics-core`).
 | Worst-case corner search + seeded Monte Carlo | `src/uncertainty.rs` |
 | Per-thread spring-coupled load distribution | `src/thread_load_distribution.rs` |
 | Thread Workbench tapped-hole elastic FE adapter | `src/thread_hybrid.rs` |
+| Offline tapped-hole axisymmetric contact pilot | `src/thread_contact.rs` (numerical stiffness only; no capacity link) |
 | AN/NAS/MS21250/Hi-Lok thread catalogs | `src/thread_catalog.rs` |
 
 ## Entry Points
@@ -41,6 +42,7 @@ Does not own: any UI, unit selection, or material database (`mechanics-core`).
 - Thread shear uses the FED-STD-H28 same-material simplified area; no thread-class tolerance data exists here for the external/internal-distinct form.
 - `thread_capability.rs` owns the separate Unified axial screen used by Thread Workbench: external/internal FED-STD-H28 shear areas, damage comparison, STI hole limits, and insert manufacturer-rating gates. `thread_catalog.rs` now distinguishes the internal basic minor (`1.082532P`) from the external basic root (`1.226869P`); keep both when changing catalog geometry. Method and source limits: `docs/thread-workbench.md`.
 - `thread_hybrid.rs` runs the 1D elastic bolt/parent bar-and-spring FE model for tapped-hole load sharing only. Its uniform parent annulus is an idealization; it does not change `thread_capability` capacities or model coil/key transfer, flank contact, plasticity or rupture.
+- `thread_contact.rs` is an offline 2D axisymmetric contact pilot. Its radial wall is measured from the outermost parent thread root. Elastic reaction requires force balance and three-mesh convergence. An explicit finite-strain J2 path reports bolt/parent yielding and first local rupture-onset threshold; a separate three-mesh gate checks plastic response. It does not delete material or predict validated pull-out capacity. Both paths scale length by pitch and stress by parent modulus, then convert force/gap at the output. Neither feeds `thread_capability`.
 - `thread_capability.rs` also owns the inch installation catalog: 44 Heli-Coil STI hole/drill records and 16 Howmet solid-insert regular-tap records. Keep STI tap and regular Unified tap data distinct; pilot drills are not strength ratings. Source pages and expansion limits: `docs/thread-workbench.md`.
 - HC68-2 chart readings for 1/4-20 and 1/4-28 are advisory rows only; the graph is approximate and does not replace a confirmed matching assembly rating. NASA RP-1228's tapped-hole equation must not be applied to a wire-insert assembly.
 - Friction integrals are cross-checked against quadrature; thread load distribution against the continuum sinh solution (differential tests). Keep those tests when touching either.

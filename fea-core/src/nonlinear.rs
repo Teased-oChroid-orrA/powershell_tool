@@ -419,6 +419,16 @@ impl std::fmt::Debug for StepObserver {
     }
 }
 
+/// A fixed-geometry failure measure evaluated after each converged step.
+#[derive(Clone)]
+pub struct FailureMonitor(pub std::sync::Arc<dyn Fn(&NlState) -> bool + Send + Sync>);
+
+impl std::fmt::Debug for FailureMonitor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FailureMonitor")
+    }
+}
+
 /// Newton iterations without a 3 % gain of the best residual after which a contact solve is called stagnated.
 const STAGNATION_ITERATIONS: usize = 8;
 /// Iterations in a row with less than a tenth of the residual taken off (a creep) before the near-contact stabiliser is dropped.
@@ -477,6 +487,8 @@ pub struct NlOptions {
     pub max_cuts_total: usize,
     /// Stop the analysis when the equivalent plastic strain anywhere reaches this.
     pub failure_ep: Option<f64>,
+    /// Optional caller-defined failure measure on the converged material state.
+    pub failure_monitor: Option<FailureMonitor>,
     /// Chord (modified) Newton: reuse one factorization of the tangent for up to this many
     /// iterations while the residual keeps falling by at least a factor of four per iteration
     /// (`0` = full Newton). The factorization dominates a 2D/3D iteration, the tangent assembly
@@ -538,7 +550,7 @@ impl NlOptions {
 
 impl Default for NlOptions {
     fn default() -> Self {
-        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, max_cuts_total: DEFAULT_MAX_CUTS_TOTAL, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0, ep_step: 0.0, interrupt: Interrupt::default(), stick_slip_guard: false, observer: None }
+        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, max_cuts_total: DEFAULT_MAX_CUTS_TOTAL, failure_ep: None, failure_monitor: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0, ep_step: 0.0, interrupt: Interrupt::default(), stick_slip_guard: false, observer: None }
     }
 }
 
@@ -685,6 +697,7 @@ struct Ctx<'a> {
     free: Vec<usize>,
     fixed: Vec<usize>,
     f_ext: Vec<f64>,
+    displacement_force_scale: Cell<f64>,
     bc: &'a Dirichlet,
     opt: NlOptions,
     factorisations: Cell<usize>,
@@ -878,12 +891,18 @@ impl Ctx<'_> {
         Ok(dx)
     }
 
-    /// A residual this small against the full applied load is converged whatever the current force level (a body in
-    /// free flight has nothing but round-off to measure a relative tolerance against). A coupling's offset is a load too: the
-    /// force `k offset` it would carry if its dofs did not move (a bolt's preload with nothing else applied balances to round-off).
-    fn abs_tol(&self) -> f64 {
+    /// A free-flight, displacement-driven body has zero applied force and zero
+    /// internal force, leaving round-off as its entire relative force scale.
+    /// Use the elastic force induced by the prescribed displacement only while
+    /// every contact point is open. Active contact still needs relative convergence.
+    fn abs_tol(&self, ev: &Eval) -> f64 {
         let offsets = self.couplings.iter().map(|c| (c.k * c.offset).powi(2)).sum::<f64>().sqrt();
-        1e-10 * norm(&self.f_ext).max(offsets)
+        let applied = 1e-10 * norm(&self.f_ext).max(offsets);
+        if ev.state.contact.iter().flatten().all(|c| !c.active) {
+            applied.max(1e-14 * self.displacement_force_scale.get())
+        } else {
+            applied
+        }
     }
 
     /// Make the Newton step the one the exact frictional tangent gives: the factorised matrix `K` is symmetric and
@@ -1207,7 +1226,7 @@ impl Model {
                 return Err("arc-length control needs zero prescribed displacements".into());
             }
         }
-        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), held: Cell::new(0), events: RefCell::new(Vec::new()), start, ground: loads.ground.clone(), couplings: loads.couplings.clone(), followers: loads.followers.clone(), timers: Default::default(), last_start: RefCell::new(None) };
+        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, displacement_force_scale: Cell::new(0.0), bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), held: Cell::new(0), events: RefCell::new(Vec::new()), start, ground: loads.ground.clone(), couplings: loads.couplings.clone(), followers: loads.followers.clone(), timers: Default::default(), last_start: RefCell::new(None) };
         let mut sol = match opt.control {
             Control::Load => ctx.run_load_control()?,
             Control::Arc { ds, lambda_max, max_steps } => ctx.run_arc_length(ds, lambda_max, max_steps)?,
@@ -1310,6 +1329,19 @@ impl Ctx<'_> {
                 cs.set_stabilise(true);
             }
             let ev0 = ev0?;
+            if self.displacement_force_scale.get() == 0.0 {
+                let mut prescribed = vec![0.0; u.len()];
+                for &i in &self.fixed {
+                    prescribed[i] = self.bc.value[i];
+                }
+                let mut drive = vec![0.0; u.len()];
+                ev0.k.as_ref().expect("tangent").matvec_add(&self.pat, &prescribed, &mut drive);
+                let scale = norm(&drive);
+                if !scale.is_finite() {
+                    return Err("prescribed-displacement force scale overflow".into());
+                }
+                self.displacement_force_scale.set(scale);
+            }
             let mut kd = vec![0.0; u.len()];
             ev0.k.as_ref().expect("tangent").matvec_add(&self.pat, &jump, &mut kd);
             let mut dx: Vec<f64> = self.free.iter().map(|&i| -kd[i]).collect();
@@ -1352,7 +1384,7 @@ impl Ctx<'_> {
             if self.opt.interrupt.triggered() {
                 return Err("interrupted".into());
             }
-            if rn <= self.opt.tol * self.scale(&ev, lambda) || rn < 1e-14 * self.scale(&ev, lambda).max(1.0) || rn <= self.abs_tol() {
+            if rn <= self.opt.tol * self.scale(&ev, lambda) || rn < 1e-14 * self.scale(&ev, lambda).max(1.0) || rn <= self.abs_tol(&ev) {
                 let mut st = ev.state;
                 st.rigid_q = q;
                 return Ok((u, st, residuals));
@@ -1732,7 +1764,8 @@ impl Ctx<'_> {
                     if newton_effort <= if self.contacts.is_some() { 16 } else { 5 } && (self.opt.ep_step == 0.0 || dep <= 0.5 * self.opt.ep_step) {
                         dl = (dl * 1.5).min(dl_max);
                     }
-                    if self.opt.failure_ep.is_some_and(|lim| max_ep >= lim) {
+                    if self.opt.failure_ep.is_some_and(|lim| max_ep >= lim)
+                        || self.opt.failure_monitor.as_ref().is_some_and(|monitor| (monitor.0)(&state)) {
                         return Ok(self.finish(u, state, lambda, steps, Stop::FailureStrain));
                     }
                     if self.opt.stop_at_force > 0.0 && steps.last().and_then(|s| s.master_force.first()).is_some_and(|f| norm(f) >= self.opt.stop_at_force) {
@@ -1844,7 +1877,7 @@ impl Ctx<'_> {
                 let r = self.residual(&ev, lam);
                 let rn = norm(&r);
                 residuals.push(rn);
-                if rn <= self.opt.tol * self.scale(&ev, lam) || rn <= self.abs_tol() {
+                if rn <= self.opt.tol * self.scale(&ev, lam) || rn <= self.abs_tol(&ev) {
                     converged = Some((ut, ev.state, lam));
                     break;
                 }
@@ -1929,7 +1962,8 @@ impl Ctx<'_> {
                     } else if iterations > 8 {
                         ds *= 0.6;
                     }
-                    if self.opt.failure_ep.is_some_and(|lim| max_ep >= lim) {
+                    if self.opt.failure_ep.is_some_and(|lim| max_ep >= lim)
+                        || self.opt.failure_monitor.as_ref().is_some_and(|monitor| (monitor.0)(&state)) {
                         return Ok(self.finish(u, state, lambda, steps, Stop::FailureStrain));
                     }
                 }

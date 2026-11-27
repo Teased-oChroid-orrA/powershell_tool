@@ -1,0 +1,6 @@
+[
+  {"id":"formed-0602","hole_in":0.602,"load_lbf":35000,"method":"Formed","note":"Reported full-strength point; rounded narrative value"},
+  {"id":"formed-0607","hole_in":0.607,"load_lbf":31500,"method":"Formed","note":"Reported 10% loss; rounded narrative value"},
+  {"id":"formed-0612","hole_in":0.612,"load_lbf":22000,"method":"Formed","note":"Reported narrative value"},
+  {"id":"formed-0619","hole_in":0.619,"load_lbf":12550,"method":"Formed","note":"Reported narrative value; article also says holes ranged only to 0.617 in"}
+]

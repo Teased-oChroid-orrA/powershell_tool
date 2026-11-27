@@ -18,6 +18,7 @@ const PAGE: &str = include_str!("thread_evidence/index.html");
 const DATA: &str = include_str!("thread_evidence/nasa-coil.json");
 const TAPPED_PAGE: &str = include_str!("thread_evidence/tapped.html");
 const TAPPED_DATA: &str = include_str!("thread_evidence/nasa-tapped.json");
+const TULSA_DATA: &str = include_str!("thread_evidence/tulsa-tapped.json");
 const MAX_HEAD: usize = 8192;
 const MAX_BODY: usize = 16384;
 
@@ -33,6 +34,18 @@ struct TappedRow {
     id: String,
     limit: Option<f64>,
     pullout: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct TulsaRow {
+    id: String,
+    hole_in: f64,
+    load_lbf: f64,
+}
+
+fn tulsa_rows() -> &'static [TulsaRow] {
+    static ROWS: OnceLock<Vec<TulsaRow>> = OnceLock::new();
+    ROWS.get_or_init(|| serde_json::from_str(TULSA_DATA).expect("bundled Tulsa evidence data"))
 }
 
 fn tapped_rows() -> &'static [TappedRow] {
@@ -58,7 +71,7 @@ struct Update {
 }
 
 fn valid_edits(edits: &BTreeMap<String, f64>) -> bool {
-    if edits.len() > source_rows().len() * 10 + tapped_rows().len() * 2 {
+    if edits.len() > source_rows().len() * 10 + tapped_rows().len() * 2 + tulsa_rows().len() * 2 {
         return false;
     }
     edits.iter().all(|(key, value)| {
@@ -87,6 +100,14 @@ fn valid_edits(edits: &BTreeMap<String, f64>) -> bool {
                 let Some(row) = tapped_rows().iter().find(|row| row.id == series) else { return false; };
                 index == 0 && (0.0..=1_000_000_000.0).contains(value)
                     && (if kind == "limit" { row.limit } else { row.pullout }).is_some()
+            }
+            "tulsa_hole" | "tulsa_load" => {
+                let Some(row) = tulsa_rows().iter().find(|row| row.id == series) else { return false; };
+                index == 0 && if kind == "tulsa_hole" {
+                    row.hole_in > 0.0 && (0.5..=0.7).contains(value)
+                } else {
+                    row.load_lbf > 0.0 && (0.0..=1_000_000_000.0).contains(value)
+                }
             }
             _ => false,
         }
@@ -280,6 +301,7 @@ fn handle(mut stream: TcpStream, port: u16, token: &str, store: &Path) -> io::Re
         ),
         ("GET", "tapped") => response(&mut stream, "200 OK", "text/html; charset=utf-8", TAPPED_PAGE.as_bytes()),
         ("GET", "tapped/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", TAPPED_DATA.as_bytes()),
+        ("GET", "tulsa/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", TULSA_DATA.as_bytes()),
         ("GET", "state") => {
             let data = locked(store, || {
                 let saved = read_saved(store)?;
@@ -389,6 +411,7 @@ mod tests {
         assert_eq!(http(&server, "GET", "data", "", &origin).0, 200);
         assert_eq!(http(&server, "GET", "tapped", "", &origin).0, 200);
         assert_eq!(http(&server, "GET", "tapped/data", "", &origin).0, 200);
+        assert_eq!(http(&server, "GET", "tulsa/data", "", &origin).0, 200);
         let (_, state) = http(&server, "GET", "state", "", &origin);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&state).unwrap()["revision"],
@@ -405,6 +428,8 @@ mod tests {
         let (_, updated) = http(&server, "GET", "state", "", &origin);
         let updated: serde_json::Value = serde_json::from_str(&updated).unwrap();
         assert_eq!(updated["edits"]["pullout:8:0"], 7700.0);
+        let tulsa = serde_json::json!({"revision": updated["revision"], "edits": {"load:B1:0": 52000.0, "tulsa_load:formed-0602:0": 34000.0}}).to_string();
+        assert_eq!(http(&server, "PUT", "state", &tulsa, &origin).0, 200);
         for key in ["load:P:0", "other:B1:0", "load:B1:9"] {
             let body = serde_json::json!({"revision": updated["revision"], "edits": {(key): 1.0}})
                 .to_string();
