@@ -13,3 +13,9 @@ Source conflicts affect the other groups and the fixture:
 - Table 1 calls the final self-drilling row SS-D4P1.3; its plotted legend and Table 2 call it SS-D4P1.4. That row is excluded from the direct-tapped subset regardless.
 
 The thin tube wall bends and tears at the hole. The present axisymmetric ring model omits that global 3D deformation, so a numerical match to these peaks would not validate its pull-out capacity. The selected group averages remain secondary comparison data. Item 1's independent matched-specimen gate stays open; the Workbench's analytical capacity remains governing.
+
+## Companion-source screen and qualification
+
+[Grimsmo et al. 2016](https://doi.org/10.1016/j.jcsr.2016.06.023) reports M16 bolt-and-nut tension tests, bolt material tests, and FE failure comparisons. Its nut is not the tapped parent in Zhang's tube, and its material condition cannot be assigned to Zhang's specimens. The [SIMLab 2009 annual report](https://www.ntnu.edu/documents/139845/32416528/SIMLab%2BAnnual%2Breport%2B2009.pdf/20c07ac2-2b4d-4b5d-85ea-2c754a3b2a52) describes M5 fastener thread stripping and necking inside a tapped hole at high strain rate, but does not provide a matched specimen-level geometry, material curve, and pull-out record. Neither source closes Item 1's physical admission gate.
+
+Commit `758ea49` passed the focused `thread_evidence::tests` Rust test, 40 Table 1 unit conversions, JavaScript syntax check, and browser edit/chart/save/reload/reset check. [Windows run 46065884952](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/46065884952) passed release build, package, and bare-dashboard smoke check. The Windows run did not inspect the Thread Workbench window or validate pull-out physics.
