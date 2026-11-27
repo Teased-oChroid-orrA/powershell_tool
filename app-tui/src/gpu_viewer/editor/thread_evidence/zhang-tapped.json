@@ -1,0 +1,7 @@
+[
+  {"id":"MS-D5P0.8","d_in":0.1937007874,"p_in":0.03149606299,"dh_in":0.3661417323,"th_in":0.1377952756,"fu_lbf":1420.79252,"cov_pct":2.5,"du_in":0.03149606299,"ku_lbf_per_in":45024.51032,"mode":"I","check":"Consistent to source rounding"},
+  {"id":"MS-D5P1.1","d_in":0.1937007874,"p_in":0.04330708661,"dh_in":0.3700787402,"th_in":0.1338582677,"fu_lbf":1508.468008,"cov_pct":3.8,"du_in":0.0657480315,"ku_lbf_per_in":22897.69009,"mode":"I","check":"Consistent to source rounding"},
+  {"id":"MS-D6P1.3","d_in":0.2464566929,"p_in":0.05118110236,"dh_in":0.4803149606,"th_in":0.1732283465,"fu_lbf":1503.971829,"cov_pct":4.1,"du_in":0.09763779528,"ku_lbf_per_in":29435.80858,"mode":"I","check":"Published stiffness conflicts with force / displacement"},
+  {"id":"MS-D6P1.1","d_in":0.2291338583,"p_in":0.04330708661,"dh_in":0.4606299213,"th_in":0.1732283465,"fu_lbf":1420.79252,"cov_pct":4.2,"du_in":0.05196850394,"ku_lbf_per_in":29961.14212,"mode":"I","check":"Published stiffness conflicts with force / displacement"},
+  {"id":"MS-D8P1.3","d_in":0.311023622,"p_in":0.05118110236,"dh_in":0.6181102362,"th_in":0.2322834646,"fu_lbf":1798.471545,"cov_pct":2.4,"du_in":0.1484251969,"ku_lbf_per_in":12105.51197,"mode":"I","check":"Consistent to source rounding"}
+]

@@ -19,6 +19,7 @@ const DATA: &str = include_str!("thread_evidence/nasa-coil.json");
 const TAPPED_PAGE: &str = include_str!("thread_evidence/tapped.html");
 const TAPPED_DATA: &str = include_str!("thread_evidence/nasa-tapped.json");
 const TULSA_DATA: &str = include_str!("thread_evidence/tulsa-tapped.json");
+const ZHANG_DATA: &str = include_str!("thread_evidence/zhang-tapped.json");
 const MAX_HEAD: usize = 8192;
 const MAX_BODY: usize = 16384;
 
@@ -41,6 +42,24 @@ struct TulsaRow {
     id: String,
     hole_in: f64,
     load_lbf: f64,
+}
+
+#[derive(Deserialize)]
+struct ZhangRow {
+    id: String,
+    d_in: f64,
+    p_in: f64,
+    dh_in: f64,
+    th_in: f64,
+    fu_lbf: f64,
+    cov_pct: f64,
+    du_in: f64,
+    ku_lbf_per_in: f64,
+}
+
+fn zhang_rows() -> &'static [ZhangRow] {
+    static ROWS: OnceLock<Vec<ZhangRow>> = OnceLock::new();
+    ROWS.get_or_init(|| serde_json::from_str(ZHANG_DATA).expect("bundled Zhang evidence data"))
 }
 
 fn tulsa_rows() -> &'static [TulsaRow] {
@@ -71,7 +90,7 @@ struct Update {
 }
 
 fn valid_edits(edits: &BTreeMap<String, f64>) -> bool {
-    if edits.len() > source_rows().len() * 10 + tapped_rows().len() * 2 + tulsa_rows().len() * 2 {
+    if edits.len() > source_rows().len() * 10 + tapped_rows().len() * 2 + tulsa_rows().len() * 2 + zhang_rows().len() * 8 {
         return false;
     }
     edits.iter().all(|(key, value)| {
@@ -108,6 +127,21 @@ fn valid_edits(edits: &BTreeMap<String, f64>) -> bool {
                 } else {
                     row.load_lbf > 0.0 && (0.0..=1_000_000_000.0).contains(value)
                 }
+            }
+            "zhang_d" | "zhang_p" | "zhang_dh" | "zhang_th" | "zhang_fu" | "zhang_cov" | "zhang_du" | "zhang_ku" => {
+                let Some(row) = zhang_rows().iter().find(|row| row.id == series) else { return false; };
+                if index != 0 { return false; }
+                let (published, max) = match kind {
+                    "zhang_d" => (row.d_in, 10.0),
+                    "zhang_p" => (row.p_in, 10.0),
+                    "zhang_dh" => (row.dh_in, 10.0),
+                    "zhang_th" => (row.th_in, 10.0),
+                    "zhang_fu" => (row.fu_lbf, 1_000_000_000.0),
+                    "zhang_cov" => (row.cov_pct, 100.0),
+                    "zhang_du" => (row.du_in, 100.0),
+                    _ => (row.ku_lbf_per_in, 1_000_000_000.0),
+                };
+                published > 0.0 && (0.0..=max).contains(value)
             }
             _ => false,
         }
@@ -302,6 +336,7 @@ fn handle(mut stream: TcpStream, port: u16, token: &str, store: &Path) -> io::Re
         ("GET", "tapped") => response(&mut stream, "200 OK", "text/html; charset=utf-8", TAPPED_PAGE.as_bytes()),
         ("GET", "tapped/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", TAPPED_DATA.as_bytes()),
         ("GET", "tulsa/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", TULSA_DATA.as_bytes()),
+        ("GET", "zhang/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", ZHANG_DATA.as_bytes()),
         ("GET", "state") => {
             let data = locked(store, || {
                 let saved = read_saved(store)?;
@@ -412,6 +447,7 @@ mod tests {
         assert_eq!(http(&server, "GET", "tapped", "", &origin).0, 200);
         assert_eq!(http(&server, "GET", "tapped/data", "", &origin).0, 200);
         assert_eq!(http(&server, "GET", "tulsa/data", "", &origin).0, 200);
+        assert_eq!(http(&server, "GET", "zhang/data", "", &origin).0, 200);
         let (_, state) = http(&server, "GET", "state", "", &origin);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&state).unwrap()["revision"],
@@ -430,6 +466,10 @@ mod tests {
         assert_eq!(updated["edits"]["pullout:8:0"], 7700.0);
         let tulsa = serde_json::json!({"revision": updated["revision"], "edits": {"load:B1:0": 52000.0, "tulsa_load:formed-0602:0": 34000.0}}).to_string();
         assert_eq!(http(&server, "PUT", "state", &tulsa, &origin).0, 200);
+        let (_, latest) = http(&server, "GET", "state", "", &origin);
+        let latest: serde_json::Value = serde_json::from_str(&latest).unwrap();
+        let zhang = serde_json::json!({"revision": latest["revision"], "edits": {"load:B1:0": 52000.0, "zhang_fu:MS-D5P0.8:0": 1450.0}}).to_string();
+        assert_eq!(http(&server, "PUT", "state", &zhang, &origin).0, 200);
         for key in ["load:P:0", "other:B1:0", "load:B1:9"] {
             let body = serde_json::json!({"revision": updated["revision"], "edits": {(key): 1.0}})
                 .to_string();
