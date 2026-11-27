@@ -1,0 +1,286 @@
+[
+  {
+    "id": "MS-D5P0.8",
+    "color": "#5b85cf",
+    "points": [
+      {
+        "travel_in": 0.0,
+        "load_lbf": 0.0
+      },
+      {
+        "travel_in": 0.0046,
+        "load_lbf": 175.6
+      },
+      {
+        "travel_in": 0.0071,
+        "load_lbf": 292.7
+      },
+      {
+        "travel_in": 0.0092,
+        "load_lbf": 465.4
+      },
+      {
+        "travel_in": 0.0129,
+        "load_lbf": 702.6
+      },
+      {
+        "travel_in": 0.0167,
+        "load_lbf": 878.2
+      },
+      {
+        "travel_in": 0.0211,
+        "load_lbf": 1046.4
+      },
+      {
+        "travel_in": 0.0252,
+        "load_lbf": 1178.5
+      },
+      {
+        "travel_in": 0.0274,
+        "load_lbf": 1289.6
+      },
+      {
+        "travel_in": 0.031,
+        "load_lbf": 1382.6
+      }
+    ]
+  },
+  {
+    "id": "MS-D5P1.1",
+    "color": "#e98033",
+    "points": [
+      {
+        "travel_in": 0.0,
+        "load_lbf": 0.0
+      },
+      {
+        "travel_in": 0.0101,
+        "load_lbf": 100.6
+      },
+      {
+        "travel_in": 0.0138,
+        "load_lbf": 232.7
+      },
+      {
+        "travel_in": 0.0163,
+        "load_lbf": 322.8
+      },
+      {
+        "travel_in": 0.0174,
+        "load_lbf": 544.9
+      },
+      {
+        "travel_in": 0.0182,
+        "load_lbf": 770.1
+      },
+      {
+        "travel_in": 0.0187,
+        "load_lbf": 911.2
+      },
+      {
+        "travel_in": 0.0235,
+        "load_lbf": 1002.8
+      },
+      {
+        "travel_in": 0.0277,
+        "load_lbf": 1064.4
+      },
+      {
+        "travel_in": 0.0316,
+        "load_lbf": 1131.9
+      },
+      {
+        "travel_in": 0.0364,
+        "load_lbf": 1178.5
+      },
+      {
+        "travel_in": 0.0411,
+        "load_lbf": 1208.5
+      },
+      {
+        "travel_in": 0.0452,
+        "load_lbf": 1238.5
+      },
+      {
+        "travel_in": 0.0498,
+        "load_lbf": 1283.6
+      },
+      {
+        "travel_in": 0.0539,
+        "load_lbf": 1354.1
+      },
+      {
+        "travel_in": 0.0588,
+        "load_lbf": 1442.7
+      },
+      {
+        "travel_in": 0.0628,
+        "load_lbf": 1490.7
+      }
+    ]
+  },
+  {
+    "id": "MS-D6P1.1",
+    "color": "#9e9e9e",
+    "points": [
+      {
+        "travel_in": 0.0,
+        "load_lbf": 0.0
+      },
+      {
+        "travel_in": 0.007,
+        "load_lbf": 181.6
+      },
+      {
+        "travel_in": 0.012,
+        "load_lbf": 268.7
+      },
+      {
+        "travel_in": 0.0189,
+        "load_lbf": 418.8
+      },
+      {
+        "travel_in": 0.0234,
+        "load_lbf": 478.9
+      },
+      {
+        "travel_in": 0.0259,
+        "load_lbf": 600.5
+      },
+      {
+        "travel_in": 0.0267,
+        "load_lbf": 759.6
+      },
+      {
+        "travel_in": 0.0291,
+        "load_lbf": 915.7
+      },
+      {
+        "travel_in": 0.031,
+        "load_lbf": 1023.8
+      },
+      {
+        "travel_in": 0.0322,
+        "load_lbf": 1158.9
+      },
+      {
+        "travel_in": 0.0336,
+        "load_lbf": 1259.5
+      },
+      {
+        "travel_in": 0.0367,
+        "load_lbf": 1295.6
+      },
+      {
+        "travel_in": 0.0397,
+        "load_lbf": 1300.1
+      },
+      {
+        "travel_in": 0.0424,
+        "load_lbf": 1304.6
+      },
+      {
+        "travel_in": 0.0456,
+        "load_lbf": 1334.6
+      },
+      {
+        "travel_in": 0.0482,
+        "load_lbf": 1366.1
+      },
+      {
+        "travel_in": 0.0503,
+        "load_lbf": 1457.7
+      }
+    ]
+  },
+  {
+    "id": "MS-D6P1.3",
+    "color": "#e8b500",
+    "points": [
+      {
+        "travel_in": 0.0,
+        "load_lbf": 0.0
+      },
+      {
+        "travel_in": 0.0053,
+        "load_lbf": 195.2
+      },
+      {
+        "travel_in": 0.0117,
+        "load_lbf": 232.7
+      },
+      {
+        "travel_in": 0.0169,
+        "load_lbf": 286.7
+      },
+      {
+        "travel_in": 0.0209,
+        "load_lbf": 322.8
+      },
+      {
+        "travel_in": 0.0282,
+        "load_lbf": 364.8
+      },
+      {
+        "travel_in": 0.0334,
+        "load_lbf": 444.4
+      },
+      {
+        "travel_in": 0.0363,
+        "load_lbf": 560.0
+      },
+      {
+        "travel_in": 0.0418,
+        "load_lbf": 701.1
+      },
+      {
+        "travel_in": 0.0467,
+        "load_lbf": 873.7
+      },
+      {
+        "travel_in": 0.0512,
+        "load_lbf": 942.8
+      },
+      {
+        "travel_in": 0.057,
+        "load_lbf": 1061.4
+      },
+      {
+        "travel_in": 0.062,
+        "load_lbf": 1089.9
+      },
+      {
+        "travel_in": 0.0673,
+        "load_lbf": 1175.5
+      },
+      {
+        "travel_in": 0.0724,
+        "load_lbf": 1270.0
+      },
+      {
+        "travel_in": 0.0781,
+        "load_lbf": 1330.1
+      },
+      {
+        "travel_in": 0.0834,
+        "load_lbf": 1373.6
+      },
+      {
+        "travel_in": 0.0907,
+        "load_lbf": 1408.2
+      },
+      {
+        "travel_in": 0.0955,
+        "load_lbf": 1481.7
+      },
+      {
+        "travel_in": 0.0991,
+        "load_lbf": 1486.2
+      },
+      {
+        "travel_in": 0.1067,
+        "load_lbf": 1594.3
+      }
+    ]
+  }
+]

@@ -20,6 +20,7 @@ const TAPPED_PAGE: &str = include_str!("thread_evidence/tapped.html");
 const TAPPED_DATA: &str = include_str!("thread_evidence/nasa-tapped.json");
 const TULSA_DATA: &str = include_str!("thread_evidence/tulsa-tapped.json");
 const ZHANG_DATA: &str = include_str!("thread_evidence/zhang-tapped.json");
+const ZHANG_CURVES: &str = include_str!("thread_evidence/zhang-figure5.json");
 const MAX_HEAD: usize = 8192;
 const MAX_BODY: usize = 16384;
 
@@ -57,6 +58,23 @@ struct ZhangRow {
     ku_lbf_per_in: f64,
 }
 
+#[derive(Deserialize)]
+struct ZhangCurve {
+    id: String,
+    points: Vec<ZhangPoint>,
+}
+
+#[derive(Deserialize)]
+struct ZhangPoint {
+    travel_in: f64,
+    load_lbf: f64,
+}
+
+fn zhang_curves() -> &'static [ZhangCurve] {
+    static CURVES: OnceLock<Vec<ZhangCurve>> = OnceLock::new();
+    CURVES.get_or_init(|| serde_json::from_str(ZHANG_CURVES).expect("bundled Zhang curve data"))
+}
+
 fn zhang_rows() -> &'static [ZhangRow] {
     static ROWS: OnceLock<Vec<ZhangRow>> = OnceLock::new();
     ROWS.get_or_init(|| serde_json::from_str(ZHANG_DATA).expect("bundled Zhang evidence data"))
@@ -90,7 +108,7 @@ struct Update {
 }
 
 fn valid_edits(edits: &BTreeMap<String, f64>) -> bool {
-    if edits.len() > source_rows().len() * 10 + tapped_rows().len() * 2 + tulsa_rows().len() * 2 + zhang_rows().len() * 8 {
+    if edits.len() > source_rows().len() * 10 + tapped_rows().len() * 2 + tulsa_rows().len() * 2 + zhang_rows().len() * 8 + zhang_curves().iter().map(|c| c.points.len() * 2).sum::<usize>() {
         return false;
     }
     edits.iter().all(|(key, value)| {
@@ -104,12 +122,13 @@ fn valid_edits(edits: &BTreeMap<String, f64>) -> bool {
         let Some(index) = parts.next().and_then(|x| x.parse::<usize>().ok()) else {
             return false;
         };
-        if parts.next().is_some() || index >= 5 || !value.is_finite() {
+        if parts.next().is_some() || !value.is_finite() {
             return false;
         }
         match kind {
             "load" | "eq" => {
                 let Some(row) = source_rows().iter().find(|row| row.id == series) else { return false; };
+                if index >= row.load.len() { return false; }
                 match kind {
                     "load" => row.load[index].is_some() && (0.0..=1_000_000_000.0).contains(value),
                     _ => row.eq[index].is_some() && (-15.0..=15.0).contains(value),
@@ -142,6 +161,12 @@ fn valid_edits(edits: &BTreeMap<String, f64>) -> bool {
                     _ => (row.ku_lbf_per_in, 1_000_000_000.0),
                 };
                 published > 0.0 && (0.0..=max).contains(value)
+            }
+            "zhang_curve_x" | "zhang_curve_y" => {
+                let Some(curve) = zhang_curves().iter().find(|curve| curve.id == series) else { return false; };
+                let Some(point) = curve.points.get(index) else { return false; };
+                let max = if kind == "zhang_curve_x" { 1.0 } else { 100_000.0 };
+                (0.0..=max).contains(value) && point.travel_in >= 0.0 && point.load_lbf >= 0.0
             }
             _ => false,
         }
@@ -337,6 +362,7 @@ fn handle(mut stream: TcpStream, port: u16, token: &str, store: &Path) -> io::Re
         ("GET", "tapped/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", TAPPED_DATA.as_bytes()),
         ("GET", "tulsa/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", TULSA_DATA.as_bytes()),
         ("GET", "zhang/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", ZHANG_DATA.as_bytes()),
+        ("GET", "zhang/curves") => response(&mut stream, "200 OK", "application/json; charset=utf-8", ZHANG_CURVES.as_bytes()),
         ("GET", "state") => {
             let data = locked(store, || {
                 let saved = read_saved(store)?;
@@ -448,6 +474,7 @@ mod tests {
         assert_eq!(http(&server, "GET", "tapped/data", "", &origin).0, 200);
         assert_eq!(http(&server, "GET", "tulsa/data", "", &origin).0, 200);
         assert_eq!(http(&server, "GET", "zhang/data", "", &origin).0, 200);
+        assert_eq!(http(&server, "GET", "zhang/curves", "", &origin).0, 200);
         let (_, state) = http(&server, "GET", "state", "", &origin);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&state).unwrap()["revision"],
@@ -468,9 +495,9 @@ mod tests {
         assert_eq!(http(&server, "PUT", "state", &tulsa, &origin).0, 200);
         let (_, latest) = http(&server, "GET", "state", "", &origin);
         let latest: serde_json::Value = serde_json::from_str(&latest).unwrap();
-        let zhang = serde_json::json!({"revision": latest["revision"], "edits": {"load:B1:0": 52000.0, "zhang_fu:MS-D5P0.8:0": 1450.0}}).to_string();
+        let zhang = serde_json::json!({"revision": latest["revision"], "edits": {"load:B1:0": 52000.0, "zhang_fu:MS-D5P0.8:0": 1450.0, "zhang_curve_y:MS-D5P1.1:10": 1500.0}}).to_string();
         assert_eq!(http(&server, "PUT", "state", &zhang, &origin).0, 200);
-        for key in ["load:P:0", "other:B1:0", "load:B1:9"] {
+        for key in ["load:P:0", "other:B1:0", "load:B1:9", "zhang_curve_y:MS-D5P0.8:999", "zhang_curve_x:unknown:0"] {
             let body = serde_json::json!({"revision": updated["revision"], "edits": {(key): 1.0}})
                 .to_string();
             assert_eq!(http(&server, "PUT", "state", &body, &origin).0, 400);
@@ -486,6 +513,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&saved).unwrap()["edits"]["load:B1:0"],
             52000.0
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&saved).unwrap()["edits"]["zhang_curve_y:MS-D5P1.1:10"],
+            1500.0
         );
     }
 }
