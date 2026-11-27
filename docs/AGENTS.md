@@ -58,7 +58,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | #234 — Bushing edge-check uncertainty controls | `docs/issue-234-uncertainty-controls.md` (editable CVs, stale-run behavior, verification) |
 | #234 — Bushings / pin loads on holes of every sketch region | `docs/issue-234-multi-region-bushings.md` (global hole numbering, scope, evidence) |
 | #234 — Plasticity with bushings | `docs/issue-234-bushing-plasticity.md` (what the lift needed, Lame / Hill / fully plastic evidence, cost) |
-| #383 — Tapped-hole pull-out qualification | `docs/issue-383-phase-1.md` (public matched-specimen search, missing measurements and capacity gate) |
+| #383 — Tapped-hole pull-out qualification | `docs/issue-383-phase-1.md` (admission gate and initial screen) → `docs/issue-383-phase-2.md` (public data and companion-source screen) |
 
 ### Find It Fast — by current/live status
 | Looking for current status of... | Go to |

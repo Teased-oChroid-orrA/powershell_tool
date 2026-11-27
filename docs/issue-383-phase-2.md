@@ -1,0 +1,13 @@
+# Issue 383, Phase 2: public data and companion-source screen
+
+2026-11-27. Continued the public-only search for a directly tapped, physically tested pull-out specimen with matched geometry, material curves, fracture data, and force–displacement history. No source passed the admission gate in [Phase 1](issue-383-phase-1.md); no capacity model or runtime data changed.
+
+## Additional sources checked
+
+- [Croccolo et al., *Tribology International* 138 (2019) 297–306](https://research.unipd.it/handle/11577/3304308): M6 class 12.9 screws in aluminum tapped nuts, with three engagement ratios and repeated tightening. The public abstract reports an experimentally estimated engagement threshold for stripping, but the study targets friction and preload during tightening. The institutional record marks its publisher PDF restricted. The public record supplies neither a monotonic pull-out force–displacement history nor matched measured material and fracture curves. Keep as an engagement-trend lead, not a pull-out calibration specimen.
+- [Zhang et al., *Materials* 19 (2026) 3070](https://www.mdpi.com/1996-1944/19/14/3070): checked the article's data statement and supplementary-material listing. The statement says original contributions are included in the article and directs further inquiries to authors; no supplementary-material section appears. The article plots selected experimental and modeled curves and material response, but does not release individual raw records or establish same-condition coupon and fracture provenance. Its reported screw rupture strain is tied to the modeled material curve, not an independently measured fracture calibration. The Phase 1 rejection remains.
+- [Wu et al., *Materials* 15 (2022) 2469](https://www.mdpi.com/1996-1944/15/7/2469): companion work by authors of the 2021 friction-drilling study. It measures thread-strip response and local hardness for friction-drilled holes; its data statement says all data are within the manuscript. It does not supply a matched constitutive or fracture curve for the 2021 conventionally drilled and cut-tapped control, nor establish that the specimens came from the same material lot. Do not combine these studies into a synthetic specimen.
+
+## Gate
+
+Item 1 remains open. A public article with group means, plotted curves, or catalog strengths is insufficient for independent capacity qualification. Continue seeking a public specimen-level archive or dissertation with linked coupon IDs and raw pull-out traces. If none exists, retain the offline contact model as a numerical diagnostic and keep the analytical Workbench capacity governing.
