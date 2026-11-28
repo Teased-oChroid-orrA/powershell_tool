@@ -21,6 +21,7 @@ const TAPPED_DATA: &str = include_str!("thread_evidence/nasa-tapped.json");
 const TULSA_DATA: &str = include_str!("thread_evidence/tulsa-tapped.json");
 const ZHANG_DATA: &str = include_str!("thread_evidence/zhang-tapped.json");
 const ZHANG_CURVES: &str = include_str!("thread_evidence/zhang-figure5.json");
+const KRAUS_DATA: &str = include_str!("thread_evidence/kraus-blind.json");
 const MAX_HEAD: usize = 8192;
 const MAX_BODY: usize = 16384;
 
@@ -70,6 +71,19 @@ struct ZhangPoint {
     load_lbf: f64,
 }
 
+#[derive(Deserialize)]
+struct KrausRow {
+    id: String,
+    engagement_in: f64,
+    mean_lbf: f64,
+    sd_lbf: f64,
+}
+
+fn kraus_rows() -> &'static [KrausRow] {
+    static ROWS: OnceLock<Vec<KrausRow>> = OnceLock::new();
+    ROWS.get_or_init(|| serde_json::from_str(KRAUS_DATA).expect("bundled Kraus evidence data"))
+}
+
 fn zhang_curves() -> &'static [ZhangCurve] {
     static CURVES: OnceLock<Vec<ZhangCurve>> = OnceLock::new();
     CURVES.get_or_init(|| serde_json::from_str(ZHANG_CURVES).expect("bundled Zhang curve data"))
@@ -108,7 +122,7 @@ struct Update {
 }
 
 fn valid_edits(edits: &BTreeMap<String, f64>) -> bool {
-    if edits.len() > source_rows().len() * 10 + tapped_rows().len() * 2 + tulsa_rows().len() * 2 + zhang_rows().len() * 8 + zhang_curves().iter().map(|c| c.points.len() * 2).sum::<usize>() {
+    if edits.len() > source_rows().len() * 10 + tapped_rows().len() * 2 + tulsa_rows().len() * 2 + zhang_rows().len() * 8 + zhang_curves().iter().map(|c| c.points.len() * 2).sum::<usize>() + kraus_rows().len() * 3 {
         return false;
     }
     edits.iter().all(|(key, value)| {
@@ -167,6 +181,16 @@ fn valid_edits(edits: &BTreeMap<String, f64>) -> bool {
                 let Some(point) = curve.points.get(index) else { return false; };
                 let max = if kind == "zhang_curve_x" { 1.0 } else { 100_000.0 };
                 (0.0..=max).contains(value) && point.travel_in >= 0.0 && point.load_lbf >= 0.0
+            }
+            "kraus_depth" | "kraus_mean" | "kraus_sd" => {
+                let Some(row) = kraus_rows().iter().find(|row| row.id == series) else { return false; };
+                if index != 0 { return false; }
+                let (published, max) = match kind {
+                    "kraus_depth" => (row.engagement_in, 10.0),
+                    "kraus_mean" => (row.mean_lbf, 1_000_000_000.0),
+                    _ => (row.sd_lbf, 1_000_000_000.0),
+                };
+                published > 0.0 && (0.0..=max).contains(value)
             }
             _ => false,
         }
@@ -363,6 +387,7 @@ fn handle(mut stream: TcpStream, port: u16, token: &str, store: &Path) -> io::Re
         ("GET", "tulsa/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", TULSA_DATA.as_bytes()),
         ("GET", "zhang/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", ZHANG_DATA.as_bytes()),
         ("GET", "zhang/curves") => response(&mut stream, "200 OK", "application/json; charset=utf-8", ZHANG_CURVES.as_bytes()),
+        ("GET", "kraus/data") => response(&mut stream, "200 OK", "application/json; charset=utf-8", KRAUS_DATA.as_bytes()),
         ("GET", "state") => {
             let data = locked(store, || {
                 let saved = read_saved(store)?;
@@ -475,6 +500,7 @@ mod tests {
         assert_eq!(http(&server, "GET", "tulsa/data", "", &origin).0, 200);
         assert_eq!(http(&server, "GET", "zhang/data", "", &origin).0, 200);
         assert_eq!(http(&server, "GET", "zhang/curves", "", &origin).0, 200);
+        assert_eq!(http(&server, "GET", "kraus/data", "", &origin).0, 200);
         let (_, state) = http(&server, "GET", "state", "", &origin);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&state).unwrap()["revision"],
@@ -495,9 +521,9 @@ mod tests {
         assert_eq!(http(&server, "PUT", "state", &tulsa, &origin).0, 200);
         let (_, latest) = http(&server, "GET", "state", "", &origin);
         let latest: serde_json::Value = serde_json::from_str(&latest).unwrap();
-        let zhang = serde_json::json!({"revision": latest["revision"], "edits": {"load:B1:0": 52000.0, "zhang_fu:MS-D5P0.8:0": 1450.0, "zhang_curve_y:MS-D5P1.1:10": 1500.0}}).to_string();
+        let zhang = serde_json::json!({"revision": latest["revision"], "edits": {"load:B1:0": 52000.0, "zhang_fu:MS-D5P0.8:0": 1450.0, "zhang_curve_y:MS-D5P1.1:10": 1500.0, "kraus_mean:M20-S355-17.5:0": 57400.0}}).to_string();
         assert_eq!(http(&server, "PUT", "state", &zhang, &origin).0, 200);
-        for key in ["load:P:0", "other:B1:0", "load:B1:9", "zhang_curve_y:MS-D5P0.8:999", "zhang_curve_x:unknown:0"] {
+        for key in ["load:P:0", "other:B1:0", "load:B1:9", "zhang_curve_y:MS-D5P0.8:999", "zhang_curve_x:unknown:0", "kraus_mean:M20-S355-17.5:1", "kraus_mean:unknown:0"] {
             let body = serde_json::json!({"revision": updated["revision"], "edits": {(key): 1.0}})
                 .to_string();
             assert_eq!(http(&server, "PUT", "state", &body, &origin).0, 400);
@@ -517,6 +543,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&saved).unwrap()["edits"]["zhang_curve_y:MS-D5P1.1:10"],
             1500.0
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&saved).unwrap()["edits"]["kraus_mean:M20-S355-17.5:0"],
+            57400.0
         );
     }
 }

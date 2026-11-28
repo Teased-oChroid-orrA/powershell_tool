@@ -1,0 +1,14 @@
+[
+  {"id":"M12-S235-4.4","bolt":"M12","parent":"S235","engagement_in":0.1732283465,"mean_lbf":8126.843293,"sd_lbf":562.022358,"thread_failures":5,"bolt_ruptures":0},
+  {"id":"M12-S235-7.7","bolt":"M12","parent":"S235","engagement_in":0.3031496063,"mean_lbf":15696.160407,"sd_lbf":391.167561,"thread_failures":5,"bolt_ruptures":0},
+  {"id":"M12-S235-11","bolt":"M12","parent":"S235","engagement_in":0.4330708661,"mean_lbf":20893.743172,"sd_lbf":164.110528,"thread_failures":0,"bolt_ruptures":5},
+  {"id":"M12-S355-5.65","bolt":"M12","parent":"S355","engagement_in":0.2224409449,"mean_lbf":10431.13496,"sd_lbf":245.041748,"thread_failures":5,"bolt_ruptures":0},
+  {"id":"M12-S355-8.1","bolt":"M12","parent":"S355","engagement_in":0.3188976378,"mean_lbf":16514.46496,"sd_lbf":575.510894,"thread_failures":5,"bolt_ruptures":0},
+  {"id":"M12-S355-10.5","bolt":"M12","parent":"S355","engagement_in":0.4133858268,"mean_lbf":20601.491546,"sd_lbf":323.724878,"thread_failures":4,"bolt_ruptures":1},
+  {"id":"M20-S235-7.3","bolt":"M20","parent":"S235","engagement_in":0.2874015748,"mean_lbf":22548.336993,"sd_lbf":732.877155,"thread_failures":5,"bolt_ruptures":0},
+  {"id":"M20-S235-12.8","bolt":"M20","parent":"S235","engagement_in":0.5039370079,"mean_lbf":44062.552848,"sd_lbf":1474.746667,"thread_failures":5,"bolt_ruptures":0},
+  {"id":"M20-S235-18.35","bolt":"M20","parent":"S235","engagement_in":0.7224409449,"mean_lbf":57551.089434,"sd_lbf":301.243984,"thread_failures":4,"bolt_ruptures":1},
+  {"id":"M20-S355-9.4","bolt":"M20","parent":"S355","engagement_in":0.3700787402,"mean_lbf":29382.528863,"sd_lbf":1222.96065,"thread_failures":5,"bolt_ruptures":0},
+  {"id":"M20-S355-13.5","bolt":"M20","parent":"S355","engagement_in":0.531496063,"mean_lbf":44624.575205,"sd_lbf":1335.365122,"thread_failures":5,"bolt_ruptures":0},
+  {"id":"M20-S355-17.5","bolt":"M20","parent":"S355","engagement_in":0.688976378,"mean_lbf":57393.723173,"sd_lbf":364.190488,"thread_failures":1,"bolt_ruptures":4}
+]

@@ -987,7 +987,7 @@ impl ThreadSession {
             DockItem::text(
                 match &changed.governing {
                     Some(g) => format!(
-                        "Lowest modeled axial capacity: {} · {:.0} lbf",
+                        "Analytical axial capacity screen: {} · {:.0} lbf",
                         g.name, g.lbf
                     ),
                     None => "Assembly capacity incomplete: required paths lack data.".into(),
@@ -1021,6 +1021,12 @@ impl ThreadSession {
             "No safety factor, preload, fatigue, temperature or transverse load is included.",
             Tone::Dim,
         ));
+        if self.file.case.family == Family::Tapped {
+            summary.push(DockItem::text(
+                "Plastic-collapse and progressive-stripping capacities are unavailable: no qualified failure prediction or physical calibration.",
+                Tone::Warn,
+            ));
+        }
         let mut compare = Compare {
             heads: vec![
                 "Failure path".into(),
@@ -1091,7 +1097,7 @@ impl ThreadSession {
         let mut cards = vec![
             Card::new(
                 "thread-summary",
-                "Strength capability",
+                "Analytical strength screen",
                 Relevance::Info,
                 summary,
             ),
@@ -1141,7 +1147,7 @@ impl ThreadSession {
             }
             Err(reason) => fe.push(DockItem::text(reason, Tone::Warn)),
         }
-        cards.insert(1, Card::new("thread-elastic-fe", "Elastic FE load sharing", Relevance::Info, fe));
+        cards.insert(1, Card::new("thread-elastic-fe", "1D elastic FE load sharing", Relevance::Info, fe));
         cards
     }
     fn workbench_data(&self) -> Workbench {
@@ -1524,6 +1530,8 @@ mod tests {
         assert_eq!(base.per_turn_lbf, changed.per_turn_lbf);
         let fe_card = s.results().into_iter().find(|card| card.id == "thread-elastic-fe").unwrap();
         assert!(fe_card.items.iter().any(|item| matches!(item, DockItem::Plot(plot) if plot.series.len() == 2)));
+        let summary = s.results().into_iter().find(|card| card.id == "thread-summary").unwrap();
+        assert!(summary.items.iter().any(|item| matches!(item, DockItem::Line { text, .. } if text.contains("Plastic-collapse and progressive-stripping capacities are unavailable"))));
         s.set_change(Change::FemaleMinor);
         let (base, changed) = s.elastic_fe().unwrap();
         assert_eq!(base.per_turn_lbf, changed.per_turn_lbf);
