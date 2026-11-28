@@ -444,7 +444,7 @@ pub fn solve_mesh_checked_plastic(inputs: PlasticInputs) -> Result<MeshCheckedPl
         let c = &result.contact;
         let balance = (c.contact_axial_lbf / c.axial_reaction_lbf - 1.0).abs();
         let turns = (c.turn_load_lbf.iter().sum::<f64>() / c.axial_reaction_lbf - 1.0).abs();
-        if balance > 1e-5 || turns > 1e-5 || c.min_gap_in < -1e-6 {
+        if balance > 1e-5 || turns > 1e-5 || c.min_gap_in * inputs.contact.tpi < -2.8e-5 {
             return Err(format!("plastic thread-contact force balance or gap check failed at {} elements: force {:.3e}, turns {:.3e}, gap {:.3e} in", c.mesh_elements, balance, turns, c.min_gap_in));
         }
         results.push(result);
@@ -473,7 +473,7 @@ pub fn solve_mesh_checked_plastic(inputs: PlasticInputs) -> Result<MeshCheckedPl
 }
 
 /// Refuse a contact reaction until three meshes balance force, keep penetration
-/// below 0.000001 in, and converge the total and per-turn loads.
+/// below 0.000028 pitch, and converge the total and per-turn loads.
 pub fn solve_mesh_checked(inputs: ContactInputs) -> Result<MeshCheckedContact, String> {
     let mut results = Vec::with_capacity(3);
     for edge_fraction in [0.2, 0.1, 0.07] {
@@ -481,11 +481,9 @@ pub fn solve_mesh_checked(inputs: ContactInputs) -> Result<MeshCheckedContact, S
             edge_fraction,
             ..inputs
         })?;
-        let balance = (result.contact_axial_lbf - result.axial_reaction_lbf).abs()
-            / result.axial_reaction_lbf.max(1.0);
-        let turns = (result.turn_load_lbf.iter().sum::<f64>() - result.axial_reaction_lbf).abs()
-            / result.axial_reaction_lbf.max(1.0);
-        if balance > 1e-5 || turns > 1e-5 || result.min_gap_in < -1e-6 {
+        let balance = (result.contact_axial_lbf / result.axial_reaction_lbf - 1.0).abs();
+        let turns = (result.turn_load_lbf.iter().sum::<f64>() / result.axial_reaction_lbf - 1.0).abs();
+        if balance > 1e-5 || turns > 1e-5 || result.min_gap_in * inputs.tpi < -2.8e-5 {
             return Err("thread-contact force balance or gap check failed".into());
         }
         results.push(result);
@@ -559,6 +557,20 @@ mod tests {
         assert!(checked.mesh_elements[0] < checked.mesh_elements[1]);
         assert!(checked.mesh_elements[1] < checked.mesh_elements[2]);
         assert!(checked.mesh_change_fraction < 0.02);
+        let c = pilot();
+        let scaled = solve_mesh_checked(ContactInputs {
+            major_in: 2.0 * c.major_in,
+            bolt_minor_in: 2.0 * c.bolt_minor_in,
+            female_minor_in: 2.0 * c.female_minor_in,
+            radial_clearance_in: 2.0 * c.radial_clearance_in,
+            tpi: c.tpi / 2.0,
+            radial_wall_in: 2.0 * c.radial_wall_in,
+            travel_in: 2.0 * c.travel_in,
+            ..c
+        }).unwrap();
+        assert!((scaled.result.axial_reaction_lbf / checked.result.axial_reaction_lbf - 4.0).abs() < 1e-5);
+        assert!((scaled.result.min_gap_in - 2.0 * checked.result.min_gap_in).abs() < 1e-10);
+        assert!((scaled.mesh_change_fraction - checked.mesh_change_fraction).abs() < 1e-8);
     }
 
     #[test]

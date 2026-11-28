@@ -19,3 +19,5 @@ Before adding a plastic-collapse limit to runtime, define a reproducible limit-l
 ## Qualification of this increment
 
 The 12 Table 3 rows were checked against the publisher's PDF text on printed p. 145 (PDF page 5); 36 depth/mean/standard-deviation conversions and all 12 failure splits passed independent arithmetic checks. The Evidence page rendered 12 editable rows, four plotted group series, and 12 markers; a changed mean saved and survived a reload. `thread_evidence::tests` passed its route, invalid-key, restart-persistence, and stale-revision checks. The 11 focused Thread Workbench tests passed. This checks evidence handling and labeling, not physical pull-out prediction.
+
+[Windows run 46096562860](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/46096562860) passed release build, bare-dashboard smoke, ZIP package, and artifact upload for `ac6205f`.
